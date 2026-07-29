@@ -5,6 +5,10 @@ pages_build_output_dir = "out"
 compatibility_date = "2026-05-26"
 
 [[kv_namespaces]]
+binding = "CONTACT_LEADS"
+id = "3996bfc7569a41e9a56cfb05cc229519"
+
+[[kv_namespaces]]
 binding = "NEWSLETTER_SUBSCRIBERS"
 id = "3eaa600b0e1a43abbebc6a36252e1474"
 
