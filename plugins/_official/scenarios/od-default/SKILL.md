@@ -1,6 +1,6 @@
 ---
 name: od-default
-description: Hidden fallback scenario for free-form Home prompts. Ask the task type first, then continue through the matching Open Design flow.
+description: Hidden fallback scenario for free-form Home prompts. Infer the task type and ask only when routing is materially ambiguous.
 od:
   scenario: default-router
   mode: scenario
@@ -12,20 +12,26 @@ This plugin runs only when the user types a free-form Home prompt without
 choosing one of the visible category chips. It is the design-engine
 fallback, not a visible catalog entry.
 
-## Turn 1: ask the task type and lock the brief
+## Route first; clarify only when needed
 
-Your first response must be one short sentence plus this structured form,
-then stop. Do not write files, use tools, or start planning until the user
-answers. Localize every user-facing string to the user's chat language, but
-keep ids, types, option values, and the ordered `taskType` options stable.
-Prefill each question's `default` from the brief, including the `taskType`
-option you recommend, so the user can submit the form unchanged.
+Infer the task type from the user's brief and known conversation context.
+When one route is reasonably clear, bind it and continue directly to that
+Open Design flow. A free-form Home prompt, a first turn, or the presence of a
+discovery stage does not by itself require a question form.
+
+Emit the form below only when two or more routes remain materially plausible
+and choosing the wrong one would change the delivery format. Localize every
+user-facing string to the user's chat language, but keep ids, types, and the
+ordered `taskType` options stable. Prefill the `taskType` recommendation so
+the user can submit unchanged. You may add at most two other unanswered
+questions, and only when their answers are also required before useful work
+can begin; never restore a fixed discovery checklist.
 
 ```html
 <question-form id="task-type" title="Choose the task type">
 {
   "lang": "en",
-  "description": "I'll route this through the right Open Design workflow and lock the brief in one shot. Prefilled for you — send as is, or adjust first.",
+  "description": "I need one routing decision before I build. The recommended option is preselected.",
   "questions": [
     {
       "id": "taskType",
@@ -43,40 +49,6 @@ option you recommend, so the user can submit the form unchanged.
         "Audio",
         "Other"
       ]
-    },
-    {
-      "id": "audience",
-      "label": "Who is this for?",
-      "type": "text",
-      "placeholder": "Target user, buyer, viewer, or audience..."
-    },
-    {
-      "id": "brand",
-      "label": "Brand context",
-      "type": "radio",
-      "options": [
-        { "label": "Pick a direction for me", "value": "pick_direction" },
-        { "label": "I have a brand spec — I'll share it", "value": "brand_spec" },
-        { "label": "Match a reference site / screenshot — I'll attach it", "value": "reference_match" }
-      ]
-    },
-    {
-      "id": "scale",
-      "label": "Roughly how much?",
-      "type": "text",
-      "placeholder": "e.g. 8 slides, 1 landing + 3 sub-pages, 4 mobile screens, 30s video"
-    },
-    {
-      "id": "speakerNotes",
-      "label": "For slide decks, include speaker notes?",
-      "type": "switch",
-      "defaultValue": true
-    },
-    {
-      "id": "constraints",
-      "label": "Any important constraints?",
-      "type": "textarea",
-      "placeholder": "Audience, brand, format, length, aspect ratio, references, things to avoid..."
     }
   ]
 }
@@ -103,7 +75,8 @@ task type as authoritative and continue:
 - `Other`: ask only the minimum follow-up needed, then choose the closest
   Open Design workflow and continue.
 
-This single form already locks the discovery brief. Do not emit a second
-`<question-form id="discovery">`; proceed directly to the matching planning,
-generation, and critique stages. Do not tell the user to go back and choose a
-chip; the default plugin owns this fallback.
+Do not automatically emit a second `<question-form id="discovery">` after the
+route answer. Continue with the submitted answer and all existing context.
+Ask again later only if a new, genuinely blocking ambiguity appears. Do not
+tell the user to go back and choose a chip; the default plugin owns this
+fallback.

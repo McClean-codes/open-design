@@ -17,6 +17,13 @@ import { describe, expect, it } from 'vitest';
 const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, '../../..');
 const scenariosRoot = path.join(repoRoot, 'plugins', '_official', 'scenarios');
+const officialMarketplacePath = path.join(
+  repoRoot,
+  'plugins',
+  'registry',
+  'official',
+  'open-design-marketplace.json',
+);
 
 const CANONICAL = new Map<string, { taskKind: string; pipelineStages: string[] }>([
   ['od-new-generation',  { taskKind: 'new-generation',  pipelineStages: ['discovery', 'plan', 'generate', 'critique'] }],
@@ -85,23 +92,31 @@ describe('plugins/_official/scenarios roster', () => {
     });
   }
 
-  it('od-default is hidden and asks for task type through a GenUI surface', async () => {
+  it('od-default is hidden, loads its router skill, and never auto-raises task type', async () => {
     const manifestPath = path.join(scenariosRoot, 'od-default', 'open-design.json');
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    const marketplace = JSON.parse(await readFile(officialMarketplacePath, 'utf8'));
+    const registryEntry = marketplace.plugins.find(
+      (plugin: { name?: string }) => plugin.name === 'open-design/od-default',
+    );
     expect(manifest.od.hidden).toBe(true);
     expect(manifest.od.context?.craft).toEqual(
       expect.arrayContaining(['typography', 'color', 'anti-ai-slop']),
     );
-    expect(manifest.od.pipeline.stages[0].id).toBe('task-type');
-    expect(manifest.od.genui.surfaces).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          id: 'task-type',
-          kind: 'choice',
-          trigger: expect.objectContaining({ stageId: 'task-type' }),
-        }),
-      ]),
+    expect(manifest.od.context?.skills).toEqual([{ path: './SKILL.md' }]);
+    expect(manifest.od.pipeline.stages.map((stage: { id: string }) => stage.id)).toEqual([
+      'discovery',
+      'plan',
+      'generate',
+      'critique',
+    ]);
+    expect(manifest.od.genui?.surfaces ?? []).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'task-type' })]),
     );
+    expect(manifest.od.capabilities).not.toContain('genui:choice');
+    expect(registryEntry).toBeDefined();
+    expect(registryEntry.capabilitiesSummary).toEqual(manifest.od.capabilities);
+    expect(registryEntry.description).toBe(manifest.description);
   });
 
   it('od-new-generation declares the default craft rails for anti-slop HTML output', async () => {
