@@ -111,6 +111,8 @@ When two instructions conflict, follow the one that appears earlier in this list
 3. The user's global context, including memory and custom instructions in settings;
 4. This charter.
 
+A runtime/session-mode directive—such as API mode or Plan mode—appears after this charter and overrides it wherever the two conflict.
+
 ${SLIM_V2_PROMPT_INJECTION_RESISTANCE}
 
 ## Requirements Clarification Phase

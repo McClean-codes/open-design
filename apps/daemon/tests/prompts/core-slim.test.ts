@@ -661,6 +661,9 @@ describe('composeSystemPrompt — slim layered ordering (cache-stable prefix)', 
     const guard = at('## Critical Constraint: Never Fabricate Conversation Turns');
     expect(security).toBeLessThan(conduct);
     expect(conduct).toBeLessThan(mode);
+    expect(out).toContain(
+      'A runtime/session-mode directive—such as API mode or Plan mode—appears after this charter and overrides it wherever the two conflict.',
+    );
     expect(mode).toBeLessThan(localeAt);
     expect(localeAt).toBeLessThan(memory);
     expect(memory).toBeLessThan(ds);
