@@ -271,16 +271,16 @@ function workspaceResourceMutationAllowed(
   // bit 403'd every plain member's comment on someone else's shared project
   // at the workspace layer (2026-07-28 dogfood: “评论保存失败，请重试。”),
   // before the per-comment author rules in routes/project/comments.ts ever
-  // ran. Same base preconditions as `canMutate` (not frozen, writable
-  // lifecycle, active membership); only the standing test widens — the
-  // sharing act (`visibility: 'team'`) is what grants comment standing
-  // beyond creator/privileged, so an unshared personal binding stays closed
-  // to other members.
+  // ran. Comments are intentionally independent from
+  // `canWriteSyncedFiles`: shared-project viewers are read-only for project
+  // files but the product still promises that they can comment. The sharing
+  // act (`visibility: 'team'`) grants comment standing to every active
+  // workspace member, while frozen resources and unshared personal bindings
+  // remain closed.
   if (capability === 'comment') {
     return (
       access.canMutate ||
       (!access.frozen &&
-        ctx.canWriteSyncedFiles &&
         ctx.memberStatus === 'active' &&
         row.visibility === 'team')
     );

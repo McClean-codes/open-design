@@ -69,11 +69,16 @@ function sendApiError(res: any, status: number, code: string, message: string) {
   return res.status(status).json({ error: { code, message } });
 }
 
-function workspaceHeaders(memberId: string, role: 'owner' | 'admin' | 'member') {
+function workspaceHeaders(
+  memberId: string,
+  role: 'owner' | 'admin' | 'member',
+  canWriteSyncedFiles = true,
+) {
   return {
     'x-od-workspace-id': WORKSPACE_ID,
     'x-od-workspace-member-id': memberId,
     'x-od-workspace-role': role,
+    'x-od-workspace-can-write-synced-files': String(canWriteSyncedFiles),
   };
 }
 
@@ -264,6 +269,25 @@ describe('project comments — workspace mutation gate', () => {
     const { comment } = (await resp.json()) as { comment: { id: string } };
     expect(comment.id).toBeTruthy();
   });
+
+  it.each([
+    ['member', OTHER_MEMBER_ID],
+    ['admin', 'member-admin'],
+  ] as const)(
+    'allows an active %s to comment when synced-file writes are disabled',
+    async (role, memberId) => {
+      const baseUrl = await startServer();
+      const resp = await fetch(`${baseUrl}/api/projects/${TEAM_PROJECT}/conversations/conv-team/comments`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(memberId, role, false),
+        },
+        body: JSON.stringify({ target: COMMENT_TARGET, note: `${role} comment` }),
+      });
+      expect(resp.status).toBe(200);
+    },
+  );
 
   // Same as above but against the exact row shape the member's own daemon
   // holds after `POST /api/projects/:id/collab/pull` — the unattributed
