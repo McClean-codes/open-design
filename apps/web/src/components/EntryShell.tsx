@@ -128,6 +128,7 @@ import { ONBOARDING_ARTIFACT_CHIP_IDS } from './home-hero/chips';
 import { homeHeroChipLabel } from './home-hero/chip-labels';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { Icon } from './Icon';
+import { Button } from '@open-design/components';
 import { defaultAgentModelId, effectiveAgentModelChoice } from './agentModelSelection';
 import { AgentIcon } from './AgentIcon';
 import { CommunityView } from './CommunityView';
@@ -1845,6 +1846,14 @@ function OnboardingView({
   const [amrLoginCancelPending, setAmrLoginCancelPending] = useState(false);
   const [newsletterSubmitting, setNewsletterSubmitting] = useState(false);
   const [amrLoginError, setAmrLoginError] = useState<string | null>(null);
+  // Local dismissal for the cloud landing's activation-retry card only (its
+  // own × close, distinct from "取消登录" which cancels the whole vela login).
+  // Reset whenever a login attempt isn't in flight, so a canceled-then-retried
+  // attempt shows the hint again instead of staying hidden from a prior dismiss.
+  const [activationHintClosed, setActivationHintClosed] = useState(false);
+  useEffect(() => {
+    if (!amrLoginPending) setActivationHintClosed(false);
+  }, [amrLoginPending]);
   const [visibleAgentIds, setVisibleAgentIds] = useState<string[]>([]);
   const [providerTestState, setProviderTestState] = useState<
     | { status: 'idle' }
@@ -3074,7 +3083,7 @@ function OnboardingView({
 
   // Connect step, default face: a minimal, centered Open Design Cloud sign-in
   // landing. No stepper, no runtime cards — just the cloud CTA, a secondary
-  // link into the full runtime chooser, and a top-left language bar.
+  // link into the full runtime chooser, and a footer language switcher.
   if (step === 0 && connectExpanded === null) {
     const cloudBusy = amrLoginPending;
     const amrStatusResolving = !amrStatusResolved;
@@ -3083,133 +3092,142 @@ function OnboardingView({
         className="onboarding-view onboarding-view--cloud"
         aria-label={t('settings.welcomeTitle')}
       >
-        <div className="onboarding-cloud__topbar">
-          <LanguageMenu compact placement="down" align="end" />
-        </div>
-        <div className="onboarding-cloud__center">
-          <span
-            className="onboarding-cloud__logo od-brand-glyph"
-            role="img"
-            aria-label="Open Design"
-          />
-          <h1 className="onboarding-cloud__title">{t('settings.onboardingCloudTitle')}</h1>
-          <p className="onboarding-cloud__body">{t('settings.onboardingCloudBody')}</p>
-          <button
-            type="button"
-            className="onboarding-cloud__primary"
-            onClick={() => {
-              if (amrStatusResolving) return;
-              if (amrSignedIn) {
-                recordAmrEntry(analytics.track, 'onboarding_amr_card', new Date(), {
-                  metricsConsent: config.telemetry?.metrics === true,
-                });
-                setRuntime('amr');
-                onModeChange('daemon');
-                onAgentChange('amr');
-                recordAmrEntry(
-                  analytics.track,
-                  'onboarding_amr_sign_in_continue',
-                  new Date(),
-                  {
-                    metricsConsent: config.telemetry?.metrics === true,
-                    reuseExistingFrom: ['onboarding_amr_card'],
-                  },
-                );
-                setStep((current) => current + 1);
-                return;
-              }
-              void handleCloudSignIn();
-            }}
-            disabled={cloudBusy || amrLoginCancelPending || amrStatusResolving}
-            aria-busy={cloudBusy || amrStatusResolving ? true : undefined}
-          >
-            <Icon name="orbit" size={17} />
-            <span>
-              {cloudBusy
-                ? t('settings.amrSigningIn')
-                : amrStatusResolving
-                  ? t('common.loading')
-                  : amrSignedIn
-                    ? t('settings.onboardingCloudContinue')
-                    : t('settings.onboardingCloudSignIn')}
-            </span>
-          </button>
-          {amrLoginError ? (
-            <span className="onboarding-cloud__error" role="alert">
-              {amrLoginError}
-            </span>
-          ) : null}
-          {/* Manual device-auth fallback, mirroring Settings' AmrLoginPill:
-              vela auto-opens the browser, but when that fails silently (e.g.
-              corp-managed hosts) the pending login otherwise looks like a
-              dead button — surface the activation link the status poll
-              already carries. */}
-          {cloudBusy && amrStatus?.activationUrl ? (
-            <div className="amr-login-activation" role="group">
-              <span className="amr-login-activation__hint">
-                {amrStatus.browserOpenFailed
-                  ? t('settings.amrActivationBrowserFailed')
-                  : t('settings.amrActivationHint')}
-              </span>
-              <div className="amr-login-activation__actions">
-                <a
-                  className="amr-login-activation__open"
-                  href={amrStatus.activationUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {t('settings.amrActivationOpen')}
-                </a>
-              </div>
-            </div>
-          ) : null}
-          {cloudBusy ? (
+        <div className="onboarding-cloud__pane">
+          <div className="onboarding-cloud__center">
+            <h1 className="onboarding-cloud__title">{t('settings.onboardingCloudTitle')}</h1>
+            <p className="onboarding-cloud__body">{t('settings.onboardingCloudBody')}</p>
             <button
               type="button"
-              className="onboarding-cloud__cancel"
-              onClick={handleCancelAmrLogin}
-              disabled={amrLoginCancelPending}
-            >
-              {t('settings.amrCancelSignIn')}
-            </button>
-          ) : (
-            <div className="onboarding-cloud__alts">
-              <button
-                type="button"
-                className="onboarding-cloud__secondary"
-                onClick={() => {
-                  emitOnboardingClick('local_coding_agent', 'select_runtime', {
-                    runtime_type: 'local_cli',
+              className="onboarding-cloud__primary"
+              onClick={() => {
+                if (amrStatusResolving) return;
+                if (amrSignedIn) {
+                  recordAmrEntry(analytics.track, 'onboarding_amr_card', new Date(), {
+                    metricsConsent: config.telemetry?.metrics === true,
                   });
-                  setRuntime('local');
+                  setRuntime('amr');
                   onModeChange('daemon');
-                  void scanCliAgents({ preferExisting: true });
-                  setConnectExpanded('local');
-                }}
-              >
-                {t('settings.onboardingLocalTitle')}
-              </button>
-              <span className="onboarding-cloud__alts-or">
-                {t('settings.onboardingCloudOr')}
+                  onAgentChange('amr');
+                  recordAmrEntry(
+                    analytics.track,
+                    'onboarding_amr_sign_in_continue',
+                    new Date(),
+                    {
+                      metricsConsent: config.telemetry?.metrics === true,
+                      reuseExistingFrom: ['onboarding_amr_card'],
+                    },
+                  );
+                  setStep((current) => current + 1);
+                  return;
+                }
+                void handleCloudSignIn();
+              }}
+              disabled={cloudBusy || amrLoginCancelPending || amrStatusResolving}
+              aria-busy={cloudBusy || amrStatusResolving ? true : undefined}
+            >
+              <Icon name="log-in" size={17} />
+              <span>
+                {cloudBusy
+                  ? t('settings.amrSigningIn')
+                  : amrStatusResolving
+                    ? t('common.loading')
+                    : amrSignedIn
+                      ? t('settings.onboardingCloudContinue')
+                      : t('settings.onboardingCloudSignIn')}
               </span>
+            </button>
+            {amrLoginError ? (
+              <span className="onboarding-cloud__error" role="alert">
+                {amrLoginError}
+              </span>
+            ) : null}
+            {/* Manual device-auth fallback, mirroring Settings' AmrLoginPill:
+                vela auto-opens the browser, but when that fails silently (e.g.
+                corp-managed hosts) the pending login otherwise looks like a
+                dead button — surface the activation link the status poll
+                already carries. */}
+            {cloudBusy && amrStatus?.activationUrl && !activationHintClosed ? (
+              <div className="amr-login-activation onboarding-cloud__activation" role="group">
+                <span className="amr-login-activation__hint">
+                  {amrStatus.browserOpenFailed
+                    ? t('settings.amrActivationBrowserFailed')
+                    : t('settings.amrActivationHint')}
+                </span>
+                <div className="amr-login-activation__actions">
+                  <a
+                    className="amr-login-activation__open"
+                    href={amrStatus.activationUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {t('settings.amrActivationOpen')}
+                  </a>
+                  <button
+                    type="button"
+                    className="onboarding-cloud__activation-dismiss"
+                    onClick={() => setActivationHintClosed(true)}
+                  >
+                    {t('common.cancel')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {cloudBusy ? (
               <button
                 type="button"
-                className="onboarding-cloud__secondary"
-                onClick={() => {
-                  emitOnboardingClick('byok', 'select_runtime', { runtime_type: 'byok' });
-                  setRuntime('byok');
-                  onModeChange('api');
-                  setConnectExpanded('byok');
-                }}
+                className="onboarding-cloud__cancel"
+                onClick={handleCancelAmrLogin}
+                disabled={amrLoginCancelPending}
               >
-                {t('settings.onboardingByokTitle')}
+                {t('settings.amrCancelSignIn')}
               </button>
-            </div>
-          )}
+            ) : (
+              <div className="onboarding-cloud__alts">
+                <Button
+                  variant="subtle"
+                  className="onboarding-cloud__alt-btn"
+                  onClick={() => {
+                    emitOnboardingClick('local_coding_agent', 'select_runtime', {
+                      runtime_type: 'local_cli',
+                    });
+                    setRuntime('local');
+                    onModeChange('daemon');
+                    void scanCliAgents({ preferExisting: true });
+                    setConnectExpanded('local');
+                  }}
+                >
+                  <Icon name="robot" size={16} />
+                  {t('settings.onboardingLocalTitle')}
+                </Button>
+                <span className="onboarding-cloud__alts-or">
+                  {t('settings.onboardingCloudOr')}
+                </span>
+                <Button
+                  variant="subtle"
+                  className="onboarding-cloud__alt-btn"
+                  onClick={() => {
+                    emitOnboardingClick('byok', 'select_runtime', { runtime_type: 'byok' });
+                    setRuntime('byok');
+                    onModeChange('api');
+                    setConnectExpanded('byok');
+                  }}
+                >
+                  <Icon name="key" size={16} />
+                  {t('settings.onboardingByokTitle')}
+                </Button>
+              </div>
+            )}
+          </div>
+          <footer className="onboarding-cloud__footer">
+            <LanguageMenu placement="up" align="start" />
+            <span>
+              © {new Date().getFullYear()} Open Design · {t('settings.onboardingCloudRights')}
+            </span>
+          </footer>
         </div>
-        <footer className="onboarding-cloud__footer">
-          © {new Date().getFullYear()} Open Design · {t('settings.onboardingCloudRights')}
-        </footer>
+        <div className="onboarding-cloud__art" aria-hidden="true">
+          <img src="/onboarding/onboarding-cloud-art.png" alt="" />
+        </div>
       </section>
     );
   }

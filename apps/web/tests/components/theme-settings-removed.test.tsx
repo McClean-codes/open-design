@@ -159,10 +159,10 @@ describe('Onboarding welcome (theme toggle removed)', () => {
     );
   }
 
-  it('renders no sun/moon theme toggle in the welcome top bar', () => {
+  it('renders no sun/moon theme toggle on the welcome pane', () => {
     const { container } = renderOnboarding();
 
-    expect(container.querySelector('.onboarding-cloud__topbar')).not.toBeNull();
+    expect(container.querySelector('.onboarding-cloud__pane')).not.toBeNull();
     expect(container.querySelector('.onboarding-cloud__theme')).toBeNull();
   });
 

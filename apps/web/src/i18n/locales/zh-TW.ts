@@ -855,7 +855,7 @@ export const zhTW: Dict = {
   "entry.navTeamSection": "團隊",
   "entry.teamSlotNote": "此檢視由團隊服務提供，接入中。",
   "entry.cloudCalloutTitle": "Open Design Cloud 版",
-  "entry.cloudCalloutBody": "點擊登入使用 Open Design Cloud，即可享受雲端協作",
+  "entry.cloudCalloutBody": "登入即可享受雲端協作",
   "entry.cloudCalloutDismissAria": "關閉 Open Design Cloud 版說明",
   "entry.workspaceLockedNote": "工作區已鎖定，恢復帳單後可繼續編輯共享專案。",
   "entry.workspaceLockedRecover": "恢復存取",

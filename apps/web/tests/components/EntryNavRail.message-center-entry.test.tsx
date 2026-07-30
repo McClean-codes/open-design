@@ -94,7 +94,7 @@ describe('EntryNavRail message-center openers', () => {
     expect(document.activeElement).toBe(accountTrigger);
   });
 
-  it('returns focus to the account trigger when the panel closes with the close button', async () => {
+  it('returns focus to the account trigger when the panel closes via the backdrop', async () => {
     renderRail(teamContext());
     const accountTrigger = screen.getByTestId('entry-nav-account');
 
@@ -102,7 +102,7 @@ describe('EntryNavRail message-center openers', () => {
     fireEvent.click(screen.getByTestId('account-menu-message-center'));
     const dialog = await waitFor(() => screen.getByTestId('message-center-dialog'));
 
-    fireEvent.click(screen.getByRole('button', { name: /关闭/ }));
+    fireEvent.mouseDown(screen.getByTestId('message-center-backdrop'));
 
     expect(dialog.isConnected).toBe(false);
     expect(document.activeElement).toBe(accountTrigger);

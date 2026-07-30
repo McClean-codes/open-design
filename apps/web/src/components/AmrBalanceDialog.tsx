@@ -191,8 +191,16 @@ export function AmrBalanceDialog({
       >
         <Icon name="close" size={14} />
       </button>
-      <div className={styles.iconBadge} aria-hidden>
-        <Icon name="sparkles" size={22} />
+      <div className={styles.banner}>
+        <img
+          className={styles.bannerImage}
+          src="/upgrade/cloud-signin-aurora.jpg"
+          alt=""
+          width={1680}
+          height={720}
+          decoding="async"
+          draggable={false}
+        />
       </div>
       <h2 className={styles.title}>
         {signedOut ? t('chat.amrBalanceGate.signedOutTitle') : t('chat.amrBalanceGate.title')}

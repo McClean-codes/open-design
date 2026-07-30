@@ -896,6 +896,15 @@
 .df-empty-cta-tertiary .od-icon {
   color: var(--blue);
 }
+/* Moved-in doc / upload pills (from the top toolbar). No purple design token
+   exists (--purple resolves to ink gray), so the violet is a literal — the
+   same #8b5cf6 the community accents already use. */
+.df-empty-cta-doc .od-icon {
+  color: var(--green);
+}
+.df-empty-cta-upload .od-icon {
+  color: #8b5cf6;
+}
 /* Hover: only the pill's stroke takes the icon's color — the surface stays
    white and the label stays neutral. */
 .df-empty-cta:hover {
@@ -910,6 +919,12 @@
 }
 .df-empty-cta-tertiary:hover {
   border-color: var(--blue);
+}
+.df-empty-cta-doc:hover {
+  border-color: var(--green);
+}
+.df-empty-cta-upload:hover {
+  border-color: #8b5cf6;
 }
 .df-empty-cta:focus-visible {
   outline: 2px solid var(--accent);

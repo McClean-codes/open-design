@@ -3244,10 +3244,52 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 trackComposerBar({ element: 'design_system_open' });
                 openDesignSystemPicker();
               } : undefined}
-              // No toolboxLabel / renderToolbox, and hidePluginsRow: 插件 and
-              // 设计百宝箱 left this menu — the quick pills above the input
-              // open their standalone popovers instead.
-              hidePluginsRow
+              // 插件 and 设计百宝箱 live inside the "+" menu (right below
+              // 工作目录) as hover-expand submenus. The toolbox flyout reuses
+              // the same DesignToolboxPanel the standalone popover renders.
+              toolboxLabel={t('chat.designToolbox.title')}
+              renderToolbox={(close) => (
+                <DesignToolboxPanel
+                  actions={DESIGN_TOOLBOX_ACTIONS}
+                  skills={skills}
+                  plugins={pluginsForComposer}
+                  mcpServers={enabledMcpServers}
+                  mcpTemplates={mcpTemplates}
+                  connectors={connectors}
+                  projectFiles={projectFiles}
+                  activeSkillIds={stagedSkills.map((skill) => skill.id)}
+                  activePluginId={activeAppliedPlugin?.pluginId ?? pinnedPluginId ?? null}
+                  activeMcpServerIds={stagedMcpServers.map((server) => server.id)}
+                  activeConnectorIds={stagedConnectors.map((connector) => connector.id)}
+                  activeFilePaths={staged.map((item) => item.path)}
+                  onOpened={() => trackDesignToolbox({ element: 'design_toolbox_open' })}
+                  onPickAction={(action) => {
+                    trackDesignToolbox({
+                      element: 'design_toolbox_action',
+                      toolbox_action_id: action.id,
+                    });
+                    applyDesignToolboxAction(action);
+                    close();
+                  }}
+                  onPickSkill={(skill) => {
+                    trackDesignToolbox({
+                      element: 'design_toolbox_resource',
+                      resource_kind: 'skill',
+                      resource_id: skill.id,
+                    });
+                    applyDesignToolboxSkill(skill);
+                    close();
+                  }}
+                  onPickResource={(resource) => {
+                    trackDesignToolbox({
+                      element: 'design_toolbox_resource',
+                      ...designToolboxResourceTracking(resource),
+                    });
+                    applyDesignToolboxResource(resource);
+                    close();
+                  }}
+                />
+              )}
             />
             {/* #5517: the design-system picker sits inline in the composer's
                 icon row (palette icon) instead of the staged-context bar. */}

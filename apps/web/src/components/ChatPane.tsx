@@ -64,9 +64,6 @@ import {
   DESIGN_SYSTEM_NEXT_STEP_ACTIONS,
   type NextStepActionsVariant,
 } from './NextStepActions';
-// Shared pill look for the 扩展 / 设计百宝箱 quick pills, which render above
-// the composer input (moved out of the next-step card).
-import nextStepStyles from './NextStepActions.module.css';
 import { AmrGuidance } from './AmrGuidance';
 import { AmrLoginPill } from './AmrLoginPill';
 import {
@@ -88,7 +85,6 @@ import {
   type ChatComposerHandle,
   type ChatSendOutcome,
   type ChatSendMeta,
-  type ComposerStandalonePanel,
 } from './ChatComposer';
 import type { PlaceholderScenario } from './home-hero/placeholderScenarios';
 import { listDesignArtifactCandidates } from './design-files/designArtifacts';
@@ -967,14 +963,6 @@ export function ChatPane({
   const chatLogScrollIdleTimerRef = useRef<number | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<ChatComposerHandle | null>(null);
-  // The 插件 / 设计百宝箱 quick pills. The popovers they open live inside
-  // ChatComposer, so the pills need both a way to report their expanded state
-  // and a stable identity for the popover to return focus to.
-  const quickPillRefs = {
-    plugins: useRef<HTMLButtonElement | null>(null),
-    toolbox: useRef<HTMLButtonElement | null>(null),
-  };
-  const [openComposerPanel, setOpenComposerPanel] = useState<ComposerStandalonePanel>(null);
   const composerSlotRef = useRef<HTMLDivElement | null>(null);
   const composerLayerRef = useRef<HTMLDivElement | null>(null);
   const pinnedTodoRef = useRef<HTMLDivElement | null>(null);
@@ -1077,39 +1065,13 @@ export function ChatPane({
   const handleToolboxAction = useCallback((id: DesignToolboxActionId) => {
     composerRef.current?.applyDesignToolboxAction(id);
   }, []);
-  // Quick pills above the composer input: 插件 and 设计百宝箱 open their own
-  // standalone popovers — the "+" menu no longer carries either row. They
-  // open on hover (with a short intent delay so a pointer merely passing
-  // through to the input doesn't pop a panel) as well as on click; leaving
-  // the pill schedules a close that hovering the popup cancels.
-  const pillHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 插件 / 设计百宝箱 live inside the composer's "+" menu now (no quick pills
+  // above the input), but the "next step" card (AssistantMessage) still opens
+  // these same standalone popovers via this callback — no pill to return
+  // focus to from that path, so no opener is passed.
   const handleNextStepOpenComposerPanel = useCallback((which: 'plugins' | 'toolbox') => {
-    if (pillHoverTimerRef.current) {
-      clearTimeout(pillHoverTimerRef.current);
-      pillHoverTimerRef.current = null;
-    }
-    // Hand the pill down as the popover's return-focus target: it opens a
-    // surface that takes focus, and it is the control the user came from.
-    const opener = quickPillRefs[which].current;
-    if (which === 'toolbox') composerRef.current?.openDesignToolbox(opener);
-    else composerRef.current?.openPluginsPanel(opener);
-  }, []);
-  const handleQuickPillHoverEnter = useCallback((which: 'plugins' | 'toolbox') => {
-    if (pillHoverTimerRef.current) clearTimeout(pillHoverTimerRef.current);
-    pillHoverTimerRef.current = setTimeout(() => {
-      pillHoverTimerRef.current = null;
-      handleNextStepOpenComposerPanel(which);
-    }, 140);
-  }, [handleNextStepOpenComposerPanel]);
-  const handleQuickPillHoverLeave = useCallback(() => {
-    if (pillHoverTimerRef.current) {
-      clearTimeout(pillHoverTimerRef.current);
-      pillHoverTimerRef.current = null;
-    }
-    composerRef.current?.scheduleComposerPanelClose();
-  }, []);
-  useEffect(() => () => {
-    if (pillHoverTimerRef.current) clearTimeout(pillHoverTimerRef.current);
+    if (which === 'toolbox') composerRef.current?.openDesignToolbox();
+    else composerRef.current?.openPluginsPanel();
   }, []);
   const handleNextStepPromptAction = useCallback((
     prompt: string,
@@ -2154,45 +2116,10 @@ export function ChatPane({
 
   const composerNode = (
     <>
-      {/* 扩展 / 设计百宝箱 quick pills: moved out of the next-step card so
-          they sit directly above the composer input, and travel with the
-          composer into its portaled fixed layer. Hidden for viewer-only
-          panes where the "+" menu they open is off-limits anyway. */}
-      {viewerOnly ? null : (
-        <div
-          className={`${nextStepStyles.quickPills} ${nextStepStyles.composerQuickPills}`}
-          data-testid="composer-quick-pills"
-        >
-          <button
-            ref={quickPillRefs.plugins}
-            type="button"
-            className={nextStepStyles.quickPill}
-            data-testid="next-step-quick-pill-plugins"
-            aria-haspopup="menu"
-            aria-expanded={openComposerPanel === 'plugins'}
-            onClick={() => handleNextStepOpenComposerPanel('plugins')}
-            onMouseEnter={() => handleQuickPillHoverEnter('plugins')}
-            onMouseLeave={handleQuickPillHoverLeave}
-          >
-            <Icon name="sparkles" size={16} />
-            <span>{t('entry.navPlugins')}</span>
-          </button>
-          <button
-            ref={quickPillRefs.toolbox}
-            type="button"
-            className={nextStepStyles.quickPill}
-            data-testid="next-step-quick-pill-toolbox"
-            aria-haspopup="menu"
-            aria-expanded={openComposerPanel === 'toolbox'}
-            onClick={() => handleNextStepOpenComposerPanel('toolbox')}
-            onMouseEnter={() => handleQuickPillHoverEnter('toolbox')}
-            onMouseLeave={handleQuickPillHoverLeave}
-          >
-            <Icon name="lightbulb" size={16} />
-            <span>{t('chat.designToolbox.tooltip')}</span>
-          </button>
-        </div>
-      )}
+      {/* 插件 / 设计百宝箱 live inside the composer's "+" menu (below 工作目录,
+          hover to expand); they no longer sit as quick pills above the input.
+          The next-step card still opens their standalone panels via
+          `handleNextStepOpenComposerPanel`. */}
     <ChatComposer
       ref={composerRef}
       designSystemPicker={designSystemPicker}
@@ -2249,7 +2176,6 @@ export function ChatPane({
       onOpenSettings={onOpenSettings}
       onOpenMcpSettings={onOpenMcpSettings}
       onBrowsePlugins={onBrowsePlugins}
-      onStandalonePanelChange={setOpenComposerPanel}
       onOpenConnectors={onOpenConnectors}
       petConfig={petConfig}
       onAdoptPet={onAdoptPet}

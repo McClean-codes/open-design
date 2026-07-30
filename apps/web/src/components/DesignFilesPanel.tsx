@@ -1131,25 +1131,6 @@ export function DesignFilesPanel({
           <span>{t('designFiles.library.label')}</span>
         </button>
       ) : null}
-      <button type="button" onClick={onNewSketch} title={t('designFiles.newSketch')}>
-        <Icon name="pencil" size={13} />
-        <span>{t('designFiles.newSketch')}</span>
-      </button>
-      {/* `onPaste` is a historical prop name — the action creates a new blank
-          Markdown document, so it is labelled for what it does. */}
-      <button type="button" onClick={onPaste} title={t('designFiles.newDocumentTitle')}>
-        <Icon name="file" size={13} />
-        <span>{t('designFiles.newDocument')}</span>
-      </button>
-      <button
-        type="button"
-        data-testid="design-files-upload-trigger"
-        onClick={onUpload}
-        title={t('designFiles.upload.title')}
-      >
-        <Icon name="upload" size={13} />
-        <span>{t('designFiles.upload.label')}</span>
-      </button>
       {onCreateDesignSystemFromProject || onDuplicateProject ? (
         <div className="df-project-menu-anchor" ref={projectMenuRef}>
           <button
@@ -1382,6 +1363,28 @@ export function DesignFilesPanel({
                     >
                       <Icon name="pencil" size={13} />
                       <span>{t('designFiles.newSketch')}</span>
+                    </button>
+                    {/* `onPaste` is a historical prop name — the action creates
+                        a new blank Markdown document. */}
+                    <button
+                      type="button"
+                      className="df-empty-cta df-empty-cta-doc"
+                      data-testid="design-files-empty-new-document"
+                      onClick={onPaste}
+                      title={t('designFiles.newDocumentTitle')}
+                    >
+                      <Icon name="file" size={13} />
+                      <span>{t('designFiles.newDocument')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="df-empty-cta df-empty-cta-upload"
+                      data-testid="design-files-upload-trigger"
+                      onClick={onUpload}
+                      title={t('designFiles.upload.title')}
+                    >
+                      <Icon name="upload" size={13} />
+                      <span>{t('designFiles.upload.label')}</span>
                     </button>
                     {onOpenBrowser ? (
                       <button
