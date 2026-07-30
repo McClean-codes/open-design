@@ -4,6 +4,9 @@ name = "open-design-landing-staging"
 pages_build_output_dir = "out"
 compatibility_date = "2026-05-26"
 
+# Vela's CONTACT_SALES_SERVICE_SECRET is an encrypted Pages secret and must be
+# configured independently on the open-design-landing-staging project before
+# deployment. Never reuse the production secret value here.
 [[kv_namespaces]]
 binding = "CONTACT_LEADS"
 id = "3996bfc7569a41e9a56cfb05cc229519"

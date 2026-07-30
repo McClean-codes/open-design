@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { describe, it } from "node:test";
 
 import { onRequest } from "../functions/contact-sales.ts";
@@ -8,10 +9,12 @@ type StoredValue = { value: string };
 
 class MemoryKV {
   readonly values = new Map<string, StoredValue>();
+  readonly writes: string[] = [];
   failWrites = false;
 
   async put(key: string, value: string): Promise<void> {
     if (this.failWrites) throw new Error("KV unavailable");
+    this.writes.push(key);
     this.values.set(key, { value });
   }
 
@@ -35,6 +38,7 @@ type CallOptions = {
   headers?: Record<string, string>;
   kv?: MemoryKV | null;
   now?: number;
+  url?: string;
 };
 
 // Drive the Pages Function directly with a mock context. Valid calls get a
@@ -46,20 +50,24 @@ async function call(
   options: CallOptions = {},
 ): Promise<{
   status: number;
-  body: { ok: boolean; duplicate?: boolean; error?: string };
+  body: { ok: boolean; error?: string };
   kv: MemoryKV | null;
+  waitUntilCalls: number;
 }> {
   const waited: Promise<unknown>[] = [];
   const kv = options.kv === undefined ? new MemoryKV() : options.kv;
-  const request = new Request("https://open-design.ai/contact-sales", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      origin,
-      ...options.headers,
+  const request = new Request(
+    options.url ?? "https://open-design.ai/contact-sales",
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        origin,
+        ...options.headers,
+      },
+      body: JSON.stringify(payload),
     },
-    body: JSON.stringify(payload),
-  });
+  );
   const res = await onRequest({
     request,
     env: {
@@ -75,10 +83,10 @@ async function call(
     status: res.status,
     body: (await res.json()) as {
       ok: boolean;
-      duplicate?: boolean;
       error?: string;
     },
     kv,
+    waitUntilCalls: waited.length,
   };
 }
 
@@ -130,30 +138,20 @@ describe("contact-sales validation", () => {
     assert.equal((await call({ ...ENTERPRISE_OK, email: "rodrigo@linkflow.com.br" })).status, 200);
   });
 
-  it("does not require a name on the shared lead-form sources; the in-app `client` source still does", async () => {
+  it("does not require a name on the shared lead-form sources", async () => {
     // Neither web surface collects a name (email is the contact handle).
     assert.equal((await call(ENTERPRISE_OK)).status, 200);
     assert.equal((await call(PRICING_TEAM_OK)).status, 200);
-    const { status, body } = await call({ ...ENTERPRISE_OK, source: "client" });
-    assert.equal(status, 400);
-    assert.equal(body.error, "missing_fields");
   });
 
-  it("rejects an unrecognized or missing source (no silent relaxed write)", async () => {
+  it("only accepts the canonical enterprise, pricing_team, and signed Vela sources", async () => {
     assert.equal((await call({ name: "Ada", email: "ada@acme.com", source: "bogus" })).body.error, "invalid_source");
     assert.equal((await call({ name: "Ada", email: "ada@acme.com" })).body.error, "invalid_source");
+    assert.equal((await call({ ...ENTERPRISE_OK, source: "client" })).body.error, "invalid_source");
     // An unknown source must not sneak through the name+email-only path.
     const typo = await call({ name: "Ada", email: "ada@acme.com", source: "enterprisee" });
     assert.equal(typo.status, 400);
     assert.equal(typo.body.error, "invalid_source");
-  });
-
-  it("keeps the in-app `client` source strict (name + full enums)", async () => {
-    assert.equal((await call({ name: "Ada", email: "ada@acme.com", source: "client" })).body.error, "missing_fields");
-    // With a name and the full enum contract, client is accepted; industry and
-    // location predate the field there and stay optional.
-    const { industry: _industry, location: _location, ...clientContract } = ENTERPRISE_OK;
-    assert.equal((await call({ ...clientContract, name: "Ada", source: "client" })).status, 200);
   });
 
   it("keeps the shared contract: known team-size/seat-range/budget enums + a use case are required", async () => {
@@ -247,8 +245,8 @@ function velaServiceHeaders(
   };
 }
 
-describe("contact-sales durable delivery", () => {
-  it("does not acknowledge a lead until the KV backup succeeds", async () => {
+describe("contact-sales canonical KV intake", () => {
+  it("does not acknowledge a lead until its canonical KV write succeeds", async () => {
     const missing = await call(ENTERPRISE_OK, "https://open-design.ai", {
       kv: null,
     });
@@ -260,6 +258,56 @@ describe("contact-sales durable delivery", () => {
     const failed = await call(ENTERPRISE_OK, "https://open-design.ai", { kv });
     assert.equal(failed.status, 503);
     assert.equal(failed.body.error, "lead_storage_failed");
+  });
+
+  it("stores only lead:<sha256(email)> and overwrites the same normalized email", async () => {
+    const kv = new MemoryKV();
+    const first = await call(ENTERPRISE_OK, "https://open-design.ai", {
+      kv,
+      now: SERVICE_NOW,
+    });
+    const secondPayload = {
+      ...PRICING_TEAM_OK,
+      email: " ADA@ACME.COM ",
+      company: "Acme Updated",
+    };
+    const second = await call(secondPayload, "https://open-design.ai", {
+      kv,
+      now: SERVICE_NOW + 1_000,
+    });
+
+    assert.equal(first.status, 200);
+    assert.equal(second.status, 200);
+    const key = `lead:${createHash("sha256").update("ada@acme.com").digest("hex")}`;
+    assert.deepEqual([...kv.values.keys()], [key]);
+    assert.deepEqual(kv.writes, [key, key]);
+    const stored = JSON.parse(kv.values.get(key)?.value ?? "{}");
+    assert.equal(stored.email, "ada@acme.com");
+    assert.equal(stored.source, "pricing_team");
+    assert.equal(stored.company, "Acme Updated");
+    assert.equal(stored.submittedAt, "2026-07-29T08:00:01.000Z");
+  });
+
+  it("rejects cross-origin browser submissions while keeping staging and production same-origin", async () => {
+    const crossOrigin = await call(
+      ENTERPRISE_OK,
+      "https://attacker.example",
+    );
+    assert.equal(crossOrigin.status, 403);
+    assert.equal(crossOrigin.body.error, "origin_not_allowed");
+
+    assert.equal(
+      (await call(ENTERPRISE_OK, "https://open-design.ai")).status,
+      200,
+    );
+    assert.equal(
+      (
+        await call(ENTERPRISE_OK, "https://staging.open-design.ai", {
+          url: "https://staging.open-design.ai/contact-sales",
+        })
+      ).status,
+      200,
+    );
   });
 
   it("rejects forged or stale Vela service submissions", async () => {
@@ -292,7 +340,7 @@ describe("contact-sales durable delivery", () => {
     assert.equal(stale.body.error, "service_auth_expired");
   });
 
-  it("accepts a signed Vela lead and preserves the stable event id", async () => {
+  it("accepts a signed Vela server-to-server lead and preserves its source and event id in the canonical record", async () => {
     const result = await call(VELA_TEAM_PLAN_OK, "", {
       env: { CONTACT_SALES_SERVICE_SECRET: SERVICE_SECRET },
       headers: velaServiceHeaders(VELA_TEAM_PLAN_OK),
@@ -301,131 +349,71 @@ describe("contact-sales durable delivery", () => {
 
     assert.equal(result.status, 200);
     assert.equal(result.body.ok, true);
-    const delivery = result.kv?.values.get(
-      `contact-delivery:${VELA_TEAM_PLAN_OK.eventId}`,
-    );
-    assert.ok(delivery);
-    assert.equal(
-      JSON.parse(delivery.value).lead.name,
-      VELA_TEAM_PLAN_OK.name,
-    );
-    assert.equal(
-      JSON.parse(delivery.value).lead.source,
-      VELA_TEAM_PLAN_OK.source,
-    );
+    const key = `lead:${createHash("sha256").update(VELA_TEAM_PLAN_OK.email).digest("hex")}`;
+    assert.deepEqual([...result.kv!.values.keys()], [key]);
+    const stored = JSON.parse(result.kv?.values.get(key)?.value ?? "{}");
+    assert.equal(stored.name, VELA_TEAM_PLAN_OK.name);
+    assert.equal(stored.source, VELA_TEAM_PLAN_OK.source);
+    assert.equal(stored.eventId, VELA_TEAM_PLAN_OK.eventId);
   });
 
-  it("does not notify Feishu twice when Vela retries the same event id", async () => {
+  it("is KV-only: it never fetches externally, schedules delivery, or writes an outbox", async () => {
     const originalFetch = globalThis.fetch;
-    let feishuCalls = 0;
+    let externalFetches = 0;
     globalThis.fetch = async () => {
-      feishuCalls += 1;
-      return new Response(JSON.stringify({ code: 0 }), { status: 200 });
+      externalFetches += 1;
+      throw new Error("contact-sales must not call external services");
     };
     try {
       const kv = new MemoryKV();
-      const env = {
-        CONTACT_SALES_SERVICE_SECRET: SERVICE_SECRET,
-        FEISHU_CONTACT_WEBHOOK: "https://open.feishu.cn/test-webhook",
-      };
-      const headers = velaServiceHeaders(VELA_TEAM_PLAN_OK);
-      const first = await call(VELA_TEAM_PLAN_OK, "", {
-        env,
-        headers,
+      const result = await call(ENTERPRISE_OK, "https://open-design.ai", {
         kv,
-        now: SERVICE_NOW,
-      });
-      const duplicate = await call(VELA_TEAM_PLAN_OK, "", {
-        env,
-        headers,
-        kv,
-        now: SERVICE_NOW,
-      });
-
-      assert.equal(first.status, 200);
-      assert.equal(duplicate.status, 200);
-      assert.equal(duplicate.body.duplicate, true);
-      assert.equal(feishuCalls, 1);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it("keeps a recoverable retry record when Feishu rejects an HTTP 200 body", async () => {
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ code: 19021 }), { status: 200 });
-    try {
-      const result = await call(VELA_TEAM_PLAN_OK, "", {
+        // Legacy notification variables must have no effect if they remain
+        // configured on a Cloudflare project during rollout.
         env: {
-          CONTACT_SALES_SERVICE_SECRET: SERVICE_SECRET,
           FEISHU_CONTACT_WEBHOOK: "https://open.feishu.cn/test-webhook",
+          FEISHU_CONTACT_SECRET: "legacy-secret",
         },
-        headers: velaServiceHeaders(VELA_TEAM_PLAN_OK),
-        now: SERVICE_NOW,
       });
 
       assert.equal(result.status, 200);
-      const delivery = result.kv?.values.get(
-        `contact-delivery:${VELA_TEAM_PLAN_OK.eventId}`,
-      );
-      assert.ok(delivery);
-      const stored = JSON.parse(delivery.value);
-      assert.equal(stored.status, "retry");
-      assert.equal(stored.attempt, 3);
-      assert.equal(typeof stored.nextAttemptAt, "string");
-      assert.equal(stored.lastError, "feishu_rejected");
+      assert.equal(externalFetches, 0);
+      assert.equal(result.waitUntilCalls, 0);
+      assert.equal(kv.values.size, 1);
+      assert.ok([...kv.values.keys()].every((key) => key.startsWith("lead:")));
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 
-  it("recovers a due retry record while accepting a later lead", async () => {
-    const originalFetch = globalThis.fetch;
-    let reject = true;
-    globalThis.fetch = async () =>
-      new Response(JSON.stringify({ code: reject ? 19021 : 0 }), {
-        status: 200,
-      });
-    try {
-      const kv = new MemoryKV();
-      const env = {
-        CONTACT_SALES_SERVICE_SECRET: SERVICE_SECRET,
-        FEISHU_CONTACT_WEBHOOK: "https://open.feishu.cn/test-webhook",
-      };
-      await call(VELA_TEAM_PLAN_OK, "", {
-        env,
-        headers: velaServiceHeaders(VELA_TEAM_PLAN_OK),
-        kv,
-        now: SERVICE_NOW,
-      });
-      const firstKey = `contact-delivery:${VELA_TEAM_PLAN_OK.eventId}`;
-      const first = JSON.parse(kv.values.get(firstKey)?.value ?? "{}");
-      first.nextAttemptAt = new Date(SERVICE_NOW - 1).toISOString();
-      kv.values.set(firstKey, { value: JSON.stringify(first) });
+  it("contains no direct Feishu notifier or delivery outbox implementation", async () => {
+    const source = await readFile(
+      new URL("../functions/contact-sales.ts", import.meta.url),
+      "utf8",
+    );
+    assert.doesNotMatch(source, /FEISHU_CONTACT|notifyFeishu|buildFeishuCard/);
+    assert.doesNotMatch(source, /contact-delivery:|deliverRecord|drainDueDeliveries/);
+    assert.doesNotMatch(source, /\bfetch\s*\(/);
+  });
 
-      reject = false;
-      const laterLead = {
-        ...VELA_TEAM_PLAN_OK,
-        eventId: "evt-vela-team-plan-2",
-        email: "second@example.com",
-      };
-      const later = await call(laterLead, "", {
-        env,
-        headers: velaServiceHeaders(laterLead, {
-          eventId: laterLead.eventId,
-        }),
-        kv,
-        now: SERVICE_NOW,
-      });
-
-      assert.equal(later.status, 200);
-      assert.equal(
-        JSON.parse(kv.values.get(firstKey)?.value ?? "{}").status,
-        "delivered",
-      );
-    } finally {
-      globalThis.fetch = originalFetch;
+  it("keeps production and staging on independent CONTACT_LEADS namespaces with the Vela secret contract documented", async () => {
+    const [production, staging] = await Promise.all([
+      readFile(new URL("../wrangler.toml", import.meta.url), "utf8"),
+      readFile(new URL("../wrangler.staging.toml", import.meta.url), "utf8"),
+    ]);
+    for (const config of [production, staging]) {
+      assert.match(config, /binding = "CONTACT_LEADS"/);
+      assert.match(config, /CONTACT_SALES_SERVICE_SECRET/);
+      assert.doesNotMatch(config, /FEISHU_CONTACT/);
     }
+    const productionId = production.match(
+      /binding = "CONTACT_LEADS"\s+id = "([^"]+)"/,
+    )?.[1];
+    const stagingId = staging.match(
+      /binding = "CONTACT_LEADS"\s+id = "([^"]+)"/,
+    )?.[1];
+    assert.ok(productionId);
+    assert.ok(stagingId);
+    assert.notEqual(productionId, stagingId);
   });
 });
