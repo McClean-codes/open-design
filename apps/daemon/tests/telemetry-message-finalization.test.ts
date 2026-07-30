@@ -103,6 +103,30 @@ describe('Langfuse message finalization gate', () => {
     expect(prompt).not.toContain('Treat these form answers as the active user turn');
   });
 
+  it.each([
+    {
+      header: '[form answers: task-type]',
+      expectedFormId: 'task-type',
+      expectedTransition: 'continue with RULE 2 / RULE 3',
+    },
+    {
+      header: '[form answers]',
+      expectedFormId: 'form',
+      expectedTransition: 'Treat these form answers as the active user turn',
+    },
+  ])(
+    'accepts the supported $header form-answer header',
+    ({ header, expectedFormId, expectedTransition }) => {
+      const prompt = composeChatUserRequestForAgent(
+        '## user\ninitial brief',
+        `${header}\n- taskType: Slide deck`,
+      );
+
+      expect(prompt).toContain(`The user has answered the ${expectedFormId} form.`);
+      expect(prompt).toContain(expectedTransition);
+    },
+  );
+
   it('unknown form ids get the generic transition without forcing the build', () => {
     const prompt = composeChatUserRequestForAgent(
       '## user\ninitial brief',

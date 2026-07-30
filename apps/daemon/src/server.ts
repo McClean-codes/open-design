@@ -1374,7 +1374,9 @@ export function telemetryPromptFromRunRequest(message, currentPrompt) {
   return typeof currentPrompt === 'string' ? currentPrompt : message;
 }
 
-const FORM_ANSWERS_HEADER_RE = /^\s*\[form answers\s+(?:\u2014|-)\s*([^\]\r\n]+)\]/i;
+// Keep this header grammar aligned with parseFormAnswers in @open-design/contracts.
+const FORM_ANSWERS_HEADER_RE =
+  /^\s*\[form answers(?:\s*[\u2014\-:]\s*([^\]\r\n]+))?\]\s*(?:\r?\n|$)/i;
 
 // Aggressive OVERRIDE for weak / medium-strength plain agents (e.g.
 // GPT-OSS-120B Medium, Gemini 3.5 Flash) that otherwise echo RULE 1's
