@@ -79,7 +79,10 @@ import {
   openHostExternalUrl,
 } from '@open-design/host';
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
-import { sharedCancellableGet } from '../lib/shared-cancellable-get';
+import {
+  evictSharedCancellableGet,
+  sharedCancellableGet,
+} from '../lib/shared-cancellable-get';
 import { workspaceProjectHeaders } from '../state/projects';
 
 export const DEFAULT_DEPLOY_PROVIDER_ID = 'vercel-self';
@@ -1617,6 +1620,14 @@ export async function createSocialSharePayload(
 
 // Project files — all paths are scoped under .od/projects/<id>/ on disk.
 
+function projectFilesCacheKey(projectId: string): string {
+  return `project-files:${projectId}`;
+}
+
+function invalidateProjectFiles(projectId: string): void {
+  evictSharedCancellableGet(projectFilesCacheKey(projectId));
+}
+
 export async function fetchProjectFiles(
   projectId: string,
   options?: { signal?: AbortSignal },
@@ -1628,7 +1639,7 @@ export async function fetchProjectFiles(
   // can never be killed by an abandoned card scan.
   try {
     return await sharedCancellableGet(
-      `project-files:${projectId}`,
+      projectFilesCacheKey(projectId),
       async (signal): Promise<ProjectFile[]> => {
         const url = `/api/projects/${encodeURIComponent(projectId)}/files`;
         const resp = await fetch(url, { signal });
@@ -1713,7 +1724,9 @@ export async function deleteProjectFolder(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: folderPath }),
     });
-    return resp.ok;
+    if (!resp.ok) return false;
+    invalidateProjectFiles(projectId);
+    return true;
   } catch {
     return false;
   }
@@ -2103,6 +2116,7 @@ export async function restoreProjectFileVersion(
       },
     );
     if (!resp.ok) return null;
+    invalidateProjectFiles(projectId);
     return (await resp.json()) as RestoreProjectFileVersionResponse;
   } catch {
     return null;
@@ -2303,6 +2317,7 @@ export async function writeProjectTextFileDetailed(
         message: body.message || resp.statusText || 'Save failed',
       };
     }
+    invalidateProjectFiles(projectId);
     const json = (await resp.json()) as { file: ProjectFile };
     return { ok: true, file: json.file };
   } catch {
@@ -2326,6 +2341,7 @@ export async function writeProjectBase64File(
       body: JSON.stringify({ name, content: base64, encoding: 'base64' }),
     });
     if (!resp.ok) return null;
+    invalidateProjectFiles(projectId);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
   } catch {
@@ -2349,6 +2365,7 @@ export async function uploadProjectFile(
       body: form,
     });
     if (!resp.ok) return null;
+    invalidateProjectFiles(projectId);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
   } catch {
@@ -2385,6 +2402,7 @@ export async function importProjectFigma(
       }
       return { ok: false, error: message };
     }
+    invalidateProjectFiles(projectId);
     const result = (await resp.json()) as FigmaImportResult;
     return { ok: true, result };
   } catch (err) {
@@ -2457,6 +2475,7 @@ export async function uploadProjectFiles(
         break;
       }
 
+      invalidateProjectFiles(projectId);
       const json = (await resp.json()) as {
         files: { name: string; path: string; size?: number; originalName?: string }[];
       };
@@ -2528,7 +2547,9 @@ export async function deleteProjectFile(
         ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
       },
     );
-    return resp.ok;
+    if (!resp.ok) return false;
+    invalidateProjectFiles(projectId);
+    return true;
   } catch {
     return false;
   }
@@ -2552,6 +2573,7 @@ export async function renameProjectFile(
     const errorBody = await readApiErrorBody(resp);
     throw new Error(errorBody.message);
   }
+  invalidateProjectFiles(projectId);
   return (await resp.json()) as RenameProjectFileResponse;
 }
 
