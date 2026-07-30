@@ -1065,14 +1065,6 @@ export function ChatPane({
   const handleToolboxAction = useCallback((id: DesignToolboxActionId) => {
     composerRef.current?.applyDesignToolboxAction(id);
   }, []);
-  // 插件 / 设计百宝箱 live inside the composer's "+" menu now (no quick pills
-  // above the input), but the "next step" card (AssistantMessage) still opens
-  // these same standalone popovers via this callback — no pill to return
-  // focus to from that path, so no opener is passed.
-  const handleNextStepOpenComposerPanel = useCallback((which: 'plugins' | 'toolbox') => {
-    if (which === 'toolbox') composerRef.current?.openDesignToolbox();
-    else composerRef.current?.openPluginsPanel();
-  }, []);
   const handleNextStepPromptAction = useCallback((
     prompt: string,
     options?: { sessionMode?: ChatSessionMode },
@@ -2117,9 +2109,7 @@ export function ChatPane({
   const composerNode = (
     <>
       {/* 插件 / 设计百宝箱 live inside the composer's "+" menu (below 工作目录,
-          hover to expand); they no longer sit as quick pills above the input.
-          The next-step card still opens their standalone panels via
-          `handleNextStepOpenComposerPanel`. */}
+          hover to expand); they no longer sit as quick pills above the input. */}
     <ChatComposer
       ref={composerRef}
       designSystemPicker={designSystemPicker}
@@ -2490,7 +2480,6 @@ export function ChatPane({
                 nextStepSkills={skills}
                 toolboxSkillNames={featuredToolboxSkillNames}
                 nextStepVariant={nextStepVariant}
-                onNextStepOpenComposerPanel={handleNextStepOpenComposerPanel}
                 onForkFromMessage={onForkFromMessage}
                 onAssistantFeedback={onAssistantFeedback}
                 forkingMessageId={forkingMessageId}
@@ -3179,7 +3168,6 @@ function ChatRows({
   nextStepSkills,
   toolboxSkillNames,
   nextStepVariant,
-  onNextStepOpenComposerPanel,
   onForkFromMessage,
   onAssistantFeedback,
   forkingMessageId,
@@ -3240,7 +3228,6 @@ function ChatRows({
   nextStepSkills?: SkillSummary[];
   toolboxSkillNames?: Partial<Record<DesignToolboxActionId, string | null>>;
   nextStepVariant?: NextStepActionsVariant;
-  onNextStepOpenComposerPanel?: (which: 'plugins' | 'toolbox') => void;
   onForkFromMessage?: (message: ChatMessage) => void;
   onAssistantFeedback?: (message: ChatMessage, change: ChatMessageFeedbackChange) => void;
   forkingMessageId?: string | null;
@@ -3454,7 +3441,6 @@ function ChatRows({
         nextStepSkills={nextStepSkills}
         toolboxSkillNames={toolboxSkillNames}
         nextStepVariant={nextStepVariant}
-        onNextStepOpenComposerPanel={onNextStepOpenComposerPanel}
       />
     );
   };
