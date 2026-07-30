@@ -867,6 +867,26 @@ export class ByokCredentialProfileNetworkError extends Error {
   }
 }
 
+export function classifyByokCredentialProfileFailure(error: unknown): {
+  errorCode: string;
+  errorKind: string;
+} {
+  if (error instanceof ByokCredentialProfileHttpError) {
+    return {
+      errorCode: error.code || `HTTP_${error.status}`,
+      errorKind: 'unknown',
+    };
+  }
+  if (error instanceof ByokCredentialProfileNetworkError) {
+    return {
+      errorCode: 'DAEMON_UNREACHABLE',
+      errorKind: 'unknown',
+    };
+  }
+  const fallback = error instanceof Error ? error.name : 'UNKNOWN';
+  return { errorCode: fallback, errorKind: fallback };
+}
+
 export function legacyByokMigrationErrorPresentation(
   error: Error,
   daemonUnavailableMessage: string,

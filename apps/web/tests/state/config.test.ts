@@ -4,6 +4,7 @@ import {
   ByokCredentialProfileNetworkError,
   buildMediaProvidersForDaemonSave,
   BYOK_PROVIDER_PRESETS,
+  classifyByokCredentialProfileFailure,
   DEFAULT_CONFIG,
   defaultKnownProviderModel,
   fetchByokCredentialProfilesFromDaemon,
@@ -1709,6 +1710,40 @@ describe('secure BYOK profiles', () => {
     )).toEqual({
       message: 'Local daemon may be offline.',
       details: 'Failed to fetch',
+    });
+  });
+
+  it('classifies secure profile persistence failures with stable telemetry values', () => {
+    expect(classifyByokCredentialProfileFailure(
+      new ByokCredentialProfileHttpError(
+        400,
+        'Invalid secure profile',
+        'VALIDATION_FAILED',
+      ),
+    )).toEqual({
+      errorCode: 'VALIDATION_FAILED',
+      errorKind: 'unknown',
+    });
+    expect(classifyByokCredentialProfileFailure(
+      new ByokCredentialProfileHttpError(502, 'Bad gateway'),
+    )).toEqual({
+      errorCode: 'HTTP_502',
+      errorKind: 'unknown',
+    });
+    expect(classifyByokCredentialProfileFailure(
+      new ByokCredentialProfileNetworkError(
+        'Failed to fetch',
+        new TypeError('Failed to fetch'),
+      ),
+    )).toEqual({
+      errorCode: 'DAEMON_UNREACHABLE',
+      errorKind: 'unknown',
+    });
+    expect(classifyByokCredentialProfileFailure(
+      new TypeError('Test request failed'),
+    )).toEqual({
+      errorCode: 'TypeError',
+      errorKind: 'TypeError',
     });
   });
 
