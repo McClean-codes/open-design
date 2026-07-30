@@ -44,7 +44,7 @@ interface CollisionIssue {
 interface ClippedTextIssue {
   type: 'clipped-text';
   candidate: TextCandidate;
-  visibleRect: Rect;
+  visibleRect: Rect | null;
   clippedBy: string;
 }
 
@@ -537,7 +537,7 @@ async function auditActiveSlide(page: Page, oneBasedIndex: number): Promise<Brow
         | {
             type: 'clipped-text';
             candidate: BrowserCandidate;
-            visibleRect: BrowserRect;
+            visibleRect: BrowserRect | null;
             clippedBy: string;
           }
       > = [];
@@ -691,20 +691,21 @@ async function auditActiveSlide(page: Page, oneBasedIndex: number): Promise<Brow
                 rect,
               };
               const clipped = clippedRectFor(rect, owner);
+              if (
+                clipped.clippedBy != null &&
+                (clipped.rect == null ||
+                  clipped.rect.width < rect.width - overlapThreshold ||
+                  clipped.rect.height < rect.height - overlapThreshold)
+              ) {
+                issues.push({
+                  type: 'clipped-text',
+                  candidate,
+                  visibleRect: clipped.rect,
+                  clippedBy: clipped.clippedBy,
+                });
+              }
               if (clipped.rect != null) {
                 candidates.push({ candidate, visibleRect: clipped.rect });
-                if (
-                  clipped.clippedBy != null &&
-                  (clipped.rect.width < rect.width - overlapThreshold ||
-                    clipped.rect.height < rect.height - overlapThreshold)
-                ) {
-                  issues.push({
-                    type: 'clipped-text',
-                    candidate,
-                    visibleRect: clipped.rect,
-                    clippedBy: clipped.clippedBy,
-                  });
-                }
               }
             }
           }
