@@ -16,6 +16,7 @@ const PROFILE_ID_PATTERN = /^byok-[a-z0-9][a-z0-9._-]{2,95}$/u;
 const KEYCHAIN_SERVICE = 'dev.opendesign.byok';
 const MAX_SECRET_OUTPUT_BYTES = 64 * 1024;
 const INTERACTIVE_SECRET_TIMEOUT_MS = 10_000;
+const WINDOWS_DPAPI_TIMEOUT_MS = 10_000;
 
 type StoredProfile = Omit<ByokCredentialProfile, 'configured' | 'keyTail'>;
 type StoredDocument = {
@@ -460,11 +461,14 @@ try {
       }
     }
     'set' {
-      $secret = [Console]::In.ReadToEnd()
-      if ([string]::IsNullOrWhiteSpace($secret)) {
+      $encodedSecret = [Console]::In.ReadLine()
+      if ([string]::IsNullOrWhiteSpace($encodedSecret)) {
         throw 'Secret must not be empty'
       }
-      $plain = [System.Text.Encoding]::UTF8.GetBytes($secret)
+      $plain = [Convert]::FromBase64String($encodedSecret)
+      if ($plain.Length -eq 0) {
+        throw 'Secret must not be empty'
+      }
       $cipher = [System.Security.Cryptography.ProtectedData]::Protect(
         $plain,
         $null,
@@ -606,9 +610,11 @@ async function runWindowsDpapiCommand(
     const stdout: Buffer[] = [];
     let stdoutBytes = 0;
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const finish = (error: Error | null, output?: string | null) => {
       if (settled) return;
       settled = true;
+      if (timer !== null) clearTimeout(timer);
       if (error) reject(error);
       else resolve(output === undefined ? '' : output);
     };
@@ -635,8 +641,25 @@ async function runWindowsDpapiCommand(
       }
       finish(new Error('Secure credential backend command failed.'));
     });
-    if (secretInput === undefined) child.stdin.end();
-    else child.stdin.end(secretInput);
+    child.stdin.on('error', () => {
+      finish(new Error('Secure credential backend command failed.'));
+    });
+    timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {
+        // Best-effort termination; the generic failure below stays secret-free.
+      }
+      finish(new Error('Secure credential backend command failed.'));
+    }, WINDOWS_DPAPI_TIMEOUT_MS);
+    timer.unref?.();
+    if (secretInput === undefined) {
+      child.stdin.end();
+    } else {
+      child.stdin.end(
+        `${Buffer.from(secretInput, 'utf8').toString('base64')}\n`,
+      );
+    }
   });
 }
 
