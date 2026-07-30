@@ -21,11 +21,13 @@ discovery stage does not by itself require a question form.
 
 Emit the form below only when two or more routes remain materially plausible
 and choosing the wrong one would change the delivery format. Localize every
-user-facing string to the user's chat language, but keep ids, types, and the
-ordered `taskType` options stable. Prefill the `taskType` recommendation so
-the user can submit unchanged. You may add at most two other unanswered
-questions, and only when their answers are also required before useful work
-can begin; never restore a fixed discovery checklist.
+user-facing string to the user's chat language, but keep ids, types, option
+values, and the ordered `taskType` options stable. Set `defaultValue` to the
+stable value of the route you recommend so the user can submit unchanged; the
+example below recommends `prototype`, but replace it with the inferred route
+value before emission. You may add at most two other unanswered questions, and
+only when their answers are also required before useful work can begin; never
+restore a fixed discovery checklist.
 
 ```html
 <question-form id="task-type" title="Choose the task type">
@@ -39,15 +41,16 @@ can begin; never restore a fixed discovery checklist.
       "type": "radio",
       "required": true,
       "allowCustom": false,
+      "defaultValue": "prototype",
       "options": [
-        "Prototype",
-        "Live artifact",
-        "Slide deck",
-        "Image",
-        "Video",
-        "HyperFrames",
-        "Audio",
-        "Other"
+        { "label": "Prototype", "value": "prototype" },
+        { "label": "Live artifact", "value": "live_artifact" },
+        { "label": "Slide deck", "value": "slide_deck" },
+        { "label": "Image", "value": "image" },
+        { "label": "Video", "value": "video" },
+        { "label": "HyperFrames", "value": "hyperframes" },
+        { "label": "Audio", "value": "audio" },
+        { "label": "Other", "value": "other" }
       ]
     }
   ]
@@ -57,22 +60,23 @@ can begin; never restore a fixed discovery checklist.
 
 ## After the answer
 
-When the user replies with `[form answers — task-type]`, bind the chosen
-task type as authoritative and continue:
+When the user replies with `[form answers — task-type]`, bind the chosen task
+type as authoritative, match the stable `[value: ...]` token rather than the
+localized label, and continue:
 
-- `Prototype`: run the normal new-generation prototype flow.
-- `Live artifact`: create a live HTML/CSS/JS artifact and register it for
+- `prototype` (`Prototype`): run the normal new-generation prototype flow.
+- `live_artifact` (`Live artifact`): create a live HTML/CSS/JS artifact and register it for
   preview when tooling is available.
-- `Slide deck`: follow the deck workflow and framework rules.
-- `Image`: plan a concrete image prompt, then use the OD media generation
+- `slide_deck` (`Slide deck`): follow the deck workflow and framework rules.
+- `image` (`Image`): plan a concrete image prompt, then use the OD media generation
   CLI for image output.
-- `Video`: plan shots, duration, aspect, and motion, then use the OD media
+- `video` (`Video`): plan shots, duration, aspect, and motion, then use the OD media
   generation CLI for video output.
-- `HyperFrames`: create HTML-driven motion frames or a HyperFrames-ready
+- `hyperframes` (`HyperFrames`): create HTML-driven motion frames or a HyperFrames-ready
   motion artifact before rendering/exporting.
-- `Audio`: plan voice/music/SFX intent, then use the OD media generation
+- `audio` (`Audio`): plan voice/music/SFX intent, then use the OD media generation
   CLI for audio output.
-- `Other`: ask only the minimum follow-up needed, then choose the closest
+- `other` (`Other`): ask only the minimum follow-up needed, then choose the closest
   Open Design workflow and continue.
 
 Do not automatically emit a second `<question-form id="discovery">` after the
