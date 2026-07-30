@@ -174,6 +174,7 @@ describe('slim core — moved-out content stays out (ownership)', () => {
     const charter = renderSlimCoreCharter('filesystem');
     expect(charter).not.toContain('scale-to-fit');
     expect(charter).not.toContain('data-screen-label');
+    expect(charter).not.toContain('## Nested / concentric diagram discipline');
   });
 });
 

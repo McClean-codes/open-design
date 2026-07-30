@@ -339,6 +339,14 @@ describe('composeSystemPrompt', () => {
     expect(prompt).toContain('no dark-on-dark labels');
   });
 
+  it('injects nested-diagram discipline only through deck surfaces', () => {
+    const heading = '## Nested / concentric diagram discipline';
+
+    expect(composeSystemPrompt({ skillMode: 'deck' })).toContain(heading);
+    expect(composeSystemPrompt({ metadata: { kind: 'deck' } as any })).toContain(heading);
+    expect(composeSystemPrompt({ metadata: { kind: 'prototype' } as any })).not.toContain(heading);
+  });
+
   it('resolves a non-media primary surface ahead of composed media mentions', () => {
     expect(resolveExclusiveSurface({
       skillMode: 'deck',

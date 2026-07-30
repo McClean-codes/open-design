@@ -131,6 +131,15 @@ describe('DISCOVERY_AND_PHILOSOPHY (contracts copy) — prompt routing parity', 
     expect(prompt).toContain('themeVariables');
     expect(prompt).toContain('no dark-on-dark labels');
   });
+
+  it('injects nested-diagram discipline through every contracts deck path only', () => {
+    const heading = '## Nested / concentric diagram discipline';
+
+    expect(composeSystemPrompt({ skillMode: 'deck' })).toContain(heading);
+    expect(composeSystemPrompt({ metadata: { kind: 'deck' } as any })).toContain(heading);
+    expect(composeSystemPrompt({})).toContain(heading);
+    expect(composeSystemPrompt({ metadata: { kind: 'prototype' } as any })).not.toContain(heading);
+  });
 });
 
 describe('composeSystemPrompt', () => {
