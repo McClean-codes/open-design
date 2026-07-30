@@ -12553,6 +12553,10 @@ function HtmlViewer({
   const myMemberId = collab.member?.memberId ?? null;
   const iAmProjectOwner = collab.isOwner;
   const commentAuthoredByMe = (comment: PreviewComment | null | undefined): boolean => {
+    // No persisted comment means this is the create flow: the draft belongs
+    // to the current viewer, including a read-only member/admin annotating
+    // someone else's shared project.
+    if (!comment) return true;
     const authorId = comment?.authorMemberId ?? null;
     // A legacy shared comment without an author is deliberately owner-only.
     // Treating it as "mine" for every member made the client advertise a

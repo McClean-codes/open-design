@@ -84,6 +84,7 @@ import { emptyManualEditStyles } from '../../src/edit-mode/types';
 import { __resetPreviewIsolationCache } from '../../src/runtime/powered-preview';
 import { readExpandedIndexCss } from '../helpers/read-expanded-css';
 import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
+import { CollabProvider, type CollabContextValue } from '../../src/collab/collab-context';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -5982,6 +5983,61 @@ describe('FileViewer tweaks toolbar', () => {
       expect(layout.contains(popover)).toBe(true);
       expect(canvas.contains(popover)).toBe(false);
     });
+  });
+
+  it('keeps the Comment CTA for a new element annotation in a viewer-only team project', async () => {
+    const collab: CollabContextValue = {
+      enabled: true,
+      member: { memberId: 'wm-1', name: 'Member', role: 'member' },
+      present: [],
+      publishedVersion: 1,
+      syncState: 'synced',
+      viewerOnly: true,
+      isOwner: false,
+      ownerDisplayName: 'Owner',
+      ownerRole: 'owner',
+      downloadPending: false,
+      reportChange: () => {},
+      requestPublish: () => {},
+      refreshPresence: () => {},
+      checkStatusNow: () => {},
+    };
+
+    render(
+      <CollabProvider value={collab}>
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={htmlPreviewFile()}
+          liveHtml='<html><body><main data-od-id="hero">Hero</main></body></html>'
+          viewerOnly
+          onSavePreviewComment={vi.fn()}
+        />
+      </CollabProvider>,
+    );
+
+    clickAgentTool('board-mode-toggle');
+    const frame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent('message', {
+      source: frame.contentWindow,
+      data: {
+        type: 'od:comment-target',
+        elementId: 'hero',
+        selector: '[data-od-id="hero"]',
+        label: 'Hero',
+        text: 'Hero',
+        position: { x: 8, y: 12, width: 120, height: 48 },
+        hoverPoint: { x: 12, y: 16 },
+        htmlHint: '<main data-od-id="hero">Hero</main>',
+      },
+    }));
+
+    const input = await screen.findByTestId('comment-popover-input');
+    fireEvent.change(input, { target: { value: 'Please tighten this heading.' } });
+
+    expect(input).not.toHaveAttribute('readonly');
+    expect(screen.getByTestId('comment-popover-save')).toHaveTextContent('Comment');
+    expect(screen.queryByTestId('comment-add-send')).toBeNull();
   });
 
   it('docks the comment side panel outside the clickable preview canvas', () => {
