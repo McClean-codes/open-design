@@ -33,9 +33,14 @@ import {
 
 const WORKSPACE_CURRENT_PATH = '/api/v1/workspaces/current';
 const DEFAULT_TIMEOUT_MS = 8_000;
-const DEFAULT_DIRECTORY_CACHE_TTL_MS = 5_000;
-// After a FAILED default-workspace bootstrap (empty directory, PUT rejected),
-// don't re-list on every poller tick — B is asked again after this window.
+// Read authorization is display-only and is polled every 5s by an open shared
+// project. Keep the successful lease comfortably wider than that cadence so a
+// poll cannot expire the lease at the exact instant it is meant to reuse it.
+// Mutations never consume this lease: `fresh()` below always performs (or joins)
+// an unsettled authoritative read.
+const DEFAULT_DIRECTORY_CACHE_TTL_MS = 15_000;
+// After a failed legacy default-workspace bootstrap, avoid repeating the
+// directory read on every compatibility request.
 const BOOTSTRAP_FAILURE_COOLDOWN_MS = 60_000;
 
 const WORKSPACE_TYPES = new Set<WorkspaceType>(['personal', 'team']);
@@ -63,7 +68,10 @@ interface VelaWorkspaceContextOptions {
   fetch?: typeof fetch;
   /** Injectable for tests; defaults to reading ~/.amr/config.json + env. */
   readSession?: typeof readVelaControlApiContext;
-  /** OD-local active workspace selection. Vela Web does not own this. */
+  /**
+   * Legacy default for no-argument `current()` and fresh-account bootstrap.
+   * Exact request resolution never reads it.
+   */
   getActiveWorkspaceId?: () => string | null | undefined;
   /**
    * Persist a LOCAL default selection (fresh account with no selection
@@ -340,12 +348,17 @@ export function createVelaWorkspaceContextProvider(
     return workspaceContextFromDirectoryItem(fallback);
   }
 
-  return {
-    async current(_req: WorkspaceContextRequest): Promise<WorkspaceCollabContext | null> {
+  async function resolveCurrent(
+    req: WorkspaceContextRequest,
+  ): Promise<WorkspaceCollabContext | null> {
       const session = readSession();
       if (!session || !session.controlKey || !session.apiUrl) return null;
       try {
-        const localSelection = options.getActiveWorkspaceId?.()?.trim() || undefined;
+        const explicitSelection = req.workspaceId?.trim() || undefined;
+        // The no-argument fallback is legacy compatibility only. Client-facing
+        // routes use resolveExact and cannot borrow this daemon-local pin.
+        const localSelection =
+          explicitSelection ?? (options.getActiveWorkspaceId?.()?.trim() || undefined);
         // B's current is enrichment, not authority (explicit-workspace
         // handoff): the daemon serves the LOCALLY pinned workspace. B's
         // answer is adopted only when it matches — a switch made on another
@@ -387,7 +400,47 @@ export function createVelaWorkspaceContextProvider(
         // single-player. A transient B outage must not break the local editor.
         return null;
       }
-    },
+  }
+
+  async function resolveExact(
+    req: WorkspaceContextRequest & { workspaceId: string },
+  ): Promise<WorkspaceCollabContext | null> {
+    const session = readSession();
+    const workspaceId = req.workspaceId.trim();
+    if (!session || !session.controlKey || !session.apiUrl || !workspaceId) return null;
+    try {
+      const response = await fetchCurrent(session, workspaceId);
+      if (response.ok) {
+        const mapped = mapVelaWorkspaceContext(await response.json());
+        if (mapped?.workspaceId === workspaceId) {
+          return withDisplayName(mapped, session);
+        }
+      } else if (response.status === 401) {
+        return null;
+      }
+      const directory = await fetchVelaWorkspaceDirectory({
+        fetch: fetchImpl,
+        readSession: () => session,
+        timeoutMs,
+      });
+      if (!directory.ok) return null;
+      const item = directory.items.find(
+        (entry) =>
+          entry.workspaceId === workspaceId
+          && entry.memberStatus === 'active'
+          && entry.lifecycleState !== 'deleted',
+      );
+      return item
+        ? withDisplayName(workspaceContextFromDirectoryItem(item), session)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return {
+    current: resolveCurrent,
+    resolveExact,
   };
 }
 
@@ -492,16 +545,24 @@ export function velaWorkspaceDirectoryIdentity(
 }
 
 /**
- * One daemon-owned directory read identity shared by project scope reads and
- * final run authorization. Successful reads are briefly cached and concurrent
- * callers coalesce onto one request; failures are never cached.
+ * One daemon-owned authority broker shared by idempotent reads and mutations.
+ *
+ * Successful authority reads seed a bounded display-read lease. Mutations
+ * ignore that settled lease and always perform a fresh directory read, while
+ * still sharing an already-unsettled request from the same Vela session. This
+ * keeps the 5s status poll off the control plane without weakening mutation
+ * freshness, and prevents a status/heartbeat boundary from launching duplicate
+ * directory requests.
  */
-export function createCachedWorkspaceDirectoryFetcher(options: {
+export function createWorkspaceDirectoryAuthorityBroker(options: {
   fetchDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
   identityKey?: () => string;
   ttlMs?: number;
   now?: () => number;
-} = {}): () => Promise<WorkspaceDirectoryFetchResult> {
+} = {}): {
+  read: () => Promise<WorkspaceDirectoryFetchResult>;
+  fresh: () => Promise<WorkspaceDirectoryFetchResult>;
+} {
   const fetchDirectory =
     options.fetchDirectory ?? (() => fetchVelaWorkspaceDirectory());
   const identityKey = options.identityKey ?? velaWorkspaceDirectoryIdentity;
@@ -513,10 +574,9 @@ export function createCachedWorkspaceDirectoryFetcher(options: {
   >();
   const inFlight = new Map<string, Promise<WorkspaceDirectoryFetchResult>>();
 
-  return async () => {
-    const identity = identityKey();
-    const cachedEntry = cached.get(identity);
-    if (cachedEntry && now() < cachedEntry.expiresAt) return cachedEntry.result;
+  const start = (
+    identity: string,
+  ): Promise<WorkspaceDirectoryFetchResult> => {
     const pending = inFlight.get(identity);
     if (pending) return pending;
     const request = fetchDirectory()
@@ -532,6 +592,44 @@ export function createCachedWorkspaceDirectoryFetcher(options: {
     inFlight.set(identity, request);
     return request;
   };
+
+  return {
+    read: () => {
+      const identity = identityKey();
+      const cachedEntry = cached.get(identity);
+      if (cachedEntry && now() < cachedEntry.expiresAt) {
+        return Promise.resolve(cachedEntry.result);
+      }
+      return start(identity);
+    },
+    fresh: () => start(identityKey()),
+  };
+}
+
+/**
+ * Compatibility wrapper for callers that only need the bounded read lease.
+ * Production daemon wiring uses one shared broker for reads and mutations.
+ */
+export function createCachedWorkspaceDirectoryFetcher(options: {
+  fetchDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
+  identityKey?: () => string;
+  ttlMs?: number;
+  now?: () => number;
+} = {}): () => Promise<WorkspaceDirectoryFetchResult> {
+  return createWorkspaceDirectoryAuthorityBroker(options).read;
+}
+
+/**
+ * Mutation authorization must not reuse a settled directory result, but
+ * concurrent checks from the same Vela session may share one authority read.
+ * Partitioning the in-flight request by session identity prevents an account
+ * switch from authorizing account B with account A's membership directory.
+ */
+export function createFreshWorkspaceDirectoryFetcher(options: {
+  fetchDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
+  identityKey?: () => string;
+} = {}): () => Promise<WorkspaceDirectoryFetchResult> {
+  return createWorkspaceDirectoryAuthorityBroker(options).fresh;
 }
 
 export async function fetchVelaWorkspaceDirectory(
@@ -541,7 +639,10 @@ export async function fetchVelaWorkspaceDirectory(
   const readSession = options.readSession ?? readVelaControlApiContext;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const session = readSession();
-  if (!session || !session.controlKey || !session.apiUrl) return { ok: false, items: [] };
+  // No local Vela session is an authoritative signed-out identity, not an
+  // authority outage. Returning a successful empty directory lets clients
+  // clear a previously cached Team selection instead of preserving it forever.
+  if (!session || !session.controlKey || !session.apiUrl) return { ok: true, items: [] };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {

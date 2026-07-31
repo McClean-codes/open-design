@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import { Button, VisuallyHidden } from '@open-design/components';
-import type { AmrWalletSnapshot } from '@open-design/contracts';
+import type { AmrWalletSnapshot, WorkspaceCollabContext } from '@open-design/contracts';
 import { validateBaseUrl } from '@open-design/contracts/api/connectionTest';
 import {
   agentIdToTracking,
@@ -122,6 +122,7 @@ import { fetchProviderModels } from '../providers/provider-models';
 import {
   fetchConnectors,
   fetchDesignTemplates,
+  liveArtifactPreviewUrl,
   openExternalUrl,
 } from '../providers/registry';
 import { MEDIA_PROVIDERS } from '../media/models';
@@ -186,6 +187,11 @@ import {
   setCritiqueTheaterEnabled,
   useCritiqueTheaterEnabled,
 } from './Theater';
+import {
+  projectWorkspaceContext,
+  projectWorkspaceScopeReady,
+  useProjectWorkspaceScope,
+} from '../collab/useProjectWorkspaceScope';
 import {
   applyAppearanceToDocument,
   resolveAccentColor,
@@ -437,6 +443,8 @@ interface Props {
   welcome?: boolean;
   initialSection?: SettingsSection;
   initialHighlight?: SettingsHighlight;
+  /** Workspace id persisted on the currently-open project, when any. */
+  persistedProjectWorkspaceId?: string | null;
   providerModelsCache?: ProviderModelsCache;
   /**
    * Persist the current draft. Invoked by the dialog's autosave loop on
@@ -1481,6 +1489,7 @@ export function SettingsDialog({
   welcome,
   initialSection = 'general',
   initialHighlight = null,
+  persistedProjectWorkspaceId = null,
   onPersist,
   onSilentUpdatePreferenceChange,
   onPersistComposioKey,
@@ -5770,6 +5779,7 @@ export function SettingsDialog({
               composioApiKeyConfigured={Boolean(cfg.composio?.apiKeyConfigured)}
               daemonMediaProviders={daemonMediaProviders}
               daemonMediaProvidersFetchState={daemonMediaProvidersFetchState}
+              workspaceContext={workspaceContext}
               onOpenComposioSection={() => setActiveSection('composio')}
               onLeaveForOrbitProject={(runConfig) => {
                 // Persist any in-flight Orbit edits (toggle / time) before
@@ -5846,7 +5856,10 @@ export function SettingsDialog({
               </div>
 
               <div className="settings-general-block">
-                <CritiqueTheaterSection />
+                <CritiqueTheaterSection
+                  callerWorkspaceContext={workspaceContext}
+                  persistedProjectWorkspaceId={persistedProjectWorkspaceId}
+                />
               </div>
             </section>
           ) : null}
@@ -6615,6 +6628,14 @@ interface OrbitRunStartResponse {
   agentRunId: string;
 }
 
+export function orbitLiveArtifactHref(
+  projectId: string,
+  artifactId: string,
+  workspaceContext: WorkspaceCollabContext | null,
+): string {
+  return liveArtifactPreviewUrl(projectId, artifactId, 'rendered', workspaceContext);
+}
+
 export async function persistConfigAndRunOrbit(
   config: AppConfig,
   options?: {
@@ -6638,14 +6659,26 @@ export async function persistConfigAndRunOrbit(
   return await response.json() as OrbitRunStartResponse;
 }
 
-export function configForManualOrbitRun(config: AppConfig): AppConfig {
+export function configForManualOrbitRun(
+  config: AppConfig,
+  workspaceContext: WorkspaceCollabContext | null = null,
+): AppConfig {
   const effectiveTemplateSkillId = config.orbit?.templateSkillId || DEFAULT_ORBIT.templateSkillId || '';
-  if (!effectiveTemplateSkillId) return config;
   return {
     ...config,
     orbit: {
       ...(config.orbit ?? DEFAULT_ORBIT),
-      templateSkillId: effectiveTemplateSkillId,
+      ...(effectiveTemplateSkillId ? { templateSkillId: effectiveTemplateSkillId } : {}),
+      ...(workspaceContext
+        ? {
+            workspaceScope: {
+              workspaceId: workspaceContext.workspaceId,
+              workspaceMemberId: workspaceContext.workspaceMemberId,
+            },
+          }
+        : config.orbit?.workspaceScope
+          ? { workspaceScope: config.orbit.workspaceScope }
+          : {}),
     },
   };
 }
@@ -6677,6 +6710,7 @@ function OrbitSection({
   composioApiKeyConfigured,
   daemonMediaProviders,
   daemonMediaProvidersFetchState,
+  workspaceContext,
   onOpenComposioSection,
   onLeaveForOrbitProject,
 }: {
@@ -6689,6 +6723,7 @@ function OrbitSection({
   composioApiKeyConfigured: boolean;
   daemonMediaProviders?: AppConfig['mediaProviders'] | null;
   daemonMediaProvidersFetchState?: 'idle' | 'ok' | 'error';
+  workspaceContext: WorkspaceCollabContext | null;
   /** Switch the parent settings dialog to the Connectors (Composio) tab.
    *  Used by the Orbit gate's primary CTA so the user can fix the
    *  prerequisite without leaving the dialog. */
@@ -6738,7 +6773,20 @@ function OrbitSection({
   const updateOrbit = (patch: Partial<NonNullable<AppConfig['orbit']>>) => {
     setCfg((curr) => ({
       ...curr,
-      orbit: { ...(curr.orbit ?? DEFAULT_ORBIT), ...patch },
+      orbit: {
+        ...(curr.orbit ?? DEFAULT_ORBIT),
+        ...patch,
+        ...(workspaceContext
+          ? {
+              workspaceScope: {
+                workspaceId: workspaceContext.workspaceId,
+                workspaceMemberId: workspaceContext.workspaceMemberId,
+              },
+            }
+          : curr.orbit?.workspaceScope
+            ? { workspaceScope: curr.orbit.workspaceScope }
+            : {}),
+      },
     }));
   };
 
@@ -6848,7 +6896,7 @@ function OrbitSection({
 
     void (async () => {
       try {
-        const runConfig = configForManualOrbitRun(cfg);
+        const runConfig = configForManualOrbitRun(cfg, workspaceContext);
         const payload = await persistConfigAndRunOrbit(runConfig, {
           daemonProviders: daemonMediaProviders,
           syncMediaProviders: daemonMediaProvidersFetchState === 'ok',
@@ -6893,7 +6941,11 @@ function OrbitSection({
   const lastRunAbs = lastRun ? new Date(lastRun.completedAt).toLocaleString() : null;
   const lastRunRel = formatRelative(lastRun?.completedAt, t);
   const liveArtifactHref = lastRun?.artifactId && lastRun?.artifactProjectId
-    ? `/api/live-artifacts/${encodeURIComponent(lastRun.artifactId)}/preview?projectId=${encodeURIComponent(lastRun.artifactProjectId)}`
+    ? orbitLiveArtifactHref(
+        lastRun.artifactProjectId,
+        lastRun.artifactId,
+        workspaceContext,
+      )
     : null;
   const isBusy = running || Boolean(status?.running);
 
@@ -8644,12 +8696,67 @@ function IntegrationsSection() {
  * the user that per-project persistence requires opening a project
  * first. That matches the actual scope of the wire-up.
  */
-function CritiqueTheaterSection() {
+function CritiqueTheaterSection({
+  callerWorkspaceContext,
+  persistedProjectWorkspaceId,
+}: {
+  callerWorkspaceContext: WorkspaceCollabContext | null;
+  persistedProjectWorkspaceId: string | null;
+}) {
+  const route = useRoute();
+  const activeProjectId = route.kind === 'project' ? route.projectId : null;
+  return activeProjectId
+    ? (
+      <ProjectScopedCritiqueTheaterSection
+        projectId={activeProjectId}
+        callerWorkspaceContext={callerWorkspaceContext}
+        persistedProjectWorkspaceId={persistedProjectWorkspaceId}
+      />
+    )
+    : (
+      <CritiqueTheaterSectionContent
+        activeProjectId={null}
+        projectScopeReady
+        workspaceContext={null}
+      />
+    );
+}
+
+function ProjectScopedCritiqueTheaterSection({
+  projectId,
+  callerWorkspaceContext,
+  persistedProjectWorkspaceId,
+}: {
+  projectId: string;
+  callerWorkspaceContext: WorkspaceCollabContext | null;
+  persistedProjectWorkspaceId: string | null;
+}) {
+  const projectScope = useProjectWorkspaceScope(
+    projectId,
+    callerWorkspaceContext,
+    persistedProjectWorkspaceId,
+  );
+  return (
+    <CritiqueTheaterSectionContent
+      activeProjectId={projectId}
+      projectScopeReady={projectWorkspaceScopeReady(projectScope.scope)}
+      workspaceContext={projectWorkspaceContext(projectScope.scope)}
+    />
+  );
+}
+
+function CritiqueTheaterSectionContent({
+  activeProjectId,
+  projectScopeReady,
+  workspaceContext,
+}: {
+  activeProjectId: string | null;
+  projectScopeReady: boolean;
+  workspaceContext: WorkspaceCollabContext | null;
+}) {
   const { t } = useI18n();
   const analytics = useAnalytics();
   const enabled = useCritiqueTheaterEnabled();
-  const route = useRoute();
-  const activeProjectId = route.kind === 'project' ? route.projectId : null;
 
   const handleToggle = () => {
     const next = !enabled;
@@ -8661,8 +8768,11 @@ function CritiqueTheaterSection() {
       status_after: next ? 'on' : 'off',
       has_active_project: activeProjectId !== null,
     });
-    if (activeProjectId !== null) {
-      void setCritiqueTheaterEnabled(next, { projectId: activeProjectId });
+    if (activeProjectId !== null && projectScopeReady) {
+      void setCritiqueTheaterEnabled(next, {
+        projectId: activeProjectId,
+        workspaceContext,
+      });
     } else {
       void setCritiqueTheaterEnabled(next);
     }

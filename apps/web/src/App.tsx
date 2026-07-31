@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { flushSync } from 'react-dom';
 import { AnimatePresence, motion, MotionConfig } from 'motion/react';
+import { Button } from '@open-design/components';
 import { useAnalytics } from './analytics/provider';
 import {
   trackFileUploadResult,
@@ -23,7 +24,6 @@ import type {
   ChatSessionMode,
   RunContextSelection,
   TeamProject,
-  WorkspaceTeamProjectsResponse,
   WorkspaceCollabContext,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
@@ -87,12 +87,19 @@ import {
 } from './providers/daemon';
 import { AMR_LOGIN_STATUS_EVENT } from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
+import { fetchTeamProjectsCatalog } from './collab/team-projects-catalog';
+import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
+  currentWorkspaceAccountGeneration,
   useWorkspaceBilling,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
 } from './collab/useWorkspaceContext';
+import {
+  projectResourceReadsCanStart,
+  useProjectRouteWorkspaceContext,
+} from './collab/useProjectRouteWorkspaceContext';
 import { resolvePlanTier } from './collab/team-plan';
 import { deriveTabIdentityScope, UNSET_ACCOUNT_BUCKET } from './collab/tab-scope';
 import { CommunityView } from './components/CommunityView';
@@ -128,6 +135,7 @@ import {
 import { installFontRecovery } from './runtime/font-recovery';
 import {
   createDesignSystemProjectFromProject,
+  bootstrapProjectRoute,
   createProject,
   createPluginShareProject,
   deleteProject as deleteProjectApi,
@@ -212,7 +220,13 @@ export function shouldRouteToFirstRunOnboarding(
   pathname: string,
 ): boolean {
   if (config.onboardingCompleted === true) return false;
-  if (pathname.startsWith('/collab-demo') || pathname.startsWith('/community')) return false;
+  if (
+    pathname.startsWith('/projects/')
+    || pathname.startsWith('/collab-demo')
+    || pathname.startsWith('/community')
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -303,6 +317,7 @@ type ProjectListRequest = {
   generation: number;
   mutationVersion: number;
   scopeKey: string;
+  workspaceView: WorkspaceProjectListView | undefined;
 };
 
 /**
@@ -317,7 +332,7 @@ const UNRESOLVED_PROJECT_LIST_SCOPE = 'local';
 
 function projectListScopeKey(context: WorkspaceCollabContext | null): string {
   return context
-    ? `${context.workspaceId}:${context.workspaceMemberId}`
+    ? `workspace:${workspaceIdentityCacheKey(context)}`
     : UNRESOLVED_PROJECT_LIST_SCOPE;
 }
 
@@ -492,26 +507,37 @@ type TeamProjectCatalogLookup =
   | { ok: true; project: TeamProject | null }
   | { ok: false };
 
-async function fetchTeamProjectCatalogEntry(projectId: string): Promise<TeamProjectCatalogLookup> {
+async function fetchTeamProjectCatalogEntry(
+  projectId: string,
+  workspaceContext: WorkspaceCollabContext | null,
+  coalesce = true,
+): Promise<TeamProjectCatalogLookup> {
+  if (!workspaceContext) return { ok: true, project: null };
   try {
-    const response = await fetch('/api/workspace/projects/team');
-    if (!response.ok) return { ok: false };
-    const body = (await response.json()) as WorkspaceTeamProjectsResponse;
+    const projects = await fetchTeamProjectsCatalog({
+      context: workspaceContext,
+      coalesce,
+    });
     return {
       ok: true,
-      project: (body.projects ?? []).find((project) => project.projectId === projectId) ?? null,
+      project: projects.find((project) => project.projectId === projectId) ?? null,
     };
   } catch {
     return { ok: false };
   }
 }
 
-async function pullTeamSharedProjectIfAvailable(projectId: string): Promise<TeamSharedProjectPullOutcome> {
-  const lookup = await fetchTeamProjectCatalogEntry(projectId);
+async function pullTeamSharedProjectIfAvailable(
+  projectId: string,
+  workspaceContext: WorkspaceCollabContext | null,
+): Promise<TeamSharedProjectPullOutcome> {
+  if (!workspaceContext) return { isTeamShared: false, pulled: false };
+  const lookup = await fetchTeamProjectCatalogEntry(projectId, workspaceContext);
   if (!lookup.ok || !lookup.project) return { isTeamShared: false, pulled: false };
   try {
     const pullResponse = await fetch(`/api/projects/${encodeURIComponent(projectId)}/collab/pull`, {
       method: 'POST',
+      headers: workspaceProjectHeaders(workspaceContext),
     });
     return { isTeamShared: true, pulled: pullResponse.ok };
   } catch {
@@ -558,6 +584,32 @@ export type DeepLinkedProjectResolution =
   // Never confirmed as team-shared within the retry window (or genuinely not
   // shared at all) — the caller's existing not-found handling applies.
   | { kind: 'not-found' };
+
+export type ProjectRouteSurfaceState =
+  | 'ready'
+  | 'loading-projects'
+  | 'resolving-deep-link'
+  | 'missing'
+  | 'materialization-failed'
+  | 'daemon-unavailable';
+
+/**
+ * The project route must never use `!activeProject` as an unbounded loading
+ * condition. Once the initial list is complete, every absent-project path is
+ * either a bounded deep-link resolution or an explicit terminal surface.
+ */
+export function projectRouteSurfaceState(input: {
+  projectsLoading: boolean;
+  hasActiveProject: boolean;
+  daemonLive: boolean;
+  resolutionFailure?: 'missing' | 'materialization-failed';
+}): ProjectRouteSurfaceState {
+  if (input.hasActiveProject) return 'ready';
+  if (input.projectsLoading) return 'loading-projects';
+  if (!input.daemonLive) return 'daemon-unavailable';
+  if (input.resolutionFailure) return input.resolutionFailure;
+  return 'resolving-deep-link';
+}
 
 /**
  * Resolves a project a member has just deep-linked to but has no local
@@ -692,6 +744,7 @@ function AppInner() {
   const workspaceBilling = useWorkspaceBilling();
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
+  const projectRouteWorkspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   workspaceContextRef.current = workspaceContext;
   workspaceContextStateRef.current = workspaceContextState;
   const listCurrentWorkspaceProjects = useCallback(
@@ -771,6 +824,11 @@ function AppInner() {
   // effect while the project actually stayed in the managed root.
   const [workingDirError, setWorkingDirError] = useState<string | null>(null);
   const [projectOpenError, setProjectOpenError] = useState<string | null>(null);
+  const [deepLinkResolutionFailure, setDeepLinkResolutionFailure] = useState<{
+    projectId: string;
+    failure: 'missing' | 'materialization-failed';
+  } | null>(null);
+  const [deepLinkRetryRevision, setDeepLinkRetryRevision] = useState(0);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
   const [settingsHighlight, setSettingsHighlight] = useState<SettingsHighlight>(null);
@@ -813,6 +871,12 @@ function AppInner() {
     Record<string, DesignSystemGenerationJob>
   >({});
   const [projects, setProjects] = useState<Project[]>([]);
+  const [appliedProjectListWitness, setAppliedProjectListWitness] = useState<{
+    scopeKey: string;
+    generation: number;
+    workspaceView: WorkspaceProjectListView | undefined;
+    projectIds: ReadonlySet<string>;
+  } | null>(null);
   const projectsRef = useRef<Project[]>(projects);
   useEffect(() => {
     projectsRef.current = projects;
@@ -1024,12 +1088,16 @@ function AppInner() {
     }
   }, []);
 
-  const beginProjectListRequest = useCallback((): ProjectListRequest => {
+  const beginProjectListRequest = useCallback((
+    workspaceView: WorkspaceProjectListView | undefined,
+  ): ProjectListRequest => {
     projectListRequestGenerationRef.current += 1;
+    const issuedContext = workspaceContextRef.current;
     return {
       generation: projectListRequestGenerationRef.current,
       mutationVersion: projectListMutationVersionRef.current,
-      scopeKey: projectListScopeKey(workspaceContextRef.current),
+      scopeKey: projectListScopeKey(issuedContext),
+      workspaceView: issuedContext ? workspaceView ?? 'recent' : undefined,
     };
   }, []);
 
@@ -1078,6 +1146,12 @@ function AppInner() {
       return true;
     }
     latestAppliedProjectListGenerationRef.current = request.generation;
+    setAppliedProjectListWitness({
+      scopeKey: request.scopeKey,
+      generation: request.generation,
+      workspaceView: request.workspaceView,
+      projectIds: fetchedIds,
+    });
     for (const id of fetchedIds) pendingLocalProjectIds.delete(id);
     for (const [id, deletedAtMutationVersion] of locallyDeletedProjectIds) {
       if (
@@ -1483,17 +1557,20 @@ function AppInner() {
         markSkillRegistryReady('templates');
       });
 
-      const designSystemsWorkspaceId = workspaceContextRef.current?.workspaceId ?? null;
-      void fetchDesignSystems().then((list) => {
+      const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(
+        workspaceContextRef.current,
+      );
+      void fetchDesignSystems(workspaceContextRef.current).then((list) => {
         if (
           cancelled ||
-          (workspaceContextRef.current?.workspaceId ?? null) !== designSystemsWorkspaceId
+          workspaceIdentityCacheKey(workspaceContextRef.current)
+            !== designSystemsWorkspaceIdentity
         ) return;
         setDesignSystems(list);
         setDsLoading(false);
       });
 
-      const request = beginProjectListRequest();
+      const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects({
         workspaceView: workspaceProjectViewRef.current,
       }).then((list) => {
@@ -1699,13 +1776,13 @@ function AppInner() {
   }, []);
 
   const refreshProjects = useCallback(async () => {
-    const request = beginProjectListRequest();
+    const request = beginProjectListRequest(workspaceProjectView);
     const list = await listCurrentWorkspaceProjects({ workspaceView: workspaceProjectView });
     reconcileFetchedProjects(list, request);
   }, [beginProjectListRequest, listCurrentWorkspaceProjects, reconcileFetchedProjects, workspaceProjectView]);
 
   const refreshProjectsStrict = useCallback(async () => {
-    const request = beginProjectListRequest();
+    const request = beginProjectListRequest(workspaceProjectView);
     const list = await listCurrentWorkspaceProjects({
       throwOnError: true,
       workspaceView: workspaceProjectView,
@@ -1722,7 +1799,7 @@ function AppInner() {
       return;
     }
     let cancelled = false;
-    const request = beginProjectListRequest();
+    const request = beginProjectListRequest(effectiveWorkspaceProjectView);
     setProjectsLoading(true);
     (async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -1764,15 +1841,14 @@ function AppInner() {
   ]);
 
   const refreshDesignSystems = useCallback(async () => {
-    // `fetchDesignSystems()` takes no context — the daemon resolves the scope
-    // from its OWN vela session (`resolveWorkspaceScope`), not from request
-    // headers. The catalog itself is keyed only by workspaceId, so the commit
-    // guard deliberately uses that SAME scope: role/member/permission changes
-    // must not discard a still-valid response without scheduling a successor.
-    // A slow read for a different workspace still cannot restore its library.
-    const issuedWorkspaceId = workspaceContextRef.current?.workspaceId ?? null;
-    const list = await fetchDesignSystems();
-    if ((workspaceContextRef.current?.workspaceId ?? null) !== issuedWorkspaceId) return;
+    // Carry the captured Workspace/member identity on the request. The daemon
+    // verifies that exact membership instead of consulting mutable ambient
+    // Workspace state, and the same identity key prevents an A response from
+    // committing after the UI has moved to B.
+    const issuedContext = workspaceContextRef.current;
+    const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
+    const list = await fetchDesignSystems(issuedContext);
+    if (workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity) return;
     setDesignSystems(list);
     // Bootstrap and this workspace-scoped refresh can overlap on launch.
     // Either response is a complete catalog for the active daemon identity,
@@ -1781,14 +1857,12 @@ function AppInner() {
     setDsLoading(false);
   }, []);
 
-  // The design-system catalog is workspace-scoped on the daemon (#145), so it
-  // is stale the moment the active workspace changes. Only the boot pass and a
-  // route change into home refetched it, and switching workspaces does neither
-  // — the switcher lives ON the home view, so `route.kind` stays 'home' — which
-  // left the previous workspace's library on screen until a reload.
+  // The design-system catalog is verified against the exact Workspace/member
+  // identity. Re-read whenever either half changes; a role replacement can
+  // reuse the Workspace id while changing the authoritative membership.
   useEffect(() => {
     void refreshDesignSystems();
-  }, [workspaceContext?.workspaceId, refreshDesignSystems]);
+  }, [currentWorkspaceIdentity, refreshDesignSystems]);
 
   const refreshSkills = useCallback(async () => {
     // Always scoped. `GET /api/skills` is fail-closed on a missing
@@ -2144,9 +2218,10 @@ function AppInner() {
       const fidelity = fidelityToTracking(metadata?.fidelity ?? null);
       const creationSource: 'blank' | 'template' | 'zip' | 'folder' =
         kind === 'template' ? 'template' : 'blank';
+      let createWorkspaceContext: WorkspaceCollabContext | null = null;
       let result;
       try {
-        const createWorkspaceContext = resolvedWorkspaceContextForWrite(
+        createWorkspaceContext = resolvedWorkspaceContextForWrite(
           workspaceContextStateRef.current,
         );
         if (
@@ -2231,6 +2306,7 @@ function AppInner() {
             result.project.id,
             userWorkingDir,
             input.userWorkingDirToken,
+            createWorkspaceContext,
           );
         } catch (err) {
           // The desktop working-dir token is short-lived (~60s TTL); if the
@@ -2261,7 +2337,7 @@ function AppInner() {
           result.project.id,
           pendingFiles,
           undefined,
-          workspaceContextRef.current,
+          createWorkspaceContext,
         );
         firstMessageAttachments = uploadResult.uploaded;
         const partial = uploadResult.failed.length > 0;
@@ -2573,7 +2649,8 @@ function AppInner() {
   // through the normal daemon API.
   const handleImportFolderResponse = useCallback(async (result: OpenDesignHostProjectImportSuccess) => {
     rememberLocalProject(result.projectId);
-    const project = await getProject(result.projectId);
+    const importedProjectContext = workspaceContextRef.current;
+    const project = await getProject(result.projectId, importedProjectContext);
     if (project != null) {
       setProjects((curr) => [project, ...curr.filter((p) => p.id !== project.id)]);
     } else {
@@ -2594,7 +2671,7 @@ function AppInner() {
         updatedAt: Date.now(),
       };
       setProjects((curr) => [stub, ...curr.filter((p) => p.id !== stub.id)]);
-      const request = beginProjectListRequest();
+      const request = beginProjectListRequest(workspaceProjectView);
       const list = await listCurrentWorkspaceProjects({ workspaceView: workspaceProjectView });
       reconcileFetchedProjects(list, request);
     }
@@ -2627,7 +2704,7 @@ function AppInner() {
     projectId: string,
     expectedAuthorizationKey: string,
   ): Promise<ProjectNameAuthorityResolution> => {
-    const context = workspaceContextRef.current;
+    const context = projectRouteWorkspaceContextRef.current;
     const key = projectViewAuthorizationLifetimeKey(projectId, context);
     if (key !== expectedAuthorizationKey) return { kind: 'stale' };
     const authorizationGeneration = projectAuthorizationGenerationRef.current;
@@ -2637,8 +2714,11 @@ function AppInner() {
     const authorityRequestIsCurrent = () =>
       projectAuthorizationGenerationRef.current === authorizationGeneration
       && projectNameAuthorityRequestGenerationRef.current.get(key) === requestGeneration
-      && projectViewAuthorizationLifetimeKey(projectId, workspaceContextRef.current) === key;
-    const lookup = await fetchTeamProjectCatalogEntry(projectId);
+      && projectViewAuthorizationLifetimeKey(
+        projectId,
+        projectRouteWorkspaceContextRef.current,
+      ) === key;
+    const lookup = await fetchTeamProjectCatalogEntry(projectId, context, false);
     if (!authorityRequestIsCurrent()) {
       // Workspace/member changed while the catalog request was in flight.
       // A newer same-key request also supersedes this response, so an older
@@ -2774,7 +2854,7 @@ function AppInner() {
       return true;
     }
     try {
-      const project = await getProject(id);
+      const project = await getProject(id, openingContext);
       if (!openingScopeIsCurrent()) return false;
       if (project && canUseLocalProject(project)) {
         const openedProject = catalogName ? { ...project, name: catalogName } : project;
@@ -2788,10 +2868,10 @@ function AppInner() {
         navigate({ kind: 'project', projectId: id, fileName: routeFileName });
         return true;
       }
-      const { pulled } = await pullTeamSharedProjectIfAvailable(id);
+      const { pulled } = await pullTeamSharedProjectIfAvailable(id, openingContext);
       if (!openingScopeIsCurrent()) return false;
       if (pulled) {
-        const pulledProject = await getProject(id);
+        const pulledProject = await getProject(id, openingContext);
         if (!openingScopeIsCurrent()) return false;
         if (pulledProject && canUseLocalProject(pulledProject)) {
           const openedProject = catalogName
@@ -2808,7 +2888,7 @@ function AppInner() {
           return true;
         }
       }
-      const request = beginProjectListRequest();
+      const request = beginProjectListRequest('all');
       const list = await listCurrentWorkspaceProjects({ workspaceView: 'all' });
       if (!openingScopeIsCurrent()) return false;
       const reconciledList = catalogName
@@ -3020,32 +3100,102 @@ function AppInner() {
     });
   }, []);
 
-  const loadedActiveProject =
+  // The project list belongs to the shell's ambient Workspace and is cleared
+  // immediately when the navigation rail switches A -> B. An already-open
+  // project is not ambient: retain its persisted row independently so that
+  // clearing/replacing the Home catalog cannot tear down ProjectView, lose the
+  // exact A authority, or reinterpret the same route under B.
+  const routeProjectSnapshotRef = useRef<{
+    project: Project;
+    accountGeneration: number;
+    capturedAfterListGeneration: number;
+  } | null>(null);
+  const [, setRouteProjectSnapshotRevision] = useState(0);
+  const activeAccountGeneration = currentWorkspaceAccountGeneration();
+  let loadedActiveProject: Project | null = null;
+  if (route.kind === 'project') {
+    const listedProject = projects.find((project) => project.id === route.projectId);
+    if (listedProject) {
+      routeProjectSnapshotRef.current = {
+        project: listedProject,
+        accountGeneration: activeAccountGeneration,
+        capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+      };
+    } else if (
+      routeProjectSnapshotRef.current?.project.id !== route.projectId
+      || routeProjectSnapshotRef.current.accountGeneration !== activeAccountGeneration
+      || (
+        appliedProjectListWitness?.scopeKey === currentProjectListScope
+        && appliedProjectListWitness.workspaceView === 'all'
+        && appliedProjectListWitness.generation
+          > routeProjectSnapshotRef.current.capturedAfterListGeneration
+        && !appliedProjectListWitness.projectIds.has(route.projectId)
+        && workspaceContext?.workspaceId
+          === routeProjectSnapshotRef.current.project.workspaceId
+      )
+    ) {
+      routeProjectSnapshotRef.current = null;
+    }
+    loadedActiveProject =
+      listedProject
+      ?? routeProjectSnapshotRef.current?.project
+      ?? null;
+  } else {
+    routeProjectSnapshotRef.current = null;
+  }
+  // A fresh project deep link starts before the shell's ambient Workspace
+  // context has resolved. Derive the exact caller from the persisted project
+  // binding + signed-in account directory instead; this is independent of
+  // whichever Workspace another tab or the navigation rail currently selects.
+  const projectRouteWorkspaceContext = useProjectRouteWorkspaceContext(
+    loadedActiveProject?.workspaceId,
+    workspaceContextState,
+  );
+  // Never mount ProjectView around the synthetic "Untitled" placeholder. Its
+  // effects immediately fan out project-owned reads, but before the project
+  // list lands there is no persisted Workspace id with which to scope them.
+  // Waiting for the real row is the authorization gate that turns the cold
+  // start from two headerless 400 waves plus a scoped retry into one scoped
+  // wave. Unbound local projects still mount as soon as their real row lands.
+  const activeProject = loadedActiveProject;
+  const activeProjectWorkspaceContext = activeProject
+    ? projectRouteWorkspaceContext.context
+    : null;
+  projectRouteWorkspaceContextRef.current = activeProjectWorkspaceContext;
+  // Project tabs belong to the project's persisted Workspace authority, not
+  // the shell's ambient selection. On a cold deep link the ambient context can
+  // settle (or switch A -> B) after the exact project scope has already loaded;
+  // handing that B key to WorkspaceTabsBar makes its legitimate scope-change
+  // cleanup navigate to B's saved Home tab, unmounting the healthy A project
+  // and emitting a misleading presence/leave. Keep tab reconciliation
+  // deferred until the project row + exact membership witness exist, then pin
+  // it to that Workspace. Truly unbound local projects retain the ambient
+  // account/workspace tab behavior.
+  const workspaceTabsIdentityScopeKey =
     route.kind === 'project'
-      ? (projects.find((p) => p.id === route.projectId) ?? null)
-      : null;
-  const routeProjectPlaceholder = useMemo<Project | null>(() => {
-    if (route.kind !== 'project') return null;
-    const now = Date.now();
-    return {
-      id: route.projectId,
-      name: 'Untitled',
-      skillId: null,
-      designSystemId: null,
-      createdAt: now,
-      updatedAt: now,
-    };
-  }, [route]);
-  const activeProject = loadedActiveProject ?? routeProjectPlaceholder;
+      ? activeProject === null
+        ? null
+        : activeProject.workspaceId
+          ? activeProjectWorkspaceContext && identityScopeKey !== null
+            ? `${nextTabScopeAccountId}::${activeProjectWorkspaceContext.workspaceId}`
+            : null
+          : identityScopeKey
+      : identityScopeKey;
   const activeAuthoritativeProjectName =
     route.kind === 'project'
       ? authoritativeProjectNames[
-          projectViewAuthorizationLifetimeKey(route.projectId, workspaceContext)
+          projectViewAuthorizationLifetimeKey(
+            route.projectId,
+            activeProjectWorkspaceContext,
+          )
         ]
       : undefined;
   const activeProjectAuthorizationKey =
     route.kind === 'project'
-      ? projectViewAuthorizationLifetimeKey(route.projectId, workspaceContext)
+      ? projectViewAuthorizationLifetimeKey(
+          route.projectId,
+          activeProjectWorkspaceContext,
+        )
       : null;
 
   // A full-page refresh/deep link does not pass through EntryShell's card
@@ -3055,8 +3205,8 @@ function AppInner() {
   // below skipped resolution merely because SQLite returned "some" row.
   useEffect(() => {
     if (route.kind !== 'project') return;
-    if (workspaceContextLoading) return;
     if (!loadedActiveProject?.workspaceId) return;
+    if (!activeProjectWorkspaceContext) return;
     if (!activeProjectAuthorizationKey || activeAuthoritativeProjectName) return;
     void resolveAuthoritativeProjectName(route.projectId, activeProjectAuthorizationKey);
   }, [
@@ -3066,9 +3216,7 @@ function AppInner() {
     loadedActiveProject?.workspaceId,
     activeAuthoritativeProjectName,
     activeProjectAuthorizationKey,
-    workspaceContextLoading,
-    workspaceContext?.workspaceId,
-    workspaceContext?.workspaceMemberId,
+    activeProjectWorkspaceContext,
     resolveAuthoritativeProjectName,
   ]);
 
@@ -3094,18 +3242,54 @@ function AppInner() {
   useEffect(() => {
     if (route.kind !== 'project') return;
     if (loadedActiveProject) return;
-    if (!projects.length && !daemonLive) return;
+    if (projectsLoading || !daemonLive) return;
     if (projects.some((p) => p.id === route.projectId)) return;
     let cancelled = false;
     const projectId = route.projectId;
-    (async () => {
+    setDeepLinkResolutionFailure((current) =>
+      current?.projectId === projectId ? null : current
+    );
+    const deepLinkContext = workspaceContextRef.current;
+    const deepLinkIdentity = workspaceIdentityCacheKey(deepLinkContext);
+    const identityChanged = () =>
+      workspaceIdentityCacheKey(workspaceContextRef.current) !== deepLinkIdentity;
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const accountChanged = () =>
+      currentWorkspaceAccountGeneration() !== accountGeneration;
+    void (async () => {
+      const bootstrap = await bootstrapProjectRoute(projectId, { accountGeneration });
+      // This scope came from the project's persisted binding, not the shell's
+      // selection. Ambient null -> B settlement and A -> B navigation cannot
+      // invalidate it; only a real account boundary can.
+      if (cancelled || accountChanged()) return;
+      if (bootstrap.kind === 'found') {
+        routeProjectSnapshotRef.current = {
+          project: bootstrap.project,
+          accountGeneration,
+          capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+        };
+        setRouteProjectSnapshotRevision((current) => current + 1);
+        return;
+      }
+      if (bootstrap.kind === 'forbidden') {
+        setDeepLinkResolutionFailure({ projectId, failure: 'missing' });
+        return;
+      }
+      if (bootstrap.kind === 'unavailable') {
+        setDeepLinkResolutionFailure({
+          projectId,
+          failure: 'materialization-failed',
+        });
+        return;
+      }
       const resolution = await resolveDeepLinkedTeamSharedProject(projectId, {
-        getProject,
-        pullTeamSharedProjectIfAvailable,
+        getProject: (id) => getProject(id, deepLinkContext),
+        pullTeamSharedProjectIfAvailable: (id) =>
+          pullTeamSharedProjectIfAvailable(id, deepLinkContext),
         delay,
-        isCancelled: () => cancelled,
+        isCancelled: () => cancelled || identityChanged(),
       });
-      if (cancelled) return;
+      if (cancelled || identityChanged()) return;
       if (resolution.kind === 'found') {
         const fetched = resolution.project;
         setProjects((curr) => {
@@ -3120,11 +3304,30 @@ function AppInner() {
       // The hub confirmed at least once during the retry window that this
       // project belongs to the caller's team: it exists and they have access.
       // Local materialization is just still catching up — leave the route
-      // alone instead of bouncing the member off a project they can see.
-      if (resolution.kind === 'still-materializing') return;
-      const request = beginProjectListRequest();
-      const list = await listCurrentWorkspaceProjects({ workspaceView: 'all' }).catch(() => []);
-      if (cancelled) return;
+      // alone instead of bouncing the member off a project they can see, but
+      // stop the spinner and offer an explicit retry after the bounded window.
+      if (resolution.kind === 'still-materializing') {
+        setDeepLinkResolutionFailure({
+          projectId,
+          failure: 'materialization-failed',
+        });
+        return;
+      }
+      const request = beginProjectListRequest('all');
+      let list: Project[];
+      try {
+        list = await listCurrentWorkspaceProjects({
+          throwOnError: true,
+          workspaceView: 'all',
+        });
+      } catch {
+        setDeepLinkResolutionFailure({
+          projectId,
+          failure: 'materialization-failed',
+        });
+        return;
+      }
+      if (cancelled || identityChanged()) return;
       const applied = reconcileFetchedProjects(list, request);
       if (!applied) return;
       const fetchedProject = locallyDeletedProjectIdsRef.current.has(projectId)
@@ -3134,14 +3337,29 @@ function AppInner() {
       const knownLocalProject =
         staleRequest && pendingLocalProjectIdsRef.current.has(projectId);
       if (!fetchedProject && !knownLocalProject) {
-        setProjectOpenError(t('project.missing'));
-        navigate({ kind: 'home', view: 'home' }, { replace: true });
+        setDeepLinkResolutionFailure({ projectId, failure: 'missing' });
       }
-    })();
+    })().catch(() => {
+      if (cancelled || identityChanged()) return;
+      setDeepLinkResolutionFailure({
+        projectId,
+        failure: 'materialization-failed',
+      });
+    });
     return () => {
       cancelled = true;
     };
-  }, [route, loadedActiveProject, projects, daemonLive, beginProjectListRequest, listCurrentWorkspaceProjects, reconcileFetchedProjects, t]);
+  }, [
+    route,
+    loadedActiveProject,
+    projects,
+    projectsLoading,
+    daemonLive,
+    deepLinkRetryRevision,
+    beginProjectListRequest,
+    listCurrentWorkspaceProjects,
+    reconcileFetchedProjects,
+  ]);
 
   const openSettings = useCallback((
     section: SettingsSection = 'execution',
@@ -3368,6 +3586,11 @@ function AppInner() {
       welcome={presentation === 'modal' ? settingsWelcome : false}
       initialSection={settingsInitialSection}
       initialHighlight={settingsHighlight}
+      persistedProjectWorkspaceId={
+        route.kind === 'project'
+          ? projects.find((project) => project.id === route.projectId)?.workspaceId ?? null
+          : null
+      }
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
       onDraftChange={handleSettingsDraftChange}
@@ -3408,7 +3631,12 @@ function AppInner() {
   } else if (route.kind === 'marketplace') {
     appMain = <MarketplaceView />;
   } else if (route.kind === 'marketplace-detail') {
-    appMain = <PluginDetailView pluginId={route.pluginId} />;
+    appMain = (
+      <PluginDetailView
+        pluginId={route.pluginId}
+        workspaceContextState={workspaceContextState}
+      />
+    );
   } else if (route.kind === 'collab-demo') {
     appMain = <CollabDemoView projectId={route.projectId} />;
   } else if (route.kind === 'community') {
@@ -3515,50 +3743,121 @@ function AppInner() {
     );
   } else if (route.kind === 'home' && route.view === 'settings') {
     appMain = renderSettingsSurface('page');
-  } else if (activeProject) {
-    appMain = (
-      <ProjectView
-        key={projectViewAuthorizationLifetimeKey(activeProject.id, workspaceContext)}
-        project={activeProject}
-        projectAuthorizationKey={
-          activeProjectAuthorizationKey ?? activeProject.id
-        }
-        authoritativeProjectName={activeAuthoritativeProjectName}
-        resolveAuthoritativeProjectName={resolveAuthoritativeProjectName}
-        routeFileName={route.kind === 'project' ? route.fileName : null}
-        routeConversationId={route.kind === 'project' ? route.conversationId : null}
-        config={config}
-        agents={agents}
-        skills={enabledFunctionalSkills}
-        designTemplates={designTemplates}
-        designSystems={designSystems}
-        daemonLive={daemonLive}
-        onModeChange={handleModeChange}
-        onAgentChange={handleAgentChange}
-        onAgentModelChange={handleAgentModelChange}
-        onApiModelChange={handleApiModelChange}
-        onRefreshAgents={refreshAgents}
-        onOpenSettings={openSettings}
-        onOpenAmrSettings={openAmrSettings}
-        onOpenMcpSettings={openMcpSettings}
-        onBrowsePlugins={openPluginRegistry}
-        onOpenConnectors={openConnectorIntegrations}
-        onAdoptPetInline={handleAdoptPet}
-        onTogglePet={handleTogglePet}
-        onOpenPetSettings={openPetSettings}
-        onBack={handleBack}
-        onClearPendingPrompt={handleClearPendingPrompt}
-        onTouchProject={handleTouchProject}
-        onProjectChange={handleProjectChange}
-        onProjectsRefresh={refreshProjects}
-        onDeleteProject={handleDeleteProject}
-        onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
-        onDesignSystemsRefresh={refreshDesignSystems}
-        onCreateProjectFromDesignSystem={handleCreateProjectFromDesignSystem}
-        onCreateDesignSystemFromProject={handleCreateDesignSystemFromProject}
-        onDuplicateProject={handleDuplicateProject}
-      />
-    );
+  } else if (route.kind === 'project') {
+    const routeSurfaceState = projectRouteSurfaceState({
+      projectsLoading,
+      hasActiveProject: activeProject !== null,
+      daemonLive,
+      resolutionFailure:
+        deepLinkResolutionFailure?.projectId === route.projectId
+          ? deepLinkResolutionFailure.failure
+          : undefined,
+    });
+    if (
+      routeSurfaceState === 'loading-projects'
+      || routeSurfaceState === 'resolving-deep-link'
+      || (
+        activeProject
+        && !projectResourceReadsCanStart(
+          activeProject.workspaceId,
+          projectRouteWorkspaceContext,
+        )
+        && projectRouteWorkspaceContext.loading
+      )
+    ) {
+      appMain = (
+        <div className="entry-shell entry-shell--no-header">
+          <CenteredLoader label={t('entry.loadingWorkspace')} />
+        </div>
+      );
+    } else if (routeSurfaceState !== 'ready') {
+      const canRetry = routeSurfaceState === 'materialization-failed';
+      appMain = (
+        <div className="entry-shell entry-shell--no-header">
+          <div className="centered-loader">
+            <span role="alert">
+              {routeSurfaceState === 'missing'
+                ? t('project.missing')
+                : t('connectors.unavailable')}
+            </span>
+            <Button
+              onClick={
+                canRetry
+                  ? () => setDeepLinkRetryRevision((current) => current + 1)
+                  : handleBack
+              }
+            >
+              {canRetry
+                ? t('promptTemplates.retry')
+                : t('project.backToProjects')}
+            </Button>
+          </div>
+        </div>
+      );
+    } else if (activeProject && projectRouteWorkspaceContext.failure) {
+      appMain = (
+        <div className="entry-shell entry-shell--no-header">
+          <div className="centered-loader">
+            <span role="alert">
+              {projectRouteWorkspaceContext.failure === 'forbidden'
+                ? t('project.missing')
+                : t('connectors.unavailable')}
+            </span>
+            <Button onClick={projectRouteWorkspaceContext.retry}>
+              {t('promptTemplates.retry')}
+            </Button>
+          </div>
+        </div>
+      );
+    } else if (activeProject) {
+      appMain = (
+        <ProjectView
+          key={projectViewAuthorizationLifetimeKey(
+            activeProject.id,
+            activeProjectWorkspaceContext,
+          )}
+          project={activeProject}
+          workspaceContextOverride={activeProjectWorkspaceContext}
+          projectAuthorizationKey={
+            activeProjectAuthorizationKey ?? activeProject.id
+          }
+          authoritativeProjectName={activeAuthoritativeProjectName}
+          resolveAuthoritativeProjectName={resolveAuthoritativeProjectName}
+          routeFileName={route.fileName}
+          routeConversationId={route.conversationId ?? null}
+          config={config}
+          agents={agents}
+          skills={enabledFunctionalSkills}
+          designTemplates={designTemplates}
+          designSystems={designSystems}
+          daemonLive={daemonLive}
+          onModeChange={handleModeChange}
+          onAgentChange={handleAgentChange}
+          onAgentModelChange={handleAgentModelChange}
+          onApiModelChange={handleApiModelChange}
+          onRefreshAgents={refreshAgents}
+          onOpenSettings={openSettings}
+          onOpenAmrSettings={openAmrSettings}
+          onOpenMcpSettings={openMcpSettings}
+          onBrowsePlugins={openPluginRegistry}
+          onOpenConnectors={openConnectorIntegrations}
+          onAdoptPetInline={handleAdoptPet}
+          onTogglePet={handleTogglePet}
+          onOpenPetSettings={openPetSettings}
+          onBack={handleBack}
+          onClearPendingPrompt={handleClearPendingPrompt}
+          onTouchProject={handleTouchProject}
+          onProjectChange={handleProjectChange}
+          onProjectsRefresh={refreshProjects}
+          onDeleteProject={handleDeleteProject}
+          onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
+          onDesignSystemsRefresh={refreshDesignSystems}
+          onCreateProjectFromDesignSystem={handleCreateProjectFromDesignSystem}
+          onCreateDesignSystemFromProject={handleCreateDesignSystemFromProject}
+          onDuplicateProject={handleDuplicateProject}
+        />
+      );
+    }
   } else {
     appMain = (
       <EntryView
@@ -3663,7 +3962,7 @@ function AppInner() {
           route={route}
           projects={projects}
           onboardingCompleted={config.onboardingCompleted === true}
-          identityScopeKey={identityScopeKey}
+          identityScopeKey={workspaceTabsIdentityScopeKey}
         />
         <div className="workspace-shell__body">
           {appMain}

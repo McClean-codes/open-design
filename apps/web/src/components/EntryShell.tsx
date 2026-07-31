@@ -144,6 +144,11 @@ import {
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import {
+  beginWorkspaceScopedRead,
+  workspaceIdentityCacheKey,
+  workspaceProjectHeaders,
+} from '../collab/workspace-identity';
+import {
   buildAllProjectsList,
   buildDraftsList,
   createSharedProjectPredicate,
@@ -690,8 +695,8 @@ export function EntryShell({
   );
   const readyWorkspaceId = workspaceContext?.workspaceId ?? null;
   const readyWorkspaceMemberId = workspaceContext?.workspaceMemberId ?? null;
-  const readyScopeKey = readyWorkspaceId && readyWorkspaceMemberId
-    ? `${readyWorkspaceId}:${readyWorkspaceMemberId}`
+  const readyScopeKey = workspaceContext
+    ? workspaceIdentityCacheKey(workspaceContext)
     : null;
   const contentReadyScopeKeyRef = useRef<string | null>(null);
   if (contentReadyScopeKeyRef.current !== readyScopeKey) {
@@ -720,7 +725,8 @@ export function EntryShell({
     if (contentReadyProjectIdsRef.current.has(projectId)) {
       return Promise.resolve(true);
     }
-    const scopeKey = `${workspaceId}:${workspaceMemberId}`;
+    const scopeKey = readyScopeKey;
+    if (!scopeKey) return Promise.resolve(false);
     const key = `${scopeKey}:${projectId}`;
     const existing = contentReadyHydrationRef.current.get(key);
     if (existing) return existing;
@@ -750,6 +756,7 @@ export function EntryShell({
     return hydration;
   }, [
     onTeamProjectContentReady,
+    readyScopeKey,
     workspaceContext?.workspaceMemberId,
     workspaceContext?.workspaceId,
     workspaceContext?.workspaceType,
@@ -775,7 +782,7 @@ export function EntryShell({
         currentWorkspaceMemberId,
       );
     },
-  });
+  }, { workspaceContext });
   useEffect(() => {
     if (!readyScopeKey) return;
     for (const [projectId, eventScope] of pendingContentReadyProjectIdsRef.current) {
@@ -846,9 +853,15 @@ export function EntryShell({
     // on the card (spinner overlay) and swallow re-clicks meanwhile —
     // otherwise the first click reads as dead for the entire download.
     if (pullingProjectId) return false;
+    const pullRead = beginWorkspaceScopedRead(workspaceContextRef.current);
+    if (!pullRead.context) return false;
     setPullingProjectId(id);
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(id)}/collab/pull`, { method: 'POST' });
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}/collab/pull`, {
+        method: 'POST',
+        headers: workspaceProjectHeaders(pullRead.context),
+      });
+      if (!pullRead.isStillCurrent(workspaceContextRef.current)) return false;
       if (!response.ok) return false;
       await Promise.resolve(onProjectsRefresh?.());
     } catch {
@@ -1433,6 +1446,7 @@ export function EntryShell({
             // shared cards), opened through the pull-first handler so a shared
             // project the member has not pulled yet still opens.
             projects={allProjectsList}
+            workspaceContext={workspaceContext}
             onOpenProject={handleOpenAllProjects}
             onClose={() => setProjectSearchOpen(false)}
           />
