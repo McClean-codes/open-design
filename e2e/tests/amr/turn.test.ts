@@ -22,8 +22,9 @@
  *      `~/.amr/config.json` resolution path.
  */
 
-import { mkdir, writeFile, chmod } from 'node:fs/promises';
+import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { createServer } from 'node:http';
 import { join } from 'node:path';
 
 import { describe, expect, test } from 'vitest';
@@ -53,7 +54,7 @@ type ProjectResponse = {
 // because cross-app private fixtures must not be reused — see
 // e2e/AGENTS.md "tests must not borrow another app's private source".
 const FAKE_VELA_SCRIPT = `#!/usr/bin/env node
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { argv, stdin, stdout, env, exit } from 'node:process';
@@ -63,6 +64,15 @@ const SESSION_ID = 'fake-amr-session-1';
 const LIVE_MODEL_ID = 'glm-5';
 const PRESET_MODELS_JSON = JSON.stringify({ source: 'preset', data: [{ id: LIVE_MODEL_ID }] });
 const REMOTE_MODELS_JSON = JSON.stringify({ source: 'remote', data: [{ id: LIVE_MODEL_ID }] });
+
+if (env.FAKE_VELA_SPAWN_ENV_LOG) {
+  appendFileSync(env.FAKE_VELA_SPAWN_ENV_LOG, JSON.stringify({
+    argv: argv.slice(2),
+    workspaceId: env.OPEN_DESIGN_WORKSPACE_ID ?? null,
+    runId: env.OPEN_DESIGN_RUN_ID ?? null,
+    sessionId: env.OPEN_DESIGN_SESSION_ID ?? null,
+  }) + '\\n', 'utf8');
+}
 
 function writeMessage(obj) {
   stdout.write(JSON.stringify(obj) + '\\n');
@@ -302,5 +312,169 @@ describe('AMR chat-run end-to-end', () => {
         expect(anyAssistant).toBeTruthy();
       }
     });
+  }, 180_000);
+
+  test('the spawned vela process receives the run project team workspace, not an ambient account scope', async () => {
+    const suite = await createSmokeSuite('amr-team-workspace-spawn');
+    const workspace = {
+      workspaceId: 'ws-amr-team-e2e',
+      workspaceName: 'AMR Billing Team',
+      workspaceType: 'team',
+      workspaceMemberId: 'wm-amr-team-e2e',
+      role: 'owner',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+    };
+    const authority = createServer((req, res) => {
+      if (
+        req.method === 'GET' &&
+        (req.url === '/api/v1/workspaces' || req.url === '/api/v1/workspaces/current')
+      ) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(
+          req.url.endsWith('/current')
+            ? {
+                ...workspace,
+                billingState: 'active',
+                planId: 'team_plus',
+                providerMode: 'platform_credits',
+                seatSummary: { seatLimit: 5, usedSeats: 2 },
+              }
+            : { items: [workspace] },
+        ));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not found' }));
+    });
+    await new Promise<void>((resolve) => authority.listen(0, '127.0.0.1', resolve));
+    const address = authority.address();
+    if (!address || typeof address === 'string') {
+      throw new Error('AMR workspace authority did not bind a port');
+    }
+    const authorityUrl = `http://127.0.0.1:${address.port}`;
+    const velaBin = await writeFakeVelaBin(
+      join(suite.scratchDir, 'fake-vela-team-workspace'),
+    );
+    const spawnEnvLog = join(suite.scratchDir, 'vela-spawn-env.jsonl');
+
+    try {
+      await suite.with.toolsDev(
+        async ({ webUrl }) => {
+          const velaConfigDir = join(suite.scratchDir, 'home', '.amr');
+          await mkdir(velaConfigDir, { recursive: true });
+          await writeFile(
+            join(velaConfigDir, 'config.json'),
+            JSON.stringify({
+              profiles: {
+                local: {
+                  runtimeKey: 'fake-runtime-key',
+                  controlKey: 'fake-control-key',
+                  apiUrl: suite.amr.apiUrl,
+                  linkUrl: suite.amr.linkUrl,
+                  user: {
+                    id: 'fake-user-id',
+                    email: 'workspace-runner@example.com',
+                    plan: 'team_plus',
+                  },
+                },
+              },
+            }),
+          );
+          await requestJson(webUrl, '/api/app-config', {
+            method: 'PUT',
+            body: {
+              agentCliEnv: {
+                amr: {
+                  FAKE_VELA_API_URL: suite.amr.apiUrl,
+                  FAKE_VELA_LINK_URL: suite.amr.linkUrl,
+                  VELA_BIN: velaBin,
+                  ...suite.amr.runtimeEnv(),
+                },
+              },
+              agentId: 'amr',
+              agentModels: { amr: { model: 'default', reasoning: 'default' } },
+              designSystemId: null,
+              onboardingCompleted: true,
+              skillId: null,
+              telemetry: { artifactManifest: true, content: false, metrics: false },
+            },
+          });
+
+          const headers = {
+            'x-od-workspace-id': workspace.workspaceId,
+            'x-od-workspace-type': workspace.workspaceType,
+            'x-od-workspace-member-id': workspace.workspaceMemberId,
+            'x-od-workspace-role': workspace.role,
+            'x-od-workspace-member-status': workspace.memberStatus,
+            'x-od-workspace-lifecycle-state': workspace.lifecycleState,
+            'x-od-workspace-can-share-projects': 'true',
+            'x-od-workspace-can-write-synced-files': 'true',
+          };
+          const project = await requestJson<ProjectResponse>(webUrl, '/api/projects', {
+            method: 'POST',
+            headers,
+            body: {
+              designSystemId: null,
+              id: randomUUID(),
+              metadata: { kind: 'prototype' },
+              name: 'Workspace-billed AMR run',
+              pendingPrompt: null,
+              skillId: null,
+            },
+          });
+          const t0 = Date.now();
+          const run = await requestJson<{ runId: string }>(webUrl, '/api/runs', {
+            method: 'POST',
+            headers,
+            body: {
+              agentId: 'amr',
+              assistantMessageId: `assistant-${t0}`,
+              clientRequestId: `request-${t0}`,
+              conversationId: project.conversationId,
+              designSystemId: null,
+              message: 'Prove the spawned workspace scope',
+              model: 'default',
+              projectId: project.project.id,
+              reasoning: 'default',
+              skillId: null,
+            },
+          });
+          await waitForRunStatus(webUrl, run.runId, 'succeeded', { timeoutMs: 30_000 });
+
+          const childInvocations = (await readFile(spawnEnvLog, 'utf8'))
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as {
+              argv: string[];
+              workspaceId: string | null;
+              runId: string | null;
+              sessionId: string | null;
+            });
+          const childEnv = childInvocations.find((entry) => entry.runId === run.runId) as {
+            workspaceId: string | null;
+            runId: string | null;
+            sessionId: string | null;
+          } | undefined;
+          expect(childEnv, `fake vela invocations: ${JSON.stringify(childInvocations)}`).toBeDefined();
+          expect(childEnv).toMatchObject({
+            workspaceId: workspace.workspaceId,
+            runId: run.runId,
+            sessionId: project.conversationId,
+          });
+        },
+        {
+          env: {
+            FAKE_VELA_SPAWN_ENV_LOG: spawnEnvLog,
+            OD_WORKSPACE_CONTEXT_SOURCE: 'vela',
+            VELA_API_URL: authorityUrl,
+            VELA_CONTROL_KEY: 'e2e-amr-workspace-control-key',
+          },
+        },
+      );
+    } finally {
+      await new Promise<void>((resolve) => authority.close(() => resolve()));
+    }
   }, 180_000);
 });
