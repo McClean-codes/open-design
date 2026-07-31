@@ -1853,11 +1853,18 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     const syncState: ProjectSyncState = velaProjectSyncStateToProject(remote.syncState);
     const resourceState = remote.access.frozen || isWorkspaceLocked(ctx) ? 'frozen' : 'active';
     const name = remote.displayName?.trim() || remote.projectId;
+    // A catalog-only summary has no local project directory yet. Reuse the
+    // existing placeholder metadata contract so clients do not issue local
+    // file/cover reads that can only 404 before the first explicit pull. The
+    // materialized local row replaces this projection (and clears the stamp)
+    // once real hub content lands.
+    const metadata = { sharedProjectPlaceholderAt: updatedAt };
     const project = {
       id: remote.projectId,
       name,
       skillId: null,
       designSystemId: null,
+      metadata,
       createdAt,
       updatedAt,
     };
@@ -1879,6 +1886,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       syncState,
       createdAt,
       updatedAt,
+      metadata,
       project,
     };
   }
@@ -4848,6 +4856,83 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     return filePath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
   }
 
+  function rewriteWorkspaceScopedHtmlAssetUrls(
+    html: string,
+    projectId: string,
+    ownerFilePath: string,
+    workspaceId: string,
+    workspaceMemberId: string,
+  ): string {
+    const assetAttr = /(\s)(src|poster|data-src)(\s*=\s*)(["'])([^"']*)\4/gi;
+    const linkTag = /<link\b[^>]*>/gi;
+    const linkHref = /(\shref\s*=\s*)(["'])([^"']*)\2/i;
+    const srcsetAttr = /(\ssrcset\s*=\s*)(["'])([^"']*)\2/gi;
+    const cssUrl = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+    const ownerDir = path.posix.dirname(ownerFilePath);
+    const scopeQuery = `workspaceId=${encodeURIComponent(workspaceId)}`
+      + `&workspaceMemberId=${encodeURIComponent(workspaceMemberId)}`;
+
+    const rewrite = (ref: string): string => {
+      const trimmed = ref.trim();
+      if (!trimmed || /^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(trimmed)) return ref;
+      const match = trimmed.match(/^([^?#]*)([?#][\s\S]*)?$/);
+      const rawPath = match?.[1] ?? trimmed;
+      const suffix = match?.[2] ?? '';
+      let decodedPath = rawPath;
+      try {
+        decodedPath = decodeURIComponent(rawPath);
+      } catch {
+        return ref;
+      }
+      const resolved = path.posix.normalize(path.posix.join(ownerDir, decodedPath));
+      if (!resolved || resolved === '..' || resolved.startsWith('../') || path.posix.isAbsolute(resolved)) {
+        return ref;
+      }
+      const scoped = `/api/projects/${encodeURIComponent(projectId)}/raw/`
+        + `${encodeProjectPathForUrl(resolved)}?${scopeQuery}`;
+      if (!suffix) return scoped;
+      if (suffix.startsWith('#')) return `${scoped}${suffix}`;
+      return `${scoped}&${suffix.slice(1)}`;
+    };
+
+    let next = html.replace(
+      assetAttr,
+      (match, space: string, name: string, eq: string, quote: string, value: string) => {
+        const rewritten = rewrite(value);
+        return rewritten === value ? match : `${space}${name}${eq}${quote}${rewritten}${quote}`;
+      },
+    );
+    next = next.replace(linkTag, (tag) =>
+      tag.replace(linkHref, (match, prefix: string, quote: string, value: string) => {
+        const rewritten = rewrite(value);
+        return rewritten === value ? match : `${prefix}${quote}${rewritten}${quote}`;
+      }),
+    );
+    next = next.replace(srcsetAttr, (match, prefix: string, quote: string, value: string) => {
+      // A data URL contains an unescaped comma, so the lightweight candidate
+      // splitter below cannot safely rewrite a mixed data-URL srcset. Leave the
+      // whole attribute untouched rather than corrupting embedded bytes.
+      if (/(?:^|,\s*)data:/i.test(value)) return match;
+      const rewritten = value
+        .split(',')
+        .map((candidate) => {
+          const body = candidate.trim();
+          if (!body) return candidate;
+          const [url = '', ...descriptors] = body.split(/\s+/);
+          const rewrittenUrl = rewrite(url);
+          if (rewrittenUrl === url) return candidate;
+          const leading = candidate.match(/^\s*/)?.[0] ?? '';
+          return `${leading}${[rewrittenUrl, ...descriptors].join(' ')}`;
+        })
+        .join(',');
+      return rewritten === value ? match : `${prefix}${quote}${rewritten}${quote}`;
+    });
+    return next.replace(cssUrl, (match, quote: string, value: string) => {
+      const rewritten = rewrite(value);
+      return rewritten === value ? match : `url(${quote}${rewritten}${quote})`;
+    });
+  }
+
   async function maybeResolveVitePreviewHtml({
     file,
     projectId,
@@ -5342,7 +5427,27 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
             projectsRoot: PROJECTS_DIR,
             readProjectFile,
           });
-          return applyUrlPreviewBridgesToHtml(transformed, file.mime, req.query.odPreviewBridge);
+          const bridged = applyUrlPreviewBridgesToHtml(
+            transformed,
+            file.mime,
+            req.query.odPreviewBridge,
+          );
+          const workspaceId = typeof req.query.workspaceId === 'string'
+            ? req.query.workspaceId
+            : null;
+          const workspaceMemberId = typeof req.query.workspaceMemberId === 'string'
+            ? req.query.workspaceMemberId
+            : null;
+          if (!workspaceId || !workspaceMemberId || !/^text\/html(?:;|$)/i.test(file.mime)) {
+            return bridged;
+          }
+          return rewriteWorkspaceScopedHtmlAssetUrls(
+            Buffer.isBuffer(bridged) ? bridged.toString('utf8') : String(bridged),
+            projectId,
+            relPath,
+            workspaceId,
+            workspaceMemberId,
+          );
         },
         true, // revalidate: emit ETag/Last-Modified so covers/preview/export reuse cached assets
       );

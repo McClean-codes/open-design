@@ -613,6 +613,11 @@ export function RecentProjectsStrip({
     signal: AbortSignal,
     requestWorkspaceContext: WorkspaceCollabContext | null,
   ): Promise<ProjectCoverOverride | null | undefined> => {
+    // Catalog-only Team projects intentionally have no local directory until
+    // the first open materializes them. Probing `/files` here can only produce
+    // a noisy 404; the content-ready event below force-refreshes the cover once
+    // the pull has committed real bytes and the placeholder stamp is cleared.
+    if (project.metadata?.sharedProjectPlaceholderAt != null) return null;
     const designSystemProject = isDesignSystemProject(project);
     if (project.metadata?.entryFile && !designSystemProject) return null;
     let files: Awaited<ReturnType<typeof fetchProjectFiles>>;
