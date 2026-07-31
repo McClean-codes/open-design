@@ -11,11 +11,17 @@ import {
   isNodePtyUnavailableError,
   loadNodePty,
 } from '../services/node-pty.js';
-import { WindowsDpapiWorker } from './windows-dpapi-worker.js';
+import {
+  WindowsDpapiWorker,
+  WindowsDpapiWorkerError,
+  type WindowsDpapiWorkerDiagnostic,
+  type WindowsDpapiWorkerPhase,
+} from './windows-dpapi-worker.js';
 
 const PROFILE_ID_PATTERN = /^byok-[a-z0-9][a-z0-9._-]{2,95}$/u;
 const KEYCHAIN_SERVICE = 'dev.opendesign.byok';
 const MAX_SECRET_OUTPUT_BYTES = 64 * 1024;
+const MAX_BYOK_API_KEY_BYTES = 32 * 1024;
 const INTERACTIVE_SECRET_TIMEOUT_MS = 10_000;
 
 type StoredProfile = Omit<ByokCredentialProfile, 'configured' | 'keyTail'>;
@@ -27,6 +33,7 @@ type StoredDocument = {
 export interface ByokSecretBackend {
   readonly kind: string;
   available(): Promise<boolean>;
+  close?(): Promise<void>;
   set(profileId: string, secret: string): Promise<void>;
   get(profileId: string): Promise<string | null>;
   delete(profileId: string): Promise<boolean>;
@@ -51,6 +58,8 @@ export class ByokCredentialService {
   readonly backend: ByokSecretBackend;
   readonly metadataPath: string;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private closePromise: Promise<void> | null = null;
+  private closed = false;
   private readonly persistMetadata: NonNullable<
     ByokCredentialServiceOptions['persistMetadata']
   >;
@@ -65,6 +74,7 @@ export class ByokCredentialService {
   }
 
   async status(): Promise<{ available: boolean; backend: string }> {
+    this.assertOpen();
     return {
       available: await this.backend.available(),
       backend: this.backend.kind,
@@ -72,11 +82,13 @@ export class ByokCredentialService {
   }
 
   async list(): Promise<ByokCredentialProfile[]> {
+    this.assertOpen();
     const document = await this.readDocument();
     return Promise.all(document.profiles.map((profile) => this.toPublicProfile(profile)));
   }
 
   async get(profileId: string): Promise<ByokCredentialProfile | null> {
+    this.assertOpen();
     assertProfileId(profileId);
     const stored = (await this.readDocument()).profiles.find((profile) => profile.id === profileId);
     return stored ? this.toPublicProfile(stored) : null;
@@ -88,22 +100,28 @@ export class ByokCredentialService {
    * actually being started.
    */
   async has(profileId: string): Promise<boolean> {
+    this.assertOpen();
     assertProfileId(profileId);
     return (await this.readDocument()).profiles.some((profile) => profile.id === profileId);
   }
 
   async upsert(input: UpsertByokCredentialProfileRequest): Promise<ByokCredentialProfile> {
+    this.assertOpen();
     return this.serializeMutation(() => this.upsertUnlocked(input));
   }
 
   private async upsertUnlocked(
     input: UpsertByokCredentialProfileRequest,
   ): Promise<ByokCredentialProfile> {
+    const normalized = normalizeProfileInput(input);
+    const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
+    if (Buffer.byteLength(apiKey, 'utf8') > MAX_BYOK_API_KEY_BYTES) {
+      throw new Error(`apiKey must be at most ${MAX_BYOK_API_KEY_BYTES} UTF-8 bytes.`);
+    }
     const available = await this.backend.available();
     if (!available) {
       throw new Error('Secure credential storage is unavailable on this system.');
     }
-    const normalized = normalizeProfileInput(input);
     const document = await this.readDocument();
     const existingIndex = input.id
       ? document.profiles.findIndex((profile) => profile.id === input.id)
@@ -112,7 +130,6 @@ export class ByokCredentialService {
     const id = input.id ?? createProfileId();
     assertProfileId(id);
     const existing = existingIndex >= 0 ? document.profiles[existingIndex] : undefined;
-    const apiKey = typeof input.apiKey === 'string' ? input.apiKey.trim() : '';
     if (normalized.requiresApiKey && !apiKey && !existing) {
       throw new Error('An API key is required when creating this BYOK profile.');
     }
@@ -146,6 +163,7 @@ export class ByokCredentialService {
   }
 
   async resolve(profileId: string): Promise<ResolvedByokCredentialProfile | null> {
+    this.assertOpen();
     assertProfileId(profileId);
     const stored = (await this.readDocument()).profiles.find((profile) => profile.id === profileId);
     if (!stored) return null;
@@ -167,7 +185,19 @@ export class ByokCredentialService {
   }
 
   async delete(profileId: string): Promise<boolean> {
+    this.assertOpen();
     return this.serializeMutation(() => this.deleteUnlocked(profileId));
+  }
+
+  async close(): Promise<void> {
+    this.closePromise ??= this.closeUnlocked();
+    return this.closePromise;
+  }
+
+  private async closeUnlocked(): Promise<void> {
+    this.closed = true;
+    await this.mutationQueue;
+    await this.backend.close?.();
   }
 
   private async deleteUnlocked(profileId: string): Promise<boolean> {
@@ -202,6 +232,12 @@ export class ByokCredentialService {
       () => undefined,
     );
     return result;
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error('Secure credential service is closed.');
+    }
   }
 
   private async toPublicProfile(
@@ -436,26 +472,92 @@ class LinuxSecretServiceBackend implements ByokSecretBackend {
   }
 }
 
-type WindowsDpapiWorkerClient = Pick<WindowsDpapiWorker, 'ready' | 'run'>;
+type WindowsDpapiWorkerClient = Pick<WindowsDpapiWorker, 'close' | 'ready' | 'run'>;
+
+type WindowsDpapiWorkerTimeouts = {
+  connectMs: number;
+  startupMs: number;
+  readyMs: number;
+  operationMs: number;
+  shutdownMs: number;
+};
+
+type WindowsDpapiWorkerSlot = {
+  abortController: AbortController;
+  closePromise: Promise<void> | null;
+  generation: number;
+  promise: Promise<WindowsDpapiWorkerClient>;
+  readyPromise: Promise<void> | null;
+};
+
+const DEFAULT_WINDOWS_DPAPI_WORKER_TIMEOUTS: WindowsDpapiWorkerTimeouts = {
+  connectMs: 50_000,
+  startupMs: 55_000,
+  readyMs: 3_000,
+  operationMs: 5_000,
+  shutdownMs: 5_000,
+};
 
 export type WindowsDpapiBackendOptions = {
   commandAvailable?: (command: string) => Promise<boolean>;
-  createWorker?: () => Promise<WindowsDpapiWorkerClient>;
+  createWorker?: (options?: { signal: AbortSignal }) => Promise<WindowsDpapiWorkerClient>;
+  onDiagnostic?: (diagnostic: WindowsDpapiWorkerDiagnostic) => void;
+  timeouts?: Partial<WindowsDpapiWorkerTimeouts>;
 };
 
 export class WindowsDpapiBackend implements ByokSecretBackend {
   readonly kind = 'windows-dpapi';
   private availability: Promise<boolean> | null = null;
-  private worker: Promise<WindowsDpapiWorkerClient> | null = null;
+  private worker: WindowsDpapiWorkerSlot | null = null;
+  private workerGeneration = 0;
+  private closePromise: Promise<void> | null = null;
+  private closed = false;
+  private readonly timeouts: WindowsDpapiWorkerTimeouts;
 
   constructor(
     private readonly secretsDir: string,
     private readonly options: WindowsDpapiBackendOptions = {},
-  ) {}
+  ) {
+    this.timeouts = {
+      connectMs: positiveWindowsDpapiTimeout(
+        options.timeouts?.connectMs,
+        DEFAULT_WINDOWS_DPAPI_WORKER_TIMEOUTS.connectMs,
+      ),
+      startupMs: positiveWindowsDpapiTimeout(
+        options.timeouts?.startupMs,
+        DEFAULT_WINDOWS_DPAPI_WORKER_TIMEOUTS.startupMs,
+      ),
+      readyMs: positiveWindowsDpapiTimeout(
+        options.timeouts?.readyMs,
+        DEFAULT_WINDOWS_DPAPI_WORKER_TIMEOUTS.readyMs,
+      ),
+      operationMs: positiveWindowsDpapiTimeout(
+        options.timeouts?.operationMs,
+        DEFAULT_WINDOWS_DPAPI_WORKER_TIMEOUTS.operationMs,
+      ),
+      shutdownMs: positiveWindowsDpapiTimeout(
+        options.timeouts?.shutdownMs,
+        DEFAULT_WINDOWS_DPAPI_WORKER_TIMEOUTS.shutdownMs,
+      ),
+    };
+  }
 
   async available() {
+    if (this.closed) return false;
     this.availability ??= this.probeAvailability();
-    return this.availability;
+    const attempt = this.availability;
+    try {
+      const available = await attempt;
+      if (!available && this.availability === attempt) {
+        this.availability = null;
+      }
+      return available;
+    } catch {
+      if (this.availability === attempt) {
+        this.availability = null;
+      }
+      return false;
+    }
   }
 
   private async probeAvailability() {
@@ -463,7 +565,7 @@ export class WindowsDpapiBackend implements ByokSecretBackend {
       return false;
     }
     try {
-      await (await this.getWorker()).ready();
+      await this.getReadyWorker();
       return true;
     } catch {
       return false;
@@ -472,7 +574,7 @@ export class WindowsDpapiBackend implements ByokSecretBackend {
 
   async set(profileId: string, secret: string) {
     assertProfileId(profileId);
-    await (await this.getWorker()).run(
+    await this.runWorker(
       'set',
       path.join(this.secretsDir, `${profileId}.bin`),
       secret,
@@ -481,7 +583,7 @@ export class WindowsDpapiBackend implements ByokSecretBackend {
 
   async get(profileId: string) {
     assertProfileId(profileId);
-    const result = await (await this.getWorker()).run(
+    const result = await this.runWorker(
       'get',
       path.join(this.secretsDir, `${profileId}.bin`),
     );
@@ -490,16 +592,257 @@ export class WindowsDpapiBackend implements ByokSecretBackend {
 
   async delete(profileId: string) {
     assertProfileId(profileId);
-    return (await (await this.getWorker()).run(
+    return (await this.runWorker(
       'delete',
       path.join(this.secretsDir, `${profileId}.bin`),
     )).found;
   }
 
-  private getWorker(): Promise<WindowsDpapiWorkerClient> {
-    this.worker ??= this.options.createWorker?.() ?? WindowsDpapiWorker.create();
-    return this.worker;
+  async close(): Promise<void> {
+    this.closePromise ??= this.closeUnlocked();
+    return this.closePromise;
   }
+
+  private async closeUnlocked(): Promise<void> {
+    this.closed = true;
+    this.availability = null;
+    const slot = this.worker;
+    this.worker = null;
+    if (slot) await this.disposeWorker(slot);
+  }
+
+  private async runWorker(
+    operation: 'set' | 'get' | 'delete',
+    secretPath: string,
+    secret?: string,
+  ) {
+    const { slot, worker } = await this.getReadyWorker();
+    const startedAt = Date.now();
+    try {
+      return await withWindowsDpapiTimeout(
+        worker.run(operation, secretPath, secret),
+        this.timeouts.operationMs,
+        'operation',
+      );
+    } catch (error) {
+      throw await this.handleWorkerFailure(
+        slot,
+        error,
+        'operation',
+        startedAt,
+        worker,
+      );
+    }
+  }
+
+  private async getReadyWorker(): Promise<{
+    slot: WindowsDpapiWorkerSlot;
+    worker: WindowsDpapiWorkerClient;
+  }> {
+    const slot = this.getWorkerSlot();
+    const startupStartedAt = Date.now();
+    let worker: WindowsDpapiWorkerClient;
+    try {
+      worker = await withWindowsDpapiTimeout(
+        slot.promise,
+        this.timeouts.startupMs,
+        'spawn',
+      );
+    } catch (error) {
+      throw await this.handleWorkerFailure(slot, error, 'spawn', startupStartedAt);
+    }
+    const readyStartedAt = Date.now();
+    try {
+      slot.readyPromise ??= worker.ready();
+      await withWindowsDpapiTimeout(
+        slot.readyPromise,
+        this.timeouts.readyMs,
+        'ready',
+      );
+    } catch (error) {
+      throw await this.handleWorkerFailure(
+        slot,
+        error,
+        'ready',
+        readyStartedAt,
+        worker,
+      );
+    }
+    return { slot, worker };
+  }
+
+  private getWorkerSlot(): WindowsDpapiWorkerSlot {
+    if (this.closed) {
+      throw new WindowsDpapiWorkerError('operation', 'closed', false);
+    }
+    if (this.worker) return this.worker;
+    const generation = ++this.workerGeneration;
+    const abortController = new AbortController();
+    const promise = Promise.resolve().then(
+      () => this.options.createWorker?.({
+        signal: abortController.signal,
+      }) ?? WindowsDpapiWorker.create({
+        connectTimeoutMs: this.timeouts.connectMs,
+        signal: abortController.signal,
+        shutdownTimeoutMs: this.timeouts.shutdownMs,
+      }),
+    );
+    const slot: WindowsDpapiWorkerSlot = {
+      abortController,
+      closePromise: null,
+      generation,
+      promise,
+      readyPromise: null,
+    };
+    this.worker = slot;
+    return slot;
+  }
+
+  private async handleWorkerFailure(
+    slot: WindowsDpapiWorkerSlot,
+    error: unknown,
+    fallbackPhase: WindowsDpapiWorkerPhase,
+    startedAt: number,
+    worker?: WindowsDpapiWorkerClient,
+  ): Promise<WindowsDpapiWorkerError> {
+    const safeError = normalizeWindowsDpapiError(error, fallbackPhase);
+    if (this.closed && safeError.failureClass === 'closed') {
+      return safeError;
+    }
+    this.reportDiagnostic({
+      phase: safeError.phase,
+      failureClass: safeError.failureClass,
+      durationMs: Math.max(0, Date.now() - startedAt),
+      workerGeneration: slot.generation,
+    });
+    if (safeError.fatal) {
+      if (this.worker === slot) {
+        this.worker = null;
+        this.availability = null;
+      }
+      try {
+        await this.disposeWorker(slot, worker);
+      } catch {
+        // Preserve the operation failure; disposeWorker already emitted the
+        // separate safe shutdown diagnostic.
+      }
+    }
+    return safeError;
+  }
+
+  private async disposeWorker(
+    slot: WindowsDpapiWorkerSlot,
+    knownWorker?: WindowsDpapiWorkerClient,
+  ): Promise<void> {
+    slot.closePromise ??= this.disposeWorkerUnlocked(slot, knownWorker);
+    await slot.closePromise;
+  }
+
+  private async disposeWorkerUnlocked(
+    slot: WindowsDpapiWorkerSlot,
+    knownWorker?: WindowsDpapiWorkerClient,
+  ): Promise<void> {
+    slot.abortController.abort();
+    let worker = knownWorker;
+    if (!worker) {
+      try {
+        worker = await withWindowsDpapiTimeout(
+          slot.promise,
+          this.timeouts.shutdownMs,
+          'shutdown',
+        );
+      } catch (error) {
+        const safeError = normalizeWindowsDpapiError(error, 'shutdown');
+        if (safeError.failureClass === 'closed') return;
+        void slot.promise.then(
+          (lateWorker) => withWindowsDpapiTimeout(
+            lateWorker.close(),
+            this.timeouts.shutdownMs,
+            'shutdown',
+          ).catch(() => undefined),
+          () => undefined,
+        );
+        if (safeError.failureClass === 'timeout') {
+          this.reportDiagnostic({
+            phase: 'shutdown',
+            failureClass: 'timeout',
+            durationMs: this.timeouts.shutdownMs,
+            workerGeneration: slot.generation,
+          });
+          throw safeError;
+        }
+        return;
+      }
+    }
+    const startedAt = Date.now();
+    try {
+      await withWindowsDpapiTimeout(
+        worker.close(),
+        this.timeouts.shutdownMs,
+        'shutdown',
+      );
+    } catch (error) {
+      const safeError = normalizeWindowsDpapiError(error, 'shutdown');
+      this.reportDiagnostic({
+        phase: safeError.phase,
+        failureClass: safeError.failureClass,
+        durationMs: Math.max(0, Date.now() - startedAt),
+        workerGeneration: slot.generation,
+      });
+      throw safeError;
+    }
+  }
+
+  private reportDiagnostic(diagnostic: WindowsDpapiWorkerDiagnostic): void {
+    try {
+      if (this.options.onDiagnostic) {
+        this.options.onDiagnostic(diagnostic);
+      } else {
+        console.warn('[byok] Windows DPAPI worker failure', diagnostic);
+      }
+    } catch {
+      // Observability must never change credential storage behavior.
+    }
+  }
+}
+
+function withWindowsDpapiTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  phase: WindowsDpapiWorkerPhase,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new WindowsDpapiWorkerError(phase, 'timeout'));
+    }, timeoutMs);
+    timer.unref?.();
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+function positiveWindowsDpapiTimeout(
+  value: number | undefined,
+  fallback: number,
+): number {
+  return Number.isFinite(value) && Number(value) > 0 ? Number(value) : fallback;
+}
+
+function normalizeWindowsDpapiError(
+  error: unknown,
+  phase: WindowsDpapiWorkerPhase,
+): WindowsDpapiWorkerError {
+  return error instanceof WindowsDpapiWorkerError
+    ? error
+    : new WindowsDpapiWorkerError(phase, 'unknown');
 }
 
 class UnavailableSecretBackend implements ByokSecretBackend {

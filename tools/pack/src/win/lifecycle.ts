@@ -64,6 +64,7 @@ import type {
 
 const PACKAGED_CONFIG_PATH_ENV = "OD_PACKAGED_CONFIG_PATH";
 const UPDATE_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
+export const WIN_DESKTOP_EVAL_TIMEOUT_MS = 60_000;
 
 function desktopStamp(config: ToolPackConfig): SidecarStamp {
   return {
@@ -491,7 +492,7 @@ async function requestDesktopEval(
     return await requestJsonIpc<DesktopEvalResult>(
       ipc,
       { input: { expression }, type: SIDECAR_MESSAGES.EVAL },
-      { timeoutMs: 60_000 },
+      { timeoutMs: WIN_DESKTOP_EVAL_TIMEOUT_MS },
     );
   } catch (error) {
     return {

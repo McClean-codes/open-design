@@ -859,9 +859,6 @@ const SANDBOX_MODE_ENABLED = isSandboxModeEnabled(process.env);
 const RUNTIME_DATA_DIR = resolveDataDir(process.env.OD_DATA_DIR, PROJECT_ROOT, {
   requireExplicit: SANDBOX_MODE_ENABLED,
 });
-const defaultByokCredentialService = new ByokCredentialService({
-  dataDir: RUNTIME_DATA_DIR,
-});
 const SANDBOX_RUNTIME = resolveSandboxRuntimeConfig(SANDBOX_MODE_ENABLED, RUNTIME_DATA_DIR);
 ensureSandboxRuntimeDirs(SANDBOX_RUNTIME);
 const PLUGIN_LOCKFILE_PATH = path.join(RUNTIME_DATA_DIR, 'od-plugin-lock.json');
@@ -2053,12 +2050,12 @@ export interface StartServerOptions {
 export interface StartServerResult {
   url: string;
   server: import('node:http').Server;
-  shutdown: () => Promise<void> | void;
+  shutdown: () => Promise<void>;
   routeInventory: import('./route-registration-guard.js').RouteRegistration[];
 }
 
 export async function startServer({
-  byokCredentialService = defaultByokCredentialService,
+  byokCredentialService = new ByokCredentialService({ dataDir: RUNTIME_DATA_DIR }),
   port = 7456,
   host = normalizeDaemonBindHost(process.env.OD_BIND_HOST),
   returnServer = false,
@@ -9110,19 +9107,23 @@ export async function startServer({
   //   - `apps/daemon/sidecar/server.ts`     → expects `{ url, server }`
   //   - `apps/daemon/tests/version-route.test.ts` → expects `{ url, server }`
   return await new Promise((resolve, reject) => {
-    let daemonShutdownStarted = false;
+    let daemonShutdownPromise: Promise<void> | null = null;
     const cleanupDaemonBackgroundWork = () => {
       composioConnectorProvider.stopCatalogRefreshLoop();
       orbitService.stop();
       routineService?.stop();
     };
-    const shutdownDaemonRuns = async () => {
-      if (daemonShutdownStarted) return;
-      daemonShutdownStarted = true;
-      daemonShuttingDown = true;
-      await design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() });
-      await terminalService.shutdownActive();
-      await design.analytics.shutdown();
+    const shutdownDaemonRuns = () => {
+      daemonShutdownPromise ??= (async () => {
+        daemonShuttingDown = true;
+        const byokShutdown = byokCredentialService.close();
+        void byokShutdown.catch(() => undefined);
+        await design.runs.shutdownActive({ graceMs: resolveChatRunShutdownGraceMs() });
+        await terminalService.shutdownActive();
+        await byokShutdown;
+        await design.analytics.shutdown();
+      })();
+      return daemonShutdownPromise;
     };
     let server;
     try {
@@ -9190,7 +9191,11 @@ export async function startServer({
       return;
     }
     server.once('close', () => {
-      void shutdownDaemonRuns().finally(cleanupDaemonBackgroundWork);
+      void shutdownDaemonRuns()
+        .catch(() => {
+          console.error('[od] daemon shutdown cleanup failed');
+        })
+        .finally(cleanupDaemonBackgroundWork);
     });
     // `app.listen` throws synchronously when the port is already in use on
     // some Node versions, but emits an `error` event on others (and for

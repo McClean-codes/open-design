@@ -25,40 +25,44 @@ describe.runIf(process.platform === 'win32')('Windows DPAPI BYOK credential smok
     const service = new ByokCredentialService({ dataDir, backend });
     const apiKey = 'windows-dpapi-smoke-secret';
 
-    await expect(service.status()).resolves.toEqual({
-      available: true,
-      backend: 'windows-dpapi',
-    });
-    const profile = await service.upsert({
-      id: 'byok-windows-dpapi-smoke',
-      label: 'Windows DPAPI smoke',
-      protocol: 'openai',
-      baseUrl: 'https://api.openai.com/v1',
-      model: 'gpt-5.4',
-      apiKey,
-    });
+    try {
+      await expect(service.status()).resolves.toEqual({
+        available: true,
+        backend: 'windows-dpapi',
+      });
+      const profile = await service.upsert({
+        id: 'byok-windows-dpapi-smoke',
+        label: 'Windows DPAPI smoke',
+        protocol: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5.4',
+        apiKey,
+      });
 
-    expect(profile).toMatchObject({
-      id: 'byok-windows-dpapi-smoke',
-      configured: true,
-      keyTail: 'cret',
-    });
-    expect(await service.resolve(profile.id)).toMatchObject({
-      apiKey,
-      provider: { apiKey },
-    });
-    expect(
-      await readFile(
-        path.join(dataDir, 'byok', 'profiles.json'),
-        'utf8',
-      ),
-    ).not.toContain(apiKey);
-    const encrypted = await readFile(
-      path.join(dataDir, 'byok', 'secrets', `${profile.id}.bin`),
-    );
-    expect(encrypted.includes(Buffer.from(apiKey, 'utf8'))).toBe(false);
+      expect(profile).toMatchObject({
+        id: 'byok-windows-dpapi-smoke',
+        configured: true,
+        keyTail: 'cret',
+      });
+      expect(await service.resolve(profile.id)).toMatchObject({
+        apiKey,
+        provider: { apiKey },
+      });
+      expect(
+        await readFile(
+          path.join(dataDir, 'byok', 'profiles.json'),
+          'utf8',
+        ),
+      ).not.toContain(apiKey);
+      const encrypted = await readFile(
+        path.join(dataDir, 'byok', 'secrets', `${profile.id}.bin`),
+      );
+      expect(encrypted.includes(Buffer.from(apiKey, 'utf8'))).toBe(false);
 
-    await expect(service.delete(profile.id)).resolves.toBe(true);
-    await expect(service.resolve(profile.id)).resolves.toBeNull();
+      await expect(service.delete(profile.id)).resolves.toBe(true);
+      await expect(service.resolve(profile.id)).resolves.toBeNull();
+    } finally {
+      await service.close();
+    }
   });
 });

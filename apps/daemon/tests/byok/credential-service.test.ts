@@ -29,6 +29,8 @@ class MemorySecretBackend implements ByokSecretBackend {
   async delete(profileId: string) {
     return this.secrets.delete(profileId);
   }
+
+  async close() {}
 }
 
 describe('BYOK credential service', () => {
@@ -89,6 +91,26 @@ describe('BYOK credential service', () => {
     })).rejects.toThrow(/secure credential storage is unavailable/i);
   });
 
+  it('rejects oversized UTF-8 API keys before they can overflow the worker protocol', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-credentials-'));
+    roots.push(dataDir);
+    const backend = new MemorySecretBackend();
+    backend.set = vi.fn(backend.set.bind(backend));
+    const service = new ByokCredentialService({ dataDir, backend });
+
+    await expect(service.upsert({
+      id: 'byok-oversized-secret',
+      label: 'Oversized',
+      protocol: 'openai',
+      baseUrl: 'https://example.test/v1',
+      model: 'model',
+      apiKey: '密'.repeat(16_385),
+    })).rejects.toThrow('apiKey must be at most 32768 UTF-8 bytes.');
+
+    expect(backend.set).not.toHaveBeenCalled();
+    expect(backend.secrets).toEqual(new Map());
+  });
+
   it('dispatches native Windows credentials to a DPAPI backend rooted in OD_DATA_DIR', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-windows-dispatch-'));
     roots.push(dataDir);
@@ -100,6 +122,7 @@ describe('BYOK credential service', () => {
 
   it('reuses one Windows DPAPI worker across availability and credential operations', async () => {
     const worker = {
+      close: vi.fn(async () => undefined),
       ready: vi.fn(async () => undefined),
       run: vi.fn(async (operation: 'set' | 'get' | 'delete') => {
         if (operation === 'get') {
@@ -160,6 +183,44 @@ describe('BYOK credential service', () => {
       'byok-provider-one',
       'byok-provider-two',
     ]);
+  });
+
+  it('stops accepting work and waits for an accepted mutation before closing the backend', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-credentials-'));
+    roots.push(dataDir);
+    const backend = new MemorySecretBackend();
+    let releaseSet: (() => void) | undefined;
+    const setReleased = new Promise<void>((resolve) => {
+      releaseSet = resolve;
+    });
+    backend.set = vi.fn(async (profileId: string, secret: string) => {
+      await setReleased;
+      backend.secrets.set(profileId, secret);
+    });
+    backend.close = vi.fn(async () => undefined);
+    const service = new ByokCredentialService({ dataDir, backend });
+    const upsert = service.upsert({
+      id: 'byok-close-boundary',
+      label: 'Close boundary',
+      protocol: 'openai',
+      baseUrl: 'https://example.test/v1',
+      model: 'model',
+      apiKey: 'accepted-secret',
+    });
+    await vi.waitFor(() => {
+      expect(backend.set).toHaveBeenCalledTimes(1);
+    });
+
+    const close = service.close();
+    await expect(service.status()).rejects.toThrow('Secure credential service is closed.');
+    expect(backend.close).not.toHaveBeenCalled();
+
+    releaseSet?.();
+    await expect(upsert).resolves.toMatchObject({ id: 'byok-close-boundary' });
+    await expect(close).resolves.toBeUndefined();
+    await expect(service.close()).resolves.toBeUndefined();
+
+    expect(backend.close).toHaveBeenCalledTimes(1);
   });
 
   it('removes a newly created secret when metadata persistence fails', async () => {
