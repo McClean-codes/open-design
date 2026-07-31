@@ -1015,7 +1015,12 @@ export function HomeView({
     const inputFields = options?.inputFields ?? record.manifest?.od?.inputs ?? [];
     const optimisticInputs = hydratePluginInputs(
       inputFields,
-      withHomeDesignSystemDefault(options?.inputs, inputFields, selectedDesignSystemTitle),
+      withHomePluginContextDefaults(
+        options?.inputs,
+        inputFields,
+        selectedDesignSystemTitle,
+        workspaceContext?.workspaceName,
+      ),
     );
     const inputsValid = pluginInputsAreValid(inputFields, optimisticInputs);
     const queryTemplate =
@@ -1218,8 +1223,14 @@ export function HomeView({
       deferApply?: boolean;
     },
   ) {
+    const inputFields = options?.inputFields ?? record.manifest?.od?.inputs ?? [];
     const replacement = previewPluginReplacement(record, nextPrompt, {
-      inputs: withHomeDesignSystemDefault(options?.inputs, options?.inputFields ?? record.manifest?.od?.inputs ?? [], selectedDesignSystemTitle),
+      inputs: withHomePluginContextDefaults(
+        options?.inputs,
+        inputFields,
+        selectedDesignSystemTitle,
+        workspaceContext?.workspaceName,
+      ),
       inputFields: options?.inputFields,
       queryTemplate: options?.queryTemplate,
     });
@@ -2877,6 +2888,39 @@ function withHomeDesignSystemDefault(
   return {
     ...(provided ?? {}),
     designSystem: defaultDesignSystemTitle,
+  };
+}
+
+// Supply values that are already part of the Home shell's active context for
+// plugin fields that otherwise have no input surface. Explicit request values
+// and manifest defaults remain authoritative.
+function withHomePluginContextDefaults(
+  provided: Record<string, unknown> | undefined,
+  fields: InputFieldSpec[],
+  defaultDesignSystemTitle: string,
+  workspaceName: string | undefined,
+): Record<string, unknown> | undefined {
+  const withDesignSystem = withHomeDesignSystemDefault(
+    provided,
+    fields,
+    defaultDesignSystemTitle,
+  );
+  const workspaceField = fields.find((field) => field.name === 'workspace_name');
+  const normalizedWorkspaceName = workspaceName?.trim();
+  if (
+    !workspaceField
+    || workspaceField.default !== undefined
+    || !normalizedWorkspaceName
+  ) {
+    return withDesignSystem;
+  }
+  const current = withDesignSystem?.workspace_name;
+  if (current !== undefined && current !== null && String(current).trim().length > 0) {
+    return withDesignSystem;
+  }
+  return {
+    ...(withDesignSystem ?? {}),
+    workspace_name: normalizedWorkspaceName,
   };
 }
 
