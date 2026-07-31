@@ -243,8 +243,10 @@ describe('EntryShell team project content readiness', () => {
       onOpenProject,
     });
 
-    expect(await screen.findByText('Ready shared project')).toBeTruthy();
-    fireEvent.click(screen.getByTitle('Ready shared project'));
+    const activeCard = await screen.findByRole('button', {
+      name: /Ready shared project/,
+    });
+    fireEvent.click(activeCard);
 
     await waitFor(() => {
       expect(onOpenProject).toHaveBeenCalledWith(
