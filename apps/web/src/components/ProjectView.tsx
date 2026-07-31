@@ -1186,6 +1186,24 @@ export function projectSplitClassName(workspaceFocused: boolean): string {
   return workspaceFocused ? 'split split-focus' : 'split';
 }
 
+/**
+ * Whether a project open should start with the chat pane collapsed (workspace
+ * focus mode). Shared team projects the viewer did not create — confirmed
+ * shared (`syncState` past `local_only`) and not owned by the viewer — default
+ * to design-first so members land on the artifact instead of the author's
+ * conversation. Personal projects, owners, and still-unknown collab status
+ * keep chat open (the usual default).
+ */
+export function shouldDefaultCollapseChatForSharedNonOwner(collab: {
+  enabled: boolean;
+  syncState: string | null;
+  isOwner: boolean;
+}): boolean {
+  if (!collab.enabled) return false;
+  if (collab.syncState == null || collab.syncState === 'local_only') return false;
+  return !collab.isOwner;
+}
+
 // React key for the on-screen question form. Deliberately does NOT include the
 // form's parsed `id`: there is at most one (first) form per assistant message,
 // so `${conversation}:${message}` is already a stable, unique identity for the
@@ -2282,9 +2300,29 @@ export function ProjectView({
     setActiveConversationId(routeConversationId);
   }, [routeConversationId, conversations, activeConversationId]);
 
+  // Reset chat pane to the open default on project switch. Shared non-owner
+  // projects re-collapse once collab status confirms (see below) — but only
+  // once per open, so expanding chat after that is sticky for the visit.
+  const sharedNonOwnerChatDefaultAppliedRef = useRef<string | null>(null);
   useEffect(() => {
     setWorkspaceFocused(false);
+    sharedNonOwnerChatDefaultAppliedRef.current = null;
   }, [project.id]);
+
+  useEffect(() => {
+    if (sharedNonOwnerChatDefaultAppliedRef.current === project.id) return;
+    if (
+      !shouldDefaultCollapseChatForSharedNonOwner({
+        enabled: projectCollab.enabled,
+        syncState: projectCollab.syncState,
+        isOwner: projectCollab.isOwner,
+      })
+    ) {
+      return;
+    }
+    setWorkspaceFocused(true);
+    sharedNonOwnerChatDefaultAppliedRef.current = project.id;
+  }, [project.id, projectCollab.enabled, projectCollab.syncState, projectCollab.isOwner]);
 
   // Load messages whenever the active conversation changes. This happens
   // on project mount (after conversations load) and on user-triggered
