@@ -491,7 +491,7 @@ async function requestDesktopEval(
     return await requestJsonIpc<DesktopEvalResult>(
       ipc,
       { input: { expression }, type: SIDECAR_MESSAGES.EVAL },
-      { timeoutMs: 5000 },
+      { timeoutMs: 60_000 },
     );
   } catch (error) {
     return {
