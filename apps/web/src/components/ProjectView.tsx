@@ -944,6 +944,10 @@ function autoSendFirstMessageKey(projectId: string): string {
   return `od:auto-send-first:${projectId}`;
 }
 
+function autoSendPromptKey(projectId: string): string {
+  return `od:auto-send-prompt:${projectId}`;
+}
+
 function autoSendAttachmentsKey(projectId: string): string {
   return `od:auto-send-attachments:${projectId}`;
 }
@@ -975,6 +979,15 @@ function readAutoSendAttachments(projectId: string): ChatAttachment[] {
     return parsed.filter(isStoredChatAttachment);
   } catch {
     return [];
+  }
+}
+
+function readAutoSendPrompt(projectId: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage.getItem(autoSendPromptKey(projectId));
+  } catch {
+    return null;
   }
 }
 
@@ -1010,6 +1023,7 @@ function clearAutoSendSession(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
     window.sessionStorage.removeItem(autoSendFirstMessageKey(projectId));
+    window.sessionStorage.removeItem(autoSendPromptKey(projectId));
     window.sessionStorage.removeItem(autoSendAttachmentsKey(projectId));
     window.sessionStorage.removeItem(autoSendContextKey(projectId));
     window.sessionStorage.removeItem(autoSendAmrGateWitnessKey(projectId));
@@ -9143,7 +9157,9 @@ export function ProjectView({
     autoSendAmrGateWitnessRef.current = isAutoSend
       ? amrGateWitness
       : undefined;
-    autoSendSeedRef.current = isAutoSend ? (project.pendingPrompt ?? '') : '';
+    autoSendSeedRef.current = isAutoSend
+      ? (readAutoSendPrompt(project.id) ?? project.pendingPrompt ?? '')
+      : '';
     autoSendAttachmentsRef.current = isAutoSend ? readAutoSendAttachments(project.id) : [];
     autoSendContextRef.current = isAutoSend ? readAutoSendContext(project.id) : null;
   }

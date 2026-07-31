@@ -4395,6 +4395,7 @@ async function prepareCreatedDesignSystemProject({
     );
     try {
       window.sessionStorage.setItem(`od:auto-send-first:${project.id}`, '1');
+      window.sessionStorage.setItem(`od:auto-send-prompt:${project.id}`, prompt);
     } catch {
       // If sessionStorage is unavailable, the project still opens with the
       // pending prompt ready for the user to send manually.

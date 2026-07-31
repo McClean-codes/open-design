@@ -363,6 +363,28 @@ describe('ProjectView pending prompt seeding', () => {
     }));
   });
 
+  it('auto-sends the session-carried prompt when the project projection drops pendingPrompt', async () => {
+    const projectId = 'with-session-prompt';
+    const prompt = 'Create the artifact after the project list refreshes';
+    window.sessionStorage.setItem(`od:auto-send-first:${projectId}`, '1');
+    window.sessionStorage.setItem(`od:auto-send-prompt:${projectId}`, prompt);
+
+    renderProjectView(project(projectId));
+
+    await waitFor(() => {
+      expect(mockedSaveMessage).toHaveBeenCalled();
+    });
+    const userMessageCall = mockedSaveMessage.mock.calls.find(
+      ([, , message]) => message.role === 'user',
+    );
+    expect(userMessageCall?.[2]).toEqual(expect.objectContaining({
+      role: 'user',
+      content: prompt,
+    }));
+    expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBeNull();
+    expect(window.sessionStorage.getItem(`od:auto-send-prompt:${projectId}`)).toBeNull();
+  });
+
   it('keeps the Home auto-send pending when preflight rejects transiently, then retries after recovery', async () => {
     const projectId = 'auto-send-retry';
     const currentProject = project(projectId, 'Create the artifact');
@@ -371,7 +393,12 @@ describe('ProjectView pending prompt seeding', () => {
     window.sessionStorage.setItem(`od:auto-send-first:${projectId}`, '1');
 
     const view = renderProjectView(currentProject, onClearPendingPrompt, {
-      config: { ...config, apiKey: '' },
+      config: {
+        ...config,
+        apiKey: '',
+        byokProfileId: null,
+        byokCredentialConfigured: false,
+      },
       onOpenSettings,
     });
 

@@ -2468,6 +2468,16 @@ function AppInner() {
             `od:auto-send-first:${result.project.id}`,
             '1',
           );
+          if (derivedPendingPrompt !== undefined) {
+            window.sessionStorage.setItem(
+              `od:auto-send-prompt:${result.project.id}`,
+              derivedPendingPrompt,
+            );
+          } else {
+            window.sessionStorage.removeItem(
+              `od:auto-send-prompt:${result.project.id}`,
+            );
+          }
           if (input.amrGatePrecheckWitness) {
             window.sessionStorage.setItem(
               `od:auto-send-amr-gate-witness:${result.project.id}`,
@@ -2594,6 +2604,13 @@ function AppInner() {
       );
       try {
         window.sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
+        const pendingPrompt = input.pendingPrompt ?? result.project.pendingPrompt;
+        if (pendingPrompt !== undefined) {
+          window.sessionStorage.setItem(
+            `od:auto-send-prompt:${result.project.id}`,
+            pendingPrompt,
+          );
+        }
       } catch {
         // If sessionStorage is unavailable, the project still opens with the
         // pending prompt ready for the user to send manually.
@@ -2658,6 +2675,12 @@ function AppInner() {
           `od:auto-send-first:${outcome.project.id}`,
           '1',
         );
+        if (outcome.project.pendingPrompt !== undefined) {
+          window.sessionStorage.setItem(
+            `od:auto-send-prompt:${outcome.project.id}`,
+            outcome.project.pendingPrompt,
+          );
+        }
       } catch {
         // If sessionStorage is unavailable, the project still opens with
         // the prepared prompt in the composer.
