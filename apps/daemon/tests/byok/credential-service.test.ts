@@ -1,10 +1,11 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   ByokCredentialService,
+  WindowsDpapiBackend,
   createPlatformByokSecretBackend,
   type ByokSecretBackend,
 } from '../../src/byok/credential-service.js';
@@ -95,6 +96,37 @@ describe('BYOK credential service', () => {
     const backend = createPlatformByokSecretBackend('win32', dataDir);
 
     expect(backend.kind).toBe('windows-dpapi');
+  });
+
+  it('reuses one Windows DPAPI worker across availability and credential operations', async () => {
+    const worker = {
+      ready: vi.fn(async () => undefined),
+      run: vi.fn(async (operation: 'set' | 'get' | 'delete') => {
+        if (operation === 'get') {
+          return { found: true, value: 'test-secret' };
+        }
+        return { found: true, value: null };
+      }),
+    };
+    const createWorker = vi.fn(async () => worker);
+    const backend = new WindowsDpapiBackend('/test/byok/secrets', {
+      commandAvailable: async () => true,
+      createWorker,
+    });
+
+    await expect(backend.available()).resolves.toBe(true);
+    await expect(backend.available()).resolves.toBe(true);
+    await expect(backend.set('byok-worker-reuse', 'test-secret')).resolves.toBeUndefined();
+    await expect(backend.get('byok-worker-reuse')).resolves.toBe('test-secret');
+    await expect(backend.delete('byok-worker-reuse')).resolves.toBe(true);
+
+    expect(createWorker).toHaveBeenCalledTimes(1);
+    expect(worker.ready).toHaveBeenCalledTimes(1);
+    expect(worker.run.mock.calls.map(([operation]) => operation)).toEqual([
+      'set',
+      'get',
+      'delete',
+    ]);
   });
 
   it('serializes concurrent metadata mutations so profiles cannot overwrite each other', async () => {
