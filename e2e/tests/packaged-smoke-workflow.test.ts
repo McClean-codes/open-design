@@ -1157,6 +1157,7 @@ process.stdin.on("end", () => {
       "ui/app-design-files.test.ts",
       "ui/app-manual-edit.test.ts",
       "ui/project-management-flows.test.ts",
+      "ui/workspace-multi-client-collab.test.ts",
       "ui/workspace-keyboard-flows.test.ts",
     ]);
     expect(uiP0Groups["project-workspace"].workers).toBe(1);
