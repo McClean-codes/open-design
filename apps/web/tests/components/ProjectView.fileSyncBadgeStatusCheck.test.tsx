@@ -205,6 +205,8 @@ function sharedOwnerCollab(overrides?: Partial<ProjectCollab>): ProjectCollab {
     syncState: 'pending_upload',
     viewerOnly: false,
     isOwner: true,
+    isEffectiveOwner: true,
+    isSharedNonOwner: false,
     ownerDisplayName: null,
     ownerRole: 'owner',
     downloadPending: false,

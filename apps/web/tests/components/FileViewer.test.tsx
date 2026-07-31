@@ -5994,6 +5994,8 @@ describe('FileViewer tweaks toolbar', () => {
       syncState: 'synced',
       viewerOnly: true,
       isOwner: false,
+      isEffectiveOwner: false,
+      isSharedNonOwner: true,
       ownerDisplayName: 'Owner',
       ownerRole: 'owner',
       downloadPending: false,
