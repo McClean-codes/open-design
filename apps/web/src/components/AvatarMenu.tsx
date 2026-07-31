@@ -41,7 +41,7 @@ interface Props {
   onAgentChange: (id: string) => void;
   onAgentModelChange: (
     id: string,
-    choice: { model?: string; reasoning?: string },
+    choice: { model?: string; reasoning?: string; serviceTier?: string },
   ) => void;
   onApiModelChange?: (model: string) => void;
   providerModelsCache?: Record<string, ProviderModelOption[]>;
@@ -303,9 +303,16 @@ export function AvatarMenu({
     normalizedCurrentChoice.model ?? defaultAgentModelId(currentAgent);
   const currentReasoningId =
     currentChoice.reasoning ?? currentAgent?.reasoningOptions?.[0]?.id ?? null;
-  const currentModelLabel = currentAgent?.models?.find(
+  const currentModelOption = currentAgent?.models?.find(
     (m) => m.id === currentModelId,
-  )?.label;
+  ) ?? null;
+  const currentModelLabel = currentModelOption?.label;
+  const currentServiceTierOptions = currentModelOption?.serviceTierOptions ?? [];
+  const currentServiceTierId = currentServiceTierOptions.some(
+    (tier) => tier.id === currentChoice.serviceTier,
+  )
+    ? currentChoice.serviceTier!
+    : 'default';
   const currentReasoningLabel =
     currentAgent?.reasoningOptions?.find((option) => option.id === currentReasoningId)?.label ??
     currentReasoningId;
@@ -437,7 +444,10 @@ export function AvatarMenu({
                                   openAmrUpgrade();
                                   return;
                                 }
-                                onAgentModelChange(currentAgent.id, { model: model.id });
+                                onAgentModelChange(currentAgent.id, {
+                                  model: model.id,
+                                  serviceTier: undefined,
+                                });
                                 // Selection made — dismiss the popover right away.
                                 setOpen(false);
                               }}
@@ -491,6 +501,32 @@ export function AvatarMenu({
                       </span>
                       <div className="avatar-static-value">{currentReasoningLabel}</div>
                     </div>
+                  ) : null}
+                  {currentServiceTierOptions.length > 0 ? (
+                    <label className="avatar-select-row">
+                      <span className="avatar-select-label">
+                        {t('avatar.serviceTierLabel')}
+                      </span>
+                      <select
+                        className="avatar-select"
+                        value={currentServiceTierId}
+                        onChange={(event) =>
+                          onAgentModelChange(currentAgent.id, {
+                            serviceTier:
+                              event.target.value === 'default'
+                                ? undefined
+                                : event.target.value,
+                          })
+                        }
+                      >
+                        <option value="default">{t('common.default')}</option>
+                        {currentServiceTierOptions.map((tier) => (
+                          <option key={tier.id} value={tier.id}>
+                            {tier.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                   ) : null}
                 </div>
               ) : currentModelLabel ? (
