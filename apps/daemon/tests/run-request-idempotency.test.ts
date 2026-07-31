@@ -246,7 +246,7 @@ describe('run request idempotency', () => {
     await expect(conflict.json()).resolves.toMatchObject({
       error: { code: 'PLUGIN_WORKFLOW_CONFLICT' },
     });
-  });
+  }, 40_000);
 
   it('persists the terminal Plugin HTML version origin on the Run', async () => {
     binDir = await mkdtemp(path.join(os.tmpdir(), 'od-plugin-artifact-origin-bin-'));

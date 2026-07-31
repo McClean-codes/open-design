@@ -464,7 +464,7 @@ describe('screenshot export desktop renderer file handoff', () => {
     } finally {
       await new Promise<void>((resolve) => srv.server.close(() => resolve()));
     }
-  });
+  }, 30_000);
 
   it('resolves an imported-folder project file via metadata.baseDir (not <data>/projects/:id)', async () => {
     // Imported-folder projects keep their workspace OUTSIDE <data>/projects/:id

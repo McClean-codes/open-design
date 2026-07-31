@@ -280,6 +280,10 @@ if (process.argv.includes('--help')) {
   console.log('Usage: claude -p [--include-partial-messages] [--add-dir DIR]');
   process.exit(0);
 }
+if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
+  console.log(JSON.stringify({ authenticated: true, source: 'test' }));
+  process.exit(0);
+}
 let attempts = 0;
 try { attempts = Number(fs.readFileSync(counterPath, 'utf8')) || 0; } catch {}
 fs.writeFileSync(counterPath, String(attempts + 1));
@@ -333,6 +337,10 @@ if (process.argv.includes('--help')) {
   console.log('Usage: claude -p [--include-partial-messages] [--add-dir DIR]');
   process.exit(0);
 }
+if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
+  console.log(JSON.stringify({ authenticated: true, source: 'test' }));
+  process.exit(0);
+}
 fs.appendFileSync(argsLogPath, JSON.stringify(process.argv.slice(2)) + '\\n');
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-resume-test' }));
 process.stderr.write('Upstream request failed: HTTP 503 before first token.\\n');
@@ -352,6 +360,10 @@ async function writeTextOnlyUpstreamClaude(
   await writeFile(bin, `#!/usr/bin/env node
 if (process.argv.includes('--version')) { console.log('claude-code 1.0.0-resume-textonly'); process.exit(0); }
 if (process.argv.includes('--help')) { console.log('Usage: claude -p [--include-partial-messages]'); process.exit(0); }
+if (process.argv[2] === 'auth' && process.argv[3] === 'status') {
+  console.log(JSON.stringify({ authenticated: true, source: 'test' }));
+  process.exit(0);
+}
 console.log(JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-resume-test' }));
 console.log(JSON.stringify({
   type: 'assistant',

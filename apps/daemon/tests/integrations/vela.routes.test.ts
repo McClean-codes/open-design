@@ -318,6 +318,290 @@ describe('GET /api/integrations/vela/wallet', () => {
     }
   });
 
+  it('refreshes additive subscription and recharge credits without serving the previous cached total', async () => {
+    let balanceUsd = '20.00';
+    const walletApi = await startWalletApi((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        balanceUsd,
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    seedLogin('local', {
+      apiUrl: walletApi.url,
+      controlKey: 'ck-additive-wallet',
+      runtimeKey: 'rt-additive-wallet',
+      user: { id: 'additive-wallet-user', email: 'additive@example.com', plan: 'plus' },
+    });
+    try {
+      const subscription = await getJson<{ balanceUsd: string | null; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+      );
+      expect(subscription.body).toMatchObject({
+        balanceUsd: '20.00',
+        source: 'vela_api',
+      });
+
+      balanceUsd = '30.00';
+      const cached = await getJson<{ balanceUsd: string | null; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet`,
+      );
+      expect(cached.body).toMatchObject({
+        balanceUsd: '20.00',
+        source: 'daemon_cache',
+      });
+
+      const manualRecharge = await getJson<{ balanceUsd: string | null; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+      );
+      expect(manualRecharge.body).toMatchObject({
+        balanceUsd: '30.00',
+        source: 'vela_api',
+      });
+
+      balanceUsd = '40.00';
+      const automaticRecharge = await getJson<{ balanceUsd: string | null; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+      );
+      expect(automaticRecharge.body).toMatchObject({
+        balanceUsd: '40.00',
+        source: 'vela_api',
+      });
+      expect(walletApi.requests).toEqual([
+        'Bearer ck-additive-wallet',
+        'Bearer ck-additive-wallet',
+        'Bearer ck-additive-wallet',
+      ]);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
+  it('serves the last valid wallet snapshot during an upstream outage and recovers on refresh', async () => {
+    let responseMode: 'available' | 'unavailable' = 'available';
+    let balanceUsd = '20.00';
+    const walletApi = await startWalletApi((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      if (responseMode === 'unavailable') {
+        res.statusCode = 503;
+        res.end(JSON.stringify({ error: 'temporarily_unavailable' }));
+        return;
+      }
+      res.end(JSON.stringify({
+        balanceUsd,
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    seedLogin('local', {
+      apiUrl: walletApi.url,
+      controlKey: 'ck-wallet-outage',
+      runtimeKey: 'rt-wallet-outage',
+      user: { id: 'wallet-outage-user', email: 'outage@example.com', plan: 'plus' },
+    });
+    try {
+      const initial = await getJson<{
+        balanceUsd: string | null;
+        error?: { code: string };
+        source: string;
+        stale: boolean;
+      }>(`${baseUrl}/api/integrations/vela/wallet?refresh=1`);
+      expect(initial.body).toMatchObject({
+        balanceUsd: '20.00',
+        source: 'vela_api',
+        stale: false,
+      });
+
+      responseMode = 'unavailable';
+      const degraded = await getJson<{
+        balanceUsd: string | null;
+        error?: { code: string };
+        source: string;
+        stale: boolean;
+      }>(`${baseUrl}/api/integrations/vela/wallet?refresh=1`);
+      expect(degraded.body).toMatchObject({
+        balanceUsd: '20.00',
+        source: 'daemon_cache',
+        stale: true,
+        error: { code: 'upstream' },
+      });
+
+      responseMode = 'available';
+      balanceUsd = '30.00';
+      const recovered = await getJson<{
+        balanceUsd: string | null;
+        error?: { code: string };
+        source: string;
+        stale: boolean;
+      }>(`${baseUrl}/api/integrations/vela/wallet?refresh=1`);
+      expect(recovered.body).toMatchObject({
+        balanceUsd: '30.00',
+        source: 'vela_api',
+        stale: false,
+      });
+      expect(recovered.body.error).toBeUndefined();
+      expect(walletApi.requests).toHaveLength(3);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
+  it('coalesces concurrent wallet refreshes for the same credential revision', async () => {
+    let upstreamRequestCount = 0;
+    const walletApi = await startWalletApi(async (_req, res) => {
+      upstreamRequestCount += 1;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        balanceUsd: '120.00',
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    seedLogin('local', {
+      apiUrl: walletApi.url,
+      controlKey: 'ck-wallet-single-flight',
+      runtimeKey: 'rt-wallet-single-flight',
+      user: { id: 'wallet-single-flight-user', email: 'single-flight@example.com', plan: 'pro' },
+    });
+    try {
+      const [first, second, third] = await Promise.all([
+        getJson<{ balanceUsd: string | null; source: string }>(
+          `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+        ),
+        getJson<{ balanceUsd: string | null; source: string }>(
+          `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+        ),
+        getJson<{ balanceUsd: string | null; source: string }>(
+          `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+        ),
+      ]);
+
+      expect([first.body, second.body, third.body]).toEqual([
+        expect.objectContaining({ balanceUsd: '120.00', source: 'vela_api' }),
+        expect.objectContaining({ balanceUsd: '120.00', source: 'vela_api' }),
+        expect.objectContaining({ balanceUsd: '120.00', source: 'vela_api' }),
+      ]);
+      expect(upstreamRequestCount).toBe(1);
+      expect(walletApi.requests).toEqual(['Bearer ck-wallet-single-flight']);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
+  it('keeps wallet caches isolated when the active Vela credential changes accounts', async () => {
+    const walletApi = await startWalletApi((req, res) => {
+      const balanceUsd =
+        req.headers.authorization === 'Bearer ck-personal-wallet' ? '20.00' : '120.00';
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        balanceUsd,
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    try {
+      seedLogin('local', {
+        apiUrl: walletApi.url,
+        controlKey: 'ck-personal-wallet',
+        runtimeKey: 'rt-personal-wallet',
+        user: { id: 'personal-user', email: 'personal@example.com', plan: 'plus' },
+      });
+      const personal = await getJson<{ balanceUsd: string | null; user: { id?: string } | null }>(
+        `${baseUrl}/api/integrations/vela/wallet`,
+      );
+      expect(personal.body.balanceUsd).toBe('20.00');
+      expect(personal.body.user?.id).toBe('personal-user');
+
+      seedLogin('local', {
+        apiUrl: walletApi.url,
+        controlKey: 'ck-team-wallet',
+        runtimeKey: 'rt-team-wallet',
+        user: { id: 'team-user', email: 'team@example.com', plan: 'team_pro' },
+      });
+      const team = await getJson<{ balanceUsd: string | null; user: { id?: string } | null }>(
+        `${baseUrl}/api/integrations/vela/wallet`,
+      );
+      expect(team.body.balanceUsd).toBe('120.00');
+      expect(team.body.user?.id).toBe('team-user');
+      expect(walletApi.requests).toEqual([
+        'Bearer ck-personal-wallet',
+        'Bearer ck-team-wallet',
+      ]);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
+  it('keeps wallet credentials and caches isolated across AMR profiles', async () => {
+    const walletApi = await startWalletApi((req, res) => {
+      const balanceUsd =
+        req.headers.authorization === 'Bearer ck-profile-local' ? '20.00' : '120.00';
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        balanceUsd,
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    const dir = path.dirname(configPath());
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      configPath(),
+      JSON.stringify({
+        profiles: {
+          local: {
+            apiUrl: walletApi.url,
+            controlKey: 'ck-profile-local',
+            runtimeKey: 'rt-profile-local',
+            user: { id: 'profile-user', email: 'profile@example.com', plan: 'plus' },
+          },
+          test: {
+            apiUrl: walletApi.url,
+            controlKey: 'ck-profile-test',
+            runtimeKey: 'rt-profile-test',
+            user: { id: 'profile-user', email: 'profile@example.com', plan: 'pro' },
+          },
+        },
+      }),
+      'utf8',
+    );
+    try {
+      process.env.OPEN_DESIGN_AMR_PROFILE = 'local';
+      const local = await getJson<{ balanceUsd: string | null; profile: string; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet`,
+      );
+      process.env.OPEN_DESIGN_AMR_PROFILE = 'test';
+      const test = await getJson<{ balanceUsd: string | null; profile: string; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet`,
+      );
+      process.env.OPEN_DESIGN_AMR_PROFILE = 'local';
+      const localAgain = await getJson<{
+        balanceUsd: string | null;
+        profile: string;
+        source: string;
+      }>(`${baseUrl}/api/integrations/vela/wallet`);
+
+      expect(local.body).toMatchObject({
+        balanceUsd: '20.00',
+        profile: 'local',
+        source: 'vela_api',
+      });
+      expect(test.body).toMatchObject({
+        balanceUsd: '120.00',
+        profile: 'test',
+        source: 'vela_api',
+      });
+      expect(localAgain.body).toMatchObject({
+        balanceUsd: '20.00',
+        profile: 'local',
+        source: 'daemon_cache',
+      });
+      expect(walletApi.requests).toEqual([
+        'Bearer ck-profile-local',
+        'Bearer ck-profile-test',
+      ]);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
   it('invalidates the AMR model catalog cache on explicit wallet refresh', async () => {
     const walletApi = await startWalletApi((_req, res) => {
       res.setHeader('content-type', 'application/json');
@@ -550,6 +834,64 @@ describe('GET /api/integrations/vela/wallet', () => {
       expect(second.body.source).toBe('unavailable');
       expect(second.body.error?.code).toBe('unauthorized');
       expect(second.body.error?.message).toMatch(/sign in again/i);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
+  it('recovers from an expired control key after the same account signs in again', async () => {
+    const walletApi = await startWalletApi((req, res) => {
+      res.setHeader('content-type', 'application/json');
+      if (req.headers.authorization === 'Bearer ck-expired-wallet') {
+        res.statusCode = 401;
+        res.end(JSON.stringify({ error: 'unauthenticated' }));
+        return;
+      }
+      res.end(JSON.stringify({
+        balanceUsd: '40.00',
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    try {
+      seedLogin('local', {
+        apiUrl: walletApi.url,
+        controlKey: 'ck-expired-wallet',
+        runtimeKey: 'rt-expired-wallet',
+        user: { id: 'reauth-user', email: 'reauth@example.com', plan: 'plus' },
+      });
+      const expired = await getJson<{
+        balanceUsd: string | null;
+        error?: { code: string };
+        status: string;
+      }>(`${baseUrl}/api/integrations/vela/wallet?refresh=1`);
+      expect(expired.body).toMatchObject({
+        balanceUsd: null,
+        status: 'unavailable',
+        error: { code: 'unauthorized' },
+      });
+
+      seedLogin('local', {
+        apiUrl: walletApi.url,
+        controlKey: 'ck-refreshed-wallet',
+        runtimeKey: 'rt-refreshed-wallet',
+        user: { id: 'reauth-user', email: 'reauth@example.com', plan: 'plus' },
+      });
+      const recovered = await getJson<{
+        balanceUsd: string | null;
+        error?: { code: string };
+        source: string;
+        status: string;
+      }>(`${baseUrl}/api/integrations/vela/wallet?refresh=1`);
+      expect(recovered.body).toMatchObject({
+        balanceUsd: '40.00',
+        source: 'vela_api',
+        status: 'available',
+      });
+      expect(recovered.body.error).toBeUndefined();
+      expect(walletApi.requests).toEqual([
+        'Bearer ck-expired-wallet',
+        'Bearer ck-refreshed-wallet',
+      ]);
     } finally {
       await walletApi.close();
     }
@@ -816,6 +1158,70 @@ describe('GET /api/integrations/vela/status', () => {
     expect(body.account?.balanceUsd).toBe('247.51');
   });
 
+  it.each([
+    { plan: 'free', balanceUsd: '0.00' },
+    { plan: 'plus', balanceUsd: '20.00' },
+    { plan: 'pro', balanceUsd: '120.00' },
+    { plan: 'max', balanceUsd: '300.00' },
+    { plan: 'team_basic', balanceUsd: '0.00' },
+    { plan: 'team_plus', balanceUsd: '20.00' },
+    { plan: 'team_pro', balanceUsd: '120.00' },
+    { plan: 'team_max', balanceUsd: '220.00' },
+  ])('projects the $plan plan and its current Vela balance without daemon-side recalculation', async ({
+    plan,
+    balanceUsd,
+  }) => {
+    clearAllVelaLiveAccounts();
+    process.env.FAKE_VELA_BILLING_TIER = plan;
+    process.env.FAKE_VELA_BILLING_BALANCE_USD = balanceUsd;
+    seedLogin('local', {
+      controlKey: `ck-${plan}`,
+      runtimeKey: `rt-${plan}`,
+      user: { id: `${plan}-user`, email: `${plan}@example.com`, plan: undefined },
+    });
+
+    const { status, body } = await getJson<{
+      loggedIn: boolean;
+      account?: { plan?: string; balanceUsd?: string | null };
+    }>(`${baseUrl}/api/integrations/vela/status?refresh=1`);
+
+    expect(status).toBe(200);
+    expect(body.loggedIn).toBe(true);
+    expect(body.account).toEqual({ plan, balanceUsd });
+  });
+
+  it('drops an expired team subscription to free and accepts a later resubscription snapshot', async () => {
+    clearAllVelaLiveAccounts();
+    seedLogin('local', {
+      controlKey: 'ck-team-lifecycle',
+      runtimeKey: 'rt-team-lifecycle',
+      user: { id: 'team-lifecycle-user', email: 'team-lifecycle@example.com', plan: undefined },
+    });
+
+    const readAccount = async (plan: string, balanceUsd: string) => {
+      process.env.FAKE_VELA_BILLING_TIER = plan;
+      process.env.FAKE_VELA_BILLING_BALANCE_USD = balanceUsd;
+      const response = await getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status?refresh=1`);
+      expect(response.status).toBe(200);
+      return response.body.account;
+    };
+
+    await expect(readAccount('team_plus', '20.00')).resolves.toEqual({
+      plan: 'team_plus',
+      balanceUsd: '20.00',
+    });
+    await expect(readAccount('free', '0.00')).resolves.toEqual({
+      plan: 'free',
+      balanceUsd: '0.00',
+    });
+    await expect(readAccount('team_max', '220.00')).resolves.toEqual({
+      plan: 'team_max',
+      balanceUsd: '220.00',
+    });
+  });
+
   it('normalizes a successful billing summary without a tier to free (upgradeable)', async () => {
     // membershipTier is omitted for free accounts; a successful read must still
     // surface a concrete plan so the UI shows it AND keeps the Upgrade CTA.
@@ -924,6 +1330,115 @@ describe('GET /api/integrations/vela/status', () => {
         VELA_RUNTIME_KEY: undefined,
         VELA_LINK_URL: undefined,
       });
+    }
+  });
+
+  it('keeps the newest credential billing snapshot when an older request finishes last', async () => {
+    clearAllVelaLiveAccounts();
+    const billingLog = path.join(tmpHome, 'billing-summary-out-of-order.log');
+    process.env.FAKE_VELA_BILLING_LOG = billingLog;
+    seedLogin('local', {
+      user: { id: 'out-of-order-user', email: 'out-of-order@example.com', plan: undefined },
+    });
+
+    try {
+      await setSettingsAmrEnv({
+        VELA_RUNTIME_KEY: 'rt-out-of-order-A',
+        VELA_LINK_URL: 'http://link.invalid',
+      });
+      process.env.FAKE_VELA_BILLING_TIER = 'plus';
+      process.env.FAKE_VELA_BILLING_BALANCE_USD = '20.00';
+      process.env.FAKE_VELA_BILLING_DELAY_MS = '150';
+      const olderPending = getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status?refresh=1`);
+      await waitForFile(billingLog);
+
+      await setSettingsAmrEnv({ VELA_RUNTIME_KEY: 'rt-out-of-order-B' });
+      process.env.FAKE_VELA_BILLING_TIER = 'max';
+      process.env.FAKE_VELA_BILLING_BALANCE_USD = '300.00';
+      process.env.FAKE_VELA_BILLING_DELAY_MS = '0';
+      const newer = await getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status?refresh=1`);
+      const older = await olderPending;
+      const current = await getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status`);
+
+      expect(newer.body.account).toEqual({ plan: 'max', balanceUsd: '300.00' });
+      expect(older.body.account).toEqual({ plan: 'plus', balanceUsd: '20.00' });
+      expect(current.body.account).toEqual({ plan: 'max', balanceUsd: '300.00' });
+      const attempts = readFileSync(billingLog, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean);
+      expect(attempts).toHaveLength(2);
+      expect(attempts[0]).toContain('rt-out-of-order-A');
+      expect(attempts[1]).toContain('rt-out-of-order-B');
+    } finally {
+      await setSettingsAmrEnv({
+        VELA_RUNTIME_KEY: undefined,
+        VELA_LINK_URL: undefined,
+      });
+    }
+  });
+
+  it('keeps live plan and wallet caches independent when either side refreshes', async () => {
+    clearAllVelaLiveAccounts();
+    let walletBalanceUsd = '20.00';
+    const walletApi = await startWalletApi((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        balanceUsd: walletBalanceUsd,
+        updatedAt: '2026-07-31T02:00:00.000Z',
+      }));
+    });
+    process.env.FAKE_VELA_BILLING_TIER = 'plus';
+    process.env.FAKE_VELA_BILLING_BALANCE_USD = '20.00';
+    seedLogin('local', {
+      apiUrl: walletApi.url,
+      controlKey: 'ck-independent-caches',
+      runtimeKey: 'rt-independent-caches',
+      user: { id: 'independent-cache-user', email: 'independent@example.com', plan: undefined },
+    });
+
+    try {
+      const initialStatus = await getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status?refresh=1`);
+      const initialWallet = await getJson<{ balanceUsd: string | null }>(
+        `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+      );
+      expect(initialStatus.body.account).toEqual({ plan: 'plus', balanceUsd: '20.00' });
+      expect(initialWallet.body.balanceUsd).toBe('20.00');
+
+      walletBalanceUsd = '30.00';
+      const refreshedWallet = await getJson<{ balanceUsd: string | null }>(
+        `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+      );
+      const unchangedStatus = await getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status`);
+      expect(refreshedWallet.body.balanceUsd).toBe('30.00');
+      expect(unchangedStatus.body.account).toEqual({ plan: 'plus', balanceUsd: '20.00' });
+
+      process.env.FAKE_VELA_BILLING_TIER = 'pro';
+      process.env.FAKE_VELA_BILLING_BALANCE_USD = '120.00';
+      const refreshedStatus = await getJson<{
+        account?: { plan?: string; balanceUsd?: string | null };
+      }>(`${baseUrl}/api/integrations/vela/status?refresh=1`);
+      const unchangedWallet = await getJson<{ balanceUsd: string | null; source: string }>(
+        `${baseUrl}/api/integrations/vela/wallet`,
+      );
+      expect(refreshedStatus.body.account).toEqual({ plan: 'pro', balanceUsd: '120.00' });
+      expect(unchangedWallet.body).toMatchObject({
+        balanceUsd: '30.00',
+        source: 'daemon_cache',
+      });
+      expect(walletApi.requests).toHaveLength(2);
+    } finally {
+      await walletApi.close();
     }
   });
 
@@ -1924,6 +2439,1107 @@ describe('ALL /api/integrations/vela/api-proxy/*', () => {
       );
       expect(upstreamRequests[0]?.headers['content-length']).toBe(String(Buffer.byteLength(body)));
       expect(upstreamRequests[0]?.body).toBe(body);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('keeps concurrent Workspace billing scopes on their originating proxy requests', async () => {
+    const workspaceHeaders: Array<string | undefined> = [];
+    const completionOrder: Array<string | undefined> = [];
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((target, options, callback) => {
+      expect(target instanceof URL ? target.pathname : String(target)).toContain(
+        '/api/v1/wallet/balance',
+      );
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceId = headers['x-vela-workspace-id'];
+      const scopedWorkspaceId = Array.isArray(workspaceId) ? workspaceId[0] : workspaceId;
+      workspaceHeaders.push(scopedWorkspaceId);
+
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        const balanceUsd =
+          scopedWorkspaceId === 'workspace-team-low'
+            ? '5.00'
+            : scopedWorkspaceId === 'workspace-team-full'
+              ? '120.00'
+              : '20.00';
+        const delayMs =
+          scopedWorkspaceId === 'workspace-team-low'
+            ? 5
+            : scopedWorkspaceId === 'workspace-team-full'
+              ? 30
+              : 80;
+        setTimeout(() => {
+          completionOrder.push(scopedWorkspaceId);
+          upstreamRes.end(JSON.stringify({ balanceUsd }));
+        }, delayMs);
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const scopes = [undefined, 'workspace-team-low', 'workspace-team-full'];
+      const responses = await Promise.all(
+        scopes.map((workspaceId) =>
+          fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+            headers: workspaceId ? { 'x-vela-workspace-id': workspaceId } : {},
+          }),
+        ),
+      );
+
+      expect(responses.map((response) => response.status)).toEqual([200, 200, 200]);
+      await expect(
+        Promise.all(responses.map((response) => response.json())),
+      ).resolves.toEqual([
+        { balanceUsd: '20.00' },
+        { balanceUsd: '5.00' },
+        { balanceUsd: '120.00' },
+      ]);
+      expect(workspaceHeaders).toHaveLength(3);
+      expect(new Set(workspaceHeaders)).toEqual(new Set(scopes));
+      expect(completionOrder).toEqual([
+        'workspace-team-low',
+        'workspace-team-full',
+        undefined,
+      ]);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('forwards a Workspace authorization failure without retrying against the personal scope', async () => {
+    const workspaceHeaders: Array<string | undefined> = [];
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceId = headers['x-vela-workspace-id'];
+      workspaceHeaders.push(Array.isArray(workspaceId) ? workspaceId[0] : workspaceId);
+
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 403;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ error: 'workspace_forbidden' }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-not-owned' } },
+      );
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toEqual({ error: 'workspace_forbidden' });
+      expect(workspaceHeaders).toEqual(['workspace-not-owned']);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('does not let a removed Workspace response affect another active Workspace', async () => {
+    const workspaceHeaders: Array<string | undefined> = [];
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceId = headers['x-vela-workspace-id'];
+      const scopedWorkspaceId = Array.isArray(workspaceId) ? workspaceId[0] : workspaceId;
+      workspaceHeaders.push(scopedWorkspaceId);
+
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        const removed = scopedWorkspaceId === 'workspace-removed';
+        upstreamRes.statusCode = removed ? 404 : 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(
+          removed
+            ? JSON.stringify({ error: 'workspace_not_found' })
+            : JSON.stringify({ balanceUsd: '120.00' }),
+        );
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const removed = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-removed' } },
+      );
+      expect(removed.status).toBe(404);
+      await expect(removed.json()).resolves.toEqual({ error: 'workspace_not_found' });
+
+      const active = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-active' } },
+      );
+      expect(active.status).toBe(200);
+      await expect(active.json()).resolves.toEqual({ balanceUsd: '120.00' });
+      expect(workspaceHeaders).toEqual(['workspace-removed', 'workspace-active']);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('does not cache an insufficient-balance failure after the account is recharged', async () => {
+    let requestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      requestCount += 1;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = requestCount === 1 ? 402 : 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(
+          requestCount === 1
+            ? JSON.stringify({ error: { code: 'insufficient_balance' } })
+            : JSON.stringify({ id: 'response-after-recharge', status: 'completed' }),
+        );
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const first = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/responses`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'amr-default', input: 'first attempt' }),
+        },
+      );
+      expect(first.status).toBe(402);
+      await expect(first.json()).resolves.toEqual({
+        error: { code: 'insufficient_balance' },
+      });
+
+      const afterRecharge = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/responses`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ model: 'amr-default', input: 'resume after recharge' }),
+        },
+      );
+      expect(afterRecharge.status).toBe(200);
+      await expect(afterRecharge.json()).resolves.toEqual({
+        id: 'response-after-recharge',
+        status: 'completed',
+      });
+      expect(requestCount).toBe(2);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('keeps concurrent Workspace mutations isolated by body, authorization, and scope', async () => {
+    const upstreamRequests: Array<{
+      workspaceId: string | undefined;
+      authorization: string | undefined;
+      body: unknown;
+    }> = [];
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const headerValue = (name: string) => {
+        const value = headers[name];
+        return Array.isArray(value) ? value[0] : value;
+      };
+      const workspaceId = headerValue('x-vela-workspace-id');
+      const authorization = headerValue('authorization');
+      const req = new PassThrough() as any;
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer | string) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      });
+      req.on('finish', () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        upstreamRequests.push({ workspaceId, authorization, body });
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 201;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        setTimeout(
+          () => upstreamRes.end(JSON.stringify({ workspaceId, authorization, body })),
+          workspaceId === 'workspace-a' ? 30 : 5,
+        );
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const [workspaceA, workspaceB] = await Promise.all([
+        fetch(
+          `${baseUrl}/api/integrations/vela/api-proxy/api/v1/workspaces/members/invitations`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: 'Bearer account-a',
+              'content-type': 'application/json',
+              'x-vela-workspace-id': 'workspace-a',
+            },
+            body: JSON.stringify({ email: 'a@example.com', role: 'member' }),
+          },
+        ),
+        fetch(
+          `${baseUrl}/api/integrations/vela/api-proxy/api/v1/workspaces/members/invitations`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: 'Bearer account-b',
+              'content-type': 'application/json',
+              'x-vela-workspace-id': 'workspace-b',
+            },
+            body: JSON.stringify({ email: 'b@example.com', role: 'admin' }),
+          },
+        ),
+      ]);
+
+      expect(workspaceA.status).toBe(201);
+      expect(workspaceB.status).toBe(201);
+      await expect(workspaceA.json()).resolves.toEqual({
+        workspaceId: 'workspace-a',
+        authorization: 'Bearer account-a',
+        body: { email: 'a@example.com', role: 'member' },
+      });
+      await expect(workspaceB.json()).resolves.toEqual({
+        workspaceId: 'workspace-b',
+        authorization: 'Bearer account-b',
+        body: { email: 'b@example.com', role: 'admin' },
+      });
+      expect(upstreamRequests).toEqual(
+        expect.arrayContaining([
+          {
+            workspaceId: 'workspace-a',
+            authorization: 'Bearer account-a',
+            body: { email: 'a@example.com', role: 'member' },
+          },
+          {
+            workspaceId: 'workspace-b',
+            authorization: 'Bearer account-b',
+            body: { email: 'b@example.com', role: 'admin' },
+          },
+        ]),
+      );
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('isolates account and Workspace combinations even when the Workspace id is shared', async () => {
+    const scopes: Array<{ workspaceId: string | undefined; authorization: string | undefined }> = [];
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const getHeader = (name: string) => {
+        const value = headers[name];
+        return Array.isArray(value) ? value[0] : value;
+      };
+      const workspaceId = getHeader('x-vela-workspace-id');
+      const authorization = getHeader('authorization');
+      scopes.push({ workspaceId, authorization });
+
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ workspaceId, authorization }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const responses = await Promise.all(
+        ['account-a', 'account-b'].map((account) =>
+          fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+            headers: {
+              authorization: `Bearer ${account}`,
+              'x-vela-workspace-id': 'workspace-shared',
+            },
+          }),
+        ),
+      );
+
+      await expect(Promise.all(responses.map((response) => response.json()))).resolves.toEqual([
+        { workspaceId: 'workspace-shared', authorization: 'Bearer account-a' },
+        { workspaceId: 'workspace-shared', authorization: 'Bearer account-b' },
+      ]);
+      expect(scopes).toEqual(
+        expect.arrayContaining([
+          { workspaceId: 'workspace-shared', authorization: 'Bearer account-a' },
+          { workspaceId: 'workspace-shared', authorization: 'Bearer account-b' },
+        ]),
+      );
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('destroys an abandoned Workspace upstream request while the next Workspace succeeds', async () => {
+    let abandonedRequestDestroyed = false;
+    let markWorkspaceAStarted: (() => void) | undefined;
+    const workspaceAStarted = new Promise<void>((resolve) => {
+      markWorkspaceAStarted = resolve;
+    });
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceValue = headers['x-vela-workspace-id'];
+      const workspaceId = Array.isArray(workspaceValue) ? workspaceValue[0] : workspaceValue;
+      const req = new PassThrough() as any;
+      const originalDestroy = req.destroy.bind(req);
+      req.destroy = (error?: Error) => {
+        if (workspaceId === 'workspace-a') abandonedRequestDestroyed = true;
+        return originalDestroy(error);
+      };
+      req.on('finish', () => {
+        if (workspaceId === 'workspace-a') {
+          markWorkspaceAStarted?.();
+          return;
+        }
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ workspaceId, balanceUsd: '120.00' }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const controller = new AbortController();
+      const abandoned = fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        {
+          signal: controller.signal,
+          headers: { 'x-vela-workspace-id': 'workspace-a' },
+        },
+      );
+      await workspaceAStarted;
+      controller.abort();
+      await expect(abandoned).rejects.toMatchObject({ name: 'AbortError' });
+
+      const active = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-b' } },
+      );
+      expect(active.status).toBe(200);
+      await expect(active.json()).resolves.toEqual({
+        workspaceId: 'workspace-b',
+        balanceUsd: '120.00',
+      });
+      await vi.waitFor(() => expect(abandonedRequestDestroyed).toBe(true));
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('does not retry failed Workspace mutations', async () => {
+    const statuses = [402, 403, 409, 500];
+    let requestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      const status = statuses[requestCount] ?? 500;
+      requestCount += 1;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = status;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ error: `upstream_${status}` }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      for (const status of statuses) {
+        const response = await fetch(
+          `${baseUrl}/api/integrations/vela/api-proxy/api/v1/workspaces/seats`,
+          {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-vela-workspace-id': 'workspace-a',
+            },
+            body: JSON.stringify({ seats: 1 }),
+          },
+        );
+        expect(response.status).toBe(status);
+        await expect(response.json()).resolves.toEqual({ error: `upstream_${status}` });
+      }
+      expect(requestCount).toBe(statuses.length);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('passes Workspace mutation idempotency and request correlation headers through unchanged', async () => {
+    let forwardedHeaders: Record<string, string | string[]> | undefined;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      forwardedHeaders = options?.headers as Record<string, string | string[]>;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 201;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ ok: true }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/workspaces/seats`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer account-a',
+            'content-type': 'application/json',
+            'idempotency-key': 'seat-order-123',
+            'x-request-id': 'request-456',
+            'x-vela-workspace-id': 'workspace-a',
+          },
+          body: JSON.stringify({ seats: 2 }),
+        },
+      );
+
+      expect(response.status).toBe(201);
+      expect(forwardedHeaders?.['idempotency-key']).toBe('seat-order-123');
+      expect(forwardedHeaders?.['x-request-id']).toBe('request-456');
+      expect(forwardedHeaders?.['x-vela-workspace-id']).toBe('workspace-a');
+      expect(forwardedHeaders?.authorization).toBe('Bearer account-a');
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('keeps a rate-limited Workspace isolated and preserves Retry-After', async () => {
+    let requestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      requestCount += 1;
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceValue = headers['x-vela-workspace-id'];
+      const workspaceId = Array.isArray(workspaceValue) ? workspaceValue[0] : workspaceValue;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const limited = workspaceId === 'workspace-limited';
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = limited ? 429 : 200;
+        upstreamRes.headers = {
+          'content-type': 'application/json',
+          ...(limited ? { 'retry-after': '30' } : {}),
+        };
+        callback?.(upstreamRes);
+        setTimeout(
+          () =>
+            upstreamRes.end(
+              JSON.stringify(
+                limited
+                  ? { error: 'rate_limited' }
+                  : { workspaceId, balanceUsd: '120.00' },
+              ),
+            ),
+          limited ? 5 : 20,
+        );
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const [limited, healthy] = await Promise.all([
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: { 'x-vela-workspace-id': 'workspace-limited' },
+        }),
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: { 'x-vela-workspace-id': 'workspace-healthy' },
+        }),
+      ]);
+
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get('retry-after')).toBe('30');
+      await expect(limited.json()).resolves.toEqual({ error: 'rate_limited' });
+      expect(healthy.status).toBe(200);
+      await expect(healthy.json()).resolves.toEqual({
+        workspaceId: 'workspace-healthy',
+        balanceUsd: '120.00',
+      });
+      expect(requestCount).toBe(2);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('rejects normalized path traversal outside the AMR /api/v1 proxy boundary', async () => {
+    let upstreamRequestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation((() => {
+      upstreamRequestCount += 1;
+      throw new Error('path traversal must not reach the upstream');
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+    const requestRawPath = (rawPath: string) =>
+      new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const request = http.request(
+          {
+            hostname: daemonUrl.hostname,
+            port: daemonUrl.port,
+            method: 'GET',
+            path: rawPath,
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Buffer | string) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            });
+            response.on('end', () => {
+              resolve({
+                status: response.statusCode ?? 0,
+                body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+              });
+            });
+          },
+        );
+        request.on('error', reject);
+        request.end();
+      });
+
+    try {
+      const encodedTraversal = await requestRawPath(
+        '/api/integrations/vela/api-proxy/api/v1/%2e%2e/admin/workspaces',
+      );
+      expect(encodedTraversal).toEqual({
+        status: 404,
+        body: { error: 'unknown_amr_api_proxy_path' },
+      });
+      expect(upstreamRequestCount).toBe(0);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('isolates an upstream timeout to one Workspace and lets it recover', async () => {
+    let workspaceAAttempts = 0;
+    let timedOutRequestDestroyed = false;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceValue = headers['x-vela-workspace-id'];
+      const workspaceId = Array.isArray(workspaceValue) ? workspaceValue[0] : workspaceValue;
+      if (workspaceId === 'workspace-a') workspaceAAttempts += 1;
+      const shouldTimeout = workspaceId === 'workspace-a' && workspaceAAttempts === 1;
+
+      const req = new PassThrough() as any;
+      const originalDestroy = req.destroy.bind(req);
+      req.destroy = (error?: Error) => {
+        if (shouldTimeout) timedOutRequestDestroyed = true;
+        return originalDestroy(error);
+      };
+      req.on('finish', () => {
+        if (shouldTimeout) return;
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ workspaceId, balanceUsd: '120.00' }));
+      });
+      req.setTimeout = (_timeoutMs: number, onTimeout: () => void) => {
+        if (shouldTimeout) queueMicrotask(onTimeout);
+        return req;
+      };
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const [timedOut, healthy] = await Promise.all([
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: { 'x-vela-workspace-id': 'workspace-a' },
+        }),
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: { 'x-vela-workspace-id': 'workspace-b' },
+        }),
+      ]);
+
+      expect(timedOut.status).toBe(502);
+      await expect(timedOut.json()).resolves.toEqual({ error: 'AMR API proxy timed out' });
+      expect(healthy.status).toBe(200);
+      await expect(healthy.json()).resolves.toEqual({
+        workspaceId: 'workspace-b',
+        balanceUsd: '120.00',
+      });
+      expect(timedOutRequestDestroyed).toBe(true);
+
+      const recovered = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-a' } },
+      );
+      expect(recovered.status).toBe(200);
+      await expect(recovered.json()).resolves.toEqual({
+        workspaceId: 'workspace-a',
+        balanceUsd: '120.00',
+      });
+      expect(workspaceAAttempts).toBe(2);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('survives upstream resets before headers and during a response body', async () => {
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceValue = headers['x-vela-workspace-id'];
+      const workspaceId = Array.isArray(workspaceValue) ? workspaceValue[0] : workspaceValue;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        if (workspaceId === 'workspace-reset-before-headers') {
+          queueMicrotask(() => req.destroy(new Error('upstream reset before headers')));
+          return;
+        }
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        if (workspaceId === 'workspace-reset-mid-body') {
+          upstreamRes.write('{"balanceUsd":');
+          setTimeout(() => upstreamRes.destroy(new Error('upstream reset mid-body')), 10);
+          return;
+        }
+        upstreamRes.end(JSON.stringify({ workspaceId, balanceUsd: '120.00' }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const [beforeHeaders, healthy] = await Promise.all([
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: { 'x-vela-workspace-id': 'workspace-reset-before-headers' },
+        }),
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: { 'x-vela-workspace-id': 'workspace-healthy' },
+        }),
+      ]);
+      expect(beforeHeaders.status).toBe(502);
+      await expect(beforeHeaders.json()).resolves.toEqual({
+        error: 'upstream reset before headers',
+      });
+      expect(healthy.status).toBe(200);
+      await expect(healthy.json()).resolves.toEqual({
+        workspaceId: 'workspace-healthy',
+        balanceUsd: '120.00',
+      });
+
+      const midBody = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-reset-mid-body' } },
+      );
+      expect(midBody.status).toBe(200);
+      await expect(midBody.text()).rejects.toThrow();
+
+      const afterReset = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-after-reset' } },
+      );
+      expect(afterReset.status).toBe(200);
+      await expect(afterReset.json()).resolves.toEqual({
+        workspaceId: 'workspace-after-reset',
+        balanceUsd: '120.00',
+      });
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('preserves billing query parameters, redirect status, and checkout response headers', async () => {
+    let upstreamSearch = '';
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((target, _options, callback) => {
+      upstreamSearch = target instanceof URL ? target.search : new URL(String(target)).search;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 303;
+        upstreamRes.headers = {
+          location: '/api/v1/billing/invoices/invoice-123?source=checkout',
+          'set-cookie': [
+            'checkout_session=session-123; Path=/; HttpOnly',
+            'billing_locale=zh-CN; Path=/',
+          ],
+        };
+        callback?.(upstreamRes);
+        upstreamRes.end();
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/billing/checkout` +
+          '?workspaceId=workspace-a&invoiceId=invoice-1&invoiceId=invoice-2',
+        {
+          redirect: 'manual',
+          headers: {
+            authorization: 'Bearer account-a',
+            'x-vela-workspace-id': 'workspace-a',
+          },
+        },
+      );
+
+      expect(response.status).toBe(303);
+      expect(upstreamSearch).toBe(
+        '?workspaceId=workspace-a&invoiceId=invoice-1&invoiceId=invoice-2',
+      );
+      expect(response.headers.get('location')).toBe(
+        '/api/v1/billing/invoices/invoice-123?source=checkout',
+      );
+      expect(response.headers.get('set-cookie')).toContain('checkout_session=session-123');
+      expect(response.headers.get('set-cookie')).toContain('billing_locale=zh-CN');
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('keeps a caller idempotency key stable when a disconnected mutation is submitted again', async () => {
+    const idempotencyKeys: Array<string | undefined> = [];
+    let requestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      requestCount += 1;
+      const headers = options?.headers as Record<string, string | string[]>;
+      const keyValue = headers['idempotency-key'];
+      idempotencyKeys.push(Array.isArray(keyValue) ? keyValue[0] : keyValue);
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        if (requestCount === 1) {
+          queueMicrotask(() => req.destroy(new Error('checkout connection reset')));
+          return;
+        }
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 201;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ subscriptionId: 'subscription-123' }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    const submit = () =>
+      fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/workspaces/subscriptions`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'idempotency-key': 'subscription-order-123',
+          'x-vela-workspace-id': 'workspace-a',
+        },
+        body: JSON.stringify({ plan: 'team-pro', billingPeriod: 'year' }),
+      });
+
+    try {
+      const disconnected = await submit();
+      expect(disconnected.status).toBe(502);
+      await expect(disconnected.json()).resolves.toEqual({
+        error: 'checkout connection reset',
+      });
+
+      const retried = await submit();
+      expect(retried.status).toBe(201);
+      await expect(retried.json()).resolves.toEqual({
+        subscriptionId: 'subscription-123',
+      });
+      expect(idempotencyKeys).toEqual([
+        'subscription-order-123',
+        'subscription-order-123',
+      ]);
+      expect(requestCount).toBe(2);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('drops upstream hop-by-hop response headers while preserving billing metadata', async () => {
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = {
+          connection: 'x-upstream-secret',
+          'keep-alive': 'timeout=999',
+          'proxy-authenticate': 'Basic realm=upstream',
+          te: 'trailers',
+          trailer: 'x-upstream-trailer',
+          'transfer-encoding': 'gzip',
+          upgrade: 'websocket',
+          'content-type': 'application/json',
+          'x-billing-request-id': 'billing-request-123',
+        };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ ok: true }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/billing/invoices/invoice-123`,
+        { headers: { 'x-vela-workspace-id': 'workspace-a' } },
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('x-billing-request-id')).toBe('billing-request-123');
+      expect(response.headers.get('connection')).not.toBe('x-upstream-secret');
+      expect(response.headers.get('keep-alive')).not.toBe('timeout=999');
+      expect(response.headers.get('transfer-encoding')).not.toBe('gzip');
+      expect(response.headers.get('proxy-authenticate')).toBeNull();
+      expect(response.headers.get('te')).toBeNull();
+      expect(response.headers.get('trailer')).toBeNull();
+      expect(response.headers.get('upgrade')).toBeNull();
+      await expect(response.json()).resolves.toEqual({ ok: true });
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('destroys a streaming upload upstream when the Workspace client disconnects', async () => {
+    let uploadUpstreamDestroyed = false;
+    let markUploadStarted: (() => void) | undefined;
+    const uploadStarted = new Promise<void>((resolve) => {
+      markUploadStarted = resolve;
+    });
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const workspaceValue = headers['x-vela-workspace-id'];
+      const workspaceId = Array.isArray(workspaceValue) ? workspaceValue[0] : workspaceValue;
+      const req = new PassThrough() as any;
+      const originalDestroy = req.destroy.bind(req);
+      req.destroy = (error?: Error) => {
+        if (workspaceId === 'workspace-upload') uploadUpstreamDestroyed = true;
+        return originalDestroy(error);
+      };
+      req.on('data', () => {
+        if (workspaceId === 'workspace-upload') markUploadStarted?.();
+      });
+      req.on('finish', () => {
+        if (workspaceId === 'workspace-upload') return;
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ workspaceId, ok: true }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+
+    try {
+      const upload = http.request({
+        hostname: daemonUrl.hostname,
+        port: daemonUrl.port,
+        method: 'POST',
+        path: '/api/integrations/vela/api-proxy/api/v1/workspaces/import',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-length': '1024',
+          'x-vela-workspace-id': 'workspace-upload',
+        },
+      });
+      upload.on('error', () => {});
+      upload.write(Buffer.alloc(64, 1));
+      await uploadStarted;
+      upload.destroy();
+      await vi.waitFor(() => expect(uploadUpstreamDestroyed).toBe(true));
+
+      const healthy = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-healthy' } },
+      );
+      expect(healthy.status).toBe(200);
+      await expect(healthy.json()).resolves.toEqual({
+        workspaceId: 'workspace-healthy',
+        ok: true,
+      });
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('rejects invalid Workspace headers without falling back to personal scope', async () => {
+    let upstreamRequestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      upstreamRequestCount += 1;
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ scope: 'personal' }));
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+    const rawRequest = (workspaceHeaders: string[]) =>
+      new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const request = http.request(
+          {
+            hostname: daemonUrl.hostname,
+            port: daemonUrl.port,
+            method: 'GET',
+            path: '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
+            headers: {
+              'x-vela-workspace-id': workspaceHeaders,
+            },
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Buffer | string) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            });
+            response.on('end', () => {
+              resolve({
+                status: response.statusCode ?? 0,
+                body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+              });
+            });
+          },
+        );
+        request.on('error', reject);
+        request.end();
+      });
+
+    try {
+      const empty = await rawRequest(['']);
+      const duplicate = await rawRequest(['workspace-a', 'workspace-b']);
+      const overlong = await rawRequest([`workspace-${'a'.repeat(128)}`]);
+
+      expect(empty).toEqual({ status: 400, body: { error: 'invalid_workspace_id' } });
+      expect(duplicate).toEqual({
+        status: 400,
+        body: { error: 'invalid_workspace_id' },
+      });
+      expect(overlong).toEqual({
+        status: 400,
+        body: { error: 'invalid_workspace_id' },
+      });
+      expect(upstreamRequestCount).toBe(0);
+
+      const personal = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+      );
+      expect(personal.status).toBe(200);
+      await expect(personal.json()).resolves.toEqual({ scope: 'personal' });
+      expect(upstreamRequestCount).toBe(1);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('isolates a stale 401 and lets the same Workspace recover with refreshed credentials', async () => {
+    const scopes: Array<{ workspaceId: string | undefined; authorization: string | undefined }> = [];
+    let markStaleStarted: (() => void) | undefined;
+    const staleStarted = new Promise<void>((resolve) => {
+      markStaleStarted = resolve;
+    });
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const headers = options?.headers as Record<string, string | string[]>;
+      const readHeader = (name: string) => {
+        const value = headers[name];
+        return Array.isArray(value) ? value[0] : value;
+      };
+      const workspaceId = readHeader('x-vela-workspace-id');
+      const authorization = readHeader('authorization');
+      scopes.push({ workspaceId, authorization });
+      const stale = workspaceId === 'workspace-a' && authorization === 'Bearer stale';
+      const req = new PassThrough() as any;
+      req.on('finish', () => {
+        if (stale) markStaleStarted?.();
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = stale ? 401 : 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        setTimeout(
+          () =>
+            upstreamRes.end(
+              JSON.stringify(
+                stale
+                  ? { error: 'expired_token' }
+                  : { workspaceId, authorization, balanceUsd: '120.00' },
+              ),
+            ),
+          stale ? 40 : 5,
+        );
+      });
+      req.setTimeout = () => req;
+      return req;
+    }) as typeof https.request);
+
+    try {
+      const stale = fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        {
+          headers: {
+            authorization: 'Bearer stale',
+            'x-vela-workspace-id': 'workspace-a',
+          },
+        },
+      );
+      await staleStarted;
+      const [healthy, refreshed, staleResponse] = await Promise.all([
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: {
+            authorization: 'Bearer current-b',
+            'x-vela-workspace-id': 'workspace-b',
+          },
+        }),
+        fetch(`${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`, {
+          headers: {
+            authorization: 'Bearer refreshed-a',
+            'x-vela-workspace-id': 'workspace-a',
+          },
+        }),
+        stale,
+      ]);
+
+      expect(staleResponse.status).toBe(401);
+      await expect(staleResponse.json()).resolves.toEqual({ error: 'expired_token' });
+      expect(healthy.status).toBe(200);
+      await expect(healthy.json()).resolves.toEqual({
+        workspaceId: 'workspace-b',
+        authorization: 'Bearer current-b',
+        balanceUsd: '120.00',
+      });
+      expect(refreshed.status).toBe(200);
+      await expect(refreshed.json()).resolves.toEqual({
+        workspaceId: 'workspace-a',
+        authorization: 'Bearer refreshed-a',
+        balanceUsd: '120.00',
+      });
+      expect(scopes).toEqual(
+        expect.arrayContaining([
+          { workspaceId: 'workspace-a', authorization: 'Bearer stale' },
+          { workspaceId: 'workspace-b', authorization: 'Bearer current-b' },
+          { workspaceId: 'workspace-a', authorization: 'Bearer refreshed-a' },
+        ]),
+      );
+      expect(scopes).toHaveLength(3);
     } finally {
       requestSpy.mockRestore();
     }

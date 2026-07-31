@@ -57,6 +57,17 @@ const AMR_API_PROXY_PREFIX = '/api/integrations/vela/api-proxy';
 const VELA_MESSAGE_CENTER_PREFIX = '/api/integrations/vela/message-center';
 const VELA_PUBLIC_MESSAGE_CENTER_PREFIX = '/api/integrations/vela/message-center-public';
 const AMR_API_UPSTREAM_ORIGIN = 'https://amr-api.open-design.ai';
+const PROXY_HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+const VELA_WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 type ReadAppConfig = (dataDir: string) => Promise<AppConfigPrefs>;
 type PublicBaseUrlResolver = (req: Request) => string;
@@ -167,6 +178,18 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
     return;
   }
   const target = new URL(suffix, AMR_API_UPSTREAM_ORIGIN);
+  if (!target.pathname.startsWith('/api/v1/')) {
+    res.status(404).json({ error: 'unknown_amr_api_proxy_path' });
+    return;
+  }
+  const workspaceId = req.headers['x-vela-workspace-id'];
+  if (
+    workspaceId !== undefined
+    && (Array.isArray(workspaceId) || !VELA_WORKSPACE_ID_PATTERN.test(workspaceId))
+  ) {
+    res.status(400).json({ error: 'invalid_workspace_id' });
+    return;
+  }
   const body = velaProxyRequestBody(req);
   const streamBody = shouldStreamVelaProxyRequest(req, body);
   const headers: Record<string, string | string[]> = {};
@@ -174,8 +197,7 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
     const lower = key.toLowerCase();
     if (
       lower === 'host' ||
-      lower === 'connection' ||
-      lower === 'transfer-encoding'
+      PROXY_HOP_BY_HOP_HEADERS.has(lower)
     ) {
       continue;
     }
@@ -196,7 +218,9 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
     (upstreamRes) => {
       res.status(upstreamRes.statusCode ?? 502);
       for (const [key, value] of Object.entries(upstreamRes.headers)) {
-        if (value !== undefined) res.setHeader(key, value);
+        if (value !== undefined && !PROXY_HOP_BY_HOP_HEADERS.has(key.toLowerCase())) {
+          res.setHeader(key, value);
+        }
       }
       pipeProxyStreamWithGuard(upstreamRes, res, (err) => {
         if (!res.headersSent) {
@@ -215,6 +239,11 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
       res.end();
     }
   });
+  const abortUpstream = () => {
+    if (!res.writableEnded && !upstream.destroyed) upstream.destroy();
+  };
+  req.once('aborted', abortUpstream);
+  res.once('close', abortUpstream);
   if (body) upstream.write(body);
   if (streamBody) {
     pipeProxyStreamWithGuard(req, upstream, () => upstream.destroy());

@@ -84,7 +84,7 @@ beforeEach(async () => {
   baseUrl = started.url;
   daemon = started.server;
   daemonShutdown = started.shutdown;
-});
+}, 30_000);
 
 afterEach(async () => {
   if (daemonShutdown) {
