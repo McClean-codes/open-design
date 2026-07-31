@@ -1066,6 +1066,7 @@ function buildPerformanceDiagnostics(ctx: ReportContext): Record<string, unknown
 
 function buildTimingSpanBodies(
   ctx: ReportContext,
+  traceId: string,
   parentObservationId: string,
   opts: {
     modelCallName?: string;
@@ -1287,7 +1288,7 @@ function buildTimingSpanBodies(
   return definitions
     .map((definition) =>
       timingSpanBody({
-        traceId: ctx.run.runId,
+        traceId,
         parentObservationId,
         runId: ctx.run.runId,
         ...definition,
@@ -1653,7 +1654,7 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
   // shows them in the dedicated Model Parameters card and filters work.
   const modelParameters: Record<string, unknown> | undefined =
     ctx.turn?.reasoning ? { reasoning: ctx.turn.reasoning } : undefined;
-  const timingSpanBodies = buildTimingSpanBodies(ctx, operationSpanId, {
+  const timingSpanBodies = buildTimingSpanBodies(ctx, traceId, operationSpanId, {
     modelCallName: createGeneration ? 'agent-call' : 'runtime-call',
     ...(promptStack ? { promptStack } : {}),
   });

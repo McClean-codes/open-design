@@ -1403,6 +1403,7 @@ describe('buildTracePayload', () => {
     const spans = (batch as any[])
       .filter((item) => item.type === 'span-create')
       .map((item) => item.body);
+    const trace = bodyOf(batch, 'trace-create');
     expect(spans.map((span) => span.name)).toEqual(
       expect.arrayContaining([
         'queue',
@@ -1444,6 +1445,7 @@ describe('buildTracePayload', () => {
     expect(bodyOf(batch, 'span-create', 'prompt-build').output.prompt_stack).toBeUndefined();
     expect(bodyOf(batch, 'span-create', 'spawn')).toMatchObject({
       id: 'run-spans-phase-spawn',
+      traceId: trace.id,
       parentObservationId: 'run-spans-gen',
       input: {
         phase: 'spawn',
