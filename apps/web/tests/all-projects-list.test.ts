@@ -5,6 +5,7 @@ import {
   buildAllProjectsList,
   buildDraftsList,
   createSharedProjectPredicate,
+  reconcileSharedProjectCatalogFields,
 } from '../src/collab/all-projects-list';
 import type { Project } from '../src/types';
 
@@ -180,6 +181,35 @@ describe('buildAllProjectsList', () => {
     const list = build({ projects, teamProjects: [], workspaceContext: null });
 
     expect(list).toBe(projects);
+  });
+});
+
+describe('reconcileSharedProjectCatalogFields', () => {
+  it("uses another member's catalog timestamp instead of a pulled placeholder's current time", () => {
+    const catalogUpdatedAt = 1_700_000_060_000;
+    const projects = [
+      {
+        ...localProject('p-shared', '共享项目'),
+        updatedAt: 1_800_000_000_000,
+      },
+    ];
+
+    const reconciled = reconcileSharedProjectCatalogFields({
+      projects,
+      teamProjects: [
+        sharedProject({
+          projectId: 'p-shared',
+          name: 'Catalog name',
+          updatedAt: catalogUpdatedAt,
+        }),
+      ],
+      workspaceContext: teamContext(),
+    });
+
+    expect(reconciled[0]).toMatchObject({
+      name: 'Catalog name',
+      updatedAt: catalogUpdatedAt,
+    });
   });
 });
 

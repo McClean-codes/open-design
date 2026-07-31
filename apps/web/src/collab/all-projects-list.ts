@@ -71,6 +71,39 @@ export function belongsToWorkspace(
   return projectWorkspaceId === workspaceContext.workspaceId;
 }
 
+export function reconcileSharedProjectCatalogFields(input: {
+  projects: Project[];
+  teamProjects: TeamProject[];
+  workspaceContext: WorkspaceCollabContext | null;
+}): Project[] {
+  const selfMemberId = input.workspaceContext?.workspaceMemberId;
+  if (!selfMemberId) return input.projects;
+
+  const catalogOverrides = new Map(
+    asTeamProjectRows(input.teamProjects)
+      .filter((teamProject) => teamProject.ownerMemberId !== selfMemberId)
+      .map((teamProject) => [
+        teamProject.projectId,
+        {
+          name: teamProject.name?.trim() || '',
+          createdAt: teamProject.createdAt,
+          updatedAt: teamProject.updatedAt,
+        },
+      ]),
+  );
+
+  return input.projects.map((project) => {
+    const catalog = catalogOverrides.get(project.id);
+    if (!catalog) return project;
+    return {
+      ...project,
+      ...(catalog.name ? { name: catalog.name } : {}),
+      ...(typeof catalog.createdAt === 'number' ? { createdAt: catalog.createdAt } : {}),
+      ...(typeof catalog.updatedAt === 'number' ? { updatedAt: catalog.updatedAt } : {}),
+    };
+  });
+}
+
 /**
  * The card list behind the 全部项目 grid.
  *
@@ -131,33 +164,11 @@ export function buildAllProjectsList(input: {
   // workspace's local rows while a switch is still in flight.
   const scopedProjects = projects.filter((project) => belongsToWorkspace(project, workspaceContext));
   const localProjectIds = new Set(scopedProjects.map((project) => project.id));
-  const selfMemberId = workspaceContext?.workspaceMemberId ?? null;
-
-  const catalogOverrides = new Map(
-    teamProjects
-      .filter((teamProject) => teamProject.ownerMemberId !== selfMemberId)
-      .map((teamProject) => [
-        teamProject.projectId,
-        {
-          name: teamProject.name?.trim() || '',
-          createdAt: teamProject.createdAt,
-          updatedAt: teamProject.updatedAt,
-        },
-      ]),
-  );
-
-  const localCards = scopedProjects
-    .filter((project) => isShared(project.id))
-    .map((project) => {
-      const catalog = catalogOverrides.get(project.id);
-      if (!catalog) return project;
-      return {
-        ...project,
-        ...(catalog.name ? { name: catalog.name } : {}),
-        ...(typeof catalog.createdAt === 'number' ? { createdAt: catalog.createdAt } : {}),
-        ...(typeof catalog.updatedAt === 'number' ? { updatedAt: catalog.updatedAt } : {}),
-      };
-    });
+  const localCards = reconcileSharedProjectCatalogFields({
+    projects: scopedProjects.filter((project) => isShared(project.id)),
+    teamProjects,
+    workspaceContext,
+  });
 
   const sharedCards: Project[] = teamProjects
     .filter(

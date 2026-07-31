@@ -157,6 +157,7 @@ import {
   buildAllProjectsList,
   buildDraftsList,
   createSharedProjectPredicate,
+  reconcileSharedProjectCatalogFields,
 } from '../collab/all-projects-list';
 import {
   getModelCapabilityTag,
@@ -694,6 +695,14 @@ export function EntryShell({
     sharedFallbackName: t('recentProjects.sharedProjectFallbackName'),
     isShared: isSharedProject,
   });
+  const homeProjectsList = useMemo(
+    () => reconcileSharedProjectCatalogFields({
+      projects,
+      teamProjects: teamProjects.projects,
+      workspaceContext,
+    }),
+    [projects, teamProjects.projects, workspaceContext],
+  );
   // projectId → sharing member id, so a card in the 全部项目 / 草稿 grids can
   // resolve "{creator}创建" against the member directory. A project absent here
   // is the member's own local project → "我创建".
@@ -1507,7 +1516,7 @@ export function EntryShell({
             <div className="entry-main__view-home" data-testid="entry-view-home" data-active={view === 'home' ? 'true' : 'false'} {...inactiveViewProps(view === 'home')}>
               <HomeView
                 isActive={view === 'home'}
-                projects={projects}
+                projects={homeProjectsList}
                 projectsLoading={projectsLoading}
                 designSystems={designSystems}
                 defaultDesignSystemId={defaultDesignSystemId}
