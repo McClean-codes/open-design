@@ -6127,6 +6127,70 @@ describe('FileViewer tweaks toolbar', () => {
     expect(srcDocFrame.srcdoc).toContain('data-od-selection-bridge');
   });
 
+  it('does not expose unscoped relative assets while a team srcDoc preview is materializing', async () => {
+    const filesResponse = deferredResponse();
+    const projectId = 'scoped-assets-project';
+    const fontPath = 'fonts/inter-variable-400.woff2';
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : String(input);
+      if (url === `/api/projects/${projectId}/files`) return filesResponse.promise;
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      renderWithProjectWorkspace(
+        <FileViewer
+          projectId={projectId}
+          projectKind="prototype"
+          file={htmlPreviewFile({
+            name: 'system/artifacts/poster.html',
+            path: 'system/artifacts/poster.html',
+          })}
+          liveHtml={'<html><head><style>@font-face{src:url("../../fonts/inter-variable-400.woff2")}</style></head><body>Poster</body></html>'}
+        />,
+        teamWorkspaceContext(),
+      );
+
+      fireEvent.click(screen.getByTestId('comment-panel-toggle'));
+
+      const pendingFrame = await waitFor(() => {
+        const frame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+        expect(frame.getAttribute('data-od-render-mode')).toBe('srcdoc');
+        return frame;
+      });
+      expect(pendingFrame.srcdoc).not.toContain('../../fonts/inter-variable-400.woff2');
+
+      filesResponse.resolve(new Response(JSON.stringify({
+        files: [
+          htmlPreviewFile({
+            name: 'system/artifacts/poster.html',
+            path: 'system/artifacts/poster.html',
+          }),
+          baseFile({
+            name: fontPath,
+            path: fontPath,
+            mime: 'font/woff2',
+          }),
+        ],
+      }), { status: 200 }));
+
+      await waitFor(() => {
+        const frame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+        expect(frame.srcdoc).toContain(
+          `/api/projects/${projectId}/raw/${fontPath}?workspaceId=ws-1&workspaceMemberId=wm-1`,
+        );
+        expect(frame.srcdoc).not.toContain('../../fonts/inter-variable-400.woff2');
+      });
+    } finally {
+      filesResponse.resolve(new Response(JSON.stringify({ files: [] }), { status: 200 }));
+    }
+  });
+
   it('lets Draw direct send emit a queued annotation while a task is running', async () => {
     const annotationSpy = vi.fn();
     installCanvasSnapshotMocks();

@@ -186,8 +186,10 @@ import {
 } from './file-viewer-render-mode';
 import {
   collectPreviewAssetPaths,
+  htmlHasRelativeProjectAssetRefs,
   htmlHasRootRelativeProjectAssetRefs,
   normalizeRootRelativeProjectAssetRefs,
+  rewriteProjectAssetRefsToRawUrls,
   rewriteInlinedCssAssetRefs,
   rewriteInlinedScriptAssetRefs,
 } from './file-viewer-preview-assets';
@@ -8880,7 +8882,20 @@ function HtmlViewer({
     if (!effectiveDeck || source == null) return source;
     return normalizeDeckVisualSource(removeSpeakerNotesFromHtml(source));
   }, [effectiveDeck, source]);
-  const livePreviewSource = inlinedSource ?? deckVisualSource;
+  const relativeProjectAssetRefs = useMemo(
+    () => source != null && htmlHasRelativeProjectAssetRefs(source, file.name, null),
+    [source, file.name],
+  );
+  // Browser-owned iframe subresource requests cannot attach Workspace headers,
+  // and URL resolution does not inherit the query string from the document's
+  // scoped raw URL. Hold the Team preview until every confirmed relative asset
+  // has been rewritten to its own scoped raw URL; otherwise the first srcDoc
+  // paint can leak an unscoped font/image request before the async rewrite
+  // finishes.
+  const scopedRelativeAssetRefs = workspaceContext != null && relativeProjectAssetRefs;
+  const livePreviewSource = scopedRelativeAssetRefs && inlinedSource === null
+    ? null
+    : (inlinedSource ?? deckVisualSource);
   // Annotation modes that should hold the preview still while open. Manual
   // Edit is handled by its own freeze just below; these are the non-edit
   // passes (Mark/Draw, Comment, Inspect) that also must not be yanked out
@@ -9079,7 +9094,7 @@ function HtmlViewer({
     forceInline: (forceInline || needsSandboxShim) && !needsPowered,
     needsFocusGuard: needsFocusGuard && !needsPowered,
     needsRedirectGuard: needsRedirectGuard && !needsPowered,
-    projectRootAssetRefs,
+    projectRootAssetRefs: projectRootAssetRefs || scopedRelativeAssetRefs,
   };
   const useUrlLoadPreview = shouldUrlLoadHtmlPreview(urlLoadDecision) && !manualEditRequiresSrcDoc;
   const basePreviewSrcUrl = useMemo(
@@ -9289,8 +9304,8 @@ function HtmlViewer({
     // Root-relative project asset refs need the confirmed file list before
     // they can be normalized; wait for it rather than inlining a half-fixed
     // document (the effect re-runs when the set lands).
-    if (projectRootAssetRefs && projectFilePathSet === null) return;
-    if (!hasRelativeAssetRefs(source) && !projectRootAssetRefs) return;
+    if ((projectRootAssetRefs || scopedRelativeAssetRefs) && projectFilePathSet === null) return;
+    if (!relativeProjectAssetRefs && !projectRootAssetRefs) return;
     let cancelled = false;
     void inlineRelativeAssets(
       source,
@@ -9312,6 +9327,8 @@ function HtmlViewer({
     reloadKey,
     useUrlLoadPreview,
     projectRootAssetRefs,
+    relativeProjectAssetRefs,
+    scopedRelativeAssetRefs,
     projectFilePathSet,
     workspaceContext,
   ]);
@@ -15697,18 +15714,6 @@ function isBlockedPreviewAssetScheme(assetRef: string): boolean {
   return /^(?:javascript|data):/i.test(clean);
 }
 
-function hasRelativeAssetRefs(html: string): boolean {
-  const attr = /\s(?:src|href)\s*=\s*["']([^"']+)["']/gi;
-  let match: RegExpExecArray | null;
-  while ((match = attr.exec(html)) !== null) {
-    const value = match[1]?.trim();
-    if (!value) continue;
-    if (/^(?:https?:|data:|blob:|mailto:|tel:|#|\/)/i.test(value)) continue;
-    return true;
-  }
-  return false;
-}
-
 async function inlineRelativeAssets(
   html: string,
   projectId: string,
@@ -15772,7 +15777,13 @@ async function inlineRelativeAssets(
   const resolved = (await Promise.all(replacements)).filter(
     (item): item is { from: string; to: string } => item !== null,
   );
-  return resolved.reduce((next, { from, to }) => next.replace(from, () => to), normalized);
+  const inlined = resolved.reduce(
+    (next, { from, to }) => next.replace(from, () => to),
+    normalized,
+  );
+  return workspaceContext && projectFilePaths
+    ? rewriteProjectAssetRefsToRawUrls(inlined, fileName, projectFilePaths, toRawUrl)
+    : inlined;
 }
 
 async function fetchProjectRelativeText(
