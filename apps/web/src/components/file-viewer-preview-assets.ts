@@ -69,7 +69,14 @@ export function rootRelativeProjectAssetPath(
   decoded = decoded.replace(/^\/+/, '').replace(/\\/g, '/');
   if (!decoded || decoded.endsWith('/')) return null;
   if (decoded.split('/').some((part) => part.trim() === '..')) return null;
-  if (projectFilePaths === null) return decoded;
+  if (projectFilePaths === null) {
+    // The daemon may already have rewritten a relative asset to the app's
+    // scoped raw route before FileViewer receives the HTML. While the project
+    // file list is loading, do not mistake that app endpoint for a project
+    // path and wrap it in a second `/raw/` URL during asset preflight.
+    if (decoded === 'api' || decoded.startsWith('api/')) return null;
+    return decoded;
+  }
   return projectFilePaths.has(decoded) ? decoded : null;
 }
 

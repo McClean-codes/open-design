@@ -116,6 +116,18 @@ describe('collectPreviewAssetPaths', () => {
     ]);
   });
 
+  it('does not reinterpret an already rewritten raw API URL as a project path', () => {
+    const html = [
+      '<style>',
+      '@font-face {',
+      '  src: url("/api/projects/project-1/raw/fonts/inter.woff2?workspaceId=ws-1");',
+      '}',
+      '</style>',
+    ].join('\n');
+
+    expect(collectPreviewAssetPaths(html, 'brand.html', null)).toEqual([]);
+  });
+
   it('rejects external schemes, navigation links, and traversal refs', () => {
     const html = [
       '<img src="https://cdn.example.com/a.png">',
