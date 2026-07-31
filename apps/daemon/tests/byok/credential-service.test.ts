@@ -129,6 +129,45 @@ describe('BYOK credential service', () => {
     await expect(readFile(secretPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('restores a retired Windows DPAPI blob when profile metadata deletion fails', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-credentials-'));
+    roots.push(dataDir);
+    const profileId = 'byok-retired-windows';
+    const byokDir = path.join(dataDir, 'byok');
+    const secretsDir = path.join(byokDir, 'secrets');
+    const metadataPath = path.join(byokDir, 'profiles.json');
+    const secretPath = path.join(secretsDir, `${profileId}.bin`);
+    const metadata = {
+      version: 1 as const,
+      profiles: [{
+        id: profileId,
+        label: 'Retired Windows profile',
+        protocol: 'openai',
+        baseUrl: 'https://example.test/v1',
+        model: 'model',
+        requiresApiKey: true,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    };
+    await mkdir(secretsDir, { recursive: true });
+    await writeFile(metadataPath, JSON.stringify(metadata));
+    await writeFile(secretPath, 'retired-dpapi-blob');
+    const service = new ByokCredentialService({
+      dataDir,
+      backend: createPlatformByokSecretBackend('win32', dataDir),
+      persistMetadata: async () => {
+        throw new Error('metadata unavailable');
+      },
+    });
+
+    await expect(service.delete(profileId)).rejects.toThrow('metadata unavailable');
+
+    await expect(service.get(profileId)).resolves.toMatchObject({ id: profileId });
+    await expect(readFile(metadataPath, 'utf8')).resolves.toBe(JSON.stringify(metadata));
+    await expect(readFile(secretPath, 'utf8')).resolves.toBe('retired-dpapi-blob');
+  });
+
   it('serializes concurrent metadata mutations so profiles cannot overwrite each other', async () => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-credentials-'));
     roots.push(dataDir);

@@ -29,6 +29,13 @@ export interface ByokSecretBackend {
   set(profileId: string, secret: string): Promise<void>;
   get(profileId: string): Promise<string | null>;
   delete(profileId: string): Promise<boolean>;
+  stageDelete?(profileId: string): Promise<ByokSecretDeleteTransaction>;
+}
+
+export interface ByokSecretDeleteTransaction {
+  readonly deleted: boolean;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
 }
 
 export interface ResolvedByokCredentialProfile {
@@ -174,23 +181,30 @@ export class ByokCredentialService {
     const document = await this.readDocument();
     const next = document.profiles.filter((profile) => profile.id !== profileId);
     const existed = next.length !== document.profiles.length;
-    const previousSecret = await this.backend.get(profileId);
-    const secretDeleted = await this.backend.delete(profileId);
+    const stagedDelete = await this.backend.stageDelete?.(profileId);
+    const previousSecret = stagedDelete ? null : await this.backend.get(profileId);
+    const secretDeleted = stagedDelete?.deleted ?? await this.backend.delete(profileId);
     if (existed) {
       document.profiles = next;
       try {
         await this.writeDocument(document);
       } catch (error) {
-        if (secretDeleted && previousSecret !== null) {
-          await this.restoreSecretAfterMetadataFailure(
-            profileId,
-            previousSecret,
-            error,
-          );
+        if (stagedDelete) {
+          try {
+            await stagedDelete.rollback();
+          } catch (rollbackError) {
+            throw new AggregateError(
+              [error, rollbackError],
+              'BYOK metadata persistence failed and the secure credential rollback also failed.',
+            );
+          }
+        } else if (secretDeleted && previousSecret !== null) {
+          await this.restoreSecretAfterMetadataFailure(profileId, previousSecret, error);
         }
         throw error;
       }
     }
+    await stagedDelete?.commit();
     return existed || secretDeleted;
   }
 
@@ -458,14 +472,32 @@ class RetiredWindowsSecretCleanupBackend extends UnavailableSecretBackend {
   }
 
   override async delete(profileId: string) {
+    const transaction = await this.stageDelete(profileId);
+    await transaction.commit();
+    return transaction.deleted;
+  }
+
+  async stageDelete(profileId: string): Promise<ByokSecretDeleteTransaction> {
     assertProfileId(profileId);
+    const secretPath = path.join(this.secretsDir, `${profileId}.bin`);
+    const stagedPath = `${secretPath}.${randomUUID()}.delete`;
     try {
-      await unlink(path.join(this.secretsDir, `${profileId}.bin`));
-      return true;
+      await rename(secretPath, stagedPath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          deleted: false,
+          async commit() {},
+          async rollback() {},
+        };
+      }
       throw error;
     }
+    return {
+      deleted: true,
+      commit: async () => unlink(stagedPath),
+      rollback: async () => rename(stagedPath, secretPath),
+    };
   }
 }
 
