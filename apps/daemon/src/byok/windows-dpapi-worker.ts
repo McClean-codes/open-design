@@ -1,10 +1,14 @@
 import type { ChildProcessWithoutNullStreams, SpawnOptionsWithoutStdio } from 'node:child_process';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import type { Server, Socket } from 'node:net';
 import { createServer } from 'node:net';
 
 const MAX_WORKER_LINE_BYTES = 64 * 1024;
+const MAX_AUTHENTICATING_CONNECTIONS = 16;
+const PIPE_AUTH_CHALLENGE_BYTES = 32;
+const PIPE_AUTH_KEY_BYTES = 32;
+const PIPE_AUTH_TIMEOUT_MS = 5_000;
 const DEFAULT_CONNECT_TIMEOUT_MS = 50_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5_000;
 
@@ -67,6 +71,7 @@ type WindowsDpapiWorkerResponse = {
   found?: boolean;
   id?: string;
   ok?: boolean;
+  proof?: string;
   type?: string;
   value?: string;
 };
@@ -126,6 +131,41 @@ $writer = New-Object System.IO.StreamWriter(
   $true
 )
 $writer.AutoFlush = $true
+
+try {
+  $authenticationKey = [System.Convert]::FromBase64String(
+    [Console]::In.ReadLine()
+  )
+  if ($authenticationKey.Length -ne 32) {
+    throw 'Invalid pipe authentication key'
+  }
+  $challengeEnvelope = $reader.ReadLine() | ConvertFrom-Json
+  if ([string]$challengeEnvelope.type -ne 'challenge') {
+    throw 'Invalid pipe authentication challenge'
+  }
+  $challenge = [System.Convert]::FromBase64String(
+    [string]$challengeEnvelope.challenge
+  )
+  if ($challenge.Length -ne 32) {
+    throw 'Invalid pipe authentication challenge'
+  }
+  $hmac = [System.Security.Cryptography.HMACSHA256]::new($authenticationKey)
+  try {
+    $proof = $hmac.ComputeHash($challenge)
+  } finally {
+    $hmac.Dispose()
+  }
+  Write-OpenDesignDpapiResponse @{
+    type = 'authenticate'
+    proof = [System.Convert]::ToBase64String($proof)
+  }
+} catch {
+  exit 1
+} finally {
+  if ($authenticationKey -ne $null) {
+    [System.Array]::Clear($authenticationKey, 0, $authenticationKey.Length)
+  }
+}
 
 try {
   [void][System.Reflection.Assembly]::LoadFrom(
@@ -298,6 +338,7 @@ export class WindowsDpapiWorker {
     this.pipe.on('close', () => {
       if (!this.closing) this.fail('pipe-close');
     });
+    this.pipe.resume();
     this.child.stdout.resume();
     this.child.stderr.resume();
     this.child.on('error', () => {
@@ -326,6 +367,7 @@ export class WindowsDpapiWorker {
       await closeServer(server);
       throw secureCredentialCommandError('shutdown', 'closed', false);
     }
+    const authenticationKey = randomBytes(PIPE_AUTH_KEY_BYTES);
     let child: ChildProcessWithoutNullStreams;
     try {
       child = (options.spawnWorker ?? spawn)(
@@ -350,14 +392,21 @@ export class WindowsDpapiWorker {
         },
       );
     } catch {
+      authenticationKey.fill(0);
       await closeServer(server);
       throw secureCredentialCommandError('spawn', 'spawn');
     }
-    // The packaged process must not retain an open stdin stream. Requests use
-    // the random per-process local pipe below, keeping plaintext credentials
-    // out of argv, environment variables, and temporary files.
-    child.stdin.end();
-    const connection = waitForConnection(server);
+    // The packaged process must not retain an open stdin stream. Only this
+    // per-generation pipe-authentication capability crosses stdin; BYOK
+    // credentials stay out of argv, environment variables, and temporary
+    // files and are sent only after the child proves possession of the key.
+    child.stdin.end(`${authenticationKey.toString('base64')}\n`);
+    const connectionAbortController = new AbortController();
+    const connection = waitForAuthenticatedConnection(
+      server,
+      authenticationKey,
+      connectionAbortController.signal,
+    );
     try {
       const pipe = await withTimeout(
         Promise.race([
@@ -368,9 +417,12 @@ export class WindowsDpapiWorker {
         positiveTimeout(options.connectTimeoutMs, DEFAULT_CONNECT_TIMEOUT_MS),
         'connect',
       );
+      authenticationKey.fill(0);
       server.close();
       return new WindowsDpapiWorker(child, pipe, options);
     } catch (error) {
+      authenticationKey.fill(0);
+      connectionAbortController.abort();
       void connection.then(
         (latePipe) => latePipe.destroy(),
         () => undefined,
@@ -613,10 +665,124 @@ function listen(server: Server, path: string): Promise<void> {
   });
 }
 
-function waitForConnection(server: Server): Promise<Socket> {
+function waitForAuthenticatedConnection(
+  server: Server,
+  authenticationKey: Buffer,
+  signal: AbortSignal,
+): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    server.once('connection', resolve);
-    server.once('error', reject);
+    let settled = false;
+    const authenticating = new Set<Socket>();
+    const cleanup = () => {
+      server.off('connection', onConnection);
+      server.off('error', onServerError);
+      signal.removeEventListener('abort', onAbort);
+    };
+    const rejectOnce = (error: WindowsDpapiWorkerError) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      for (const pipe of authenticating) pipe.destroy();
+      authenticating.clear();
+      reject(error);
+    };
+    const onServerError = () => {
+      rejectOnce(secureCredentialCommandError('connect', 'pipe-close'));
+    };
+    const onAbort = () => {
+      rejectOnce(secureCredentialCommandError('shutdown', 'closed', false));
+    };
+    const onConnection = (pipe: Socket) => {
+      if (settled || authenticating.size >= MAX_AUTHENTICATING_CONNECTIONS) {
+        pipe.destroy();
+        return;
+      }
+      authenticating.add(pipe);
+      void authenticatePipeClient(pipe, authenticationKey).then((authenticated) => {
+        authenticating.delete(pipe);
+        if (settled) {
+          pipe.destroy();
+          return;
+        }
+        if (!authenticated) {
+          pipe.destroy();
+          return;
+        }
+        settled = true;
+        cleanup();
+        for (const otherPipe of authenticating) otherPipe.destroy();
+        authenticating.clear();
+        resolve(pipe);
+      });
+    };
+    server.on('connection', onConnection);
+    server.once('error', onServerError);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function authenticatePipeClient(
+  pipe: Socket,
+  authenticationKey: Buffer,
+): Promise<boolean> {
+  return new Promise((resolve) => {
+    const challenge = randomBytes(PIPE_AUTH_CHALLENGE_BYTES);
+    const expectedProof = createHmac('sha256', authenticationKey)
+      .update(challenge)
+      .digest();
+    let inputBuffer = '';
+    let settled = false;
+    const finish = (authenticated: boolean, remainder = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      pipe.off('data', onData);
+      if (authenticated) {
+        pipe.pause();
+        if (remainder) pipe.unshift(Buffer.from(remainder, 'utf8'));
+      }
+      challenge.fill(0);
+      expectedProof.fill(0);
+      resolve(authenticated);
+    };
+    const onData = (chunk: Buffer) => {
+      inputBuffer += chunk.toString('utf8');
+      if (Buffer.byteLength(inputBuffer, 'utf8') > MAX_WORKER_LINE_BYTES) {
+        finish(false);
+        return;
+      }
+      const newlineIndex = inputBuffer.indexOf('\n');
+      if (newlineIndex < 0) return;
+      const line = inputBuffer.slice(0, newlineIndex).trim();
+      const remainder = inputBuffer.slice(newlineIndex + 1);
+      let response: WindowsDpapiWorkerResponse;
+      try {
+        response = JSON.parse(line) as WindowsDpapiWorkerResponse;
+      } catch {
+        finish(false);
+        return;
+      }
+      const proof = typeof response.proof === 'string'
+        ? decodeCanonicalBase64(response.proof)
+        : null;
+      finish(
+        response.type === 'authenticate'
+          && proof?.byteLength === expectedProof.byteLength
+          && timingSafeEqual(proof, expectedProof),
+        remainder,
+      );
+    };
+    const timeout = setTimeout(() => finish(false), PIPE_AUTH_TIMEOUT_MS);
+    timeout.unref?.();
+    pipe.once('error', () => finish(false));
+    pipe.once('close', () => finish(false));
+    pipe.on('data', onData);
+    pipe.write(`${JSON.stringify({
+      type: 'challenge',
+      challenge: challenge.toString('base64'),
+    })}\n`, 'utf8', (error) => {
+      if (error) finish(false);
+    });
   });
 }
 

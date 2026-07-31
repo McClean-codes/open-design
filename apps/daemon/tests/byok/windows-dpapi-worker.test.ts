@@ -1,7 +1,8 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
-import { EventEmitter } from 'node:events';
+import { createHmac, randomUUID } from 'node:crypto';
+import { EventEmitter, once } from 'node:events';
 import { mkdtemp, rm } from 'node:fs/promises';
-import type { Socket } from 'node:net';
+import { createConnection, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Duplex, PassThrough } from 'node:stream';
@@ -107,34 +108,100 @@ function parsedRequest(line: string): {
   };
 }
 
+function createTestPipeAddress(root: string): {
+  connectionName: string;
+  listenPath: string;
+} {
+  if (process.platform === 'win32') {
+    const connectionName = `open-design-dpapi-test-${process.pid}-${randomUUID()}`;
+    return {
+      connectionName,
+      listenPath: `\\\\.\\pipe\\${connectionName}`,
+    };
+  }
+  const listenPath = path.join(root, 'worker.sock');
+  return {
+    connectionName: listenPath,
+    listenPath,
+  };
+}
+
+function connectSocket(listenPath: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = createConnection(listenPath);
+    socket.once('connect', () => resolve(socket));
+    socket.once('error', reject);
+  });
+}
+
+function readSocketLine(socket: Socket): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let buffer = '';
+    const cleanup = () => {
+      socket.off('data', onData);
+      socket.off('error', onError);
+      socket.off('close', onClose);
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      reject(new Error('socket closed before a complete line was received'));
+    };
+    const onData = (chunk: Buffer) => {
+      buffer += chunk.toString('utf8');
+      const newlineIndex = buffer.indexOf('\n');
+      if (newlineIndex < 0) return;
+      const line = buffer.slice(0, newlineIndex);
+      const remainder = buffer.slice(newlineIndex + 1);
+      socket.pause();
+      cleanup();
+      if (remainder) socket.unshift(Buffer.from(remainder, 'utf8'));
+      resolve(line);
+    };
+    socket.on('data', onData);
+    socket.once('error', onError);
+    socket.once('close', onClose);
+    socket.resume();
+  });
+}
+
 describe('Windows DPAPI worker protocol and lifecycle', () => {
   const roots: string[] = [];
+  const sockets: Socket[] = [];
 
   afterEach(() => {
     vi.useRealTimers();
+    for (const socket of sockets.splice(0)) socket.destroy();
     return Promise.all(
       roots.splice(0).map((root) => rm(root, { recursive: true, force: true })),
     );
   });
 
-  it('bounds the pipe connection phase, terminates the child, and passes only a parent PID watchdog input', async () => {
+  it('bounds the pipe connection phase, terminates the child, and keeps its authentication key out of argv and env', async () => {
     vi.useFakeTimers();
     const root = await mkdtemp(path.join(tmpdir(), 'od-dpapi-worker-connect-'));
     roots.push(root);
+    const pipeAddress = createTestPipeAddress(root);
     const child = createFakeChild();
     let observeSpawn: (() => void) | undefined;
     const spawned = new Promise<void>((resolve) => {
       observeSpawn = resolve;
     });
+    let authenticationInput = '';
+    let spawnArguments: readonly string[] = [];
     let spawnEnvironment: NodeJS.ProcessEnv | undefined;
     const creating = WindowsDpapiWorker.create({
       connectTimeoutMs: 10,
-      pipeAddress: {
-        connectionName: path.join(root, 'worker.sock'),
-        listenPath: path.join(root, 'worker.sock'),
-      },
-      spawnWorker: (_command, _args, options) => {
+      pipeAddress,
+      spawnWorker: (_command, args, options) => {
+        spawnArguments = args;
         spawnEnvironment = options.env;
+        child.stdin.on('data', (chunk: Buffer) => {
+          authenticationInput += chunk.toString('utf8');
+        });
         observeSpawn?.();
         return child;
       },
@@ -149,15 +216,100 @@ describe('Windows DPAPI worker protocol and lifecycle', () => {
 
     expect(child.kill).toHaveBeenCalledTimes(1);
     expect(spawnEnvironment?.OD_BYOK_DPAPI_PARENT_PID).toBe(String(process.pid));
-    expect(spawnEnvironment?.OD_BYOK_DPAPI_PIPE_NAME).toBe(
-      path.join(root, 'worker.sock'),
-    );
+    expect(spawnEnvironment?.OD_BYOK_DPAPI_PIPE_NAME).toBe(pipeAddress.connectionName);
+    expect(spawnEnvironment?.OD_BYOK_DPAPI_AUTH_KEY).toBeUndefined();
     expect(JSON.stringify(spawnEnvironment)).not.toContain('secretPath');
+    const authenticationKey = authenticationInput.trim();
+    expect(Buffer.from(authenticationKey, 'base64')).toHaveLength(32);
+    expect(JSON.stringify([spawnArguments, spawnEnvironment])).not.toContain(
+      authenticationKey,
+    );
+  });
+
+  it('rejects an impostor before readiness and sends credentials only to the authenticated worker', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-dpapi-worker-auth-'));
+    roots.push(root);
+    const pipeAddress = createTestPipeAddress(root);
+    const child = createFakeChild();
+    let authenticationInput = '';
+    let resolveAuthenticationInput: ((value: string) => void) | undefined;
+    const authenticationInputReady = new Promise<string>((resolve) => {
+      resolveAuthenticationInput = resolve;
+    });
+    const creating = WindowsDpapiWorker.create({
+      pipeAddress,
+      spawnWorker: () => {
+        child.stdin.on('data', (chunk: Buffer) => {
+          authenticationInput += chunk.toString('utf8');
+        });
+        child.stdin.once('end', () => {
+          resolveAuthenticationInput?.(authenticationInput.trim());
+        });
+        return child;
+      },
+    });
+
+    const impostor = await connectSocket(pipeAddress.listenPath);
+    sockets.push(impostor);
+    const impostorChallengeLine = await readSocketLine(impostor);
+    expect(JSON.parse(impostorChallengeLine)).toMatchObject({
+      type: 'challenge',
+    });
+    const impostorClosed = once(impostor, 'close');
+    impostor.write('{"type":"ready","ok":true}\n');
+    await impostorClosed;
+
+    const authenticationKey = Buffer.from(
+      await authenticationInputReady,
+      'base64',
+    );
+    expect(authenticationKey).toHaveLength(32);
+    const authenticatedPipe = await connectSocket(pipeAddress.listenPath);
+    sockets.push(authenticatedPipe);
+    const challengeEnvelope = JSON.parse(
+      await readSocketLine(authenticatedPipe),
+    ) as { challenge: string; type: string };
+    const proof = createHmac('sha256', authenticationKey)
+      .update(Buffer.from(challengeEnvelope.challenge, 'base64'))
+      .digest('base64');
+    authenticatedPipe.write(
+      `${JSON.stringify({ type: 'authenticate', proof })}\n`
+      + '{"type":"ready","ok":true}\n',
+    );
+
+    const worker = await creating;
+    await worker.ready();
+    const operation = worker.run('set', '/secret/path', 'credential-value');
+    const requestLine = await readSocketLine(authenticatedPipe);
+    const request = JSON.parse(requestLine) as {
+      id: string;
+      operation: string;
+      secret: string;
+    };
+    expect(request.operation).toBe('set');
+    expect(Buffer.from(request.secret, 'base64').toString('utf8')).toBe(
+      'credential-value',
+    );
+    expect(impostorChallengeLine).not.toContain('credential-value');
+    authenticatedPipe.write(`${JSON.stringify({
+      id: request.id,
+      ok: true,
+      found: true,
+    })}\n`);
+    await expect(operation).resolves.toEqual({ found: true, value: null });
+
+    authenticatedPipe.once('end', () => {
+      authenticatedPipe.end();
+      child.emitClose(0);
+    });
+    authenticatedPipe.resume();
+    await worker.close();
   });
 
   it('aborts an in-progress connection immediately during daemon shutdown', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'od-dpapi-worker-abort-'));
     roots.push(root);
+    const pipeAddress = createTestPipeAddress(root);
     const child = createFakeChild();
     const abortController = new AbortController();
     let observeSpawn: (() => void) | undefined;
@@ -166,10 +318,7 @@ describe('Windows DPAPI worker protocol and lifecycle', () => {
     });
     const creating = WindowsDpapiWorker.create({
       connectTimeoutMs: 50_000,
-      pipeAddress: {
-        connectionName: path.join(root, 'worker.sock'),
-        listenPath: path.join(root, 'worker.sock'),
-      },
+      pipeAddress,
       signal: abortController.signal,
       spawnWorker: () => {
         observeSpawn?.();
