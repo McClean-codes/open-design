@@ -20,6 +20,8 @@ const DISABLED: CollabContextValue = {
   syncState: null,
   viewerOnly: false,
   isOwner: false,
+  isEffectiveOwner: false,
+  isSharedNonOwner: false,
   ownerDisplayName: null,
   ownerRole: null,
   downloadPending: false,

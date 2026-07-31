@@ -176,6 +176,22 @@ export interface ProjectCollab {
    */
   isOwner: boolean;
   /**
+   * Effective project ownership for UX that must not wait on `/collab/status`.
+   * True when status confirms the viewer is the single writer **or** the hub
+   * catalog already names them as owner (issue #99) **or** this tab created
+   * the project this session. Prefer this over raw `isOwner` for sticky defaults
+   * (e.g. default chat open/collapsed) that would otherwise latch wrong while
+   * `ownerMemberId` is still missing from a shared status payload.
+   */
+  isEffectiveOwner: boolean;
+  /**
+   * Confirmed: this is a shared team project the viewer did **not** create.
+   * Requires positive evidence of a different owner (status `ownerMemberId`,
+   * catalog owner, or a previously confirmed non-owner relationship) — never
+   * mere `!isOwner` during the status-unknown window.
+   */
+  isSharedNonOwner: boolean;
+  /**
    * Display name of the member who shared this project (its owner), resolved
    * server-side from the collab-cloud member directory. Drives the "这是 {owner}
    * 创建的共享项目" read-only banner. Null when the project is unshared, off-team,
@@ -296,6 +312,18 @@ export function useProjectCollab(
     && knownCatalog.some(
       (entry) => entry.projectId === projectId && entry.ownerMemberId === context.workspaceMemberId,
     );
+  // Catalog names a different member as the single writer — usable before
+  // `/collab/status` confirms ownerMemberId (mirror of knownOwnedByViewer).
+  const knownOwnedBySomeoneElse =
+    knownCatalog !== null
+    && Boolean(projectId)
+    && context?.workspaceMemberId != null
+    && knownCatalog.some(
+      (entry) =>
+        entry.projectId === projectId
+        && entry.ownerMemberId != null
+        && entry.ownerMemberId !== context.workspaceMemberId,
+    );
   // A project this browser tab created moments ago cannot possibly be shared
   // yet — see `projectIdsCreatedByViewerThisSession` above. This covers the
   // window `knownUnshared` cannot: right after creation the project is not
@@ -303,6 +331,8 @@ export function useProjectCollab(
   // or not loading is irrelevant here.
   const createdByViewerThisSession =
     Boolean(projectId) && projectIdsCreatedByViewerThisSession.has(projectId as string);
+  // Status-confirmed ownership OR catalog/session shortcuts (issue #99 path).
+  const isEffectiveOwner = isOwner || knownOwnedByViewer || createdByViewerThisSession;
   // Once `/collab/status` has EXPLICITLY confirmed this project belongs to
   // someone else (shared && !isOwner), remember it for as long as this
   // component stays mounted on this projectId. The owner unsharing later
@@ -332,6 +362,18 @@ export function useProjectCollab(
     ? false
     : (statusUnknown && !knownUnshared) || (shared && !isOwner) || lostAccessAfterUnshare;
   const viewerOnly = workspaceContextReadOnly || workspaceReadOnly || sharedReadOnly;
+  // Positive non-owner evidence only — sticky UX (default-collapsed chat) must
+  // not latch on `shared && !isOwner` while ownerMemberId is still missing from
+  // an otherwise-shared status payload for the real owner.
+  const statusNamedDifferentOwner =
+    collab.ownerMemberId != null
+    && context?.workspaceMemberId != null
+    && collab.ownerMemberId !== context.workspaceMemberId;
+  const isSharedNonOwner =
+    !isEffectiveOwner
+    && (knownOwnedBySomeoneElse
+      || (shared && statusNamedDifferentOwner)
+      || lostAccessAfterUnshare);
 
   // Member content auto-sync (the last link): when a read-only member sees the
   // resource-hub head (`publishedVersion`) advance past what we last pulled,
@@ -461,6 +503,8 @@ export function useProjectCollab(
     syncState: collab.syncState,
     viewerOnly,
     isOwner,
+    isEffectiveOwner,
+    isSharedNonOwner,
     ownerDisplayName: collab.ownerDisplayName,
     ownerRole: collab.ownerRole,
     downloadPending,

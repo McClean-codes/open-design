@@ -1188,20 +1188,16 @@ export function projectSplitClassName(workspaceFocused: boolean): string {
 
 /**
  * Whether a project open should start with the chat pane collapsed (workspace
- * focus mode). Shared team projects the viewer did not create — confirmed
- * shared (`syncState` past `local_only`) and not owned by the viewer — default
- * to design-first so members land on the artifact instead of the author's
- * conversation. Personal projects, owners, and still-unknown collab status
- * keep chat open (the usual default).
+ * focus mode). Uses `useProjectCollab`'s confirmed shared-non-owner signal
+ * (`isSharedNonOwner`) — not raw `isOwner` — so a catalog-confirmed owner whose
+ * `/collab/status` payload is still missing `ownerMemberId` does not latch into
+ * focus mode permanently (review: sticky apply ref).
  */
 export function shouldDefaultCollapseChatForSharedNonOwner(collab: {
   enabled: boolean;
-  syncState: string | null;
-  isOwner: boolean;
+  isSharedNonOwner: boolean;
 }): boolean {
-  if (!collab.enabled) return false;
-  if (collab.syncState == null || collab.syncState === 'local_only') return false;
-  return !collab.isOwner;
+  return collab.enabled && collab.isSharedNonOwner;
 }
 
 // React key for the on-screen question form. Deliberately does NOT include the
@@ -2314,15 +2310,14 @@ export function ProjectView({
     if (
       !shouldDefaultCollapseChatForSharedNonOwner({
         enabled: projectCollab.enabled,
-        syncState: projectCollab.syncState,
-        isOwner: projectCollab.isOwner,
+        isSharedNonOwner: projectCollab.isSharedNonOwner,
       })
     ) {
       return;
     }
     setWorkspaceFocused(true);
     sharedNonOwnerChatDefaultAppliedRef.current = project.id;
-  }, [project.id, projectCollab.enabled, projectCollab.syncState, projectCollab.isOwner]);
+  }, [project.id, projectCollab.enabled, projectCollab.isSharedNonOwner]);
 
   // Load messages whenever the active conversation changes. This happens
   // on project mount (after conversations load) and on user-triggered
