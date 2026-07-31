@@ -88,13 +88,11 @@ describe('BYOK credential service', () => {
     })).rejects.toThrow(/secure credential storage is unavailable/i);
   });
 
-  it('dispatches native Windows credentials to a DPAPI backend rooted in OD_DATA_DIR', async () => {
-    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-windows-dispatch-'));
-    roots.push(dataDir);
+  it('fails closed when Windows has no supported secure credential backend', async () => {
+    const backend = createPlatformByokSecretBackend('win32');
 
-    const backend = createPlatformByokSecretBackend('win32', dataDir);
-
-    expect(backend.kind).toBe('windows-dpapi');
+    expect(backend.kind).toBe('unavailable-win32');
+    await expect(backend.available()).resolves.toBe(false);
   });
 
   it('serializes concurrent metadata mutations so profiles cannot overwrite each other', async () => {
