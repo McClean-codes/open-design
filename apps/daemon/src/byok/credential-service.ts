@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   ByokChatProviderConfig,
@@ -55,7 +55,10 @@ export class ByokCredentialService {
   >;
 
   constructor(options: ByokCredentialServiceOptions) {
-    this.backend = options.backend ?? createPlatformByokSecretBackend();
+    this.backend = options.backend ?? createPlatformByokSecretBackend(
+      process.platform,
+      options.dataDir,
+    );
     this.metadataPath = path.join(options.dataDir, 'byok', 'profiles.json');
     this.persistMetadata = options.persistMetadata ?? writeMetadataDocument;
   }
@@ -338,9 +341,15 @@ function isStoredProfile(value: unknown): value is StoredProfile {
 
 export function createPlatformByokSecretBackend(
   platform: NodeJS.Platform = process.platform,
+  dataDir?: string,
 ): ByokSecretBackend {
   if (platform === 'darwin') return new MacOsKeychainBackend();
   if (platform === 'linux') return new LinuxSecretServiceBackend();
+  if (platform === 'win32' && dataDir) {
+    return new RetiredWindowsSecretCleanupBackend(
+      path.join(dataDir, 'byok', 'secrets'),
+    );
+  }
   return new UnavailableSecretBackend(platform);
 }
 
@@ -436,9 +445,28 @@ class UnavailableSecretBackend implements ByokSecretBackend {
   }
 
   async available() { return false; }
-  async set() { throw new Error('Secure credential storage is unavailable on this system.'); }
-  async get() { return null; }
-  async delete() { return false; }
+  async set(_profileId: string, _secret: string) {
+    throw new Error('Secure credential storage is unavailable on this system.');
+  }
+  async get(_profileId: string) { return null; }
+  async delete(_profileId: string) { return false; }
+}
+
+class RetiredWindowsSecretCleanupBackend extends UnavailableSecretBackend {
+  constructor(private readonly secretsDir: string) {
+    super('win32');
+  }
+
+  override async delete(profileId: string) {
+    assertProfileId(profileId);
+    try {
+      await unlink(path.join(this.secretsDir, `${profileId}.bin`));
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    }
+  }
 }
 
 async function commandAvailable(command: string): Promise<boolean> {

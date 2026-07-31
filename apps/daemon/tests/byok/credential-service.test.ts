@@ -89,10 +89,44 @@ describe('BYOK credential service', () => {
   });
 
   it('fails closed when Windows has no supported secure credential backend', async () => {
-    const backend = createPlatformByokSecretBackend('win32');
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-credentials-'));
+    roots.push(dataDir);
+    const backend = createPlatformByokSecretBackend('win32', dataDir);
 
     expect(backend.kind).toBe('unavailable-win32');
     await expect(backend.available()).resolves.toBe(false);
+  });
+
+  it('deletes a retired Windows DPAPI blob with its profile metadata', async () => {
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-byok-credentials-'));
+    roots.push(dataDir);
+    const profileId = 'byok-retired-windows';
+    const byokDir = path.join(dataDir, 'byok');
+    const secretsDir = path.join(byokDir, 'secrets');
+    const secretPath = path.join(secretsDir, `${profileId}.bin`);
+    await mkdir(secretsDir, { recursive: true });
+    await writeFile(path.join(byokDir, 'profiles.json'), JSON.stringify({
+      version: 1,
+      profiles: [{
+        id: profileId,
+        label: 'Retired Windows profile',
+        protocol: 'openai',
+        baseUrl: 'https://example.test/v1',
+        model: 'model',
+        requiresApiKey: true,
+        createdAt: 1,
+        updatedAt: 1,
+      }],
+    }));
+    await writeFile(secretPath, 'retired-dpapi-blob');
+    const service = new ByokCredentialService({
+      dataDir,
+      backend: createPlatformByokSecretBackend('win32', dataDir),
+    });
+
+    await expect(service.delete(profileId)).resolves.toBe(true);
+    await expect(service.get(profileId)).resolves.toBeNull();
+    await expect(readFile(secretPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('serializes concurrent metadata mutations so profiles cannot overwrite each other', async () => {
