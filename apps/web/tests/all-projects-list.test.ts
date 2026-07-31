@@ -111,6 +111,33 @@ describe('buildAllProjectsList', () => {
     expect(list[0]?.name).toBe('Renamed by owner');
   });
 
+  it("keeps another member's catalog update time after the shared project is pulled locally", () => {
+    const catalogCreatedAt = 1_700_000_000_000;
+    const catalogUpdatedAt = 1_700_000_060_000;
+    const pulledPlaceholder = {
+      ...localProject('p-shared', 'Pulled copy'),
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    };
+    const list = build({
+      projects: [pulledPlaceholder],
+      teamProjects: [
+        sharedProject({
+          projectId: 'p-shared',
+          name: 'Catalog name',
+          createdAt: catalogCreatedAt,
+          updatedAt: catalogUpdatedAt,
+        }),
+      ],
+    });
+
+    expect(list[0]).toMatchObject({
+      name: 'Catalog name',
+      createdAt: catalogCreatedAt,
+      updatedAt: catalogUpdatedAt,
+    });
+  });
+
   it('keeps the local name for the member’s OWN project so a fresh rename holds', () => {
     const list = build({
       projects: [localProject('p-mine', 'Just renamed')],

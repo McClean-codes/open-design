@@ -94,11 +94,12 @@ export function belongsToWorkspace(
  * synthesized into a normal card: placeholder name until the pull registers it
  * under its real name, timestamps from when it was shared.
  *
- * Names follow the hub catalog for rows owned by SOMEONE ELSE (a pulled copy's
- * local name freezes at pull time, so an owner's rename would otherwise never
- * converge here). The member's own rows keep the local name — their fresh
- * rename may not have round-tripped to the catalog yet, and letting the stale
- * catalog name win would look like the rename bounced.
+ * Names and timestamps follow the hub catalog for rows owned by SOMEONE ELSE.
+ * A pulled copy's local name freezes at pull time, while its transport
+ * placeholder is stamped with `now`; allowing either to win would hide an
+ * owner's rename and make merely opening a shared project look like a content
+ * update. The member's own rows keep the local fields — their fresh changes may
+ * not have round-tripped to the catalog yet.
  */
 export function buildAllProjectsList(input: {
   projects: Project[];
@@ -132,17 +133,30 @@ export function buildAllProjectsList(input: {
   const localProjectIds = new Set(scopedProjects.map((project) => project.id));
   const selfMemberId = workspaceContext?.workspaceMemberId ?? null;
 
-  const catalogNameOverride = new Map(
+  const catalogOverrides = new Map(
     teamProjects
       .filter((teamProject) => teamProject.ownerMemberId !== selfMemberId)
-      .map((teamProject) => [teamProject.projectId, teamProject.name?.trim() || '']),
+      .map((teamProject) => [
+        teamProject.projectId,
+        {
+          name: teamProject.name?.trim() || '',
+          createdAt: teamProject.createdAt,
+          updatedAt: teamProject.updatedAt,
+        },
+      ]),
   );
 
   const localCards = scopedProjects
     .filter((project) => isShared(project.id))
     .map((project) => {
-      const catalogName = catalogNameOverride.get(project.id);
-      return catalogName && catalogName !== project.name ? { ...project, name: catalogName } : project;
+      const catalog = catalogOverrides.get(project.id);
+      if (!catalog) return project;
+      return {
+        ...project,
+        ...(catalog.name ? { name: catalog.name } : {}),
+        ...(typeof catalog.createdAt === 'number' ? { createdAt: catalog.createdAt } : {}),
+        ...(typeof catalog.updatedAt === 'number' ? { updatedAt: catalog.updatedAt } : {}),
+      };
     });
 
   const sharedCards: Project[] = teamProjects
