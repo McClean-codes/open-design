@@ -55,8 +55,10 @@ observability slice:
   `failure_category`, `failure_detail`, `failure_stage`, `retryable`, and
   `user_action`;
 - failed runs preserve the non-empty `error_code` invariant;
-- `langfuse_trace_id` makes PostHog and Langfuse correlate by
-  `run_id == langfuse_trace_id == traceId`;
+- `langfuse_trace_id` makes PostHog and Langfuse correlate by storing the
+  actual Langfuse trace ID, deterministically derived as
+  `sha256(run_id).slice(0, 32) == traceId`; Langfuse metadata retains `run_id`
+  for the reverse join;
 - Langfuse trace metadata mirrors failure, timing, and token/cache fields;
 - `run_finished` emits main-path timing fields for queue, spawn, first token,
   generation, tool aggregate, finalization, and total duration;

@@ -17,7 +17,9 @@ Issue: [#3713](https://github.com/nexu-io/open-design/issues/3713)
 Open Design already reports completed runs to Langfuse and PostHog. The current
 implementation captures useful operational facts:
 
-- trace identity: `run_id == langfuse_trace_id == traceId`;
+- trace identity: `run_id` is the Open Design external identifier, while
+  `langfuse_trace_id == traceId == sha256(run_id).slice(0, 32)`; Langfuse
+  metadata retains `run_id` for external correlation;
 - run status, error code, failure category, failure detail, retryability, and
   user action;
 - timing fields for queue, prompt build, spawn, first token, generation, tool

@@ -55,6 +55,10 @@ const DEFAULT_FETCH_RETRIES = 1;
 const PROMPT_STACK_BLAME_MAX_SECTIONS = 8;
 let missingTelemetrySinkWarned = false;
 
+export function langfuseTraceIdForRun(runId: string): string {
+  return createHash('sha256').update(runId).digest('hex').slice(0, 32);
+}
+
 export interface LangfuseConfig {
   authHeader: string;
   baseUrl: string;
@@ -1540,7 +1544,7 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
   const performanceDiagnostics = buildPerformanceDiagnostics(ctx);
 
   const success = ctx.run.status === 'succeeded';
-  const traceId = ctx.run.runId;
+  const traceId = langfuseTraceIdForRun(ctx.run.runId);
   const langfuseDelivery =
     ctx.langfuse ??
     deriveLangfuseDeliveryState(ctx.prefs, readRunTelemetrySinkConfig());
@@ -1577,6 +1581,7 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
     status: ctx.run.status,
     error: safeRunError,
     error_code: ctx.run.errorCode,
+    run_id: ctx.run.runId,
     langfuse_trace_id: traceId,
     ...langfuseDelivery,
     ...(ctx.run.failure ?? {}),
@@ -2478,7 +2483,7 @@ export async function reportRunCompleted(
 // thread `removedReasonCodes` through and emit overwriting "cleared"
 // scores for them; not done here to keep this PR scoped to the bridge.
 export function buildFeedbackPayload(ctx: FeedbackReportContext): unknown[] {
-  const traceId = ctx.runId;
+  const traceId = langfuseTraceIdForRun(ctx.runId);
   const nowIso = new Date().toISOString();
   const batch: unknown[] = [];
 

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   buildFeedbackPayload,
   buildTracePayload,
+  langfuseTraceIdForRun,
   deriveLangfuseDeliveryState,
   isContentToolName,
   isPartialRedactToolName,
@@ -371,9 +372,18 @@ describe('shouldFullyRedactToolPayload (fail-closed)', () => {
   });
 });
 
+describe('langfuseTraceIdForRun', () => {
+  it('derives the Langfuse-compliant trace id deterministically from the Open Design run id', () => {
+    expect(langfuseTraceIdForRun('run-1')).toBe(
+      '4e65d3fbe8ad6535681b021b30785b12',
+    );
+  });
+});
+
 describe('buildTracePayload', () => {
   it('emits a trace with nested agent + generation observations', () => {
     const batch = buildTracePayload(makeCtx());
+    const traceId = langfuseTraceIdForRun('run-1');
     const types = (batch as Array<{ type: string }>).map((e) => e.type);
     expect(types).toEqual([
       'trace-create',
@@ -386,9 +396,13 @@ describe('buildTracePayload', () => {
     const gen = bodyOf(batch, 'generation-create', 'llm');
     const bash = bodyOf(batch, 'span-create', 'tool:Bash');
     const write = bodyOf(batch, 'span-create', 'tool:Write');
+    const trace = (batch[0] as any).body;
+    expect(trace.id).toBe(traceId);
+    expect(trace.metadata.run_id).toBe('run-1');
+    expect(trace.metadata.langfuse_trace_id).toBe(traceId);
     expect(span.id).toBe('run-1-agent');
-    expect(span.traceId).toBe('run-1');
-    expect(gen.traceId).toBe('run-1');
+    expect(span.traceId).toBe(traceId);
+    expect(gen.traceId).toBe(traceId);
     expect(gen.parentObservationId).toBe('run-1-agent');
     expect(bash.parentObservationId).toBe('run-1-agent');
     expect(bash.input).toBeUndefined();
@@ -1278,7 +1292,10 @@ describe('buildTracePayload', () => {
     );
     const metadata = (batch[0] as any).body.metadata;
     expect(metadata.error_code).toBe('RATE_LIMITED');
-    expect(metadata.langfuse_trace_id).toBe('run-rate-limit');
+    expect(metadata.run_id).toBe('run-rate-limit');
+    expect(metadata.langfuse_trace_id).toBe(
+      langfuseTraceIdForRun('run-rate-limit'),
+    );
     expect(metadata.langfuse_expected).toBe(false);
     expect(metadata.langfuse_delivery_status).toBe('not_expected');
     expect(metadata.langfuse_drop_reason).toBe('content_consent_off');
@@ -2528,8 +2545,9 @@ describe('buildFeedbackPayload', () => {
     ) as Array<Record<string, any>>;
     expect(batch).toHaveLength(3);
     const ratingScore = batch[0]!;
+    const traceId = langfuseTraceIdForRun('run-feedback-1');
     expect(ratingScore.type).toBe('score-create');
-    expect(ratingScore.body.traceId).toBe('run-feedback-1');
+    expect(ratingScore.body.traceId).toBe(traceId);
     expect(ratingScore.body.name).toBe('user_rating');
     expect(ratingScore.body.value).toBe(-1);
     expect(ratingScore.body.dataType).toBe('NUMERIC');
@@ -2543,7 +2561,7 @@ describe('buildFeedbackPayload', () => {
       expect(reasonScore.body.name).toBe('user_rating_reason');
       expect(reasonScore.body.dataType).toBe('CATEGORICAL');
       expect(reasonScore.body.comment).toBe('negative');
-      expect(reasonScore.body.traceId).toBe('run-feedback-1');
+      expect(reasonScore.body.traceId).toBe(traceId);
     }
     expect(batch[1]!.body.value).toBe('missed_request');
     expect(batch[2]!.body.value).toBe('weak_visual');
@@ -2611,14 +2629,14 @@ describe('reportRunFeedback', () => {
       'score',
     ]);
     expect(envelope.events[0].data).toMatchObject({
-      id: 'run-feedback-1-rating',
-      traceId: 'run-feedback-1',
+      id: '908d98293a13a7b7811f44a271aa3b5b-rating',
+      traceId: '908d98293a13a7b7811f44a271aa3b5b',
       name: 'user_rating',
       value: 1,
     });
     expect(envelope.events[1].data).toMatchObject({
-      id: 'run-feedback-1-reason-matched_request',
-      traceId: 'run-feedback-1',
+      id: '908d98293a13a7b7811f44a271aa3b5b-reason-matched_request',
+      traceId: '908d98293a13a7b7811f44a271aa3b5b',
       name: 'user_rating_reason',
       value: 'matched_request',
     });

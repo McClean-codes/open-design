@@ -411,6 +411,7 @@ import {
   snapshotAiHtmlVersionsForRun,
 } from './run-html-version-snapshots.js';
 import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
+import { langfuseTraceIdForRun } from './langfuse-trace.js';
 import { reconcileDurableRunTerminals } from './runtimes/run-terminal-reconciliation.js';
 import { buildPromptStackTelemetry } from './prompt-telemetry.js';
 import { readAnalyticsContext } from './analytics.js';
@@ -1540,7 +1541,7 @@ export function createFinalizedMessageTelemetryReporter({
         project_id: run?.projectId ?? projectId ?? null,
         conversation_id: run?.conversationId ?? conversationId ?? null,
         run_id: runId,
-        langfuse_trace_id: runId,
+        langfuse_trace_id: langfuseTraceIdForRun(runId),
         langfuse_expected: delivery.langfuse_expected,
         langfuse_delivery_status: delivery.langfuse_delivery_status,
         ...(delivery.langfuse_drop_reason

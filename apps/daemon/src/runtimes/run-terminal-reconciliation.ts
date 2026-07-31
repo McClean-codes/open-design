@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 
 import { appendMessageStatusEvent } from '../db.js';
+import { langfuseTraceIdForRun } from '../langfuse-trace.js';
 import { classifyRunFailure } from '../run-failure-classification.js';
 import { deriveRunErrorCode, runResultFromStatus } from '../run-result.js';
 import { runAskedUserQuestion } from './run-artifacts.js';
@@ -281,7 +282,7 @@ export async function reconcileDurableRunTerminals(
           artifact_count: state.artifactCount ?? 0,
           asked_user_question: runAskedUserQuestion(events),
           total_duration_ms: Math.max(0, state.updatedAt - state.createdAt),
-          langfuse_trace_id: state.id,
+          langfuse_trace_id: langfuseTraceIdForRun(state.id),
           terminal_reconciled: true,
           terminal_recovery_reason: recoveryReason,
           ...(errorCode ? { error_code: errorCode } : {}),

@@ -106,6 +106,7 @@ describe('durable run terminal reconciliation', () => {
         failure_stage: 'finalize',
         retryable: true,
         user_action: 'retry',
+        langfuse_trace_id: '109f933ded33d54c42a3faba33818f1e',
         terminal_reconciled: true,
         terminal_recovery_reason: 'daemon_restart',
       }),

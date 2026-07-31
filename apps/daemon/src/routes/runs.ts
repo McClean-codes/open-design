@@ -45,6 +45,7 @@ import { readVelaLoginStatus } from '../integrations/vela.js';
 import { getDetectedRuntimeVersions } from '../runtimes/detection.js';
 import {
   deriveLangfuseDeliveryState,
+  langfuseTraceIdForRun,
   readTelemetrySinkConfig,
 } from '../langfuse-trace.js';
 import { parseMediaExecutionPolicyInput } from '../media/policy.js';
@@ -1979,7 +1980,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
             ...(typeof run.lastAgentActivityAt === 'number'
               ? { last_progress_age_ms: Math.max(0, analyticsCapturedAt - run.lastAgentActivityAt) }
               : {}),
-            langfuse_trace_id: run.id,
+            langfuse_trace_id: langfuseTraceIdForRun(run.id),
             ...langfuseDeliveryForAnalytics,
             ...(errorCode ? { error_code: errorCode } : {}),
             ...(failure ?? {}),
