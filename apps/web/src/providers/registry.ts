@@ -1725,7 +1725,15 @@ function projectFilesCacheKey(
 
 const projectFilesCacheGenerations = new Map<string, number>();
 
-function invalidateProjectFiles(
+/**
+ * Announce that one authority-scoped project file list is obsolete.
+ *
+ * This drops a settled shared read and advances the generation fence checked
+ * by any request already in flight. The next reader therefore cannot reuse a
+ * pre-event snapshot, and an overtaken request re-reads before it resolves to
+ * its caller.
+ */
+export function invalidateProjectFilesCache(
   projectId: string,
   workspaceContext?: WorkspaceCollabContext | null,
 ): void {
@@ -1860,7 +1868,7 @@ export async function deleteProjectFolder(
       body: JSON.stringify({ path: folderPath }),
     });
     if (!resp.ok) return false;
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     return true;
   } catch {
     return false;
@@ -2345,7 +2353,7 @@ export async function restoreProjectFileVersion(
       },
     );
     if (!resp.ok) return null;
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     return (await resp.json()) as RestoreProjectFileVersionResponse;
   } catch {
     return null;
@@ -2552,7 +2560,7 @@ export async function writeProjectTextFileDetailed(
         message: body.message || resp.statusText || 'Save failed',
       };
     }
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const json = (await resp.json()) as { file: ProjectFile };
     return { ok: true, file: json.file };
   } catch {
@@ -2576,7 +2584,7 @@ export async function writeProjectBase64File(
       body: JSON.stringify({ name, content: base64, encoding: 'base64' }),
     });
     if (!resp.ok) return null;
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
   } catch {
@@ -2600,7 +2608,7 @@ export async function uploadProjectFile(
       body: form,
     });
     if (!resp.ok) return null;
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
   } catch {
@@ -2641,7 +2649,7 @@ export async function importProjectFigma(
       }
       return { ok: false, error: message };
     }
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const result = (await resp.json()) as FigmaImportResult;
     return { ok: true, result };
   } catch (err) {
@@ -2714,7 +2722,7 @@ export async function uploadProjectFiles(
         break;
       }
 
-      invalidateProjectFiles(projectId, workspaceContext);
+      invalidateProjectFilesCache(projectId, workspaceContext);
       const json = (await resp.json()) as {
         files: { name: string; path: string; size?: number; originalName?: string }[];
       };
@@ -2801,7 +2809,7 @@ export async function deleteProjectFile(
       },
     );
     if (!resp.ok) return false;
-    invalidateProjectFiles(projectId, workspaceContext);
+    invalidateProjectFilesCache(projectId, workspaceContext);
     return true;
   } catch {
     return false;
@@ -2826,7 +2834,7 @@ export async function renameProjectFile(
     const errorBody = await readApiErrorBody(resp);
     throw new Error(errorBody.message);
   }
-  invalidateProjectFiles(projectId, workspaceContext);
+  invalidateProjectFilesCache(projectId, workspaceContext);
   return (await resp.json()) as RenameProjectFileResponse;
 }
 

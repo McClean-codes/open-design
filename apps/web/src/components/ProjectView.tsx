@@ -40,6 +40,7 @@ import {
   fetchProjectFiles,
   fetchProjectFileText,
   fetchSkill,
+  invalidateProjectFilesCache,
   patchPreviewCommentSortKey,
   patchPreviewCommentStatus,
   projectRawUrl,
@@ -3399,6 +3400,16 @@ export function ProjectView({
   // out of their preview. A short trailing wait absorbs the burst; the
   // maxWait cap stops a sustained edit storm from starving the UI.
   const refreshFilesAndDesignMd = useCallback(() => {
+    // A chokidar event is an authoritative invalidation, not merely a visual
+    // refresh hint. Fence the exact project/Workspace file-list authority
+    // before publishing the React refresh key: otherwise fetchProjectFiles
+    // can return its short-lived settled cache (or an already-joined response
+    // that was captured before this event) and leave the restored project on
+    // the old file snapshot.
+    invalidateProjectFilesCache(
+      project.id,
+      projectRunWorkspaceContextRef.current,
+    );
     setFilesRefresh((n) => n + 1);
     // Round 7 (mrcfps): file mutations are the dominant staleness signal
     // post-finalize — bump the refresh key so DESIGN.md staleness
@@ -3415,7 +3426,7 @@ export function ProjectView({
     // Mirrors the existing `project-metadata-changed` → `checkStatusNow()`
     // hub-push pattern below, just triggered by the LOCAL watcher instead.
     collabCheckStatusNow();
-  }, [collabCheckStatusNow]);
+  }, [collabCheckStatusNow, project.id]);
   const coalescedFileChangedRefresh = useCoalescedCallback(
     refreshFilesAndDesignMd,
     { wait: 80, maxWait: 250 },

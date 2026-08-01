@@ -29,6 +29,7 @@ import {
   fetchProjectFileText,
   fetchLiveArtifacts,
   fetchSkillExample,
+  invalidateProjectFilesCache,
   isDeployProviderId,
   openFolderDialog,
   patchPreviewCommentSortKey,
@@ -310,6 +311,65 @@ describe('fetchProjectFiles', () => {
 
     await expect(initialRead).resolves.toEqual(freshFiles);
     expect(fileListReads).toBe(2);
+  });
+
+  it('re-reads after an external file event invalidates settled and in-flight scoped lists', async () => {
+    const workspaceContext = personalWorkspaceContext();
+    const firstFiles = [{
+      name: 'first.html',
+      path: 'first.html',
+      kind: 'html',
+      mtime: 1,
+      size: 1,
+      mime: 'text/html',
+    }];
+    const staleFiles = [{
+      name: 'stale.html',
+      path: 'stale.html',
+      kind: 'html',
+      mtime: 2,
+      size: 2,
+      mime: 'text/html',
+    }];
+    const freshFiles = [{
+      name: 'fresh.html',
+      path: 'fresh.html',
+      kind: 'html',
+      mtime: 3,
+      size: 3,
+      mime: 'text/html',
+    }];
+    let resolveStaleRead!: (response: Response) => void;
+    const staleRead = new Promise<Response>((resolve) => {
+      resolveStaleRead = resolve;
+    });
+    let fileListReads = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      expect(String(input)).toBe('/api/projects/project-event-race/files');
+      fileListReads += 1;
+      if (fileListReads === 1) {
+        return new Response(JSON.stringify({ files: firstFiles }), { status: 200 });
+      }
+      if (fileListReads === 2) return staleRead;
+      return new Response(JSON.stringify({ files: freshFiles }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchProjectFiles('project-event-race', { workspaceContext }))
+      .resolves.toEqual(firstFiles);
+    await expect(fetchProjectFiles('project-event-race', { workspaceContext }))
+      .resolves.toEqual(firstFiles);
+    expect(fileListReads).toBe(1);
+
+    invalidateProjectFilesCache('project-event-race', workspaceContext);
+    const invalidatedRead = fetchProjectFiles('project-event-race', { workspaceContext });
+    await vi.waitFor(() => expect(fileListReads).toBe(2));
+
+    invalidateProjectFilesCache('project-event-race', workspaceContext);
+    resolveStaleRead(new Response(JSON.stringify({ files: staleFiles }), { status: 200 }));
+
+    await expect(invalidatedRead).resolves.toEqual(freshFiles);
+    expect(fileListReads).toBe(3);
   });
 
   it('keeps ordinary live-artifact reads independent from cancellable card scans', async () => {
