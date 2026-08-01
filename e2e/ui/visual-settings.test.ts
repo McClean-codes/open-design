@@ -1,6 +1,6 @@
 import type { Locator } from '@playwright/test';
 
-import type { WorkspaceCollabContext } from '@open-design/contracts';
+import type { WorkspaceCollabContext, WorkspaceDirectoryItem } from '@open-design/contracts';
 import { expect, test } from '@/playwright/suite';
 import { T } from '@/timeouts';
 import {
@@ -67,6 +67,16 @@ const VISUAL_PERSONAL_WORKSPACE_CONTEXT: WorkspaceCollabContext = {
   },
 };
 
+const VISUAL_PERSONAL_WORKSPACE_DIRECTORY_ITEM = {
+  workspaceId: VISUAL_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+  workspaceName: 'Personal workspace',
+  workspaceType: VISUAL_PERSONAL_WORKSPACE_CONTEXT.workspaceType,
+  workspaceMemberId: VISUAL_PERSONAL_WORKSPACE_CONTEXT.workspaceMemberId,
+  role: VISUAL_PERSONAL_WORKSPACE_CONTEXT.role,
+  memberStatus: VISUAL_PERSONAL_WORKSPACE_CONTEXT.memberStatus,
+  lifecycleState: VISUAL_PERSONAL_WORKSPACE_CONTEXT.lifecycleState,
+} satisfies WorkspaceDirectoryItem;
+
 test('[P2] captures the settings execution surface', async ({ page }) => {
   await configureVisualPage(page);
   await gotoVisualHome(page);
@@ -103,6 +113,14 @@ test('[P1] captures the settings Open Design account balance surface', async ({ 
   // account plan the balance/plan assertions below read.
   await page.route('**/api/workspace/context', async (route) => {
     await route.fulfill({ json: { context: VISUAL_PERSONAL_WORKSPACE_CONTEXT } });
+  });
+  await page.route('**/api/workspace/directory', async (route) => {
+    await route.fulfill({
+      json: {
+        items: [VISUAL_PERSONAL_WORKSPACE_DIRECTORY_ITEM],
+        activeWorkspaceId: VISUAL_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+      },
+    });
   });
   await gotoVisualHome(page);
   await gotoVisualWorkspace(page);
