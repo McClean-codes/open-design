@@ -18,6 +18,12 @@ type MockAmrWalletOptions = {
   profile?: string;
 };
 
+type MockAmrPersonalWorkspaceOptions = {
+  accountBalanceUsd?: string;
+  accountCredits?: number;
+  accountPlan?: string;
+};
+
 export const AMR_PERSONAL_WORKSPACE_ITEM = {
   workspaceId: 'ws-amr-playwright-personal',
   workspaceName: 'AMR Playwright personal workspace',
@@ -67,7 +73,14 @@ export const AMR_PERSONAL_WORKSPACE_HEADERS: Readonly<Record<string, string>> = 
  * part of the global Playwright fixture: signed-out local CLI and BYOK tests
  * must continue to run without an AMR Workspace identity.
  */
-export async function mockAmrPersonalWorkspace(page: Page, projectId?: string) {
+export async function mockAmrPersonalWorkspace(
+  page: Page,
+  projectId?: string,
+  options: MockAmrPersonalWorkspaceOptions = {},
+) {
+  const accountPlan = options.accountPlan ?? 'free';
+  const accountBalanceUsd = options.accountBalanceUsd ?? '0.00';
+  const accountCredits = options.accountCredits ?? 0;
   await page.route('**/api/workspace/directory', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -116,11 +129,11 @@ export async function mockAmrPersonalWorkspace(page: Page, projectId?: string) {
       json: {
         summary: {
           workspaceId: null,
-          membershipTier: 'free',
-          totalAvailableCredits: 0,
-          subscriptionCredits: 0,
+          membershipTier: accountPlan,
+          totalAvailableCredits: accountCredits,
+          subscriptionCredits: accountCredits,
           rechargeCredits: 0,
-          balanceUsd: '0.00',
+          balanceUsd: accountBalanceUsd,
           subscriptionStatus: 'active',
           availableActions: [],
           workspaceBalance: null,
