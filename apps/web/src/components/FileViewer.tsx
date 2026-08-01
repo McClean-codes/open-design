@@ -8896,6 +8896,7 @@ function HtmlViewer({
   const livePreviewSource = scopedRelativeAssetRefs && inlinedSource === null
     ? null
     : (inlinedSource ?? deckVisualSource);
+  const assetInliningSource = effectiveDeck ? deckVisualSource : source;
   // Annotation modes that should hold the preview still while open. Manual
   // Edit is handled by its own freeze just below; these are the non-edit
   // passes (Mark/Draw, Comment, Inspect) that also must not be yanked out
@@ -9300,7 +9301,7 @@ function HtmlViewer({
   useEffect(() => {
     setInlinedSource(null);
     if (useUrlLoadPreview) return;
-    if (!source || effectiveDeck) return;
+    if (!assetInliningSource) return;
     // Root-relative project asset refs need the confirmed file list before
     // they can be normalized; wait for it rather than inlining a half-fixed
     // document (the effect re-runs when the set lands).
@@ -9308,7 +9309,7 @@ function HtmlViewer({
     if (!relativeProjectAssetRefs && !projectRootAssetRefs) return;
     let cancelled = false;
     void inlineRelativeAssets(
-      source,
+      assetInliningSource,
       projectId,
       file.name,
       projectFilePathSet,
@@ -9320,8 +9321,7 @@ function HtmlViewer({
       cancelled = true;
     };
   }, [
-    source,
-    effectiveDeck,
+    assetInliningSource,
     projectId,
     file.name,
     reloadKey,

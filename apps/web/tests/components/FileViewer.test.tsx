@@ -6191,6 +6191,69 @@ describe('FileViewer tweaks toolbar', () => {
     }
   });
 
+  it('materializes Team deck relative assets into scoped raw URLs before showing srcDoc', async () => {
+    const filesResponse = deferredResponse();
+    const projectId = 'scoped-deck-assets-project';
+    const deckPath = 'system/deck.html';
+    const imagePath = 'images/hero.png';
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : String(input);
+      if (url === `/api/projects/${projectId}/files`) return filesResponse.promise;
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    try {
+      renderWithProjectWorkspace(
+        <FileViewer
+          projectId={projectId}
+          projectKind="prototype"
+          file={htmlPreviewFile({
+            name: deckPath,
+            path: deckPath,
+            artifactManifest: {
+              version: 1,
+              kind: 'deck',
+              title: 'Scoped deck',
+              entry: deckPath,
+              renderer: 'deck-html',
+              exports: ['html'],
+            },
+          })}
+          isDeck
+          liveHtml={'<html><body><section class="slide"><img src="../images/hero.png"></section></body></html>'}
+        />,
+        teamWorkspaceContext(),
+      );
+
+      const pendingFrame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+      expect(pendingFrame.getAttribute('data-od-render-mode')).toBe('srcdoc');
+      expect(pendingFrame.srcdoc).not.toContain('../images/hero.png');
+
+      filesResponse.resolve(new Response(JSON.stringify({
+        files: [
+          htmlPreviewFile({ name: deckPath, path: deckPath }),
+          baseFile({ name: imagePath, path: imagePath }),
+        ],
+      }), { status: 200 }));
+
+      await waitFor(() => {
+        const frame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+        expect(frame.srcdoc).toContain(
+          `/api/projects/${projectId}/raw/${imagePath}?workspaceId=ws-1`,
+        );
+        expect(frame.srcdoc).toContain('workspaceMemberId=wm-1');
+        expect(frame.srcdoc).not.toContain('../images/hero.png');
+      });
+    } finally {
+      filesResponse.resolve(new Response(JSON.stringify({ files: [] }), { status: 200 }));
+    }
+  });
+
   it('lets Draw direct send emit a queued annotation while a task is running', async () => {
     const annotationSpy = vi.fn();
     installCanvasSnapshotMocks();

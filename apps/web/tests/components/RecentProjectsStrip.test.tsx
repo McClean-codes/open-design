@@ -202,6 +202,68 @@ class MockWorkspaceEventSource {
 }
 
 describe('RecentProjectsStrip', () => {
+  it('scans a shared project cover once after the same card materializes', async () => {
+    stubCoverProbe();
+    vi.mocked(fetchProjectFiles).mockResolvedValue([{
+      name: 'index.html',
+      path: 'index.html',
+      kind: 'html',
+      mtime: 703,
+      size: 0,
+      mime: 'text/html',
+    }]);
+    const placeholder = project({
+      id: 'project-materializing',
+      name: 'Materializing project',
+      updatedAt: 8,
+      metadata: { kind: 'other', sharedProjectPlaceholderAt: 7 },
+    });
+    const materialized = project({
+      id: placeholder.id,
+      name: placeholder.name,
+      updatedAt: placeholder.updatedAt,
+    });
+
+    const { container, rerender } = render(
+      <RecentProjectsStrip
+        projects={[placeholder]}
+        onOpen={() => {}}
+        heading="All projects"
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchProjectFiles).not.toHaveBeenCalled();
+
+    rerender(
+      <RecentProjectsStrip
+        projects={[materialized]}
+        onOpen={() => {}}
+        heading="All projects"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(fetchProjectFiles).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('.recent-projects__card-thumb-html')).not.toBeNull();
+    });
+    expect(fetchProjectFiles).toHaveBeenCalledWith(
+      'project-materializing',
+      expect.objectContaining({
+        workspaceContext: expect.objectContaining({
+          workspaceId: 'ws-1',
+          workspaceMemberId: 'wm-1',
+        }),
+      }),
+    );
+    expect(
+      (container.querySelector('iframe') as HTMLIFrameElement | null)?.getAttribute('src'),
+    ).toContain('workspaceId=ws-1');
+  });
+
   it('refreshes only the card named by team-project-content-ready', async () => {
     MockWorkspaceEventSource.instances = [];
     vi.stubGlobal('EventSource', MockWorkspaceEventSource as unknown as typeof EventSource);
