@@ -57,6 +57,12 @@ export interface ProjectEventsConnectionOptions {
    * full-cadence polling when it drops.
    */
   onConnectedChange?: (connected: boolean) => void;
+  /**
+   * Fires after the daemon's `ready` handshake. Consumers can use this to
+   * reconcile state that may have changed after their initial snapshot but
+   * before the event stream was connected.
+   */
+  onReady?: () => void;
 }
 
 const DEFAULT_INITIAL_BACKOFF = 1000;
@@ -112,6 +118,7 @@ export function createProjectEventsConnection(
     es.addEventListener('ready', () => {
       backoff = initialBackoff;
       options.onConnectedChange?.(true);
+      options.onReady?.();
     });
     es.addEventListener('file-changed', (evt) => {
       try {
@@ -256,6 +263,13 @@ export function useProjectFileEvents(
     onConnectedChangeRef.current = options.onConnectedChange;
   }, [options.onConnectedChange]);
 
+  // Like the status callback, keep reconciliation in a ref so an inline
+  // consumer callback cannot churn the EventSource connection.
+  const onReadyRef = useRef(options.onReady);
+  useEffect(() => {
+    onReadyRef.current = options.onReady;
+  }, [options.onReady]);
+
   useEffect(() => {
     if (!enabled || !projectId) return;
     if (typeof window === 'undefined') return;
@@ -265,6 +279,7 @@ export function useProjectFileEvents(
       {
         ...options,
         onConnectedChange: (connected) => onConnectedChangeRef.current?.(connected),
+        onReady: () => onReadyRef.current?.(),
       },
       workspaceContext,
     );

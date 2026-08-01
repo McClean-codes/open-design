@@ -3579,6 +3579,10 @@ export function ProjectView({
     && projectWorkspaceScopeReady(projectWorkspaceScopeState.scope);
   useProjectFileEvents(project.id, projectEventsEnabled, handleProjectEvent, {
     onConnectedChange: setProjectEventsSseConnected,
+    // A file can be created after the initial list snapshot but before SSE is
+    // listening. Reconcile once the exact-scoped stream is ready so that
+    // missed pre-handshake mutations cannot leave the workspace stale forever.
+    onReady: refreshFilesAndDesignMd,
   }, projectRunWorkspaceContext);
 
   const activePromptContextSignature = useMemo(() => {
