@@ -1,5 +1,9 @@
 import type { Page } from '@playwright/test';
 import { expect } from '@playwright/test';
+import type {
+  WorkspaceCollabContext,
+  WorkspaceDirectoryItem,
+} from '@open-design/contracts';
 import { ensureRailOpen } from './rail.js';
 import { T } from '@/timeouts';
 
@@ -13,6 +17,142 @@ type MockAmrWalletOptions = {
   plan?: string;
   profile?: string;
 };
+
+export const AMR_PERSONAL_WORKSPACE_ITEM = {
+  workspaceId: 'ws-amr-playwright-personal',
+  workspaceName: 'AMR Playwright personal workspace',
+  workspaceType: 'personal',
+  workspaceMemberId: 'mem-amr-playwright-personal',
+  role: 'owner',
+  memberStatus: 'active',
+  lifecycleState: 'active',
+} satisfies WorkspaceDirectoryItem;
+
+export const AMR_PERSONAL_WORKSPACE_CONTEXT = {
+  ...AMR_PERSONAL_WORKSPACE_ITEM,
+  billingState: 'active',
+  planId: null,
+  providerMode: 'platform_credits',
+  seatSummary: { seatLimit: 1, usedSeats: 1, availableSeats: 0, isSeatFull: true },
+  permissions: {
+    canManageMembers: true,
+    canManageBilling: true,
+    canInviteMembers: true,
+    canManageAutoRecharge: true,
+    canShareProjects: true,
+    canWriteSyncedFiles: true,
+    canViewWorkspaceSettings: true,
+    canManageSharedResources: true,
+  },
+} satisfies WorkspaceCollabContext;
+
+export const AMR_PERSONAL_WORKSPACE_HEADERS: Readonly<Record<string, string>> = {
+  'x-od-workspace-id': AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+  'x-od-workspace-type': AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceType,
+  'x-od-workspace-member-id': AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceMemberId,
+  'x-od-workspace-role': AMR_PERSONAL_WORKSPACE_CONTEXT.role,
+  'x-od-workspace-lifecycle-state': AMR_PERSONAL_WORKSPACE_CONTEXT.lifecycleState,
+  'x-od-workspace-member-status': AMR_PERSONAL_WORKSPACE_CONTEXT.memberStatus,
+  'x-od-workspace-can-share-projects': String(
+    AMR_PERSONAL_WORKSPACE_CONTEXT.permissions.canShareProjects,
+  ),
+  'x-od-workspace-can-write-synced-files': String(
+    AMR_PERSONAL_WORKSPACE_CONTEXT.permissions.canWriteSyncedFiles,
+  ),
+};
+
+/**
+ * Give AMR browser scenarios the same explicit Personal Workspace identity
+ * used when their project is created. This is deliberately opt-in rather than
+ * part of the global Playwright fixture: signed-out local CLI and BYOK tests
+ * must continue to run without an AMR Workspace identity.
+ */
+export async function mockAmrPersonalWorkspace(page: Page, projectId?: string) {
+  await page.route('**/api/workspace/directory', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        items: [AMR_PERSONAL_WORKSPACE_ITEM],
+        activeWorkspaceId: AMR_PERSONAL_WORKSPACE_ITEM.workspaceId,
+      },
+    });
+  });
+
+  await page.route('**/api/workspace/context', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const headers = route.request().headers();
+    if (
+      headers['x-od-workspace-id'] !== AMR_PERSONAL_WORKSPACE_ITEM.workspaceId
+      || headers['x-od-workspace-member-id'] !== AMR_PERSONAL_WORKSPACE_ITEM.workspaceMemberId
+    ) {
+      await route.fulfill({
+        status: 400,
+        json: { error: 'exact_workspace_scope_required' },
+      });
+      return;
+    }
+    await route.fulfill({ json: { context: AMR_PERSONAL_WORKSPACE_CONTEXT } });
+  });
+
+  await page.route('**/api/workspace/billing**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      request.method() !== 'GET'
+      || url.pathname !== '/api/workspace/billing'
+      || url.searchParams.get('scope') !== 'account'
+      || url.searchParams.size !== 1
+    ) {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        summary: {
+          workspaceId: null,
+          membershipTier: 'free',
+          totalAvailableCredits: 0,
+          subscriptionCredits: 0,
+          rechargeCredits: 0,
+          balanceUsd: '0.00',
+          subscriptionStatus: 'active',
+          availableActions: [],
+          workspaceBalance: null,
+        },
+        workspaceBalance: null,
+      },
+    });
+  });
+
+  if (projectId) {
+    // These AMR UI scenarios exercise run/error recovery rather than Vela's
+    // remote directory transport. Scope only the project they create, and let
+    // every files/conversations/messages/run request continue to the real
+    // daemon with the context the Web derives from this response.
+    await page.route(
+      `**/api/projects/${encodeURIComponent(projectId)}/workspace-scope`,
+      async (route) => {
+        await route.fulfill({
+          json: {
+            scope: {
+              kind: 'personal',
+              projectId,
+              workspaceId: AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+              visibility: 'personal',
+              context: AMR_PERSONAL_WORKSPACE_CONTEXT,
+            },
+          },
+        });
+      },
+    );
+  }
+}
 
 export async function waitForLoadingToClear(page: Page) {
   await page.getByText('Loading Open Design…').waitFor({ state: 'hidden', timeout: T.long }).catch(() => {});
@@ -239,7 +379,9 @@ export async function sendPrompt(page: Page, prompt: string) {
 }
 
 export async function createProjectViaApi(page: Page, projectId: string, name: string) {
+  await mockAmrPersonalWorkspace(page, projectId);
   const response = await page.request.post('/api/projects', {
+    headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
     data: {
       id: projectId,
       name,

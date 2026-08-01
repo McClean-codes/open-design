@@ -23,6 +23,12 @@ async function stubCatalogsEmpty(page: Page): Promise<void> {
 const STORAGE_KEY = 'open-design:config';
 const ACTIVE_ARTIFACT_PREVIEW_SELECTOR = '[data-testid="artifact-preview-frame"]:visible, [data-testid="artifact-preview-frame-url-load"]:visible, [data-testid="artifact-preview-frame-srcdoc"]:visible, [data-testid="live-artifact-preview-frame"]:visible';
 
+function projectDesignSystemTrigger(page: Page): Locator {
+  return page
+    .getByTestId('chat-composer')
+    .getByTestId('composer-design-system-trigger');
+}
+
 async function routeByokProfile(
   page: Page,
   config: Record<string, unknown>,
@@ -500,7 +506,7 @@ test('[P2] project detail header keeps the title and execution controls aligned 
   await expect(title).toBeVisible();
   await expect(settingsButton).toBeVisible();
   await expect(handoffButton).toBeVisible();
-  await expect(page.getByTestId('chat-composer').getByTestId('project-ds-picker-trigger')).toBeVisible();
+  await expect(projectDesignSystemTrigger(page)).toHaveAccessibleName(/No design system/i);
 
   const [titleBox, settingsBox, handoffBox] = await Promise.all([
     title.boundingBox(),
@@ -516,7 +522,7 @@ test('[P2] project detail header keeps the title and execution controls aligned 
   expect(Math.max(...yValues) - Math.min(...yValues)).toBeLessThan(24);
 });
 
-test('[P1] project detail header design system picker switches the active project design system', async ({ page }) => {
+test('[P1] project detail composer design system picker switches the active project design system', async ({ page }) => {
   await page.route('**/api/design-systems', async (route) => {
     await route.fulfill({ json: { designSystems: DESIGN_SYSTEMS } });
   });
@@ -525,8 +531,8 @@ test('[P1] project detail header design system picker switches the active projec
   await createProject(page, 'Header design system switch');
   await expectWorkspaceReady(page);
 
-  const trigger = page.getByTestId('project-ds-picker-trigger');
-  await expect(trigger).toContainText(/design system/i);
+  const trigger = projectDesignSystemTrigger(page);
+  await expect(trigger).toHaveAccessibleName(/No design system/i);
 
   await trigger.click();
   const popover = page.getByTestId('project-ds-picker-popover');
@@ -545,10 +551,10 @@ test('[P1] project detail header design system picker switches the active projec
   const request = await patchRequest;
   const body = request.postDataJSON() as { designSystemId?: string | null };
   expect(body.designSystemId).toBe('editorial-noir');
-  await expect(trigger).toBeVisible();
+  await expect(trigger).toHaveAccessibleName(/Editorial Noir/i);
 });
 
-test('[P0] @critical project detail header design system switch carries into the next run request', async ({ page }) => {
+test('[P0] @critical project detail composer design system switch carries into the next run request', async ({ page }) => {
   const runRequestBodies: Array<Record<string, unknown>> = [];
   await routeSuccessfulRuns(page, { bodies: runRequestBodies, runId: 'mock-run' });
 
@@ -560,7 +566,8 @@ test('[P0] @critical project detail header design system switch carries into the
   await createProject(page, 'Header design system run context');
   await expectWorkspaceReady(page);
 
-  const trigger = page.getByTestId('project-ds-picker-trigger');
+  const trigger = projectDesignSystemTrigger(page);
+  await expect(trigger).toHaveAccessibleName(/No design system/i);
   await trigger.click();
   await page.getByTestId('project-ds-picker-search').fill('editorial');
   const editorialOption = page.getByRole('option', { name: /^Editorial Noir$/ });
@@ -572,6 +579,7 @@ test('[P0] @critical project detail header design system switch carries into the
   await editorialOption.click();
   const patchBody = await patchRequest.then((request) => request.postDataJSON() as { designSystemId?: string | null });
   expect(patchBody.designSystemId).toBe('editorial-noir');
+  await expect(trigger).toHaveAccessibleName(/Editorial Noir/i);
 
   const input = page.getByTestId('chat-composer-input');
   await input.fill('Use the active design system in this layout.');
@@ -592,7 +600,9 @@ test('[P1] project detail design system picker stays inside the composer control
   await expectWorkspaceReady(page);
 
   const composer = page.getByTestId('chat-composer');
-  await expect(composer.getByTestId('project-ds-picker-trigger')).toBeVisible();
+  await expect(
+    composer.getByTestId('composer-design-system-trigger'),
+  ).toHaveAccessibleName(/No design system/i);
 });
 
 test('[P1] project detail composer working directory picker opens without leaving chat', async ({ page }) => {
@@ -1533,17 +1543,18 @@ test('[P0] clearing the project design system removes designSystemId from the ne
   await createProject(page, 'Header design system clear run context');
   await expectWorkspaceReady(page);
 
-  const trigger = page.getByTestId('project-ds-picker-trigger');
+  const trigger = projectDesignSystemTrigger(page);
+  await expect(trigger).toHaveAccessibleName(/No design system/i);
   await trigger.click();
   await page.getByTestId('project-ds-picker-search').fill('editorial');
   const editorialOption = page.getByRole('option', { name: /^Editorial Noir$/ });
   await expect(editorialOption).toBeVisible();
   await editorialOption.click();
-  await expect(trigger).toContainText(/Editorial Noir/i);
+  await expect(trigger).toHaveAccessibleName(/Editorial Noir/i);
 
   await trigger.click();
   await page.locator('.project-ds-picker-option').first().click();
-  await expect(trigger).not.toContainText(/Editorial Noir/i);
+  await expect(trigger).toHaveAccessibleName(/No design system/i);
 
   expect(patchBodies.some((body) => Object.prototype.hasOwnProperty.call(body, 'designSystemId') && body.designSystemId === null)).toBe(true);
 

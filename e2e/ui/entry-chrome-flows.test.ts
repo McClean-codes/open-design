@@ -229,7 +229,6 @@ test('[P0] @critical workspace selection remains isolated across two browser tab
       workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
     });
 
-    const requestsABeforeSwitch = requestsA.length;
     await page.getByTestId('workspace-switcher').click();
     await page.getByRole('menuitem', { name: TAB_TEAM_WORKSPACE.workspaceName }).click();
     await expect(page.getByTestId('workspace-switcher')).toContainText(
@@ -250,6 +249,11 @@ test('[P0] @critical workspace selection remains isolated across two browser tab
     await expect(pageB.getByTestId('workspace-switcher')).toContainText(
       TAB_PERSONAL_WORKSPACE.workspaceName,
     );
+
+    // Requests that begin while the switcher is open still belong to the
+    // pre-selection Personal scope. Start the witness after the Team choice is
+    // committed so this assertion covers only post-switch revalidation.
+    const requestsABeforeSwitch = requestsA.length;
 
     // Exercise both ambient revalidation edges with the two tabs active at the
     // same time. The poll retries only an idempotent browser event until the
@@ -2242,7 +2246,7 @@ test('[P2] required home plugin prompt parameters gate submit and bind the proje
 test('[P0] @critical home composer routes free-form prompts through the design router by default', async ({ page }) => {
   await gotoEntryHome(page);
 
-  await expect(page.getByTestId('composer-mode-trigger')).toHaveAttribute('aria-label', 'Choose a mode');
+  await expect(page.getByTestId('composer-mode-trigger')).toHaveAttribute('aria-label', 'Mode: Design');
 
   const input = page.getByTestId('home-hero-input');
   const prompt =
@@ -2344,7 +2348,7 @@ test('[P0] @critical clearing the home working directory removes linked dirs fro
 
   await page.getByTestId('working-dir-trigger').click();
   await page.getByTestId('working-dir-clear').click();
-  await expect(page.getByTestId('working-dir-trigger')).toContainText('Select working directory');
+  await expect(page.getByTestId('working-dir-trigger')).toContainText('Working directory');
 
   await page.getByTestId('home-hero-input').fill('Create a premium dashboard without local folder context.');
 

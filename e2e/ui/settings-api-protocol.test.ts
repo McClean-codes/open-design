@@ -39,19 +39,14 @@ async function openSettingsDialogFromEntry(page: Page) {
 async function closeSettingsDialogIfOpen(page: Page) {
   const dialog = settingsSurface(page);
   if ((await dialog.count()) === 0) return;
-  await page.keyboard.press('Escape');
-  try {
-    await expect(dialog).toHaveCount(0, { timeout: T.short });
-    return;
-  } catch {
-    // Fall back to the chrome button if focus is inside a nested popover or
-    // another transient surface swallowed Escape.
-  }
-  const closeButton = dialog.getByRole('button', { name: 'Close', exact: true });
-  if ((await closeButton.count()) > 0) {
-    await closeButton.click({ force: true, timeout: T.short });
-  }
-  await expect(dialog).toHaveCount(0);
+  await closeEntrySettings(page, dialog);
+}
+
+async function closeEntrySettings(page: Page, dialog = settingsSurface(page)) {
+  const backToHome = dialog.getByRole('button', { name: /Back to home/i });
+  await expect(backToHome).toBeEnabled();
+  await backToHome.click();
+  await expect(settingsSurface(page)).toHaveCount(0);
 }
 
 async function openExecutionSettings(
@@ -98,7 +93,7 @@ function modelCombobox(scope: Page | Locator) {
 }
 
 function providerPresetCombobox(scope: Page | Locator) {
-  return scope.getByLabel(/Gateway preset|Quick fill provider/i);
+  return scope.getByLabel(/Provider preset|Gateway preset|Quick fill provider/i);
 }
 
 async function selectComboboxOption(
@@ -288,8 +283,7 @@ test('[P0] @critical BYOK quick fill provider updates fields and saved settings 
       apiProviderBaseUrl: 'https://api.deepseek.com',
     });
 
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(settingsSurface(page)).toHaveCount(0);
+  await closeEntrySettings(page, dialog);
 
   const savedConfig = await readSavedConfig(page);
   expect(savedConfig).toMatchObject({
@@ -349,8 +343,7 @@ test('[P1] BYOK Anthropic gateway preset updates fields and persists after reope
     apiProviderBaseUrl: 'https://api.deepseek.com/anthropic',
   });
 
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(settingsSurface(page)).toHaveCount(0);
+  await closeEntrySettings(page, dialog);
 
   await openSettingsDialogFromEntry(page);
   const reopenedDialog = settingsSurface(page);
@@ -403,8 +396,7 @@ test('[P1] BYOK Ollama Cloud exposes refreshed model choices and persists select
     apiProviderBaseUrl: 'https://ollama.com',
   });
 
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(settingsSurface(page)).toHaveCount(0);
+  await closeEntrySettings(page, dialog);
 
   await openSettingsDialogFromEntry(page);
   const reopenedDialog = settingsSurface(page);
@@ -499,8 +491,7 @@ test('[P0] BYOK save stays disabled until required fields are valid', async ({ p
   });
 
   const dialog = settingsSurface(page);
-  const closeButton = dialog.getByRole('button', { name: 'Close', exact: true });
-  await expect(closeButton).toBeEnabled();
+  await expect(dialog.getByRole('button', { name: /Back to home/i })).toBeEnabled();
 
   await dialog.getByLabel('API key').fill('sk-openai-test');
   await expect.poll(async () => readSavedConfig(page)).toMatchObject({ apiKey: '' });
@@ -1026,8 +1017,7 @@ test('[P0] @critical saving Local CLI updates the entry status pill with the sel
     mode: 'daemon',
     agentId: 'codex',
   });
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(settingsSurface(page)).toHaveCount(0);
+  await closeEntrySettings(page, dialog);
 
   const executionPill = page.getByTestId('inline-model-switcher-chip');
   await expect(executionPill).toContainText(LOCAL_CLI_LABEL);
@@ -1086,7 +1076,7 @@ test('[P0] @critical Settings keeps Local CLI and BYOK model choices isolated af
     },
   });
 
-  await dialog.getByRole('tab', { name: 'BYOK' }).click();
+  await dialog.getByRole('tab', { name: 'API providers' }).click();
   await dialog.getByRole('tab', { name: 'OpenAI', exact: true }).click();
   await modelCombobox(dialog).click();
   await page.getByTestId('settings-byok-model-popover').getByRole('option', { name: /^gpt-4o-mini$/i }).click();
@@ -1098,8 +1088,7 @@ test('[P0] @critical Settings keeps Local CLI and BYOK model choices isolated af
     },
   });
 
-  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-  await expect(settingsSurface(page)).toHaveCount(0);
+  await closeEntrySettings(page, dialog);
 
   await openSettingsDialogFromEntry(page);
   const reopened = settingsSurface(page);

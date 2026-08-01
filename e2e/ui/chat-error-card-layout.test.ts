@@ -1,7 +1,13 @@
 import { expect, test } from '@/playwright/suite';
 import type { Locator, Page } from '@playwright/test';
 
-import { createProjectViaApi, gotoProject, putAppConfig, seedBrowserConfig } from '@/playwright/amr';
+import {
+  AMR_PERSONAL_WORKSPACE_HEADERS,
+  createProjectViaApi,
+  gotoProject,
+  putAppConfig,
+  seedBrowserConfig,
+} from '@/playwright/amr';
 import { runErrorCard } from '@/playwright/chat';
 import { routeAgents } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
@@ -67,6 +73,7 @@ async function seedBalanceFailure(page: Page, locale: 'en' | 'zh-CN') {
   const userResponse = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${userMessageId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'user',
         content: 'Generate a landing page',
@@ -79,6 +86,7 @@ async function seedBalanceFailure(page: Page, locale: 'en' | 'zh-CN') {
   const assistantResponse = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/a-${projectId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'assistant',
         content: '',
