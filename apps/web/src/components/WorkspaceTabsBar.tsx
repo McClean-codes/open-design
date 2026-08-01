@@ -85,6 +85,12 @@ interface TabDragTarget {
 interface Props {
   route: Route;
   projects: Project[];
+  /**
+   * Persisted Workspace binding for the project currently named by `route`.
+   * `null` is an authoritative unbound/local project; `undefined` means the
+   * current route is not a resolved project and must not relax scope resets.
+   */
+  activeProjectWorkspaceId?: string | null;
   // Once onboarding is finished, the permanent entry
   // tab must never linger on the 'onboarding' (Welcome) view — some completion
   // paths navigate straight to a new project/design-system and leave the entry
@@ -595,9 +601,41 @@ function accountBucketForScope(scopeKey: string): string {
   return scopeKey.split('::', 1)[0] ?? scopeKey;
 }
 
+function workspaceBucketForScope(scopeKey: string): string | null {
+  const separator = scopeKey.indexOf('::');
+  return separator < 0 ? null : scopeKey.slice(separator + 2);
+}
+
+function shouldRehomeAuthorizedProjectAfterSignIn({
+  previousScopeKey,
+  nextScopeKey,
+  route,
+  activeProjectWorkspaceId,
+}: {
+  previousScopeKey: string;
+  nextScopeKey: string;
+  route: Route;
+  activeProjectWorkspaceId: string | null | undefined;
+}): boolean {
+  const activeProjectMatchesIncomingScope =
+    activeProjectWorkspaceId === null
+    || (
+      typeof activeProjectWorkspaceId === 'string'
+      && activeProjectWorkspaceId === workspaceBucketForScope(nextScopeKey)
+    );
+  return (
+    accountBucketForScope(previousScopeKey) === 'anon'
+    && accountBucketForScope(nextScopeKey) !== 'anon'
+    && route.kind === 'project'
+    && activeProjectWorkspaceId !== undefined
+    && activeProjectMatchesIncomingScope
+  );
+}
+
 export function WorkspaceTabsBar({
   route,
   projects,
+  activeProjectWorkspaceId,
   onboardingCompleted = false,
   identityScopeKey,
 }: Props) {
@@ -935,6 +973,29 @@ export function WorkspaceTabsBar({
       return;
     }
 
+    // Inline "Authorize & retry" must finish the same run in place. Re-home
+    // only the live route tab (plus a fresh Home tab) when anonymous login
+    // resolves either an unbound local project or an exact witness for the
+    // project's persisted Workspace. Unresolved projects, Workspace
+    // mismatches, sign-out, authenticated account A→B, and Team/Personal
+    // workspace switches all retain the fail-closed reset below.
+    if (shouldRehomeAuthorizedProjectAfterSignIn({
+      previousScopeKey: previous,
+      nextScopeKey: identityScopeKey,
+      route,
+      activeProjectWorkspaceId,
+    })) {
+      const rehomed = syncStateToRoute(freshHomeTabsState(), route);
+      persistedTabsStore.scopes[identityScopeKey] = {
+        state: rehomed,
+        updatedAt: Date.now(),
+      };
+      pendingScopeStateRef.current = { scopeKey: identityScopeKey, state: rehomed };
+      pendingScopeRouteRef.current = null;
+      setState(rehomed);
+      return;
+    }
+
     // Preserve the prior fail-closed authentication boundary: workspace
     // bouncing within one account is recoverable, but sign-out or an account
     // change always lands on a fresh Home state instead of reviving browser
@@ -954,7 +1015,13 @@ export function WorkspaceTabsBar({
       ? null
       : { scopeKey: identityScopeKey, path: nextPath };
     navigate(nextRoute);
-  }, [identityScopeKey, onboardingActive, persistedTabsStore, route]);
+  }, [
+    activeProjectWorkspaceId,
+    identityScopeKey,
+    onboardingActive,
+    persistedTabsStore,
+    route,
+  ]);
 
   // Scroll the active tab into view when it changes. The strip itself
   // is native-scrollable horizontally (see CSS), so we just nudge the

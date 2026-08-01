@@ -36,6 +36,7 @@ import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
+  type PreviewComment,
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
 import type { ComponentProps, ReactNode } from 'react';
@@ -54,11 +55,16 @@ import {
   loadTabs,
   persistTabsToDaemonNow,
 } from '../../src/state/projects';
-import { fetchPreviewComments, fetchProjectFiles } from '../../src/providers/registry';
+import {
+  deletePreviewComment,
+  fetchPreviewComments,
+  fetchProjectFiles,
+} from '../../src/providers/registry';
 import { fetchBrands } from '../../src/runtime/brands';
 import type {
   AgentInfo,
   AppConfig,
+  ChatMessage,
   Conversation,
   DesignSystemSummary,
   Project,
@@ -265,6 +271,11 @@ vi.mock('../../src/components/Loading', () => ({
 vi.mock('../../src/components/ChatPane', () => ({
   ChatPane: (props: {
     activeConversationId?: string | null;
+    loading?: boolean;
+    messages?: ChatMessage[];
+    messagesConversationId?: string | null;
+    previewComments?: unknown[];
+    onDeleteComment?: (commentId: string) => void;
     sendDisabled?: boolean;
     queuedItems?: Array<{ prompt: string }>;
     onSend?: (
@@ -297,6 +308,7 @@ const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
 const mockedLoadTabs = vi.mocked(loadTabs);
 const mockedPersistTabsToDaemonNow = vi.mocked(persistTabsToDaemonNow);
+const mockedDeletePreviewComment = vi.mocked(deletePreviewComment);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
 const mockedFetchProjectFiles = vi.mocked(fetchProjectFiles);
 const mockedFetchBrands = vi.mocked(fetchBrands);
@@ -320,6 +332,23 @@ const conversation = (projectId: string): Conversation => ({
   title: null,
   createdAt: 1,
   updatedAt: 1,
+});
+
+const previewComment = (id: string, note: string, updatedAt: number): PreviewComment => ({
+  id,
+  projectId: PROJECT_ID,
+  conversationId: `conv-${PROJECT_ID}`,
+  filePath: 'index.html',
+  elementId: 'hero',
+  selector: '#hero',
+  label: 'Hero',
+  text: 'Hero',
+  position: { x: 0, y: 0, width: 100, height: 40 },
+  htmlHint: '<section id="hero">Hero</section>',
+  note,
+  status: 'open',
+  createdAt: 1,
+  updatedAt,
 });
 
 function deferred<T>() {
@@ -475,6 +504,104 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     ).toEqual(CALLER_CONTEXT);
   });
 
+  it('hydrates the persisted transcript without waiting for preview comments', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    const comments = deferred<Awaited<ReturnType<typeof fetchPreviewComments>>>();
+    const failedAssistant: ChatMessage = {
+      id: 'failed-amr-assistant',
+      role: 'assistant',
+      content: '',
+      createdAt: 1,
+      runStatus: 'failed',
+      agentId: 'amr',
+      events: [{
+        kind: 'status',
+        label: 'error',
+        detail: 'Sign in required.',
+        code: 'AMR_AUTH_REQUIRED',
+      }],
+    };
+    mockedListMessages.mockResolvedValue([failedAssistant]);
+    mockedFetchPreviewComments.mockReturnValue(comments.promise);
+
+    renderProjectView();
+
+    await waitFor(() => {
+      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(latest?.loading).toBe(false);
+      expect(latest?.messagesConversationId).toBe(`conv-${PROJECT_ID}`);
+      expect(latest?.messages).toEqual([failedAssistant]);
+    });
+    expect(mockedFetchPreviewComments).toHaveBeenCalledTimes(1);
+
+    comments.resolve([]);
+  });
+
+  it('does not let the initial comments read replace a newer SSE refresh', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    const initialComments = deferred<Awaited<ReturnType<typeof fetchPreviewComments>>>();
+    const staleComment = previewComment('comment-stale', 'stale initial read', 1);
+    const freshComment = previewComment('comment-fresh', 'fresh SSE read', 2);
+    mockedFetchPreviewComments
+      .mockReturnValueOnce(initialComments.promise)
+      .mockResolvedValueOnce([freshComment]);
+
+    renderProjectView();
+
+    await waitFor(() => {
+      expect(mockedUseProjectFileEvents).toHaveBeenCalled();
+      expect(chatPaneSpy.mock.calls.at(-1)?.[0].loading).toBe(false);
+    });
+    const handleProjectEvent = mockedUseProjectFileEvents.mock.calls.at(-1)?.[2];
+    await act(async () => {
+      handleProjectEvent?.({ type: 'comment-changed', projectId: PROJECT_ID });
+    });
+
+    await waitFor(() => {
+      expect(mockedFetchPreviewComments).toHaveBeenCalledTimes(2);
+      expect(chatPaneSpy.mock.calls.at(-1)?.[0].previewComments).toEqual([freshComment]);
+    });
+
+    await act(async () => {
+      initialComments.resolve([staleComment]);
+      await initialComments.promise;
+    });
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0].previewComments).toEqual([freshComment]);
+  });
+
+  it('does not let the initial comments read resurrect a locally deleted comment', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    const initialComments = deferred<Awaited<ReturnType<typeof fetchPreviewComments>>>();
+    const deletedComment = previewComment('comment-deleted', 'deleted locally', 1);
+    mockedFetchPreviewComments.mockReturnValue(initialComments.promise);
+    mockedDeletePreviewComment.mockResolvedValue(true);
+
+    renderProjectView();
+
+    const onDeleteComment = await waitFor(() => {
+      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(latest?.loading).toBe(false);
+      expect(latest?.onDeleteComment).toEqual(expect.any(Function));
+      return latest?.onDeleteComment;
+    });
+    await act(async () => {
+      onDeleteComment?.(deletedComment.id);
+      await Promise.resolve();
+    });
+    expect(mockedDeletePreviewComment).toHaveBeenCalledWith(
+      PROJECT_ID,
+      `conv-${PROJECT_ID}`,
+      deletedComment.id,
+      CALLER_CONTEXT,
+    );
+
+    await act(async () => {
+      initialComments.resolve([deletedComment]);
+      await initialComments.promise;
+    });
+    expect(chatPaneSpy.mock.calls.at(-1)?.[0].previewComments).toEqual([]);
+  });
+
   it('reuses the matching Home Team preflight while the project scope read is pending', async () => {
     window.sessionStorage.setItem(
       `od:auto-send-amr-gate-witness:${PROJECT_ID}`,
@@ -625,6 +752,18 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
       PERSONAL_CONTEXT,
     );
+    await waitFor(() => {
+      expect(
+        chatPaneSpy.mock.calls.at(-1)?.[0].amrAuthRetryPersonalAdoptionWitness,
+      ).toEqual({
+        workspaceIdentityKey:
+          'personal-workspace:personal:personal-member:member:active:active:true:true',
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+        workspaceMemberId: PERSONAL_CONTEXT.workspaceMemberId,
+        workspaceType: 'personal',
+        memberStatus: 'active',
+      });
+    });
   });
 
   it.each([

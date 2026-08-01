@@ -83,6 +83,27 @@ function activePersonalAdoptionWitness(
 }
 
 /**
+ * The one run-identity branch allowed to move a truly unbound historical
+ * project into a Workspace. Exporting the decision lets recovery flows carry
+ * structured proof of this exact branch instead of guessing from an opaque
+ * identity cache key.
+ */
+export function runWorkspacePersonalAdoptionWitness(
+  state: ProjectWorkspaceScopeState,
+  caller: WorkspaceCollabContext | null,
+  persistedProjectWorkspaceId: string | null | undefined,
+): WorkspaceCollabContext | null {
+  if (persistedProjectWorkspaceId != null || state.failure) return null;
+  if (
+    state.scope?.kind !== 'unbound'
+    && !(state.loading && state.scope === null)
+  ) {
+    return null;
+  }
+  return activePersonalAdoptionWitness(caller);
+}
+
+/**
  * The workspace identity a run creation asserts to the daemon.
  *
  * The project's resolved scope wins: it is the authority for which workspace
@@ -120,17 +141,12 @@ export function runWorkspaceIdentity(
   const resolved = projectWorkspaceContext(state.scope);
   if (resolved) return resolved;
   if (state.failure) return null;
-  const personalAdoptionWitness = activePersonalAdoptionWitness(caller);
-  if (state.scope?.kind === 'unbound') {
-    return personalAdoptionWitness;
-  }
-  if (
-    state.loading
-    && state.scope === null
-    && persistedProjectWorkspaceId == null
-  ) {
-    return personalAdoptionWitness;
-  }
+  const personalAdoptionWitness = runWorkspacePersonalAdoptionWitness(
+    state,
+    caller,
+    persistedProjectWorkspaceId,
+  );
+  if (personalAdoptionWitness) return personalAdoptionWitness;
   if (
     state.loading
     && state.scope === null
