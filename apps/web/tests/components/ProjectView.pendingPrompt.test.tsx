@@ -396,7 +396,7 @@ describe('ProjectView pending prompt seeding', () => {
       config: {
         ...config,
         apiKey: '',
-        byokProfileId: null,
+        byokProfileId: undefined,
         byokCredentialConfigured: false,
       },
       onOpenSettings,
