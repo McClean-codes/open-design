@@ -88,30 +88,31 @@ test('[P0] manual edit inspector previews and persists page and selected element
   await expect(inspectorRow(page, 'Font').locator('select')).toHaveValue('Georgia, serif');
   await expect(inspectorRow(page, 'Base size').locator('input')).toHaveValue('18');
 
-  await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'TYPOGRAPHY');
+  await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'Parameters');
   const selectedTitleMarker = frame.locator('[data-od-id="hero-title"][data-od-edit-selected="true"]');
   await expect(selectedTitleMarker).toHaveCount(1);
-  const fontSizeInput = inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Size' }).locator('input');
+  const parameters = inspectorSection(page, 'Parameters');
+  const fontSizeInput = parameters.locator('.cc-row').filter({ hasText: 'Font size' }).locator('input');
   await fontSizeInput.click();
   await expect(selectedTitleMarker).toHaveCount(1);
   await expect(fontSizeInput).not.toHaveValue('');
   await expect(fontSizeInput).not.toHaveValue(/px/i);
-  await expect(inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Color' }).locator('input')).toHaveValue(/^#[0-9a-f]{6}$/);
-  const lineInput = inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Line' }).locator('input');
+  await expect(parameters.locator('.cc-row').filter({ hasText: 'Text color' }).locator('input:not([type="color"])')).toHaveValue(/^#[0-9a-f]{6}$/);
+  const lineInput = parameters.locator('.cc-row').filter({ hasText: 'Line height' }).locator('input');
   await lineInput.click();
   await lineInput.blur();
   await expect(page.locator('.manual-edit-error')).toHaveCount(0);
   await frame.locator('body').evaluate(() => {
     window.parent.postMessage({ type: 'od-edit-targets', targets: [] }, '*');
   });
-  await expect(page.locator('.manual-edit-modal')).toContainText('TYPOGRAPHY');
+  await expect(page.locator('.manual-edit-modal')).toContainText('Parameters');
   await expect(page.locator('.manual-edit-modal')).not.toContainText('PAGE');
   await frame.locator('body').evaluate(() => {
     (window as Window & typeof globalThis & { __manualEditSmokeMarker?: string }).__manualEditSmokeMarker = 'stable-frame';
   });
 
   await fontSizeInput.fill('48');
-  await inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Color' }).locator('input').fill('#ef4444');
+  await parameters.locator('.cc-row').filter({ hasText: 'Text color' }).locator('input:not([type="color"])').fill('#ef4444');
   await expect(fontSizeInput).toHaveValue('48');
 
   const title = frame.getByRole('heading', { name: 'Original Hero' });
@@ -127,8 +128,10 @@ test('[P0] manual edit inspector previews and persists page and selected element
 
   await page.getByTestId('manual-edit-mode-toggle').click();
   await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-  await expect(page.getByRole('tablist', { name: 'View mode' })).toHaveCount(0);
-  await expect(page.locator('.viewer-source')).toHaveCount(0);
+  const viewMode = page.getByRole('tablist', { name: 'View mode' });
+  await expect(viewMode).toBeVisible();
+  await expect(viewMode.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(viewMode.getByRole('tab', { name: 'Code', exact: true })).toBeVisible();
   await expect(artifactPreview(page)).toBeVisible();
 
   await page.getByTestId('board-mode-toggle').click();
@@ -330,7 +333,10 @@ test('[P0] @critical preview toolbar keeps share, download, comment, and zoom ac
   await openDesignFile(page, 'toolbar-preview.html');
 
   await expect(page.getByTestId('artifact-preview-frame')).toBeVisible();
-  await expect(page.getByRole('tablist', { name: 'View mode' })).toHaveCount(0);
+  const viewMode = page.getByRole('tablist', { name: 'View mode' });
+  await expect(viewMode).toBeVisible();
+  await expect(viewMode.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(viewMode.getByRole('tab', { name: 'Code', exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: /^Share$/ }).click();
   const shareMenu = page.locator('.share-menu-popover[role="menu"]');
@@ -540,9 +546,9 @@ test('[P1] HTML preview toolbar exposes comments, mark, and edit workflows', asy
 
   await page.getByTestId('manual-edit-mode-toggle').click();
   await expect(page.getByTestId('manual-edit-mode-toggle')).toHaveAttribute('aria-pressed', 'true');
-  await selectPreviewElementThroughBridge(page, artifactPreviewFrame(page), '[data-od-id="hero-title"]', 'TYPOGRAPHY');
+  await selectPreviewElementThroughBridge(page, artifactPreviewFrame(page), '[data-od-id="hero-title"]', 'Parameters');
   await expect(page.locator('.manual-edit-modal')).toContainText('Hero title');
-  await expect(page.locator('.manual-edit-modal')).toContainText('TYPOGRAPHY');
+  await expect(page.locator('.manual-edit-modal')).toContainText('Parameters');
   await expect(page.getByRole('button', { name: /^Save$/ })).toBeVisible();
 });
 
@@ -770,16 +776,20 @@ test('[P0] @critical edited HTML file restores selected tab and preview after re
   const frame = artifactPreviewFrame(page);
   await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
   await page.getByTestId('manual-edit-mode-toggle').click();
-  await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'TYPOGRAPHY');
-  const fontSizeInput = inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Size' }).locator('input');
+  await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'Parameters');
+  const parameters = inspectorSection(page, 'Parameters');
+  const fontSizeInput = parameters.locator('.cc-row').filter({ hasText: 'Font size' }).locator('input');
   await expect(fontSizeInput).toBeVisible();
   await fontSizeInput.fill('52');
-  await inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Color' }).locator('input').fill('#2563eb');
+  await parameters.locator('.cc-row').filter({ hasText: 'Text color' }).locator('input:not([type="color"])').fill('#2563eb');
   await inspectSaveButton(page).click({ force: true });
   await expectFileSource(page, projectId, 'restore-edit.html', ['font-size: 52px', 'color:']);
 
   await page.getByTestId('manual-edit-mode-toggle').click();
-  await expect(page.getByRole('tablist', { name: 'View mode' })).toHaveCount(0);
+  const viewMode = page.getByRole('tablist', { name: 'View mode' });
+  await expect(viewMode).toBeVisible();
+  await expect(viewMode.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(viewMode.getByRole('tab', { name: 'Code', exact: true })).toBeVisible();
   await expect(page.locator('.viewer-source')).toHaveCount(0);
   await expect(restoreTab).toHaveAttribute('aria-selected', 'true');
   await expect(secondaryTab).toHaveAttribute('aria-selected', 'false');
@@ -790,7 +800,10 @@ test('[P0] @critical edited HTML file restores selected tab and preview after re
   const restoredTab = tabBySuffix(page, 'restore-edit.html');
   await expect(restoredTab).toBeVisible();
   await expect(restoredTab).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByRole('tablist', { name: 'View mode' })).toHaveCount(0);
+  const restoredViewMode = page.getByRole('tablist', { name: 'View mode' });
+  await expect(restoredViewMode).toBeVisible();
+  await expect(restoredViewMode.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(restoredViewMode.getByRole('tab', { name: 'Code', exact: true })).toBeVisible();
   await expect(page.locator('.viewer-source')).toHaveCount(0);
   await expect(artifactPreview(page)).toBeVisible();
   const restoredFrame = artifactPreviewFrame(page);
