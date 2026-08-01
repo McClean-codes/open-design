@@ -10,6 +10,7 @@ import {
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
+  type SetStateAction,
 } from 'react';
 import { AnimatePresence } from 'motion/react';
 import { createHtmlArtifactManifest, inferLegacyManifest } from '../artifacts/manifest';
@@ -105,6 +106,10 @@ import { playSound, showCompletionNotification } from '../utils/notifications';
 import { randomUUID } from '../utils/uuid';
 import { DEFAULT_NOTIFICATIONS } from '../state/config';
 import type { TodoItem } from '../runtime/todos';
+import type {
+  AmrAuthRetryContinuation,
+  AmrAuthRetryPersonalAdoptionWitness,
+} from '../runtime/amr-auth-retry-continuation';
 import {
   appendErrorStatusEvent,
   removeErrorStatusEvent,
@@ -242,6 +247,7 @@ import {
   projectWorkspaceScopeAuthorizesAmr,
   projectWorkspaceScopeReady,
   runWorkspaceIdentity,
+  runWorkspacePersonalAdoptionWitness,
   useProjectWorkspaceScope,
 } from '../collab/useProjectWorkspaceScope';
 import { CollabProvider, type CollabContextValue } from '../collab/collab-context';
@@ -469,6 +475,16 @@ interface Props {
   workspaceContextOverride?: WorkspaceCollabContext | null;
   /** Workspace/member authorization lifetime for async title reads. */
   projectAuthorizationKey?: string;
+  amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
+  onArmAmrAuthRetryContinuation?: (
+    continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+  ) => void;
+  onConsumeAmrAuthRetryContinuation?: (
+    continuation: AmrAuthRetryContinuation,
+  ) => boolean;
+  onDiscardAmrAuthRetryContinuation?: (
+    continuation: AmrAuthRetryContinuation,
+  ) => void;
   /**
    * The current title from the team catalog when this project is shared by
    * another member. That catalog is the naming authority; the member's local
@@ -1575,6 +1591,10 @@ export function ProjectView({
   project,
   workspaceContextOverride,
   projectAuthorizationKey = project.id,
+  amrAuthRetryContinuation = null,
+  onArmAmrAuthRetryContinuation,
+  onConsumeAmrAuthRetryContinuation,
+  onDiscardAmrAuthRetryContinuation,
   authoritativeProjectName,
   resolveAuthoritativeProjectName,
   routeFileName,
@@ -1611,6 +1631,10 @@ export function ProjectView({
   onDuplicateProject,
 }: Props) {
   const { locale, t } = useI18n();
+  const amrAuthRetryMountIdRef = useRef<string | null>(null);
+  if (amrAuthRetryMountIdRef.current === null) {
+    amrAuthRetryMountIdRef.current = randomUUID();
+  }
   const activeAuthorizationLifetimeRef = useRef<string | null>(projectAuthorizationKey);
   useEffect(() => {
     activeAuthorizationLifetimeRef.current = projectAuthorizationKey;
@@ -1643,6 +1667,11 @@ export function ProjectView({
     workspaceContext,
     project.workspaceId,
   );
+  const personalAdoptionContext = runWorkspacePersonalAdoptionWitness(
+    projectWorkspaceScopeState,
+    workspaceContext,
+    project.workspaceId,
+  );
   // Scope revalidation returns a freshly decoded context object even when the
   // data-plane authority did not change. Project hydration is keyed to the
   // authority carried by resource requests, not that object's allocation:
@@ -1651,6 +1680,16 @@ export function ProjectView({
   const projectRunAuthorityKey = workspaceIdentityCacheKey(
     resolvedProjectRunWorkspaceContext,
   );
+  const amrAuthRetryPersonalAdoptionWitness:
+    AmrAuthRetryPersonalAdoptionWitness | null = personalAdoptionContext
+      ? {
+          workspaceIdentityKey: workspaceIdentityCacheKey(personalAdoptionContext),
+          workspaceId: personalAdoptionContext.workspaceId,
+          workspaceMemberId: personalAdoptionContext.workspaceMemberId,
+          workspaceType: 'personal',
+          memberStatus: 'active',
+        }
+      : null;
   const canonicalProjectRunWorkspaceContextRef = useRef<{
     authorityKey: string;
     context: WorkspaceCollabContext | null;
@@ -1973,6 +2012,15 @@ export function ProjectView({
   // attach the runId to.
   const [messagesInitialized, setMessagesInitialized] = useState(false);
   const [previewComments, setPreviewComments] = useState<PreviewComment[]>([]);
+  // Every local comment commit invalidates older in-flight list reads. The
+  // initial read and the SSE/poll refresher use the same generation as a
+  // commit witness, so a slow response can never resurrect a locally deleted
+  // comment or replace a newer add/status update.
+  const previewCommentsGenerationRef = useRef(0);
+  const commitPreviewComments = useCallback((next: SetStateAction<PreviewComment[]>) => {
+    previewCommentsGenerationRef.current += 1;
+    setPreviewComments(next);
+  }, []);
   // Mirror so the send-now interrupt path can read the current statuses
   // synchronously without re-creating its callback on every comment change.
   const previewCommentsRef = useRef<PreviewComment[]>([]);
@@ -2387,7 +2435,7 @@ export function ProjectView({
     setMessageLoadRetryNonce(0);
     setConversationLoadError(null);
     setMessages([]);
-    setPreviewComments([]);
+    commitPreviewComments([]);
     setAttachedComments([]);
     setStreaming(false);
     streamingConversationIdRef.current = null;
@@ -2459,6 +2507,7 @@ export function ProjectView({
       }
     };
   }, [
+    commitPreviewComments,
     conversationMaterializationGenerationController,
     project.id,
     projectRunAuthorityKey,
@@ -2687,7 +2736,7 @@ export function ProjectView({
     if (!activeConversationId) {
       setMessages([]);
       setMessagesInitialized(false);
-      setPreviewComments([]);
+      commitPreviewComments([]);
       setAttachedComments([]);
       setMessagesConversationId(null);
       setFailedMessagesConversationId(null);
@@ -2703,7 +2752,8 @@ export function ProjectView({
     let cancelled = false;
     const requestWorkspaceContext = projectRunWorkspaceContextRef.current;
     setMessages([]);
-    setPreviewComments([]);
+    commitPreviewComments([]);
+    const commentsGeneration = previewCommentsGenerationRef.current;
     setAttachedComments([]);
     setArtifact(null);
     setMessagesConversationId(null);
@@ -2717,22 +2767,30 @@ export function ProjectView({
     }
     (async () => {
       try {
-        const [list, comments] = await Promise.all([
-          listMessages(
-            project.id,
-            activeConversationId,
-            requestWorkspaceContext,
-          ),
-          fetchPreviewComments(
-            project.id,
-            activeConversationId,
-            requestWorkspaceContext,
-          ),
-        ]);
+        // Comments are an auxiliary overlay. A slow collaboration read must
+        // not keep the persisted transcript (and every recovery action it
+        // contains) behind ChatPane's Loading gate. Keep both reads under this
+        // effect's project/conversation/authority lifetime, but settle them
+        // independently.
+        void fetchPreviewComments(
+          project.id,
+          activeConversationId,
+          requestWorkspaceContext,
+        ).then((comments) => {
+          if (cancelled || previewCommentsGenerationRef.current !== commentsGeneration) return;
+          setPreviewComments(comments);
+        }).catch(() => {
+          if (cancelled || previewCommentsGenerationRef.current !== commentsGeneration) return;
+          setPreviewComments([]);
+        });
+        const list = await listMessages(
+          project.id,
+          activeConversationId,
+          requestWorkspaceContext,
+        );
         if (cancelled) return;
         setMessages(list);
         setMessagesInitialized(true);
-        setPreviewComments(comments);
         setAttachedComments([]);
         setArtifact(null);
         setError(null);
@@ -2744,7 +2802,7 @@ export function ProjectView({
         if (cancelled) return;
         const message = err instanceof Error ? err.message : 'Could not load messages for this conversation.';
         setMessages([]);
-        setPreviewComments([]);
+        commitPreviewComments([]);
         setAttachedComments([]);
         setArtifact(null);
         setError(message);
@@ -2760,6 +2818,7 @@ export function ProjectView({
   }, [
     project.id,
     activeConversationId,
+    commitPreviewComments,
     messageLoadRetryNonce,
     projectRunAuthorityKey,
   ]);
@@ -4348,11 +4407,13 @@ export function ProjectView({
 
   const refreshPreviewComments = useCallback(async () => {
     if (!activeConversationId) return;
+    const commentsGeneration = ++previewCommentsGenerationRef.current;
     const next = await fetchPreviewComments(
       project.id,
       activeConversationId,
       projectRunWorkspaceContext,
     );
+    if (previewCommentsGenerationRef.current !== commentsGeneration) return;
     setPreviewComments(next);
     setAttachedComments((current) =>
       current
@@ -4448,7 +4509,7 @@ export function ProjectView({
         });
         return null;
       }
-      setPreviewComments((current) => mergeSavedPreviewComment(current, saved));
+      commitPreviewComments((current) => mergeSavedPreviewComment(current, saved));
       setAttachedComments((current) =>
         attachAfterSave ? mergeAttachedComments(current, saved) : current.map((comment) => comment.id === saved.id ? saved : comment),
       );
@@ -4457,6 +4518,7 @@ export function ProjectView({
     [
       project.id,
       activeConversationId,
+      commitPreviewComments,
       previewComments,
       projectRunWorkspaceContext,
       t,
@@ -4481,11 +4543,11 @@ export function ProjectView({
         });
         return false;
       }
-      setPreviewComments((current) => current.filter((comment) => comment.id !== commentId));
+      commitPreviewComments((current) => current.filter((comment) => comment.id !== commentId));
       setAttachedComments((current) => removeAttachedComment(current, commentId));
       return true;
     },
-    [project.id, activeConversationId, projectRunWorkspaceContext, t],
+    [project.id, activeConversationId, commitPreviewComments, projectRunWorkspaceContext, t],
   );
 
   /**
@@ -4503,7 +4565,7 @@ export function ProjectView({
   const reorderPreviewComment = useCallback(
     async (commentId: string, sortKey: number) => {
       if (!activeConversationId) return;
-      setPreviewComments((current) =>
+      commitPreviewComments((current) =>
         current.map((comment) => (comment.id === commentId ? { ...comment, sortKey } : comment)),
       );
       const saved = await patchPreviewCommentSortKey(
@@ -4514,7 +4576,7 @@ export function ProjectView({
         projectRunWorkspaceContext,
       );
       if (saved) {
-        setPreviewComments((current) => mergeSavedPreviewComment(current, saved));
+        commitPreviewComments((current) => mergeSavedPreviewComment(current, saved));
       } else {
         setProjectActionsToast({
           message: t('project.previewCommentReorderFailed'),
@@ -4524,7 +4586,7 @@ export function ProjectView({
         });
       }
     },
-    [project.id, activeConversationId, projectRunWorkspaceContext, t],
+    [project.id, activeConversationId, commitPreviewComments, projectRunWorkspaceContext, t],
   );
 
   const attachPreviewComment = useCallback((comment: PreviewComment) => {
@@ -4542,7 +4604,7 @@ export function ProjectView({
         (attachment) => attachment.source !== 'board-batch',
       );
       if (persistedAttachments.length === 0) return;
-      setPreviewComments((current) =>
+      commitPreviewComments((current) =>
         current.map((comment) =>
           persistedAttachments.some((attachment) => attachment.id === comment.id)
             ? { ...comment, status }
@@ -4565,6 +4627,7 @@ export function ProjectView({
     [
       project.id,
       activeConversationId,
+      commitPreviewComments,
       refreshPreviewComments,
       projectRunWorkspaceContext,
     ],
@@ -5933,7 +5996,7 @@ export function ProjectView({
         current.filter((comment) => !reservedCommentIds.has(comment.id)),
       );
       if (reservedCommentIds.size > 0) {
-        setPreviewComments((current) =>
+        commitPreviewComments((current) =>
           current.map((comment) =>
             reservedCommentIds.has(comment.id)
               ? { ...comment, status: 'applying' }
@@ -5953,7 +6016,7 @@ export function ProjectView({
         ).catch(() => {});
       }
     }
-  }, [enqueueChatSend, project.id, projectRunWorkspaceContext]);
+  }, [commitPreviewComments, enqueueChatSend, project.id, projectRunWorkspaceContext]);
 
   const handleSend = useCallback(
     async (
@@ -7549,7 +7612,7 @@ export function ProjectView({
       );
       if (stuckApplying.length > 0) {
         const resetIds = new Set(stuckApplying.map((comment) => comment.id));
-        setPreviewComments((current) =>
+        commitPreviewComments((current) =>
           current.map((comment) =>
             resetIds.has(comment.id) ? { ...comment, status: 'open' } : comment,
           ),
@@ -7580,7 +7643,7 @@ export function ProjectView({
       );
       if (started) removeQueuedChatSend(id);
     })();
-  }, [armSlideNavForQueuedSend, currentConversationBusy, handleSend, handleStop, prioritizeQueuedChatSend, project.id, removeQueuedChatSend, projectRunWorkspaceContext]);
+  }, [armSlideNavForQueuedSend, commitPreviewComments, currentConversationBusy, handleSend, handleStop, prioritizeQueuedChatSend, project.id, removeQueuedChatSend, projectRunWorkspaceContext]);
 
   useEffect(() => {
     if (currentConversationBusy) {
@@ -8312,7 +8375,7 @@ export function ProjectView({
   const handleSelectConversation = useCallback((id: string) => {
     if (id === activeConversationId && failedMessagesConversationId !== id) return;
     setMessages([]);
-    setPreviewComments([]);
+    commitPreviewComments([]);
     setAttachedComments([]);
     setArtifact(null);
     setStreaming(false);
@@ -8339,7 +8402,7 @@ export function ProjectView({
       { replace: true },
     );
     setMessageLoadRetryNonce((nonce) => nonce + 1);
-  }, [activeConversationId, failedMessagesConversationId, project.id, openTabsState.active]);
+  }, [activeConversationId, commitPreviewComments, failedMessagesConversationId, project.id, openTabsState.active]);
 
   const refreshConversationsForProgrammaticBrandRetry = useCallback(
     async (conversationId: string): Promise<boolean> => {
@@ -8484,7 +8547,7 @@ export function ProjectView({
         });
         if (!fresh) throw new Error(t('chat.forkConversationFailed'));
         setMessages([]);
-        setPreviewComments([]);
+        commitPreviewComments([]);
         setAttachedComments([]);
         setArtifact(null);
         setStreaming(false);
@@ -8518,6 +8581,7 @@ export function ProjectView({
       activeConversationId,
       activeConversation?.title,
       activeSessionMode,
+      commitPreviewComments,
       forkingMessageId,
       messages,
       navigate,
@@ -10044,6 +10108,13 @@ export function ProjectView({
               onDeleteComment={(commentId) => void removePreviewComment(commentId)}
               onSend={handleComposerSend}
               onRetry={handleRetry}
+              amrAuthRetryContinuation={amrAuthRetryContinuation}
+              amrAuthRetryMountId={amrAuthRetryMountIdRef.current}
+              amrAuthRetryWorkspaceIdentityKey={projectRunAuthorityKey}
+              amrAuthRetryPersonalAdoptionWitness={amrAuthRetryPersonalAdoptionWitness}
+              onArmAmrAuthRetryContinuation={onArmAmrAuthRetryContinuation}
+              onConsumeAmrAuthRetryContinuation={onConsumeAmrAuthRetryContinuation}
+              onDiscardAmrAuthRetryContinuation={onDiscardAmrAuthRetryContinuation}
               onResumeRun={handleResumeRun}
               onStop={handleStop}
               onRemoveQueuedSend={removeQueuedChatSend}

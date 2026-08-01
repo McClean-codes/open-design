@@ -83,6 +83,11 @@ import {
 } from '../providers/daemon';
 import { RESUME_CONTINUE_PROMPT } from '../runtime/resume';
 import {
+  canConsumeAmrAuthRetryContinuation,
+  type AmrAuthRetryContinuation,
+  type AmrAuthRetryPersonalAdoptionWitness,
+} from '../runtime/amr-auth-retry-continuation';
+import {
   ChatComposer,
   type ChatComposerHandle,
   type ChatSendOutcome,
@@ -544,6 +549,19 @@ interface Props {
     meta?: ChatSendMeta,
   ) => ChatSendOutcome | Promise<ChatSendOutcome>;
   onRetry?: (assistantMessage: ChatMessage) => void;
+  amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
+  amrAuthRetryMountId?: string;
+  amrAuthRetryWorkspaceIdentityKey?: string;
+  amrAuthRetryPersonalAdoptionWitness?: AmrAuthRetryPersonalAdoptionWitness | null;
+  onArmAmrAuthRetryContinuation?: (
+    continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+  ) => void;
+  onConsumeAmrAuthRetryContinuation?: (
+    continuation: AmrAuthRetryContinuation,
+  ) => boolean;
+  onDiscardAmrAuthRetryContinuation?: (
+    continuation: AmrAuthRetryContinuation,
+  ) => void;
   onResumeRun?: (assistantMessage: ChatMessage) => void;
   onStop: () => void;
   // Skills available for @-mention assembly. ProjectView filters out the
@@ -856,6 +874,13 @@ export function ChatPane({
   onDeleteComment,
   onSend,
   onRetry,
+  amrAuthRetryContinuation = null,
+  amrAuthRetryMountId,
+  amrAuthRetryWorkspaceIdentityKey,
+  amrAuthRetryPersonalAdoptionWitness = null,
+  onArmAmrAuthRetryContinuation,
+  onConsumeAmrAuthRetryContinuation,
+  onDiscardAmrAuthRetryContinuation,
   onResumeRun,
   onStop,
   onRemoveQueuedSend,
@@ -962,17 +987,9 @@ export function ChatPane({
   const amrProfile = config?.agentCliEnv?.amr?.[AMR_PROFILE_ENV_KEY] ?? null;
   const [inlineAmrLoginStatus, setInlineAmrLoginStatus] =
     useState<VelaLoginStatus | null>(null);
+  const amrAuthRetrySignedOutWitnessRef =
+    useRef<AmrAuthRetryContinuation | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
-  // Guards the inline AMR sign-in card so a successful login auto-retries the
-  // failed run exactly once (the pill's onStatusChange fires loggedIn on every
-  // poll). Keyed by the failed assistant's id.
-  const amrAuthRetriedRef = useRef<string | null>(null);
-  // Tracks the last observed AMR login state so we retry only on a real
-  // signed-out -> signed-in transition. Without this, a run that keeps failing
-  // AMR_AUTH_REQUIRED while /status already reports signed-in would auto-retry
-  // forever (each retry is a new assistant id, so the id guard alone never
-  // converges).
-  const amrAuthPrevLoggedInRef = useRef<boolean | undefined>(undefined);
   const chatLogScrollIdleTimerRef = useRef<number | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<ChatComposerHandle | null>(null);
@@ -1265,26 +1282,119 @@ export function ChatPane({
     retryAssistant && onRetry && runFailureUi?.primaryAction === 'authorize',
   );
   useEffect(() => {
+    if (
+      !amrAuthRetryContinuation
+      || !onDiscardAmrAuthRetryContinuation
+      || loading
+      || !projectId
+      || !activeConversationId
+      || messagesConversationId !== activeConversationId
+    ) {
+      return;
+    }
+    const personalAdoptionAuthorityTransition =
+      amrAuthRetryContinuation.workspaceIdentityKey === 'none'
+      && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
+      && amrAuthRetryPersonalAdoptionWitness?.workspaceIdentityKey
+        === amrAuthRetryWorkspaceIdentityKey;
+    const mismatched =
+      amrAuthRetryContinuation.projectId !== projectId
+      || amrAuthRetryContinuation.conversationId !== activeConversationId
+      || amrAuthRetryContinuation.assistantId !== retryAssistant?.id
+      || (
+        amrAuthRetryWorkspaceIdentityKey !== undefined
+        && amrAuthRetryContinuation.workspaceIdentityKey
+          !== amrAuthRetryWorkspaceIdentityKey
+        && !personalAdoptionAuthorityTransition
+      );
+    if (mismatched) {
+      onDiscardAmrAuthRetryContinuation(amrAuthRetryContinuation);
+    }
+  }, [
+    activeConversationId,
+    amrAuthRetryContinuation,
+    amrAuthRetryMountId,
+    amrAuthRetryPersonalAdoptionWitness,
+    amrAuthRetryWorkspaceIdentityKey,
+    loading,
+    messagesConversationId,
+    onDiscardAmrAuthRetryContinuation,
+    projectId,
+    retryAssistant?.id,
+  ]);
+  const consumeAmrAuthRetryIfAuthorized = useCallback((status: VelaLoginStatus | null) => {
+    if (status?.loggedIn === false) {
+      if (
+        amrAuthRetryContinuation
+        && amrAuthRetryContinuation.workspaceIdentityKey === 'none'
+        && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
+      ) {
+        amrAuthRetrySignedOutWitnessRef.current = amrAuthRetryContinuation;
+      }
+      return;
+    }
+    if (
+      status?.loggedIn !== true
+      || !amrAuthRetryContinuation
+      || !amrAuthRetryMountId
+      || !amrAuthRetryWorkspaceIdentityKey
+      || !projectId
+      || !activeConversationId
+      || !retryAssistant
+      || !onRetry
+      || !onConsumeAmrAuthRetryContinuation
+    ) {
+      return;
+    }
+    const originMountObservedSignedOut =
+      amrAuthRetrySignedOutWitnessRef.current === amrAuthRetryContinuation;
+    // Every continuation is consumed against the account identity returned by
+    // this exact status observation. An ambient shell snapshot can belong to a
+    // prior account during sign-out/sign-in transitions.
+    const loggedInAccountId = status.user?.id ?? null;
+    if (!canConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation, {
+      projectId,
+      conversationId: activeConversationId,
+      assistantId: retryAssistant.id,
+      workspaceIdentityKey: amrAuthRetryWorkspaceIdentityKey,
+      mountId: amrAuthRetryMountId,
+      loggedInAccountId,
+      nowMs: Date.now(),
+      originMountObservedSignedOut,
+      personalAdoptionWitness: amrAuthRetryPersonalAdoptionWitness,
+    })) {
+      return;
+    }
+    if (onConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation)) {
+      amrAuthRetrySignedOutWitnessRef.current = null;
+      onRetry(retryAssistant);
+    }
+  }, [
+    activeConversationId,
+    amrAuthRetryContinuation,
+    amrAuthRetryMountId,
+    amrAuthRetryPersonalAdoptionWitness,
+    amrAuthRetryWorkspaceIdentityKey,
+    onConsumeAmrAuthRetryContinuation,
+    onRetry,
+    projectId,
+    retryAssistant,
+  ]);
+  useEffect(() => {
+    if (
+      amrAuthRetrySignedOutWitnessRef.current
+      && amrAuthRetrySignedOutWitnessRef.current !== amrAuthRetryContinuation
+    ) {
+      amrAuthRetrySignedOutWitnessRef.current = null;
+    }
+  }, [amrAuthRetryContinuation]);
+  useEffect(() => {
     if (!hasInlineAmrAuthorizeFailure || !retryAssistant || !onRetry) return;
     let stopped = false;
     const retryIfSignedIn = async () => {
       const next = await refreshInlineAmrLoginStatus();
       if (stopped) return;
-      // Retry only on a real signed-out -> signed-in transition. A null/unknown
-      // status is NOT treated as signed-out, so it can't fabricate a transition;
-      // and once signed-in we never retry again until an explicit signed-out is
-      // seen. Otherwise a run that keeps failing auth while /status reports
-      // signed-in would retry forever (each retry is a new assistant id).
-      if (next?.loggedIn === true) {
-        const wasSignedOut = amrAuthPrevLoggedInRef.current === false;
-        amrAuthPrevLoggedInRef.current = true;
-        if (wasSignedOut && amrAuthRetriedRef.current !== retryAssistant.id) {
-          amrAuthRetriedRef.current = retryAssistant.id;
-          onRetry(retryAssistant);
-        }
-      } else if (next && next.loggedIn === false) {
-        amrAuthPrevLoggedInRef.current = false;
-      }
+      consumeAmrAuthRetryIfAuthorized(next);
     };
     void retryIfSignedIn();
     const interval = window.setInterval(() => {
@@ -1295,6 +1405,7 @@ export function ChatPane({
       window.clearInterval(interval);
     };
   }, [
+    consumeAmrAuthRetryIfAuthorized,
     hasInlineAmrAuthorizeFailure,
     onRetry,
     refreshInlineAmrLoginStatus,
@@ -2567,28 +2678,24 @@ export function ChatPane({
                               hideSignedOutStatus
                               revealPendingCancelAction
                               onSignInStarted={() => {
-                                amrAuthPrevLoggedInRef.current = false;
+                                if (
+                                  projectId
+                                  && activeConversationId
+                                  && amrAuthRetryMountId
+                                  && amrAuthRetryWorkspaceIdentityKey
+                                  && onArmAmrAuthRetryContinuation
+                                ) {
+                                  onArmAmrAuthRetryContinuation({
+                                    projectId,
+                                    conversationId: activeConversationId,
+                                    assistantId: retryAssistant.id,
+                                    workspaceIdentityKey: amrAuthRetryWorkspaceIdentityKey,
+                                    originMountId: amrAuthRetryMountId,
+                                  });
+                                }
                               }}
                               onStatusChange={(loginStatus) => {
-                                // Retry only on a real signed-out -> signed-in
-                                // transition (see amrAuthPrevLoggedInRef).
-                                if (loginStatus?.loggedIn === true) {
-                                  const wasSignedOut =
-                                    amrAuthPrevLoggedInRef.current === false;
-                                  amrAuthPrevLoggedInRef.current = true;
-                                  if (
-                                    wasSignedOut &&
-                                    amrAuthRetriedRef.current !== retryAssistant.id
-                                  ) {
-                                    amrAuthRetriedRef.current = retryAssistant.id;
-                                    onRetry(retryAssistant);
-                                  }
-                                } else if (
-                                  loginStatus &&
-                                  loginStatus.loggedIn === false
-                                ) {
-                                  amrAuthPrevLoggedInRef.current = false;
-                                }
+                                consumeAmrAuthRetryIfAuthorized(loginStatus);
                               }}
                             />
                           ) : runFailureUi.primaryAction === 'launch-terminal-auth' ? (

@@ -85,7 +85,10 @@ import {
   listProjectRuns,
   type VelaLoginStatus,
 } from './providers/daemon';
-import { AMR_LOGIN_STATUS_EVENT } from './components/amrLoginPolling';
+import {
+  AMR_LOGIN_STATUS_EVENT,
+  amrLoginStatusEventReason,
+} from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
 import { fetchTeamProjectsCatalog } from './collab/team-projects-catalog';
 import { workspaceProjectHeaders } from './collab/workspace-identity';
@@ -132,6 +135,11 @@ import {
   amrBalanceGateScopesMatch,
   type AmrBalanceGateScope,
 } from './runtime/amr-balance-gate';
+import {
+  AMR_AUTH_RETRY_CONTINUATION_TTL_MS,
+  routeStillMatchesAmrAuthRetryContinuation,
+  type AmrAuthRetryContinuation,
+} from './runtime/amr-auth-retry-continuation';
 import { installFontRecovery } from './runtime/font-recovery';
 import {
   createDesignSystemProjectFromProject,
@@ -1205,6 +1213,55 @@ function AppInner() {
   // globals effect below reads it; the sync effects live next to the
   // other AMR plumbing further down.
   const [amrLoginStatus, setAmrLoginStatus] = useState<VelaLoginStatus | null>(null);
+  // Inline AMR auth can invalidate the caller identity and intentionally tear
+  // down ProjectView before the login poll reports success. Keep only the
+  // exact failed-turn continuation above that authorization lifetime; the
+  // fresh ProjectView must prove the same route + Workspace authority before
+  // it may consume this one-shot retry.
+  const [amrAuthRetryContinuation, setAmrAuthRetryContinuation] =
+    useState<AmrAuthRetryContinuation | null>(null);
+  const amrAuthRetryContinuationRef = useRef<AmrAuthRetryContinuation | null>(null);
+  const clearAmrAuthRetryContinuation = useCallback((expected?: AmrAuthRetryContinuation) => {
+    if (expected && amrAuthRetryContinuationRef.current !== expected) return;
+    amrAuthRetryContinuationRef.current = null;
+    setAmrAuthRetryContinuation(null);
+  }, []);
+  const armAmrAuthRetryContinuation = useCallback((
+    input: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+  ) => {
+    const next: AmrAuthRetryContinuation = {
+      ...input,
+      accountIdAtArm:
+        amrLoginStatusRef.current?.loggedIn === true
+          ? amrLoginStatusRef.current.user?.id ?? null
+          : null,
+      createdAtMs: Date.now(),
+    };
+    amrAuthRetryContinuationRef.current = next;
+    setAmrAuthRetryContinuation(next);
+  }, []);
+  const consumeAmrAuthRetryContinuation = useCallback((
+    expected: AmrAuthRetryContinuation,
+  ): boolean => {
+    if (amrAuthRetryContinuationRef.current !== expected) return false;
+    clearAmrAuthRetryContinuation(expected);
+    return true;
+  }, [clearAmrAuthRetryContinuation]);
+  useEffect(() => {
+    if (!amrAuthRetryContinuation) return;
+    const remainingMs =
+      amrAuthRetryContinuation.createdAtMs
+      + AMR_AUTH_RETRY_CONTINUATION_TTL_MS
+      - Date.now();
+    if (remainingMs <= 0) {
+      clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
+    }, remainingMs);
+    return () => window.clearTimeout(timeout);
+  }, [amrAuthRetryContinuation, clearAmrAuthRetryContinuation]);
   // The plan that gates free-tier surfaces (today: the post-generation artifact
   // upsell). vela's login status is ACCOUNT-scoped, so a member whose plan is
   // held by the team workspace reads `free` there and used to be shown the
@@ -1229,7 +1286,22 @@ function AppInner() {
     status: VelaLoginStatus,
     options: { forceModelRefresh?: boolean; restartOnSignIn?: boolean } = {},
   ) => {
-    const wasLoggedIn = amrLoginStatusRef.current?.loggedIn === true;
+    const previousStatus = amrLoginStatusRef.current;
+    const wasLoggedIn = previousStatus?.loggedIn === true;
+    const pendingRetry = amrAuthRetryContinuationRef.current;
+    if (
+      pendingRetry
+      && (
+        (wasLoggedIn && status.loggedIn === false)
+        || (
+          status.loggedIn === true
+          && pendingRetry.accountIdAtArm !== null
+          && status.user?.id !== pendingRetry.accountIdAtArm
+        )
+      )
+    ) {
+      clearAmrAuthRetryContinuation(pendingRetry);
+    }
     amrLoginStatusRef.current = status;
     setAmrLoginStatus(status);
     if (
@@ -1241,7 +1313,7 @@ function AppInner() {
     ) {
       restartAmrPolling();
     }
-  }, [restartAmrPolling]);
+  }, [clearAmrAuthRetryContinuation, restartAmrPolling]);
 
   // Tab-scope identity key, fed to WorkspaceTabsBar so it can close every open
   // tab down to a single fresh Home tab whenever the caller's identity
@@ -1435,7 +1507,10 @@ function AppInner() {
       }
     };
     void sync();
-    const onStatusEvent = () => {
+    const onStatusEvent = (event: Event) => {
+      if (amrLoginStatusEventReason(event) === 'login-canceled') {
+        clearAmrAuthRetryContinuation();
+      }
       void sync({}, true);
     };
     const onReturnToApp = () => {
@@ -1451,7 +1526,7 @@ function AppInner() {
       window.removeEventListener('focus', onReturnToApp);
       document.removeEventListener('visibilitychange', onReturnToApp);
     };
-  }, [applyAmrLoginStatus, daemonLive]);
+  }, [applyAmrLoginStatus, clearAmrAuthRetryContinuation, daemonLive]);
 
   useEffect(() => {
     analytics.setUserId(
@@ -3173,6 +3248,33 @@ function AppInner() {
     ? projectRouteWorkspaceContext.context
     : null;
   projectRouteWorkspaceContextRef.current = activeProjectWorkspaceContext;
+  useEffect(() => {
+    const pending = amrAuthRetryContinuationRef.current;
+    if (!pending) return;
+    if (!routeStillMatchesAmrAuthRetryContinuation(pending, route)) {
+      clearAmrAuthRetryContinuation(pending);
+      return;
+    }
+    if (projectRouteWorkspaceContext.failure) {
+      clearAmrAuthRetryContinuation(pending);
+      return;
+    }
+    // A null context is the expected fail-closed refresh window. Wait for the
+    // fresh exact witness rather than borrowing or latching the old one.
+    if (
+      activeProjectWorkspaceContext
+      && workspaceIdentityCacheKey(activeProjectWorkspaceContext)
+        !== pending.workspaceIdentityKey
+    ) {
+      clearAmrAuthRetryContinuation(pending);
+    }
+  }, [
+    activeProjectWorkspaceContext,
+    amrAuthRetryContinuation,
+    clearAmrAuthRetryContinuation,
+    projectRouteWorkspaceContext.failure,
+    route,
+  ]);
   // Project tabs belong to the project's persisted Workspace authority, not
   // the shell's ambient selection. On a cold deep link the ambient context can
   // settle (or switch A -> B) after the exact project scope has already loaded;
@@ -3828,10 +3930,18 @@ function AppInner() {
             activeProjectWorkspaceContext,
           )}
           project={activeProject}
-          workspaceContextOverride={activeProjectWorkspaceContext}
+          workspaceContextOverride={
+            activeProject.workspaceId
+              ? activeProjectWorkspaceContext
+              : undefined
+          }
           projectAuthorizationKey={
             activeProjectAuthorizationKey ?? activeProject.id
           }
+          amrAuthRetryContinuation={amrAuthRetryContinuation}
+          onArmAmrAuthRetryContinuation={armAmrAuthRetryContinuation}
+          onConsumeAmrAuthRetryContinuation={consumeAmrAuthRetryContinuation}
+          onDiscardAmrAuthRetryContinuation={clearAmrAuthRetryContinuation}
           authoritativeProjectName={activeAuthoritativeProjectName}
           resolveAuthoritativeProjectName={resolveAuthoritativeProjectName}
           routeFileName={route.fileName}
@@ -3972,6 +4082,11 @@ function AppInner() {
         <WorkspaceTabsBar
           route={route}
           projects={projects}
+          activeProjectWorkspaceId={
+            route.kind === 'project' && activeProject
+              ? activeProject.workspaceId ?? null
+              : undefined
+          }
           onboardingCompleted={config.onboardingCompleted === true}
           identityScopeKey={workspaceTabsIdentityScopeKey}
         />
