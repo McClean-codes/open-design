@@ -2267,7 +2267,7 @@ test('[P2] required home plugin prompt parameters gate submit and bind the proje
 test('[P0] @critical home composer routes free-form prompts through the design router by default', async ({ page }) => {
   await gotoEntryHome(page);
 
-  await expect(page.getByTestId('composer-mode-trigger')).toHaveAttribute('aria-label', 'Choose a mode');
+  await expect(page.getByTestId('composer-mode-trigger')).toHaveAttribute('aria-label', 'Mode: Design');
 
   const input = page.getByTestId('home-hero-input');
   const prompt =
@@ -2369,7 +2369,7 @@ test('[P0] @critical clearing the home working directory removes linked dirs fro
 
   await page.getByTestId('working-dir-trigger').click();
   await page.getByTestId('working-dir-clear').click();
-  await expect(page.getByTestId('working-dir-trigger')).toContainText('Select working directory');
+  await expect(page.getByTestId('working-dir-trigger')).toContainText('Working directory');
 
   await page.getByTestId('home-hero-input').fill('Create a premium dashboard without local folder context.');
 
