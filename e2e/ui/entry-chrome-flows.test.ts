@@ -229,7 +229,6 @@ test('[P0] @critical workspace selection remains isolated across two browser tab
       workspaceMemberId: TAB_PERSONAL_WORKSPACE.workspaceMemberId,
     });
 
-    const requestsABeforeSwitch = requestsA.length;
     await page.getByTestId('workspace-switcher').click();
     await page.getByRole('menuitem', { name: TAB_TEAM_WORKSPACE.workspaceName }).click();
     await expect(page.getByTestId('workspace-switcher')).toContainText(
@@ -250,6 +249,13 @@ test('[P0] @critical workspace selection remains isolated across two browser tab
     await expect(pageB.getByTestId('workspace-switcher')).toContainText(
       TAB_PERSONAL_WORKSPACE.workspaceName,
     );
+
+    // An ambient Personal read may already be in flight when the switch click
+    // begins. The switch response retires that request before it can commit,
+    // but the mock records requests at dispatch time. Start the post-switch
+    // witness after the Team selection is visibly and durably adopted so only
+    // reads issued under the new identity are judged below.
+    const requestsABeforeSwitch = requestsA.length;
 
     // Exercise both ambient revalidation edges with the two tabs active at the
     // same time. The poll retries only an idempotent browser event until the

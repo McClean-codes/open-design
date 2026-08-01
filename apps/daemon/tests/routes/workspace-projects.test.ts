@@ -221,6 +221,12 @@ describe('workspace project routes', () => {
       body: JSON.stringify({ id: projectId, name: 'Draft in A', skillId: null, designSystemId: null }),
     });
     expect(createResp.status).toBe(200);
+    await expect(createResp.json()).resolves.toMatchObject({
+      project: {
+        id: projectId,
+        workspaceId: workspaceA,
+      },
+    });
 
     const draftsA = await listInWorkspace(workspaceA, 'member-draft-a', '?view=drafts');
     expect(draftsA.projects.map((item) => item.id)).toContain(projectId);

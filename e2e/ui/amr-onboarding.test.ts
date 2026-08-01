@@ -3,6 +3,7 @@ import type { Locator, Page } from '@playwright/test';
 
 import {
   dismissPrivacyDialog,
+  mockAmrPersonalWorkspace,
   mockAmrWalletSnapshot,
   STORAGE_KEY,
   waitForLoadingToClear,
@@ -330,6 +331,7 @@ test('[P0] onboarding AMR runtime selection carries into the first Home run requ
     amrAvailable: true,
     initialLoggedIn: true,
   });
+  await mockAmrPersonalWorkspace(page, undefined, { accountBalanceUsd: '20.00' });
 
   await seedOnboardingConfig(page, config);
   await gotoOnboarding(page);

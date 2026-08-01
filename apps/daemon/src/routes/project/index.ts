@@ -3402,8 +3402,16 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         }
       }
       /** @type {import('@open-design/contracts').CreateProjectResponse} */
+      const createdProject = resolvedSnapshot?.ok ? getProject(db, id) ?? project : project;
       const body = {
-        project: resolvedSnapshot?.ok ? getProject(db, id) ?? project : project,
+        // The binding above is part of the same transaction as the project and
+        // seed conversation. Return that authority immediately so the Web can
+        // scope its very first conversation/file reads without waiting for a
+        // later list/detail round trip. Headerless legacy creates remain
+        // explicitly unbound and therefore keep the original payload shape.
+        project: createWorkspace.context
+          ? { ...createdProject, workspaceId: createWorkspace.context.workspaceId }
+          : createdProject,
         conversationId: cid,
         ...(resolvedSnapshot?.ok
           ? { appliedPluginSnapshotId: resolvedSnapshot.snapshotId }

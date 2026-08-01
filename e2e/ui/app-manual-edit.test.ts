@@ -342,7 +342,11 @@ test('[P0] @critical preview toolbar keeps share, download, comment, and zoom ac
   const shareMenu = page.locator('.share-menu-popover[role="menu"]');
   await expect(shareMenu).toBeVisible();
   await expect(shareMenu.getByRole('tab', { name: /^Share$/ })).toHaveAttribute('aria-selected', 'true');
-  await expect(shareMenu).toContainText(/Share project in workspace|Publish this file/i);
+  // This local Personal fixture deliberately has neither a Team identity nor
+  // an authenticated public-publish capability. Keep this toolbar smoke about
+  // the stable action surface instead of requiring a workspace-specific card.
+  await expect(shareMenu.getByRole('tab', { name: /^Export$/ })).toBeVisible();
+  await expect(shareMenu.getByRole('tab', { name: /^Send to\.\.\.$/ })).toBeVisible();
   await shareMenu.getByRole('tab', { name: /^Export$/ }).click();
   await expect(shareMenu.getByRole('menuitem', { name: /Export as PDF/i })).toBeVisible();
   await page.keyboard.press('Escape');
