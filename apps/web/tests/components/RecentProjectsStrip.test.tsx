@@ -249,6 +249,9 @@ describe('RecentProjectsStrip', () => {
     await waitFor(() => {
       expect(fetchProjectFiles).toHaveBeenCalledTimes(1);
       expect(container.querySelector('.recent-projects__card-thumb-html')).not.toBeNull();
+      expect(
+        (container.querySelector('iframe') as HTMLIFrameElement | null)?.getAttribute('src'),
+      ).toContain('workspaceId=ws-1');
     });
     expect(fetchProjectFiles).toHaveBeenCalledWith(
       'project-materializing',
@@ -259,9 +262,6 @@ describe('RecentProjectsStrip', () => {
         }),
       }),
     );
-    expect(
-      (container.querySelector('iframe') as HTMLIFrameElement | null)?.getAttribute('src'),
-    ).toContain('workspaceId=ws-1');
   });
 
   it('refreshes only the card named by team-project-content-ready', async () => {
