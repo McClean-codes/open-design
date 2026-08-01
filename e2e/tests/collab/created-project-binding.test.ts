@@ -1,46 +1,10 @@
 // @vitest-environment node
 
-// INVARIANT UNDER TEST: a project this daemon creates while it knows a
-// signed-in workspace always gets a `workspace_projects` binding row.
-//
-// Every project-creating route resolved its workspace from the REQUEST's
-// `x-od-workspace-*` headers alone (`resolveCreatedProjectWorkspace` ->
-// `bindCreatedProjectToWorkspace`, whose first statement was `if (!context)
-// return;`). A headerless create therefore produced an unbound project and
-// still answered 200, so nothing anywhere surfaced the loss. Three shipped
-// callers are headerless by construction, not by choice:
-//
-//   * `od project create` (apps/daemon/src/cli.ts) and the MCP `create_project`
-//     tool never mint workspace headers at all.
-//   * the web client's duplicate / design-system-copy / plugin-share creates
-//     read a ref that drops the context's `loading` flag, so a create fired
-//     before the (vela-backed, seconds-long) identity read lands sends none.
-//   * daemon-initiated creates — Orbit runs, scheduled routines — have no
-//     request to read headers from in the first place.
-//
-// The damage is billing attribution, not cosmetics. An unbound project makes
-// `GET /api/projects/:id/workspace-scope` answer `unbound`, which
-// `ProjectView`'s `projectRunWorkspaceContext` turns into `null` on the run
-// request — an Open Design Cloud run with no workspace to bill — and which
-// blanks `AvatarMenu`'s balance/plan area while that project is open.
-//
-// The fix resolves a headerless create against the daemon's OWN last-known
-// workspace (`workspaceContext.lastKnown()`, zero-network and synchronous)
-// instead of leaving an orphan. Two boundaries are deliberately NOT that, and
-// are pinned below so nobody later "fixes" them into a block:
-//
-//   * SIGNED OUT is not a bug. A daemon that has resolved no workspace binds
-//     nothing, the create still succeeds, and `unbound` is the honest answer —
-//     the same way the product behaves with no workspace feature at all.
-//   * An explicit header identity still wins over the ambient one. A create
-//     that names a workspace binds to THAT workspace.
-//
-// Seeding is through production HTTP APIs only: `PUT /api/workspace/context`
-// (the daemon's own dev/demo context seam, the same endpoint tools-dev and the
-// demo runtime drive) for the ambient identity, and the real vela integration
-// (`VELA_CONTROL_KEY` + `VELA_API_URL` -> `GET /api/v1/workspaces`) against a
-// temporary server-level mock for the membership directory that turns a
-// binding into a resolvable `personal`/`team` scope. No source-level backdoor.
+// INVARIANT UNDER TEST: project creation binds only to an explicitly asserted
+// and authorized Workspace. Mutable daemon current/default state is never an
+// authority source: a headerless legacy, CLI, plugin, or signed-out create
+// remains unbound and usable, while an explicitly scoped create is persisted
+// under that exact Workspace.
 
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -176,9 +140,9 @@ async function createProject(
   return created.project.id;
 }
 
-describe('a created project is bound to the workspace the daemon is signed in to', () => {
+describe('a created project is bound only to an explicit Workspace', () => {
   test(
-    'headerless creates bind to the ambient workspace; signed-out stays unbound and still works',
+    'ambient state never claims headerless creates; explicit scope still binds exactly',
     { timeout: 300_000 },
     async () => {
       const suite = await createSmokeSuite('collab-created-project-binding');
@@ -187,22 +151,15 @@ describe('a created project is bound to the workspace the daemon is signed in to
         async ({ webUrl }) => {
           await setAmbientWorkspace(webUrl, AMBIENT);
 
-          // --- SOURCE 1: POST /api/projects with no workspace headers. This is
-          // `od project create`, the MCP `create_project` tool, and any web
-          // create that fired before the identity read landed.
+          // `od project create`, MCP, and other headerless legacy callers do
+          // not inherit whichever Workspace the daemon most recently observed.
           const plainCreate = await createProject(webUrl, 'Bind plain create');
           const plainScope = await readScope(webUrl, plainCreate);
           expect(
             plainScope.kind,
-            'a headerless create must still bind to the workspace the daemon knows it is in',
-          ).not.toBe('unbound');
-          expect(plainScope.workspaceId).toBe(AMBIENT.workspaceId);
-          expect(plainScope.kind).toBe('personal');
-          // The binding is a private local draft, never a team share.
-          expect(plainScope.visibility).toBe('personal');
-          // The member id is the DIRECTORY's, which is what makes it a usable
-          // billing subject rather than an echo of whatever asked.
-          expect(plainScope.context?.workspaceMemberId).toBe(AMBIENT.workspaceMemberId);
+            'a headerless create must not inherit daemon-global Workspace state',
+          ).toBe('unbound');
+          expect(plainScope.workspaceId).toBeNull();
 
           // --- SOURCE 2: folder import. Same shared helper, its own route.
           const importedDir = join(suite.scratchDir, 'imported-folder');
@@ -214,9 +171,9 @@ describe('a created project is bound to the workspace the daemon is signed in to
           const importedScope = await readScope(webUrl, imported.project.id);
           expect(
             importedScope.kind,
-            'an imported-folder project is still a project and still needs a home workspace',
-          ).not.toBe('unbound');
-          expect(importedScope.workspaceId).toBe(AMBIENT.workspaceId);
+            'a headerless folder import must not inherit daemon-global Workspace state',
+          ).toBe('unbound');
+          expect(importedScope.workspaceId).toBeNull();
 
           // --- SOURCE 3: plugin-created project. Uses whichever plugin the
           // daemon registered at startup, so it needs no fixture of its own.
@@ -232,30 +189,25 @@ describe('a created project is bound to the workspace the daemon is signed in to
           const pluginScope = await readScope(webUrl, fromPlugin.project.id);
           expect(
             pluginScope.kind,
-            'a plugin-created project must not be an orphan either',
-          ).not.toBe('unbound');
-          expect(pluginScope.workspaceId).toBe(AMBIENT.workspaceId);
+            'a headerless plugin create must not inherit daemon-global Workspace state',
+          ).toBe('unbound');
+          expect(pluginScope.workspaceId).toBeNull();
 
-          // --- BOUNDARY 1: an explicit identity outranks the ambient one. The
-          // ambient workspace is a fallback for callers that cannot say, never
-          // an override for callers that did.
+          // An explicit identity is the only Workspace binding source.
           const explicit = await createProject(
             webUrl,
             'Bind explicit team',
             workspaceHeaders(EXPLICIT_TEAM),
           );
-          const explicitScope = await readScope(webUrl, explicit);
+          const explicitScope = await readScope(
+            webUrl,
+            explicit,
+            workspaceHeaders(EXPLICIT_TEAM),
+          );
           expect(explicitScope.workspaceId).toBe(EXPLICIT_TEAM.workspaceId);
           expect(explicitScope.kind).toBe('team');
 
-          // --- BOUNDARY 2: SIGNED OUT. Runs last: it clears the ambient
-          // identity the cases above depend on.
-          //
-          // With no workspace resolved there is nothing to bind to, and
-          // inventing one would be worse than answering "none". The create must
-          // still SUCCEED and the project must still be usable — this is the
-          // product's behavior with no workspace feature at all, and a guard
-          // here would break the signed-out single-player user.
+          // Signed-out remains the same legal unbound/local path.
           await setAmbientWorkspace(webUrl, null);
           const signedOut = await createProject(webUrl, 'Bind signed out');
           const signedOutScope = await readScope(webUrl, signedOut);
