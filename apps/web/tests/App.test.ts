@@ -7,8 +7,10 @@ import {
   mergeAgentModelChoice,
   persistComposioConfigChange,
   projectViewAuthorizationLifetimeKey,
+  projectRouteSurfaceState,
   resolveDeepLinkedTeamSharedProject,
   resolveSettingsCloseConfig,
+  shouldRouteToFirstRunOnboarding,
   shouldSyncMediaProvidersOnSave,
 } from '../src/App';
 import type { AppConfig, Project } from '../src/types';
@@ -16,6 +18,48 @@ import type {
   WorkspaceCollabContext,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
+
+describe('projectRouteSurfaceState', () => {
+  it('only shows an unbounded loader while the initial project list is loading', () => {
+    expect(projectRouteSurfaceState({
+      projectsLoading: true,
+      hasActiveProject: false,
+      daemonLive: false,
+    })).toBe('loading-projects');
+  });
+
+  it('makes an absent project terminal when the daemon is unavailable', () => {
+    expect(projectRouteSurfaceState({
+      projectsLoading: false,
+      hasActiveProject: false,
+      daemonLive: false,
+    })).toBe('daemon-unavailable');
+  });
+
+  it('exposes bounded deep-link failures instead of leaving the route loading forever', () => {
+    expect(projectRouteSurfaceState({
+      projectsLoading: false,
+      hasActiveProject: false,
+      daemonLive: true,
+      resolutionFailure: 'missing',
+    })).toBe('missing');
+    expect(projectRouteSurfaceState({
+      projectsLoading: false,
+      hasActiveProject: false,
+      daemonLive: true,
+      resolutionFailure: 'materialization-failed',
+    })).toBe('materialization-failed');
+  });
+
+  it('renders a loaded project regardless of stale failure metadata', () => {
+    expect(projectRouteSurfaceState({
+      projectsLoading: false,
+      hasActiveProject: true,
+      daemonLive: true,
+      resolutionFailure: 'missing',
+    })).toBe('ready');
+  });
+});
 
 const baseConfig: AppConfig = {
   mode: 'api',
@@ -28,6 +72,15 @@ const baseConfig: AppConfig = {
   skillId: null,
   designSystemId: null,
 };
+
+describe('shouldRouteToFirstRunOnboarding', () => {
+  it('never hijacks an explicit project deep link while daemon config is hydrating', () => {
+    const unfinished = { ...baseConfig, onboardingCompleted: false };
+
+    expect(shouldRouteToFirstRunOnboarding(unfinished, '/projects/project-a')).toBe(false);
+    expect(shouldRouteToFirstRunOnboarding(unfinished, '/')).toBe(true);
+  });
+});
 
 describe('hydrateReadyTeamProject', () => {
   const project: Project = {
@@ -134,7 +187,7 @@ describe('projectViewAuthorizationLifetimeKey', () => {
     teamId: 'team-a',
   } as WorkspaceCollabContext;
 
-  it('changes when the workspace or member authorization scope changes', () => {
+  it('changes when any Workspace authorization field changes', () => {
     const initial = projectViewAuthorizationLifetimeKey(projectId, baseContext);
 
     expect(projectViewAuthorizationLifetimeKey(projectId, {
@@ -144,6 +197,22 @@ describe('projectViewAuthorizationLifetimeKey', () => {
     expect(projectViewAuthorizationLifetimeKey(projectId, {
       ...baseContext,
       workspaceMemberId: 'member-b',
+    })).not.toBe(initial);
+    expect(projectViewAuthorizationLifetimeKey(projectId, {
+      ...baseContext,
+      role: 'admin',
+    })).not.toBe(initial);
+    expect(projectViewAuthorizationLifetimeKey(projectId, {
+      ...baseContext,
+      lifecycleState: 'locked',
+    })).not.toBe(initial);
+    expect(projectViewAuthorizationLifetimeKey(projectId, {
+      ...baseContext,
+      permissions: {
+        ...baseContext.permissions,
+        canShareProjects: true,
+        canWriteSyncedFiles: false,
+      },
     })).not.toBe(initial);
     expect(projectViewAuthorizationLifetimeKey(projectId, null)).not.toBe(initial);
   });

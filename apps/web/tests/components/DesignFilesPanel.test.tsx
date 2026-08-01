@@ -10,16 +10,19 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 
+import { CollabProvider } from "../../src/collab/collab-context";
 import {
   DesignFilesPanel,
   type DesignFilesNavState,
 } from "../../src/components/DesignFilesPanel";
+import { setHtmlSourceSnapshot } from "../../src/components/html-source-snapshot-cache";
 import type {
   ProjectFile,
   ProjectFileKind,
   ProjectFolder,
 } from "../../src/types";
 import { VISUAL_STABILITY_STORAGE_KEY } from "../../src/utils/visualStability";
+import { workspaceContextFixture } from "../helpers/workspace-context";
 
 function folder(path: string): ProjectFolder {
   return {
@@ -349,6 +352,98 @@ describe("DesignFilesPanel selection", () => {
     expect(onDeleteFiles).toHaveBeenCalledWith(["file-1.html", "file-2.png"]);
   });
 
+  it("sends the project-pinned Workspace identity on batch archive download", async () => {
+    const workspaceContext = workspaceContextFixture({
+      workspaceId: "workspace-a",
+      workspaceMemberId: "member-a",
+    });
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response("zip", {
+        status: 200,
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="project.zip"',
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:test"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const files = [file({ name: "page.html", kind: "html" })];
+    const { container } = render(
+      <CollabProvider
+        value={{
+          workspaceContext,
+          workspaceContextLoading: false,
+          enabled: true,
+          member: null,
+          present: [],
+          publishedVersion: null,
+          syncState: null,
+          viewerOnly: false,
+          writerAuthority: 'allowed',
+          isOwner: true,
+          isEffectiveOwner: true,
+          isSharedNonOwner: false,
+          ownerDisplayName: null,
+          ownerRole: null,
+          downloadPending: false,
+          reportChange: vi.fn(),
+          requestPublish: vi.fn(),
+          refreshPresence: vi.fn(),
+          checkStatusNow: vi.fn(),
+        }}
+      >
+        <DesignFilesPanel
+          projectId="test-project"
+          files={files}
+          liveArtifacts={[]}
+          onRefreshFiles={vi.fn()}
+          onOpenFile={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onRenameFile={vi.fn()}
+          onDeleteFile={vi.fn()}
+          onDeleteFiles={vi.fn()}
+          onUpload={vi.fn()}
+          onUploadFiles={vi.fn()}
+          onPaste={vi.fn()}
+          onNewSketch={vi.fn()}
+        />
+      </CollabProvider>,
+    );
+
+    fireEvent.click(
+      screen
+        .getByTestId("design-file-row-page.html")
+        .querySelector(".df-card-check")!,
+    );
+    fireEvent.click(
+      container.querySelector('[data-testid="design-files-batch-bar"] button')!,
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/archive/batch"),
+        ),
+      ).toBe(true);
+    });
+    const archiveCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/archive/batch"),
+    );
+    expect(archiveCall).toBeTruthy();
+    const [, init] = archiveCall!;
+    const headers = new Headers(init?.headers);
+    expect(headers.get("x-od-workspace-id")).toBe("workspace-a");
+    expect(headers.get("x-od-workspace-member-id")).toBe("member-a");
+  });
+
   it("does not open files from card controls", () => {
     const files = generateFiles(1);
     const { container, onOpenFile } = renderPanel(files);
@@ -506,6 +601,72 @@ describe("DesignFilesPanel page thumbnails", () => {
       "/api/projects/test-project/raw/small.html?v=1700000000000",
       expect.any(Object),
     );
+  });
+
+  it("reuses an exact-version HTML thumbnail source across panel remounts", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("<!doctype html><html><body><main>Cached</main></body></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const cachedFile = file({
+      name: "cached.html",
+      kind: "html",
+      mime: "text/html",
+      size: 16 * 1024,
+      mtime: 1700000000000,
+    });
+
+    const first = renderPanel([cachedFile]);
+    await waitFor(() => {
+      expect(first.container.querySelector(".df-card-thumb iframe")).toBeTruthy();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    const second = renderPanel([cachedFile]);
+    await waitFor(() => {
+      expect(second.container.querySelector(".df-card-thumb iframe")).toBeTruthy();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    second.unmount();
+
+    const changed = renderPanel([{ ...cachedFile, mtime: cachedFile.mtime + 1 }]);
+    await waitFor(() => {
+      expect(changed.container.querySelector(".df-card-thumb iframe")).toBeTruthy();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("builds the current file thumbnail from the exact viewer source snapshot", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const currentFile = file({
+      name: "current.html",
+      kind: "html",
+      mime: "text/html",
+      size: 16 * 1024,
+      mtime: 1700000000000,
+    });
+    setHtmlSourceSnapshot({
+      authorizationScopeKey: "local",
+      projectId: "test-project",
+      fileName: currentFile.name,
+      refreshKey: `${currentFile.mtime}:${currentFile.size}:7`,
+      source: "<!doctype html><html><body><main>Already loaded</main></body></html>",
+    });
+
+    const { container } = renderPanel([currentFile], { filesRefreshKey: 7 });
+
+    await waitFor(() => {
+      const iframe = container.querySelector<HTMLIFrameElement>(".df-card-thumb iframe");
+      expect(iframe?.getAttribute("srcdoc") ?? iframe?.srcdoc ?? "")
+        .toContain("Already loaded");
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

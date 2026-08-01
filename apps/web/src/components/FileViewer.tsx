@@ -18,7 +18,13 @@ import {
   type ProjectFileVersion,
   type SocialShareRequest,
   type SocialShareResponse,
+  type WorkspaceCollabContext,
 } from '@open-design/contracts';
+import {
+  appendResourceQuery,
+  workspaceIdentityCacheKey,
+  workspaceProjectHeaders,
+} from '../collab/workspace-identity';
 import {
   anonymizeArtifactId,
   artifactKindToTracking,
@@ -63,7 +69,6 @@ import { useDismissOnOutsideInteraction } from '../hooks/useDismissOnOutsideInte
 import {
   notifyTeamProjectsChanged,
   TEAM_PROJECTS_CHANGED_EVENT,
-  useWorkspaceContext,
 } from '../collab/useWorkspaceContext';
 import {
   canPublishPublicFile,
@@ -589,7 +594,25 @@ const htmlPreviewZoomState = new Map<string, { zoom: number; zoomMode: 'auto' | 
 // real measurement message arrives (see onContentSizeMessage below) or the
 // canvas-grow recovery in the auto-fit effect fires.
 const MAX_CACHED_PREVIEW_CONTENT_WIDTHS = 128;
-const htmlPreviewContentWidthState = new Map<string, number>();
+const PREVIEW_CONTENT_WIDTH_CACHE_VERSION = 2;
+let previewContentMeasurementDocumentEpochSequence = 0;
+let previewContentMeasurementHostInstanceSequence = 0;
+function nextPreviewContentMeasurementDocumentEpoch(): string {
+  previewContentMeasurementDocumentEpochSequence += 1;
+  return `preview-document-${previewContentMeasurementDocumentEpochSequence}`;
+}
+function nextPreviewContentMeasurementHostInstance(): string {
+  previewContentMeasurementHostInstanceSequence += 1;
+  return `preview-host-${previewContentMeasurementHostInstanceSequence}`;
+}
+type PreviewContentWidthCacheEntry = {
+  version: typeof PREVIEW_CONTENT_WIDTH_CACHE_VERSION;
+  width: number;
+  measuredClientWidth: number;
+  overflow: boolean;
+};
+const htmlPreviewContentWidthState = new Map<string, PreviewContentWidthCacheEntry>();
+const htmlPreviewDocumentEpochState = new Map<string, string>();
 const MARKDOWN_CODE_BLOCK_ATTR = 'data-markdown-code-block';
 const MARKDOWN_CODE_LANGUAGE_ATTR = 'data-code-language';
 const MARKDOWN_COPY_BLOCK_ATTR = 'data-copy-code-block';
@@ -832,9 +855,19 @@ async function highlightMarkdownCodeBlocks(html: string): Promise<string> {
   return changed ? root.innerHTML : html;
 }
 
-function rewriteMarkdownImageSources(html: string, projectId: string, markdownPath: string): string {
+function rewriteMarkdownImageSources(
+  html: string,
+  projectId: string,
+  markdownPath: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
   return html.replace(/<img\b([^>]*?)\bsrc="([^"]*)"([^>]*)>/g, (match, before: string, src: string, after: string) => {
-    const resolved = markdownImageSourceUrl(projectId, markdownPath, decodeHtmlAttribute(src));
+    const resolved = markdownImageSourceUrl(
+      projectId,
+      markdownPath,
+      decodeHtmlAttribute(src),
+      workspaceContext,
+    );
     if (!resolved) return match;
     const attrs = `${before}${after}`;
     const loadingAttr = /\sloading=/.test(attrs) ? '' : ' loading="lazy"';
@@ -842,14 +875,21 @@ function rewriteMarkdownImageSources(html: string, projectId: string, markdownPa
   });
 }
 
-export function markdownImageSourceUrl(projectId: string, markdownPath: string, src: string): string | null {
+export function markdownImageSourceUrl(
+  projectId: string,
+  markdownPath: string,
+  src: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string | null {
   const trimmed = src.trim();
   if (!trimmed) return null;
   if (ABSOLUTE_MARKDOWN_IMAGE_SOURCE_RE.test(trimmed)) return trimmed;
   const relativePath = trimmed.startsWith('/')
     ? normalizeMarkdownProjectPath(trimmed.slice(1))
     : normalizeMarkdownProjectPath(`${markdownDirectory(markdownPath)}/${trimmed}`);
-  return relativePath ? projectFileUrl(projectId, relativePath) : null;
+  return relativePath
+    ? projectFileUrl(projectId, relativePath, workspaceContext)
+    : null;
 }
 
 function markdownDirectory(path: string): string {
@@ -1097,6 +1137,130 @@ export function desktopPreviewAutoFitZoomPercent(
   if (!canvasSize?.width || !Number.isFinite(canvasSize.width)) return 100;
   if (!contentWidth || !Number.isFinite(contentWidth) || contentWidth <= canvasSize.width) return 100;
   return Math.max(1, Math.min(100, (canvasSize.width / contentWidth) * 100));
+}
+
+export type PreviewContentMeasurementRequest = {
+  measurementId: string;
+  generation: string;
+  documentEpoch: string;
+  canvasWidth: number;
+  previewScale: number;
+};
+
+export type PreviewContentMeasurementResponse = {
+  measurementId: string;
+  generation: string;
+  documentEpoch: string;
+  scrollWidth: number | null;
+  clientWidth: number | null;
+};
+
+type PreviewContentMeasurementResolution =
+  | {
+    action: 'accept';
+    contentWidth: number;
+    measuredClientWidth: number;
+    overflow: boolean;
+  }
+  | { action: 'preserve' }
+  | { action: 'remeasure-neutral' }
+  | { action: 'ignore' };
+
+const PREVIEW_CONTENT_WIDTH_EPSILON = 1;
+const PREVIEW_SCALE_EPSILON = 0.0001;
+
+/**
+ * Resolves a content-width report against the exact viewport state that asked
+ * for it. At a non-neutral zoom, html/body clientWidth expands inversely with
+ * the scale shell. An equal scrollWidth/clientWidth report is therefore only
+ * the viewport floor, not evidence that the artifact itself is that wide.
+ */
+export function resolveDesktopPreviewContentMeasurement(params: {
+  request: PreviewContentMeasurementRequest;
+  response: PreviewContentMeasurementResponse;
+  currentGeneration: string;
+  latestMeasurementId: string | null;
+  currentCanvasWidth: number;
+  currentPreviewScale: number;
+  confirmedContentWidth: number | null;
+  confirmedOverflow?: boolean | null;
+}): PreviewContentMeasurementResolution {
+  const {
+    request,
+    response,
+    currentGeneration,
+    latestMeasurementId,
+    currentCanvasWidth,
+    currentPreviewScale,
+    confirmedContentWidth,
+    confirmedOverflow,
+  } = params;
+  if (
+    response.measurementId !== request.measurementId ||
+    response.generation !== request.generation ||
+    response.documentEpoch !== request.documentEpoch ||
+    request.measurementId !== latestMeasurementId ||
+    request.generation !== currentGeneration ||
+    Math.abs(request.canvasWidth - currentCanvasWidth) > PREVIEW_CONTENT_WIDTH_EPSILON ||
+    Math.abs(request.previewScale - currentPreviewScale) > PREVIEW_SCALE_EPSILON
+  ) {
+    return { action: 'ignore' };
+  }
+
+  const scrollWidth = typeof response.scrollWidth === 'number' &&
+    Number.isFinite(response.scrollWidth) &&
+    response.scrollWidth > 0
+    ? Math.ceil(response.scrollWidth)
+    : null;
+  const clientWidth = typeof response.clientWidth === 'number' &&
+    Number.isFinite(response.clientWidth) &&
+    response.clientWidth > 0
+    ? Math.ceil(response.clientWidth)
+    : null;
+  if (scrollWidth == null || clientWidth == null) return { action: 'ignore' };
+
+  if (
+    scrollWidth > clientWidth + PREVIEW_CONTENT_WIDTH_EPSILON &&
+    Math.abs(request.previewScale - 1) > PREVIEW_SCALE_EPSILON
+  ) {
+    return confirmedContentWidth != null && confirmedOverflow === true
+      ? { action: 'preserve' }
+      : { action: 'remeasure-neutral' };
+  }
+  if (scrollWidth > clientWidth + PREVIEW_CONTENT_WIDTH_EPSILON) {
+    return {
+      action: 'accept',
+      contentWidth: scrollWidth,
+      measuredClientWidth: clientWidth,
+      overflow: true,
+    };
+  }
+  if (Math.abs(request.previewScale - 1) <= PREVIEW_SCALE_EPSILON) {
+    return {
+      action: 'accept',
+      contentWidth: Math.max(1, Math.ceil(request.canvasWidth)),
+      measuredClientWidth: clientWidth,
+      overflow: false,
+    };
+  }
+  return confirmedContentWidth == null || confirmedOverflow !== true
+    ? { action: 'remeasure-neutral' }
+    : { action: 'preserve' };
+}
+
+export function previewMeasurementFrameIsUsable(params: {
+  connected: boolean;
+  active: boolean;
+  frameRect: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'>;
+  canvasRect: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom' | 'width' | 'height'>;
+}): boolean {
+  const { connected, active, frameRect, canvasRect } = params;
+  if (!connected || !active) return false;
+  if (frameRect.width <= 1 || frameRect.height <= 1) return false;
+  if (canvasRect.width <= 1 || canvasRect.height <= 1) return false;
+  const horizontalOverlap = Math.min(frameRect.right, canvasRect.right) - Math.max(frameRect.left, canvasRect.left);
+  const verticalOverlap = Math.min(frameRect.bottom, canvasRect.bottom) - Math.max(frameRect.top, canvasRect.top);
+  return horizontalOverlap > 1 && verticalOverlap > 1;
 }
 
 /**
@@ -1444,16 +1608,36 @@ function setPreviewZoomCached(key: string, zoom: number, zoomMode: 'auto' | 'man
   }
 }
 
-function setPreviewContentWidthCached(key: string, width: number | null) {
-  if (width == null) {
+function setPreviewContentWidthCached(key: string, entry: Omit<PreviewContentWidthCacheEntry, 'version'> | null) {
+  if (entry == null) {
     htmlPreviewContentWidthState.delete(key);
     return;
   }
-  htmlPreviewContentWidthState.set(key, width);
+  htmlPreviewContentWidthState.set(key, {
+    version: PREVIEW_CONTENT_WIDTH_CACHE_VERSION,
+    ...entry,
+  });
   if (htmlPreviewContentWidthState.size > MAX_CACHED_PREVIEW_CONTENT_WIDTHS) {
     const oldest = htmlPreviewContentWidthState.keys().next().value;
     if (oldest != null) htmlPreviewContentWidthState.delete(oldest);
   }
+}
+
+function getPreviewContentWidthCached(key: string): PreviewContentWidthCacheEntry | null {
+  const entry = htmlPreviewContentWidthState.get(key);
+  return entry?.version === PREVIEW_CONTENT_WIDTH_CACHE_VERSION ? entry : null;
+}
+
+function getPreviewDocumentEpoch(key: string): string {
+  const cached = htmlPreviewDocumentEpochState.get(key);
+  if (cached) return cached;
+  const epoch = nextPreviewContentMeasurementDocumentEpoch();
+  htmlPreviewDocumentEpochState.set(key, epoch);
+  if (htmlPreviewDocumentEpochState.size > MAX_CACHED_PREVIEW_CONTENT_WIDTHS) {
+    const oldest = htmlPreviewDocumentEpochState.keys().next().value;
+    if (oldest != null) htmlPreviewDocumentEpochState.delete(oldest);
+  }
+  return epoch;
 }
 
 interface Props {
@@ -1670,6 +1854,7 @@ export function LiveArtifactViewer({
   onRefreshArtifacts?: () => Promise<void> | void;
 }) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   const tabs = useMemo(() => liveArtifactViewerTabs(t), [t]);
   const [mode, setMode] = useState<LiveArtifactViewerTab>('preview');
   const [detail, setDetail] = useState<LiveArtifact | null>(null);
@@ -1763,10 +1948,14 @@ export function LiveArtifactViewer({
           ? `Live artifact created: ${liveArtifactEvent.title}`
           : `Live artifact updated: ${liveArtifactEvent.title}`,
       );
-      void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
+      void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
         if (next) setDetail(next);
       });
-      void fetchLiveArtifactRefreshes(projectId, liveArtifact.artifactId).then(setRefreshHistory);
+      void fetchLiveArtifactRefreshes(
+        projectId,
+        liveArtifact.artifactId,
+        workspaceContext,
+      ).then(setRefreshHistory);
       setReloadKey((n) => n + 1);
       continue;
     }
@@ -1788,10 +1977,14 @@ export function LiveArtifactViewer({
           error: liveArtifactEvent.error ?? undefined,
         }),
       );
-      void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
+      void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
         if (next) setDetail(next);
       });
-      void fetchLiveArtifactRefreshes(projectId, liveArtifact.artifactId).then(setRefreshHistory);
+      void fetchLiveArtifactRefreshes(
+        projectId,
+        liveArtifact.artifactId,
+        workspaceContext,
+      ).then(setRefreshHistory);
       continue;
     }
 
@@ -1808,34 +2001,45 @@ export function LiveArtifactViewer({
     } else {
       setRefreshError(t('liveArtifact.refresh.noSourceTitle'));
     }
-    void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
+    void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
       if (next) setDetail(next);
     });
-    void fetchLiveArtifactRefreshes(projectId, liveArtifact.artifactId).then(setRefreshHistory);
+    void fetchLiveArtifactRefreshes(
+      projectId,
+      liveArtifact.artifactId,
+      workspaceContext,
+    ).then(setRefreshHistory);
     setReloadKey((n) => n + 1);
     }
-  }, [liveArtifactEvents, liveArtifact.artifactId, projectId, t]);
+  }, [liveArtifactEvents, liveArtifact.artifactId, projectId, t, workspaceContext]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setDetail(null);
-    void fetchLiveArtifact(projectId, liveArtifact.artifactId).then((next) => {
+    void fetchLiveArtifact(projectId, liveArtifact.artifactId, workspaceContext).then((next) => {
       if (cancelled) return;
       setDetail(next);
       setLoading(false);
     });
-    void fetchLiveArtifactRefreshes(projectId, liveArtifact.artifactId).then((next) => {
+    void fetchLiveArtifactRefreshes(
+      projectId,
+      liveArtifact.artifactId,
+      workspaceContext,
+    ).then((next) => {
       if (!cancelled) setRefreshHistory(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, liveArtifact.artifactId, liveArtifact.updatedAt]);
+  }, [projectId, liveArtifact.artifactId, liveArtifact.updatedAt, workspaceContext]);
 
   const previewUrl = useMemo(
-    () => `${liveArtifactPreviewUrl(projectId, liveArtifact.artifactId)}&v=${reloadKey}`,
-    [projectId, liveArtifact.artifactId, reloadKey],
+    () => appendResourceQuery(
+      liveArtifactPreviewUrl(projectId, liveArtifact.artifactId, 'rendered', workspaceContext),
+      `v=${reloadKey}`,
+    ),
+    [projectId, liveArtifact.artifactId, reloadKey, workspaceContext],
   );
   const previewScale = zoom / 100;
 
@@ -1862,9 +2066,17 @@ export function LiveArtifactViewer({
     setRefreshSuccess(null);
     setRefreshEvents((prev) => appendRefreshEvent(prev, { phase: 'started' }));
     try {
-      const result = await refreshLiveArtifact(projectId, liveArtifact.artifactId);
+      const result = await refreshLiveArtifact(
+        projectId,
+        liveArtifact.artifactId,
+        workspaceContext,
+      );
       setDetail(result.artifact);
-      void fetchLiveArtifactRefreshes(projectId, liveArtifact.artifactId).then(setRefreshHistory);
+      void fetchLiveArtifactRefreshes(
+        projectId,
+        liveArtifact.artifactId,
+        workspaceContext,
+      ).then(setRefreshHistory);
       setReloadKey((n) => n + 1);
       setRefreshEvents((prev) =>
         appendRefreshEvent(prev, {
@@ -1907,7 +2119,11 @@ export function LiveArtifactViewer({
   const presentNewTab = () => {
     setPresentMenuOpen(false);
     if (typeof window === 'undefined') return;
-    window.open(liveArtifactPreviewUrl(projectId, liveArtifact.artifactId), '_blank', 'noopener,noreferrer');
+    window.open(
+      liveArtifactPreviewUrl(projectId, liveArtifact.artifactId, 'rendered', workspaceContext),
+      '_blank',
+      'noopener,noreferrer',
+    );
   };
   useEffect(() => {
     if (!inTabPresent) return;
@@ -2060,7 +2276,12 @@ export function LiveArtifactViewer({
             <span className="viewer-divider" aria-hidden />
             <a
               className="ghost-link"
-              href={liveArtifactPreviewUrl(projectId, liveArtifact.artifactId)}
+              href={liveArtifactPreviewUrl(
+                projectId,
+                liveArtifact.artifactId,
+                'rendered',
+                workspaceContext,
+              )}
               target="_blank"
               rel="noreferrer noopener"
               tabIndex={mode === 'preview' ? 0 : -1}
@@ -2225,6 +2446,7 @@ function LiveArtifactCodePanel({
   reloadKey: number;
 }) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   const [variant, setVariant] = useState<LiveArtifactCodeVariant>('template');
   const [code, setCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -2235,7 +2457,7 @@ function LiveArtifactCodePanel({
     setLoading(true);
     setFailed(false);
     setCode(null);
-    void fetchLiveArtifactCode(projectId, artifactId, variant).then((next) => {
+    void fetchLiveArtifactCode(projectId, artifactId, variant, workspaceContext).then((next) => {
       if (cancelled) return;
       setCode(next);
       setFailed(next == null);
@@ -2244,7 +2466,7 @@ function LiveArtifactCodePanel({
     return () => {
       cancelled = true;
     };
-  }, [artifactId, projectId, reloadKey, variant]);
+  }, [artifactId, projectId, reloadKey, variant, workspaceContext]);
 
   return (
     <div className="live-artifact-code-panel">
@@ -2840,18 +3062,19 @@ function FileActions({
   file: ProjectFile;
 }) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   return (
     <div className="viewer-toolbar-actions">
       <a
         className="ghost-link"
-        href={projectFileUrl(projectId, file.name)}
+        href={projectFileUrl(projectId, file.name, workspaceContext)}
         download={file.name}
       >
         {t('fileViewer.download')}
       </a>
       <a
         className="ghost-link"
-        href={projectFileUrl(projectId, file.name)}
+        href={projectFileUrl(projectId, file.name, workspaceContext)}
         target="_blank"
         rel="noreferrer noopener"
       >
@@ -2911,16 +3134,22 @@ export function fileVersionPreviewOptions(
   projectId: string,
   fileName: string,
   source: string | null | undefined,
+  workspaceContext?: WorkspaceCollabContext | null,
 ) {
   return {
     deck: sourceLooksLikeDeckPreview(source),
-    baseHref: projectRawUrl(projectId, baseDirFor(fileName)),
+    baseHref: projectRawUrl(projectId, baseDirFor(fileName), workspaceContext),
   };
 }
 
-function fileVersionPreviewSrcDoc(projectId: string, fileName: string, source: string) {
+function fileVersionPreviewSrcDoc(
+  projectId: string,
+  fileName: string,
+  source: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+) {
   return buildSrcdoc(source, {
-    ...fileVersionPreviewOptions(projectId, fileName, source),
+    ...fileVersionPreviewOptions(projectId, fileName, source, workspaceContext),
     previewFocusGuard: true,
   });
 }
@@ -3004,7 +3233,7 @@ function FileVersionManagerModal({
 }) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const { workspaceContext } = useProjectCollabContext();
   const tRef = useRef(t);
   const [versions, setVersions] = useState<ProjectFileVersion[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -3146,7 +3375,12 @@ function FileVersionManagerModal({
     if (contentCacheRef.current.has(versionId)) return Promise.resolve();
     const pending = inFlightRef.current.get(versionId);
     if (pending) return pending;
-    const request = fetchProjectFileVersion(projectId, file.name, versionId)
+    const request = fetchProjectFileVersion(
+      projectId,
+      file.name,
+      versionId,
+      workspaceContext,
+    )
       .then((result) => {
         if (result) contentCacheRef.current.set(versionId, result.content);
       })
@@ -3156,7 +3390,7 @@ function FileVersionManagerModal({
       });
     inFlightRef.current.set(versionId, request);
     return request;
-  }, [file.name, projectId]);
+  }, [file.name, projectId, workspaceContext]);
 
   const loadVersions = useCallback(async (preferredId?: string | null) => {
     setLoading(true);
@@ -4097,6 +4331,7 @@ export function CommentSidePanel({
   t: TranslateFn;
   composer?: ReactNode;
 }) {
+  const { workspaceContext } = useProjectCollabContext();
   const [newCommentDraft, setNewCommentDraft] = useState('');
   const [dragState, setDragState] = useState<CommentSideDragState | null>(null);
   // Collab-cloud member directory: turns a comment's authorMemberId into a
@@ -4359,7 +4594,11 @@ export function CommentSidePanel({
               {projectId && comment.attachments && comment.attachments.length > 0 ? (
                 <div className="comment-side-attachments">
                   {comment.attachments.map((attachment) => {
-                    const url = projectRawUrl(projectId, attachment.path);
+                    const url = projectRawUrl(
+                      projectId,
+                      attachment.path,
+                      workspaceContext,
+                    );
                     return (
                       <a
                         key={attachment.path}
@@ -5964,7 +6203,7 @@ function ReactComponentViewer({
   viewerOnly?: boolean;
 }) {
   const t = useT();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const { workspaceContext } = useProjectCollabContext();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [source, setSource] = useState<string | null>(null);
   const [srcDoc, setSrcDoc] = useState('');
@@ -5999,13 +6238,13 @@ function ReactComponentViewer({
   useEffect(() => {
     setSource(null);
     let cancelled = false;
-    void fetchProjectFileText(projectId, file.name).then((text) => {
+    void fetchProjectFileText(projectId, file.name, { workspaceContext }).then((text) => {
       if (!cancelled) setSource(text ?? '');
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, file.mtime, reloadKey]);
+  }, [projectId, file.name, file.mtime, reloadKey, workspaceContext]);
 
   // Detect whether this .jsx/.tsx is a module loaded by a sibling HTML entry.
   // Runs before any srcdoc is built so a module never flashes the raw
@@ -6015,14 +6254,16 @@ function ReactComponentViewer({
     let cancelled = false;
     void (async () => {
       try {
-        const files = await fetchProjectFiles(projectId);
+        const files = await fetchProjectFiles(projectId, { workspaceContext });
         const htmlNames = files
           .filter((entry) => /\.html?$/i.test(entry.name))
           .map((entry) => entry.name);
         const htmlSources = new Map<string, string>();
         await Promise.all(
           htmlNames.map(async (name) => {
-            const text = await fetchProjectFileText(projectId, name).catch(() => null);
+            const text = await fetchProjectFileText(projectId, name, {
+              workspaceContext,
+            }).catch(() => null);
             if (text != null) htmlSources.set(name, text);
           }),
         );
@@ -6035,7 +6276,7 @@ function ReactComponentViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, file.mtime, reloadKey]);
+  }, [projectId, file.name, file.mtime, reloadKey, workspaceContext]);
 
   useEffect(() => {
     if (!shareMenuOpen) return;
@@ -6066,7 +6307,7 @@ function ReactComponentViewer({
 
   useEffect(() => {
     let cancelled = false;
-    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId).then((shared) => {
+    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
       if (!cancelled) setShareAccess(shared ? 'workspace' : 'private');
     });
     refreshShareAccess();
@@ -6075,7 +6316,7 @@ function ReactComponentViewer({
       cancelled = true;
       window.removeEventListener(TEAM_PROJECTS_CHANGED_EVENT, refreshShareAccess);
     };
-  }, [projectId, shareMenuOpen]);
+  }, [projectId, shareMenuOpen, workspaceContext]);
 
   // Collapse the nested workspace-access listbox whenever the share popover
   // itself closes, so it never re-opens mid-flight.
@@ -6657,6 +6898,7 @@ function DocumentPreviewViewer({
   file: ProjectFile;
 }) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   const [preview, setPreview] = useState<ProjectFilePreview | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -6664,7 +6906,7 @@ function DocumentPreviewViewer({
     let cancelled = false;
     setLoading(true);
     setPreview(null);
-    void fetchProjectFilePreview(projectId, file.name).then((next) => {
+    void fetchProjectFilePreview(projectId, file.name, workspaceContext).then((next) => {
       if (!cancelled) {
         setPreview(next);
         setLoading(false);
@@ -6673,7 +6915,7 @@ function DocumentPreviewViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, file.mtime]);
+  }, [projectId, file.name, file.mtime, workspaceContext]);
 
   return (
     <div className="viewer document-viewer">
@@ -6706,6 +6948,16 @@ function DocumentPreviewViewer({
       </div>
     </div>
   );
+}
+
+export function fileViewerSourceAuthorizationScopeKey(
+  workspaceContextLoading: boolean,
+  workspaceContext: WorkspaceCollabContext | null,
+): string | null {
+  if (workspaceContextLoading) return null;
+  return workspaceContext
+    ? `workspace:${workspaceIdentityCacheKey(workspaceContext)}`
+    : 'local';
 }
 
 function HtmlViewer({
@@ -6774,14 +7026,14 @@ function HtmlViewer({
 }) {
   const { locale, t } = useI18n();
   const {
-    context: workspaceContext,
-    loading: workspaceContextLoading,
-  } = useWorkspaceContext();
-  const sourceAuthorizationScopeKey = workspaceContextLoading
-    ? null
-    : workspaceContext
-      ? `workspace:${workspaceContext.workspaceId}:member:${workspaceContext.workspaceMemberId}`
-      : 'local';
+    workspaceContext,
+    workspaceContextLoading,
+  } = useProjectCollabContext();
+  const workspaceContextIdentityChangePending = false;
+  const sourceAuthorizationScopeKey = fileViewerSourceAuthorizationScopeKey(
+    workspaceContextLoading,
+    workspaceContext,
+  );
   const analytics = useAnalytics();
   // Team collaboration: resolve comment anchors through the drift ladder when
   // the viewer is a team member of a shared project. Off (exact-match, single
@@ -7047,8 +7299,6 @@ function HtmlViewer({
   };
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const sourceSnapshotRefreshKey = htmlSourceSnapshotRefreshKey(file, filesRefreshKey);
-  const sourceSnapshotIdentity =
-    `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${sourceSnapshotRefreshKey}`;
   const [initialSourceSnapshot] = useState(() => (
     liveHtml === undefined && sourceAuthorizationScopeKey
       ? getHtmlSourceSnapshot(
@@ -7066,6 +7316,11 @@ function HtmlViewer({
   const [previewAssetWarning, setPreviewAssetWarning] = useState<PreviewAssetWarning | null>(null);
   const [inlinedSource, setInlinedSource] = useState<string | null>(null);
   const fileViewportKey = previewViewportStateKey(projectId, file);
+  // Content width is valid only for this exact file revision/authorization
+  // snapshot. Viewport and manual zoom preferences intentionally persist
+  // across revisions, but an intrinsic-width witness must not.
+  const previewContentWidthCacheBaseKey =
+    `${fileViewportKey}:${sourceSnapshotRefreshKey}:${sourceAuthorizationScopeKey ?? ''}`;
   // Lazily seed from the cache (not a hardcoded 100/'auto') so a remount that
   // lands back on a file the user already zoomed doesn't flash the wrong
   // value for a frame before the reset effect below corrects it.
@@ -7187,7 +7442,7 @@ function HtmlViewer({
 
   useEffect(() => {
     let cancelled = false;
-    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId).then((shared) => {
+    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
       if (!cancelled) setShareAccess(shared ? 'workspace' : 'private');
     });
     refreshShareAccess();
@@ -7196,7 +7451,7 @@ function HtmlViewer({
       cancelled = true;
       window.removeEventListener(TEAM_PROJECTS_CHANGED_EVENT, refreshShareAccess);
     };
-  }, [projectId, deployMenuOpen]);
+  }, [projectId, deployMenuOpen, workspaceContext]);
 
   // Collapse the nested workspace-access listbox whenever the unified share
   // popover itself closes, so it never re-opens mid-flight.
@@ -7364,6 +7619,7 @@ function HtmlViewer({
   }
   const [inTabPresent, setInTabPresent] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const nextPreviewContentWidthCacheKey = `${previewContentWidthCacheBaseKey}:${reloadKey}`;
   // Set to true permanently once `source` has been populated for the first
   // time. After the first load, we never show the "loading" skeleton again —
   // even if a reload temporarily clears `source` to null (issue #4650).
@@ -7414,18 +7670,48 @@ function HtmlViewer({
   const [commentPreviewCanvasNode, setCommentPreviewCanvasNode] = useState<HTMLDivElement | null>(null);
   // Seed from the cache instead of a cold `null` — see htmlPreviewContentWidthState
   // above. A stale seed still self-corrects once a fresh measurement lands.
-  const [desktopPreviewContentWidth, setDesktopPreviewContentWidthRaw] = useState<number | null>(
-    () => htmlPreviewContentWidthState.get(fileViewportKey) ?? null,
+  const previewMeasurementInteractionActive =
+    drawOverlayOpen || boardMode || inspectMode || manualEditMode;
+  const frozenPreviewContentWidthCacheKeyRef = useRef({
+    fileViewportKey,
+    key: nextPreviewContentWidthCacheKey,
+  });
+  if (
+    !previewMeasurementInteractionActive ||
+    frozenPreviewContentWidthCacheKeyRef.current.fileViewportKey !== fileViewportKey
+  ) {
+    frozenPreviewContentWidthCacheKeyRef.current = {
+      fileViewportKey,
+      key: nextPreviewContentWidthCacheKey,
+    };
+  }
+  const previewContentWidthCacheKey =
+    frozenPreviewContentWidthCacheKeyRef.current.key;
+  const initialPreviewContentWidthEntry = getPreviewContentWidthCached(previewContentWidthCacheKey);
+  const [desktopPreviewContentWidthEntry, setDesktopPreviewContentWidthRaw] =
+    useState<PreviewContentWidthCacheEntry | null>(
+      initialPreviewContentWidthEntry,
+    );
+  const desktopPreviewContentWidth = desktopPreviewContentWidthEntry?.width ?? null;
+  const desktopPreviewContentWidthEntryRef = useRef<PreviewContentWidthCacheEntry | null>(
+    desktopPreviewContentWidthEntry,
   );
-  const setDesktopPreviewContentWidth = useCallback((value: number | null | ((prev: number | null) => number | null)) => {
-    setDesktopPreviewContentWidthRaw((prev) => {
-      const next = typeof value === 'function'
-        ? (value as (p: number | null) => number | null)(prev)
-        : value;
-      setPreviewContentWidthCached(fileViewportKey, next);
-      return next;
-    });
-  }, [fileViewportKey]);
+  const setDesktopPreviewContentWidth = useCallback((
+    entry: Omit<PreviewContentWidthCacheEntry, 'version'> | null,
+  ) => {
+    const cachedEntry: PreviewContentWidthCacheEntry | null = entry == null
+      ? null
+      : { version: PREVIEW_CONTENT_WIDTH_CACHE_VERSION, ...entry };
+    desktopPreviewContentWidthEntryRef.current = cachedEntry;
+    setPreviewContentWidthCached(previewContentWidthCacheKey, entry);
+    setDesktopPreviewContentWidthRaw((current) => (
+      current?.width === cachedEntry?.width &&
+      current?.measuredClientWidth === cachedEntry?.measuredClientWidth &&
+      current?.overflow === cachedEntry?.overflow
+        ? current
+        : cachedEntry
+    ));
+  }, [previewContentWidthCacheKey]);
   // Last canvas width the desktop auto-fit effect measured against (see the
   // effect below, rec:recvq6WoJUvRXl) — lets that effect tell "canvas grew"
   // apart from "canvas shrank" without re-deriving it from React state.
@@ -7433,6 +7719,53 @@ function HtmlViewer({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const urlPreviewIframeRef = useRef<HTMLIFrameElement | null>(null);
   const srcDocPreviewIframeRef = useRef<HTMLIFrameElement | null>(null);
+  const previewContentMeasurementSequenceRef = useRef(0);
+  const previewContentMeasurementGenerationSequenceRef = useRef(0);
+  const previewContentMeasurementHostInstanceRef = useRef<string | null>(null);
+  if (previewContentMeasurementHostInstanceRef.current == null) {
+    previewContentMeasurementHostInstanceRef.current =
+      nextPreviewContentMeasurementHostInstance();
+  }
+  const previewContentMeasurementGenerationRef = useRef(
+    `${previewContentMeasurementHostInstanceRef.current}:generation-0`,
+  );
+  const previewContentMeasurementRevisionRef = useRef(
+    `${previewContentWidthCacheKey}:${reloadKey}`,
+  );
+  const previewContentMeasurementDocumentEpoch =
+    getPreviewDocumentEpoch(previewContentWidthCacheKey);
+  const previewContentMeasurementReadyRef = useRef<{
+    frame: HTMLIFrameElement;
+    generation: string;
+  } | null>(null);
+  const previewContentMeasurementExpectedDocumentEpochRef = useRef(
+    previewContentMeasurementDocumentEpoch,
+  );
+  const previewContentMeasurementCurrentDocumentEpochRef = useRef(
+    previewContentMeasurementDocumentEpoch,
+  );
+  previewContentMeasurementCurrentDocumentEpochRef.current =
+    previewContentMeasurementDocumentEpoch;
+  const latestPreviewContentMeasurementRef = useRef<{
+    request: PreviewContentMeasurementRequest;
+    source: Window;
+  } | null>(null);
+  const previewContentMeasurementContextRef = useRef({
+    canvasWidth: 0,
+    previewScale: 1,
+    eligible: false,
+  });
+  const desktopPreviewContentWidthRef = useRef(desktopPreviewContentWidth);
+  desktopPreviewContentWidthRef.current = desktopPreviewContentWidth;
+  const previewContentMeasurementRevision = `${previewContentWidthCacheKey}:${reloadKey}`;
+  if (previewContentMeasurementRevisionRef.current !== previewContentMeasurementRevision) {
+    previewContentMeasurementRevisionRef.current = previewContentMeasurementRevision;
+    previewContentMeasurementGenerationSequenceRef.current += 1;
+    previewContentMeasurementGenerationRef.current =
+      `${previewContentMeasurementHostInstanceRef.current}:generation-${previewContentMeasurementGenerationSequenceRef.current}`;
+    previewContentMeasurementReadyRef.current = null;
+    latestPreviewContentMeasurementRef.current = null;
+  }
   const previewRuntimeStateRef = useRef<PreviewRuntimeState | null>(null);
   const previewRuntimeStateRequestSequenceRef = useRef(0);
   const manualEditActivationPendingRef = useRef(false);
@@ -7512,8 +7845,65 @@ function HtmlViewer({
     setCommentPreviewCanvasNode((current) => (current === node ? current : node));
   }, []);
   const requestDesktopPreviewContentMeasure = useCallback((target: HTMLIFrameElement | null = iframeRef.current) => {
-    target?.contentWindow?.postMessage({ type: 'od:preview-content-size-request' }, '*');
-  }, []);
+    const source = target?.contentWindow;
+    if (!target || !source || target !== iframeRef.current) return;
+    if (
+      previewContentMeasurementExpectedDocumentEpochRef.current !==
+      previewContentMeasurementCurrentDocumentEpochRef.current
+    ) {
+      return;
+    }
+    const ready = previewContentMeasurementReadyRef.current;
+    if (
+      !ready ||
+      ready.frame !== target ||
+      ready.generation !== previewContentMeasurementGenerationRef.current
+    ) {
+      return;
+    }
+    const canvas = commentPreviewCanvasNode;
+    if (!previewMeasurementFrameIsUsable({
+      connected: target.isConnected,
+      active: target.dataset.odActive === 'true',
+      frameRect: target.getBoundingClientRect(),
+      canvasRect: canvas?.getBoundingClientRect() ?? target.getBoundingClientRect(),
+    })) {
+      return;
+    }
+    const {
+      canvasWidth,
+      previewScale: requestedPreviewScale,
+      eligible,
+    } = previewContentMeasurementContextRef.current;
+    if (!eligible || !Number.isFinite(canvasWidth) || canvasWidth <= 0) return;
+    const measurementId =
+      `${previewContentMeasurementHostInstanceRef.current}:measurement-${++previewContentMeasurementSequenceRef.current}`;
+    const request: PreviewContentMeasurementRequest = {
+      measurementId,
+      generation: previewContentMeasurementGenerationRef.current,
+      documentEpoch: previewContentMeasurementExpectedDocumentEpochRef.current,
+      canvasWidth,
+      previewScale: requestedPreviewScale,
+    };
+    latestPreviewContentMeasurementRef.current = { request, source };
+    source.postMessage({
+      type: 'od:preview-content-size-request',
+      ...request,
+    }, '*');
+  }, [commentPreviewCanvasNode]);
+  const beginDesktopPreviewContentMeasurementGeneration = useCallback((
+    target: HTMLIFrameElement | null,
+  ) => {
+    if (!target || target !== iframeRef.current || target.dataset.odActive !== 'true') return;
+    previewContentMeasurementGenerationSequenceRef.current += 1;
+    previewContentMeasurementGenerationRef.current =
+      `${previewContentMeasurementHostInstanceRef.current}:generation-${previewContentMeasurementGenerationSequenceRef.current}`;
+    latestPreviewContentMeasurementRef.current = null;
+    previewContentMeasurementReadyRef.current = {
+      frame: target,
+      generation: previewContentMeasurementGenerationRef.current,
+    };
+  }, [previewContentWidthCacheKey, reloadKey]);
   const scheduleDesktopPreviewContentMeasure = useCallback((target: HTMLIFrameElement | null = iframeRef.current) => {
     requestDesktopPreviewContentMeasure(target);
     window.requestAnimationFrame(() => {
@@ -7571,14 +7961,23 @@ function HtmlViewer({
     setManualEditSrcDocActive(false);
     setManualEditFrozenSource(null);
     previewRuntimeStateRef.current = null;
+  }, [fileViewportKey, projectId, file.name]);
+  useEffect(() => {
     // Restore this file's last measured content width instead of forcing
     // `null` — this effect also fires on every HtmlViewer remount (tab-away
     // and back), not only on a genuine file change, and clearing here would
     // throw away the seed above and reopen the cold-start auto-fit window
     // (rec:recvqaeMAGUdN2). A different file's key simply has no entry yet,
     // so this still defaults to null for a genuinely new file.
-    setDesktopPreviewContentWidth(htmlPreviewContentWidthState.get(fileViewportKey) ?? null);
-  }, [fileViewportKey, projectId, file.name]);
+    const cachedEntry = getPreviewContentWidthCached(previewContentWidthCacheKey);
+    setDesktopPreviewContentWidth(cachedEntry == null
+      ? null
+      : {
+        width: cachedEntry.width,
+        measuredClientWidth: cachedEntry.measuredClientWidth,
+        overflow: cachedEntry.overflow,
+      });
+  }, [previewContentWidthCacheKey, setDesktopPreviewContentWidth]);
   useEffect(() => {
     onCommentModeChange?.(commentPanelOpen);
   }, [commentPanelOpen, onCommentModeChange]);
@@ -7728,7 +8127,6 @@ function HtmlViewer({
       ? `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${liveHtml === undefined ? 'raw' : 'live'}`
       : null,
   );
-  const revalidatedSourceSnapshotRef = useRef<string | null>(null);
   const templateNameId = useId();
   const templateDescriptionId = useId();
   const imageExportTitleId = useId();
@@ -7886,7 +8284,13 @@ function HtmlViewer({
     viewport: previewViewport,
   });
   useEffect(() => {
-    if (previewViewport !== 'desktop' || zoomMode !== 'auto') return;
+    if (
+      previewViewport !== 'desktop' ||
+      zoomMode !== 'auto' ||
+      previewMeasurementInteractionActive
+    ) {
+      return;
+    }
     const nextWidth = boardPreviewCanvasSize?.width;
     const previousWidth = lastAutoFitCanvasWidthRef.current;
     if (typeof nextWidth === 'number' && Number.isFinite(nextWidth)) {
@@ -7918,6 +8322,7 @@ function HtmlViewer({
   }, [
     boardPreviewCanvasSize?.width,
     boardPreviewCanvasSize?.height,
+    previewMeasurementInteractionActive,
     previewViewport,
     scheduleDesktopPreviewContentMeasure,
     zoomMode,
@@ -7994,7 +8399,7 @@ function HtmlViewer({
   ) {
     const requestSeq = ++deployProviderLoadSeqRef.current;
     setDeployProviderId(providerId);
-    const deployments = await fetchProjectDeployments(projectId);
+    const deployments = await fetchProjectDeployments(projectId, workspaceContext);
     const nextDeploymentsByProvider = deploymentMapForCurrentFile(deployments);
     const exactDeployment = nextDeploymentsByProvider[providerId] ?? null;
     const fallbackDeployment = options?.fallbackToExisting
@@ -8111,9 +8516,6 @@ function HtmlViewer({
           sourceSnapshotRefreshKey,
         )
       : null;
-    const shouldRevalidateCachedSnapshot =
-      cachedSnapshot !== null &&
-      revalidatedSourceSnapshotRef.current !== sourceSnapshotIdentity;
     if (fileChanged) {
       const cachedSource = cachedSnapshot?.source ?? null;
       setSource(cachedSource);
@@ -8132,9 +8534,18 @@ function HtmlViewer({
       // switches but before the effect has run.
     }
     let cancelled = false;
+    // A snapshot with the exact authorization and content-version identity is
+    // authoritative until the file event path invalidates it or the file
+    // metadata / Workspace identity changes. Re-reading the same bytes on
+    // every ordinary viewer remount made Design Files ↔ preview round-trips
+    // perform one uncached raw request apiece.
+    if (cachedSnapshot !== null) {
+      return () => {
+        cancelled = true;
+      };
+    }
     if (
       shouldDeferPassivePreviewSource &&
-      !shouldRevalidateCachedSnapshot &&
       sourceRef.current !== null &&
       !previewTextNeedsFullSourceForSafeInline(sourceRef.current)
     ) {
@@ -8153,22 +8564,18 @@ function HtmlViewer({
     // check, and the preview only refreshes when Comment closes and the
     // url-load iframe takes over with its own ?v=mtime cache-bust.
     const cacheBustKey = `${file.mtime}-${reloadKey}-${filesRefreshKey}`;
-    // A snapshot hit is only a first-paint seed. Revisit mounts always perform
-    // one full no-store read even for passive large-HTML mode, so an owner-side
-    // remote update replaces the cached document when SSE or metadata did not
-    // change locally. Subsequent mode-only effect reruns may use the bounded
-    // routing preview again.
-    revalidatedSourceSnapshotRef.current = sourceSnapshotIdentity;
-    const loadText = shouldDeferPassivePreviewSource && !shouldRevalidateCachedSnapshot
+    const loadText = shouldDeferPassivePreviewSource
       ? fetchProjectFileTextPreview(projectId, file.name, {
           limit: HTML_ROUTING_TEXT_PREVIEW_LIMIT,
           cacheBustKey,
+          workspaceContext,
         }).then(async (preview) => {
           const previewText = preview?.text ?? null;
           if (previewTextNeedsFullSourceForSafeInline(previewText)) {
             const fullText = await fetchProjectFileText(projectId, file.name, {
               cache: 'no-store',
               cacheBustKey,
+              workspaceContext,
             });
             if (fullText !== null) {
               return {
@@ -8187,6 +8594,7 @@ function HtmlViewer({
       : fetchProjectFileText(projectId, file.name, {
           cache: 'no-store',
           cacheBustKey,
+          workspaceContext,
         }).then((text) => ({
         text,
         poweredPreviewRequired: false,
@@ -8268,7 +8676,6 @@ function HtmlViewer({
     reloadKey,
     filesRefreshKey,
     sourceSnapshotRefreshKey,
-    sourceSnapshotIdentity,
     sourceAuthorizationScopeKey,
     shouldDeferPassivePreviewSource,
   ]);
@@ -8279,7 +8686,7 @@ function HtmlViewer({
     setDeployError(null);
     setCopiedDeployLink(null);
     setDeployPhase('idle');
-    void fetchProjectDeployments(projectId).then((items) => {
+    void fetchProjectDeployments(projectId, workspaceContext).then((items) => {
       if (cancelled) return;
       const nextDeploymentsByProvider = deploymentMapForCurrentFile(items);
       const current = nextDeploymentsByProvider[deployProviderId] ?? null;
@@ -8290,7 +8697,7 @@ function HtmlViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, deployProviderId]);
+  }, [projectId, file.name, deployProviderId, workspaceContext]);
 
   const routingHtmlSource = source ?? routingSource ?? lastGoodSourceForRoutingRef.current;
   const passiveLargeHtmlPreview = shouldDeferPassivePreviewSource && source === null;
@@ -8309,9 +8716,36 @@ function HtmlViewer({
     isDeck: effectiveDeck,
     manualZoomPercent: zoom,
     canvasSize: boardPreviewCanvasSize,
-    contentWidth: desktopPreviewContentWidth,
+    contentWidth: desktopPreviewContentWidthEntry?.overflow
+      ? desktopPreviewContentWidth
+      : null,
   });
   const previewScale = previewZoomPercent / 100;
+  previewContentMeasurementContextRef.current = {
+    canvasWidth: boardPreviewCanvasSize?.width ?? 0,
+    previewScale,
+    eligible: mode === 'preview' &&
+      previewViewport === 'desktop' &&
+      zoomMode === 'auto' &&
+      !effectiveDeck &&
+      !manualEditMode &&
+      !boardMode &&
+      !drawOverlayOpen &&
+      !inspectMode &&
+      annotationFrozenSource == null,
+  };
+  if (!previewContentMeasurementContextRef.current.eligible) {
+    latestPreviewContentMeasurementRef.current = null;
+  }
+  useEffect(() => {
+    if (previewViewport !== 'desktop' || zoomMode !== 'auto') return;
+    scheduleDesktopPreviewContentMeasure();
+  }, [
+    previewScale,
+    previewViewport,
+    scheduleDesktopPreviewContentMeasure,
+    zoomMode,
+  ]);
   const previewZoomText = zoomPercentLabel(previewZoomPercent);
   const zoomLevelActive = (level: number) => Math.abs(previewZoomPercent - level) < 0.001;
   const overlayPreviewScale = effectivePreviewScale(
@@ -8503,13 +8937,13 @@ function HtmlViewer({
   useEffect(() => {
     let cancelled = false;
     setProjectFilePathSet(null);
-    void fetchProjectFiles(projectId).then((files) => {
+    void fetchProjectFiles(projectId, { workspaceContext }).then((files) => {
       if (!cancelled) setProjectFilePathSet(new Set(files.map((entry) => entry.name)));
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.mtime, filesRefreshKey, reloadKey]);
+  }, [projectId, file.mtime, filesRefreshKey, reloadKey, workspaceContext]);
   const projectRootAssetRefs = useMemo(
     () => source != null && htmlHasRootRelativeProjectAssetRefs(source, projectFilePathSet),
     [source, projectFilePathSet],
@@ -8530,7 +8964,15 @@ function HtmlViewer({
       for (const assetPath of assetPaths) {
         if (cancelled) return;
         try {
-          const resp = await fetch(`${projectRawUrl(projectId, assetPath)}?previewAssetCheck=${encodeURIComponent(cacheBust)}`);
+          const resp = await fetch(
+            appendResourceQuery(
+              projectRawUrl(projectId, assetPath, workspaceContext),
+              `previewAssetCheck=${encodeURIComponent(cacheBust)}`,
+            ),
+            workspaceContext
+              ? { headers: workspaceProjectHeaders(workspaceContext) }
+              : undefined,
+          );
           if (cancelled) return;
           if (resp.ok || resp.status === 404) continue;
           const body = await readPreviewAssetResponseBody(resp);
@@ -8560,6 +9002,7 @@ function HtmlViewer({
     projectId,
     reloadKey,
     routingHtmlSource,
+    workspaceContext,
   ]);
   // A real WebGL/Worker/WASM/SharedArrayBuffer artifact needs the "powered
   // preview" path — a cross-origin-isolated iframe with allow-same-origin —
@@ -8594,8 +9037,11 @@ function HtmlViewer({
   };
   const useUrlLoadPreview = shouldUrlLoadHtmlPreview(urlLoadDecision) && !manualEditRequiresSrcDoc;
   const basePreviewSrcUrl = useMemo(
-    () => `${projectRawUrl(projectId, file.name)}?v=${Math.round(file.mtime)}&r=${reloadKey}&${PREVIEW_BRIDGE_QUERY}`,
-    [projectId, file.name, file.mtime, reloadKey],
+    () => appendResourceQuery(
+      projectRawUrl(projectId, file.name, workspaceContext),
+      `v=${Math.round(file.mtime)}&r=${reloadKey}&${PREVIEW_BRIDGE_QUERY}`,
+    ),
+    [projectId, file.name, file.mtime, reloadKey, workspaceContext],
   );
   const [previewSrcUrl, setPreviewSrcUrl] = useState(basePreviewSrcUrl);
   // Hold the iframe URL still (it carries file.mtime) while the user is mid
@@ -8605,6 +9051,17 @@ function HtmlViewer({
   // mode entry via a ref and released on exit, so the deferred reload lands
   // exactly once when the user is done.
   const interactivePreviewModeActive = annotationFreezeActive || manualEditMode;
+  const frozenPreviewMeasurementDocumentEpochRef = useRef(
+    previewContentMeasurementDocumentEpoch,
+  );
+  if (!interactivePreviewModeActive) {
+    frozenPreviewMeasurementDocumentEpochRef.current =
+      previewContentMeasurementDocumentEpoch;
+  }
+  const transportPreviewMeasurementDocumentEpoch =
+    frozenPreviewMeasurementDocumentEpochRef.current;
+  previewContentMeasurementExpectedDocumentEpochRef.current =
+    transportPreviewMeasurementDocumentEpoch;
   const frozenPreviewSrcUrlRef = useRef<string | null>(null);
   if (interactivePreviewModeActive) {
     if (frozenPreviewSrcUrlRef.current === null) {
@@ -8671,7 +9128,19 @@ function HtmlViewer({
       : srcDocPreviewIframeRef.current;
     iframeRef.current = activeFrame;
     if (!useUrlLoadPreview) postAndConsumePreviewRuntimeState(activeFrame);
-  }, [postAndConsumePreviewRuntimeState, useUrlLoadPreview]);
+    if (
+      activeFrame?.dataset.odLoadedPreviewEpoch === transportPreviewMeasurementDocumentEpoch
+    ) {
+      beginDesktopPreviewContentMeasurementGeneration(activeFrame);
+      scheduleDesktopPreviewContentMeasure(activeFrame);
+    }
+  }, [
+    beginDesktopPreviewContentMeasurementGeneration,
+    postAndConsumePreviewRuntimeState,
+    transportPreviewMeasurementDocumentEpoch,
+    scheduleDesktopPreviewContentMeasure,
+    useUrlLoadPreview,
+  ]);
   // Clear a redirect-loop park whenever the artifact changes or the user hits
   // reload (reloadKey bump): the previewed content is fresh, so give it a clean
   // run rather than staying pinned on the "loop detected" placeholder.
@@ -8742,7 +9211,11 @@ function HtmlViewer({
     const refreshBasePreviewSrcUrl = usePoweredPreview && powered.url
       ? powered.url
       : effectiveBasePreviewSrcUrl;
-    const nextSrc = `${refreshBasePreviewSrcUrl}&fr=${filesRefreshKey}`;
+    const refreshPreviewSrcUrl = appendResourceQuery(
+      refreshBasePreviewSrcUrl,
+      `odPreviewEpoch=${encodeURIComponent(transportPreviewMeasurementDocumentEpoch)}`,
+    );
+    const nextSrc = appendResourceQuery(refreshPreviewSrcUrl, `fr=${filesRefreshKey}`);
     const timeout = window.setTimeout(() => {
       if (useUrlLoadPreview && urlPreviewIframeRef.current?.contentWindow) {
         urlPreviewIframeRef.current.contentWindow.location.replace(nextSrc);
@@ -8759,6 +9232,7 @@ function HtmlViewer({
     needsPowered,
     powered.resolved,
     powered.url,
+    transportPreviewMeasurementDocumentEpoch,
     usePoweredPreview,
   ]);
 
@@ -8772,7 +9246,13 @@ function HtmlViewer({
     if (projectRootAssetRefs && projectFilePathSet === null) return;
     if (!hasRelativeAssetRefs(source) && !projectRootAssetRefs) return;
     let cancelled = false;
-    void inlineRelativeAssets(source, projectId, file.name, projectFilePathSet).then((next) => {
+    void inlineRelativeAssets(
+      source,
+      projectId,
+      file.name,
+      projectFilePathSet,
+      workspaceContext,
+    ).then((next) => {
       if (!cancelled) setInlinedSource(next);
     });
     return () => {
@@ -8787,12 +9267,13 @@ function HtmlViewer({
     useUrlLoadPreview,
     projectRootAssetRefs,
     projectFilePathSet,
+    workspaceContext,
   ]);
 
   const srcDoc = useMemo(
     () => (previewSource ? buildSrcdoc(previewSource, {
       deck: effectiveDeck,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
+      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       hideDeckChrome: effectiveDeck,
       selectionBridge: true,
@@ -8811,8 +9292,18 @@ function HtmlViewer({
       // Embed the reload counter so the srcdoc string differs across reloads
       // even when the fetched HTML bytes are identical (issue #4650).
       reloadKey,
+      previewMeasurementEpoch: transportPreviewMeasurementDocumentEpoch,
     }) : ''),
-    [previewSource, effectiveDeck, projectId, file.name, previewStateKey, reloadKey],
+    [
+      previewSource,
+      effectiveDeck,
+      projectId,
+      file.name,
+      previewStateKey,
+      reloadKey,
+      transportPreviewMeasurementDocumentEpoch,
+      workspaceContext,
+    ],
   );
   // Only materialized while the in-tab presentation overlay is up — building
   // it eagerly would re-run buildSrcdoc on every source edit for a document
@@ -8820,13 +9311,21 @@ function HtmlViewer({
   const presentationSrcDoc = useMemo(
     () => (deckVisualSource && inTabPresent ? buildSrcdoc(deckVisualSource, {
       deck: effectiveDeck,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
+      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       hideDeckChrome: effectiveDeck,
       deckClickNavigation: effectiveDeck,
       previewFocusGuard: true,
     }) : ''),
-    [deckVisualSource, inTabPresent, effectiveDeck, projectId, file.name, previewStateKey],
+    [
+      deckVisualSource,
+      inTabPresent,
+      effectiveDeck,
+      projectId,
+      file.name,
+      previewStateKey,
+      workspaceContext,
+    ],
   );
   // Per-slide thumbnail documents are built lazily by DeckThumbnailRail, one
   // slide at a time and only for thumbnails near the rail viewport. This
@@ -8837,13 +9336,13 @@ function HtmlViewer({
   const buildDeckThumbnailSrcDoc = useCallback(
     (index: number) => buildSrcdoc(deckVisualSource ?? '', {
       deck: true,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
+      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
       initialSlideIndex: index,
       hideDeckChrome: true,
       previewFocusGuard: true,
       freezeMotion: true,
     }),
-    [deckVisualSource, projectId, file.name],
+    [deckVisualSource, projectId, file.name, workspaceContext],
   );
   // Parse the deck once per source into per-slide shadow-root render data. When
   // renderable, DeckThumbnailRail mounts a single cloned slide per thumbnail
@@ -8853,9 +9352,12 @@ function HtmlViewer({
   // fallback via `parsedDeck = null`.
   const parsedDeckThumbnails = useMemo(() => {
     if (!effectiveDeck || !deckVisualSource) return null;
-    const parsed = parseDeckThumbnails(deckVisualSource, projectRawUrl(projectId, baseDirFor(file.name)));
+    const parsed = parseDeckThumbnails(
+      deckVisualSource,
+      projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+    );
     return parsed.renderable ? parsed : null;
-  }, [effectiveDeck, deckVisualSource, projectId, file.name]);
+  }, [effectiveDeck, deckVisualSource, projectId, file.name, workspaceContext]);
   // Stable thunk so HtmlViewer's frequent re-renders (slide state, streaming
   // edits) never invalidate the memoized rail; the ref always calls the
   // freshest goToSlide closure.
@@ -8967,11 +9469,17 @@ function HtmlViewer({
   // daemon origin + `allow-same-origin` so Workers/Storage/WASM/SAB work.
   // While the isolation probe resolves, park at about:blank instead of loading
   // the opaque URL, so a large artifact isn't fetched twice.
-  const urlFrameSrc = usePoweredPreview
+  const urlFrameBaseSrc = usePoweredPreview
     ? (powered.url as string)
     : poweredResolving
       ? 'about:blank'
       : urlTransportSrc;
+  const urlFrameSrc = urlFrameBaseSrc === 'about:blank'
+    ? urlFrameBaseSrc
+    : appendResourceQuery(
+        urlFrameBaseSrc,
+        `odPreviewEpoch=${encodeURIComponent(transportPreviewMeasurementDocumentEpoch)}`,
+      );
   const urlFrameSandbox = usePoweredPreview
     ? POWERED_PREVIEW_SANDBOX
     : 'allow-scripts allow-downloads';
@@ -9152,12 +9660,54 @@ function HtmlViewer({
     function onContentSizeMessage(ev: MessageEvent) {
       if (!isOurPreviewIframeSource(ev.source)) return;
       if (!isActivePreviewIframeSource(ev.source)) return;
-      const data = ev.data as { type?: string; width?: number | null } | null;
+      const data = ev.data as ({
+        type?: string;
+      } & Partial<PreviewContentMeasurementResponse>) | null;
       if (!data || data.type !== 'od:preview-content-size') return;
-      const measuredWidth = typeof data.width === 'number' && Number.isFinite(data.width) && data.width > 0
-        ? Math.ceil(data.width)
-        : null;
-      setDesktopPreviewContentWidth((current) => (current === measuredWidth ? current : measuredWidth));
+      const latest = latestPreviewContentMeasurementRef.current;
+      const frame = iframeRef.current;
+      if (
+        !previewContentMeasurementContextRef.current.eligible ||
+        previewContentMeasurementExpectedDocumentEpochRef.current !==
+          previewContentMeasurementCurrentDocumentEpochRef.current ||
+        !latest ||
+        latest.source !== ev.source ||
+        !frame ||
+        !previewMeasurementFrameIsUsable({
+          connected: frame.isConnected,
+          active: frame.dataset.odActive === 'true',
+          frameRect: frame.getBoundingClientRect(),
+          canvasRect: commentPreviewCanvasNode?.getBoundingClientRect() ?? frame.getBoundingClientRect(),
+        })
+      ) {
+        return;
+      }
+      const response: PreviewContentMeasurementResponse = {
+        measurementId: typeof data.measurementId === 'string' ? data.measurementId : '',
+        generation: typeof data.generation === 'string' ? data.generation : '',
+        documentEpoch: typeof data.documentEpoch === 'string' ? data.documentEpoch : '',
+        scrollWidth: typeof data.scrollWidth === 'number' ? data.scrollWidth : null,
+        clientWidth: typeof data.clientWidth === 'number' ? data.clientWidth : null,
+      };
+      const resolution = resolveDesktopPreviewContentMeasurement({
+        request: latest.request,
+        response,
+        currentGeneration: previewContentMeasurementGenerationRef.current,
+        latestMeasurementId: latest.request.measurementId,
+        currentCanvasWidth: previewContentMeasurementContextRef.current.canvasWidth,
+        currentPreviewScale: previewContentMeasurementContextRef.current.previewScale,
+        confirmedContentWidth: desktopPreviewContentWidthRef.current,
+        confirmedOverflow: desktopPreviewContentWidthEntryRef.current?.overflow ?? null,
+      });
+      if (resolution.action === 'accept') {
+        setDesktopPreviewContentWidth({
+          width: resolution.contentWidth,
+          measuredClientWidth: resolution.measuredClientWidth,
+          overflow: resolution.overflow,
+        });
+      } else if (resolution.action === 'remeasure-neutral') {
+        setDesktopPreviewContentWidth(null);
+      }
     }
     window.addEventListener('message', onMessage);
     window.addEventListener('message', onRestoreRequest);
@@ -9169,7 +9719,12 @@ function HtmlViewer({
       window.removeEventListener('message', onDcViewportMessage);
       window.removeEventListener('message', onContentSizeMessage);
     };
-  }, [isActivePreviewIframeSource, isOurPreviewIframeSource]);
+  }, [
+    commentPreviewCanvasNode,
+    isActivePreviewIframeSource,
+    isOurPreviewIframeSource,
+    setDesktopPreviewContentWidth,
+  ]);
 
   useEffect(() => {
     function onMessage(ev: MessageEvent) {
@@ -10183,6 +10738,7 @@ function HtmlViewer({
     const persisted = await fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
       cacheBustKey: Date.now(),
+      workspaceContext,
     });
     if (persisted == null || persisted === expectedSource) return true;
     setSource(persisted);
@@ -10431,7 +10987,7 @@ function HtmlViewer({
     const count = Math.max(deckSlideCount, speakerNotes.length, 1);
     const presenterPreviewHtmlBySlide = Array.from({ length: count }, (_, index) => buildSrcdoc(deckVisualSource, {
       deck: true,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
+      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
       initialSlideIndex: index,
       hideDeckChrome: true,
       previewFocusGuard: true,
@@ -10849,7 +11405,7 @@ function HtmlViewer({
     if (!source) return;
     openSandboxedPreviewInNewTab(source, exportTitle, {
       deck: effectiveDeck,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name)),
+      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       hideDeckChrome: effectiveDeck,
       deckClickNavigation: effectiveDeck,
@@ -11112,6 +11668,7 @@ function HtmlViewer({
         deployProviderId,
         cloudflarePagesSelection,
         deployProviderId === CLOUDFLARE_PAGES_PROVIDER_ID ? deployTarget : undefined,
+        workspaceContext,
       );
       setDeploymentsByProvider((current) => ({
         ...current,
@@ -11160,7 +11717,7 @@ function HtmlViewer({
     setDeployError(null);
     setDeployPhase('preparing-link');
     try {
-      const next = await checkDeploymentLink(projectId, current.id);
+      const next = await checkDeploymentLink(projectId, current.id, workspaceContext);
       setDeploymentsByProvider((items) => ({
         ...items,
         [next.providerId]: next,
@@ -11710,6 +12267,7 @@ function HtmlViewer({
         projectId,
         fileName: file.name,
         title: pdfTitle,
+        workspaceContext,
         // Broader deck signal than the viewer's nav so runtime-managed decks
         // (<deck-stage>) paginate per slide; the vector fallback below uses
         // the SAME signal, so an artifact exports identically with or without
@@ -11730,6 +12288,7 @@ function HtmlViewer({
       filePath: file.name,
       projectId,
       title: pdfTitle,
+      workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     });
   }
@@ -11744,6 +12303,7 @@ function HtmlViewer({
       filePath: file.name,
       fallbackHtml: context?.content ?? source ?? '',
       fallbackTitle: context?.title ?? exportTitle,
+      workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     }));
   }
@@ -11754,6 +12314,7 @@ function HtmlViewer({
       filePath: file.name,
       fallbackHtml: context?.content ?? source ?? '',
       fallbackTitle: context?.title ?? exportTitle,
+      workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
     }));
   }
@@ -11891,6 +12452,7 @@ function HtmlViewer({
           projectId,
           fileName: file.name,
           deck: imageDeckSignal,
+          workspaceContext,
           ...(plan.index != null ? { index: plan.index } : {}),
           ...(exportViewport?.width != null ? { width: exportViewport.width } : {}),
           ...(exportViewport?.height != null ? { height: exportViewport.height } : {}),
@@ -12553,6 +13115,10 @@ function HtmlViewer({
   const myMemberId = collab.member?.memberId ?? null;
   const iAmProjectOwner = collab.isOwner;
   const commentAuthoredByMe = (comment: PreviewComment | null | undefined): boolean => {
+    // No persisted comment means this is the create flow: the draft belongs
+    // to the current viewer, including a read-only member/admin annotating
+    // someone else's shared project.
+    if (!comment) return true;
     const authorId = comment?.authorMemberId ?? null;
     // A legacy shared comment without an author is deliberately owner-only.
     // Treating it as "mine" for every member made the client advertise a
@@ -12572,8 +13138,10 @@ function HtmlViewer({
   // on a personal workspace and on an unshared project, i.e. exactly the cases
   // where a comment lost its avatar and name.
   const commentAuthorSelf = useMemo(
-    () => currentUserDirectoryEntry(workspaceContext),
-    [workspaceContext],
+    () => currentUserDirectoryEntry(
+      workspaceContextIdentityChangePending ? null : workspaceContext,
+    ),
+    [workspaceContext, workspaceContextIdentityChangePending],
   );
   const commentComposerPortalMetrics = (() => {
     if (!commentComposerHost || !commentPreviewCanvasNode) return null;
@@ -12614,7 +13182,7 @@ function HtmlViewer({
       images={boardImagePreviews}
       existingImages={
         activeComposerAttachments.map((attachment) => ({
-          url: projectRawUrl(projectId, attachment.path),
+          url: projectRawUrl(projectId, attachment.path, workspaceContext),
           name: attachment.name,
         }))
       }
@@ -13551,6 +14119,7 @@ function HtmlViewer({
                             projectId,
                             fileName: file.name,
                             title: exportTitle,
+                            workspaceContext,
                             // Broader deck signal than the viewer's nav so
                             // runtime-managed decks (<deck-stage>) paginate per
                             // slide; the vector fallback below uses the SAME
@@ -13574,6 +14143,7 @@ function HtmlViewer({
                           filePath: file.name,
                           projectId,
                           title: exportTitle,
+                          workspaceContext,
                         });
                       });
                     }}
@@ -13632,6 +14202,7 @@ function HtmlViewer({
                         filePath: file.name,
                         fallbackHtml: source ?? '',
                         fallbackTitle: exportTitle,
+                        workspaceContext,
                       }));
                     }}
                   >
@@ -13651,6 +14222,7 @@ function HtmlViewer({
                         filePath: file.name,
                         fallbackHtml: source ?? '',
                         fallbackTitle: exportTitle,
+                        workspaceContext,
                       }));
                     }}
                   >
@@ -13932,6 +14504,13 @@ function HtmlViewer({
                           onLoad={() => {
                             const frame = urlPreviewIframeRef.current;
                             if (useUrlLoadPreview) iframeRef.current = frame;
+                            if (frame) frame.dataset.odLoadedSrc = frame.getAttribute('src') ?? '';
+                            if (frame) {
+                              frame.dataset.odLoadedPreviewEpoch =
+                                new URL(frame.getAttribute('src') ?? '', window.location.href)
+                                  .searchParams.get('odPreviewEpoch') ?? '';
+                            }
+                            if (useUrlLoadPreview) beginDesktopPreviewContentMeasurementGeneration(frame);
                             // First real paint of this artifact URL — drop the
                             // first-load overlay. about:blank parks don't count.
                             if ((frame?.getAttribute('src') ?? 'about:blank') !== 'about:blank') {
@@ -13966,6 +14545,13 @@ function HtmlViewer({
                           onLoad={() => {
                             const frame = urlPreviewIframeRef.current;
                             if (useUrlLoadPreview) iframeRef.current = frame;
+                            if (frame) frame.dataset.odLoadedSrc = frame.getAttribute('src') ?? '';
+                            if (frame) {
+                              frame.dataset.odLoadedPreviewEpoch =
+                                new URL(frame.getAttribute('src') ?? '', window.location.href)
+                                  .searchParams.get('odPreviewEpoch') ?? '';
+                            }
+                            if (useUrlLoadPreview) beginDesktopPreviewContentMeasurementGeneration(frame);
                             // First real paint of this artifact URL — drop the
                             // first-load overlay. about:blank parks don't count.
                             if ((frame?.getAttribute('src') ?? 'about:blank') !== 'about:blank') {
@@ -13999,6 +14585,11 @@ function HtmlViewer({
                         onLoad={() => {
                           const frame = srcDocPreviewIframeRef.current;
                           if (!useUrlLoadPreview) iframeRef.current = frame;
+                          if (frame) {
+                            frame.dataset.odLoadedPreviewEpoch =
+                              transportPreviewMeasurementDocumentEpoch;
+                          }
+                          if (!useUrlLoadPreview) beginDesktopPreviewContentMeasurementGeneration(frame);
                           // Reset the activation dedupe exactly ONCE per
                           // freshly mounted iframe DOM node, never on the
                           // subsequent load events that the same node
@@ -14442,6 +15033,7 @@ function HtmlViewer({
                       title: exportTitle,
                       deck: true,
                       editable,
+                      workspaceContext,
                     });
                     if (!res.ok) throw new Error('error' in res ? res.error : t('fileViewer.exportPptxNa'));
                   });
@@ -15048,8 +15640,10 @@ async function inlineRelativeAssets(
   projectId: string,
   fileName: string,
   projectFilePaths: ReadonlySet<string> | null = null,
+  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string> {
-  const toRawUrl = (projectPath: string) => projectRawUrl(projectId, projectPath);
+  const toRawUrl = (projectPath: string) =>
+    projectRawUrl(projectId, projectPath, workspaceContext);
   // Root-relative project asset refs (confirmed against the real file list)
   // become owner-relative first, so the stylesheet/script inlining below and
   // the srcDoc <base href> rebasing treat them like any other relative ref.
@@ -15064,7 +15658,7 @@ async function inlineRelativeAssets(
     const href = readHtmlAttr(tag, 'href');
     if (!rel || !/\bstylesheet\b/i.test(rel) || !href) continue;
     replacements.push(
-      fetchProjectRelativeText(projectId, fileName, href).then((asset) =>
+      fetchProjectRelativeText(projectId, fileName, href, workspaceContext).then((asset) =>
         asset == null
           ? null
           : {
@@ -15083,7 +15677,7 @@ async function inlineRelativeAssets(
     const src = readHtmlAttr(tag, 'src');
     if (!src) continue;
     replacements.push(
-      fetchProjectRelativeText(projectId, fileName, src).then((asset) => {
+      fetchProjectRelativeText(projectId, fileName, src, workspaceContext).then((asset) => {
         if (asset == null) return null;
         const js = projectFilePaths
           ? rewriteInlinedScriptAssetRefs(asset.text, asset.filePath, projectFilePaths, toRawUrl)
@@ -15111,11 +15705,17 @@ async function fetchProjectRelativeText(
   projectId: string,
   ownerFileName: string,
   assetRef: string,
+  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<{ filePath: string; text: string } | null> {
   const filePath = resolveProjectRelativePath(ownerFileName, assetRef);
   if (!filePath) return null;
   try {
-    const resp = await fetch(projectRawUrl(projectId, filePath));
+    const resp = await fetch(
+      projectRawUrl(projectId, filePath, workspaceContext),
+      workspaceContext
+        ? { headers: workspaceProjectHeaders(workspaceContext) }
+        : undefined,
+    );
     if (!resp.ok) return null;
     return { filePath, text: await resp.text() };
   } catch {
@@ -15159,7 +15759,11 @@ function ImageViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const url = `${projectFileUrl(projectId, file.name)}?v=${Math.round(file.mtime)}`;
+  const { workspaceContext } = useProjectCollabContext();
+  const url = appendResourceQuery(
+    projectFileUrl(projectId, file.name, workspaceContext),
+    `v=${Math.round(file.mtime)}`,
+  );
   return (
     <div className="viewer image-viewer">
       <div className="viewer-toolbar">
@@ -15173,14 +15777,14 @@ function ImageViewer({
         <div className="viewer-toolbar-actions">
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name)}
+            href={projectFileUrl(projectId, file.name, workspaceContext)}
             download={file.name}
           >
             {t('fileViewer.download')}
           </a>
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name)}
+            href={projectFileUrl(projectId, file.name, workspaceContext)}
             target="_blank"
             rel="noreferrer noopener"
           >
@@ -15203,6 +15807,7 @@ function SketchViewer({
   file: ProjectFile;
 }) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   return (
     <div className="viewer image-viewer sketch-viewer">
       <div className="viewer-toolbar">
@@ -15214,7 +15819,12 @@ function SketchViewer({
         <FileActions projectId={projectId} file={file} />
       </div>
       <div className="viewer-body image-body">
-        <SketchPreview projectId={projectId} file={file} className="viewer-sketch-preview" />
+        <SketchPreview
+          projectId={projectId}
+          file={file}
+          className="viewer-sketch-preview"
+          workspaceContext={workspaceContext}
+        />
       </div>
     </div>
   );
@@ -15228,7 +15838,11 @@ function VideoViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const url = `${projectFileUrl(projectId, file.name)}?v=${Math.round(file.mtime)}`;
+  const { workspaceContext } = useProjectCollabContext();
+  const url = appendResourceQuery(
+    projectFileUrl(projectId, file.name, workspaceContext),
+    `v=${Math.round(file.mtime)}`,
+  );
   return (
     <div className="viewer video-viewer">
       <div className="viewer-toolbar">
@@ -15254,7 +15868,11 @@ function AudioViewer({
   file: ProjectFile;
 }) {
   const t = useT();
-  const url = `${projectFileUrl(projectId, file.name)}?v=${Math.round(file.mtime)}`;
+  const { workspaceContext } = useProjectCollabContext();
+  const url = appendResourceQuery(
+    projectFileUrl(projectId, file.name, workspaceContext),
+    `v=${Math.round(file.mtime)}`,
+  );
   return (
     <div className="viewer audio-viewer">
       <div className="viewer-toolbar">
@@ -15292,12 +15910,16 @@ export function SvgViewer({
   initialSource,
 }: SvgViewerProps) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   const [mode, setMode] = useState<SvgViewerMode>(initialMode);
   const [source, setSource] = useState<string | null>(initialSource ?? null);
   const [loadingSource, setLoadingSource] = useState(false);
   const [sourceError, setSourceError] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const url = `${projectFileUrl(projectId, file.name)}?v=${Math.round(file.mtime)}&r=${reloadKey}`;
+  const url = appendResourceQuery(
+    projectFileUrl(projectId, file.name, workspaceContext),
+    `v=${Math.round(file.mtime)}&r=${reloadKey}`,
+  );
 
   useEffect(() => {
     if (mode !== 'source') return;
@@ -15308,6 +15930,7 @@ export function SvgViewer({
     void fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
       cacheBustKey: `${Math.round(file.mtime)}-${reloadKey}`,
+      workspaceContext,
     }).then((next) => {
       if (cancelled) return;
       if (next === null) {
@@ -15321,7 +15944,15 @@ export function SvgViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, file.mtime, initialSource, mode, reloadKey]);
+  }, [
+    projectId,
+    file.name,
+    file.mtime,
+    initialSource,
+    mode,
+    reloadKey,
+    workspaceContext,
+  ]);
 
   return (
     <div className="viewer svg-viewer">
@@ -15362,14 +15993,14 @@ export function SvgViewer({
           </button>
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name)}
+            href={projectFileUrl(projectId, file.name, workspaceContext)}
             download={file.name}
           >
             {t('fileViewer.download')}
           </a>
           <a
             className="ghost-link"
-            href={projectFileUrl(projectId, file.name)}
+            href={projectFileUrl(projectId, file.name, workspaceContext)}
             target="_blank"
             rel="noreferrer noopener"
           >
@@ -15408,19 +16039,20 @@ function TextViewer({
   file: ProjectFile;
 }) {
   const t = useT();
+  const { workspaceContext } = useProjectCollabContext();
   const [text, setText] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     setText(null);
     let cancelled = false;
-    void fetchProjectFileText(projectId, file.name).then((t) => {
+    void fetchProjectFileText(projectId, file.name, { workspaceContext }).then((t) => {
       if (!cancelled) setText(t ?? '');
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, file.mtime, reloadKey]);
+  }, [projectId, file.name, file.mtime, reloadKey, workspaceContext]);
 
   async function copy() {
     if (text == null) return;
@@ -15634,7 +16266,7 @@ function MarkdownViewer({
   viewerOnly?: boolean;
 }) {
   const { t, locale } = useI18n();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const { workspaceContext } = useProjectCollabContext();
   const [text, setText] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [downloadMenuOpen, setDownloadMenuOpen] = useState(false);
@@ -15693,7 +16325,7 @@ function MarkdownViewer({
       copyBlockTimerRef.current = null;
     }
     let cancelled = false;
-    void fetchProjectFileText(projectId, file.name).then((next) => {
+    void fetchProjectFileText(projectId, file.name, { workspaceContext }).then((next) => {
       if (cancelled) return;
       if (
         loadedFileKeyRef.current === markdownFileKey &&
@@ -15955,8 +16587,13 @@ function MarkdownViewer({
   const baseHtml = useMemo(() => {
     if (text === null) return null;
     const renderPartial = MarkdownRenderer.renderPartial ?? renderMarkdownToSafeHtml;
-    return rewriteMarkdownImageSources(decorateMarkdownCodeBlocks(renderPartial(text)), projectId, file.name);
-  }, [file.name, projectId, text]);
+    return rewriteMarkdownImageSources(
+      decorateMarkdownCodeBlocks(renderPartial(text)),
+      projectId,
+      file.name,
+      workspaceContext,
+    );
+  }, [file.name, projectId, text, workspaceContext]);
   const html = highlightedHtml?.source === baseHtml && highlightedHtml.themeRevision === highlightThemeRevision
     ? highlightedHtml.html
     : baseHtml;

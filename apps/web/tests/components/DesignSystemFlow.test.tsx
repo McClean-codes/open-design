@@ -2,7 +2,12 @@
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ConnectorDetail } from '@open-design/contracts';
+import {
+  buildWorkspacePermissions,
+  buildWorkspaceSeatSummary,
+  type ConnectorDetail,
+  type WorkspaceCollabContext,
+} from '@open-design/contracts';
 
 import {
   buildDesignSystemPackageAuditRepairPrompt,
@@ -39,6 +44,17 @@ const mocks = vi.hoisted(() => ({
   streamViaDaemon: vi.fn(),
   uploadProjectFile: vi.fn(),
   writeProjectTextFile: vi.fn(),
+}));
+
+const workspaceContextState = vi.hoisted(() => ({
+  context: null as WorkspaceCollabContext | null,
+}));
+
+vi.mock('../../src/collab/useWorkspaceContext', () => ({
+  useWorkspaceContext: () => ({
+    context: workspaceContextState.context,
+    loading: false,
+  }),
 }));
 
 vi.mock('../../src/components/ChatPane', () => ({
@@ -144,6 +160,7 @@ afterEach(() => {
 });
 
 beforeEach(() => {
+  workspaceContextState.context = null;
   mocks.connectConnector.mockResolvedValue({ connector: null });
   mocks.disconnectConnector.mockResolvedValue(null);
   mocks.fetchDesignSystem.mockResolvedValue(null);
@@ -176,6 +193,23 @@ beforeEach(() => {
     mime: 'text/markdown',
   }));
 });
+
+function teamContext(): WorkspaceCollabContext {
+  return {
+    workspaceId: 'workspace-a',
+    workspaceType: 'team',
+    workspaceMemberId: 'member-a',
+    role: 'owner',
+    memberStatus: 'active',
+    lifecycleState: 'active',
+    billingState: 'active',
+    planId: 'team_plus',
+    providerMode: 'platform_credits',
+    teamId: 'team-a',
+    seatSummary: buildWorkspaceSeatSummary({ seatLimit: 3, usedSeats: 1 }),
+    permissions: buildWorkspacePermissions({ role: 'owner', lifecycleState: 'active' }),
+  };
+}
 
 function continueToGeneration() {
   fireEvent.click(screen.getByRole('button', { name: /^(continue to generation|generate)$/i }));
@@ -2826,7 +2860,9 @@ describe('DesignSystemDetailView', () => {
     await screen.findByText('Acme Design System');
     fireEvent.click(screen.getByTestId('design-system-chat-send'));
 
-    await waitFor(() => expect(mocks.fetchProjectDesignSystemPackageAudit).toHaveBeenCalledWith(project.id));
+    await waitFor(() =>
+      expect(mocks.fetchProjectDesignSystemPackageAudit).toHaveBeenCalledWith(project.id, null),
+    );
     await waitFor(() =>
       expect(screen.getAllByText(/Package audit found 1 error/).length).toBeGreaterThan(0),
     );
@@ -2892,12 +2928,16 @@ describe('DesignSystemDetailView', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Design Files' }));
 
-    await waitFor(() => expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id));
+    await waitFor(() =>
+      expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id, null),
+    );
     await waitFor(() => expect(screen.getByTestId('design-system-files')).toBeTruthy());
     expect(screen.queryByText('Opening the design system workspace...')).toBeNull();
   });
 
   it('opens the existing project fallback when workspace creation returns null', async () => {
+    const workspaceContext = teamContext();
+    workspaceContextState.context = workspaceContext;
     const system: DesignSystemDetail = {
       id: 'user:acme-design-system',
       title: 'Acme Design System',
@@ -2962,9 +3002,13 @@ describe('DesignSystemDetailView', () => {
       />,
     );
 
-    await waitFor(() => expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id));
-    await waitFor(() => expect(mocks.getProject).toHaveBeenCalledWith(project.id));
-    expect(mocks.fetchProjectFiles).toHaveBeenCalledWith(project.id);
+    await waitFor(() =>
+      expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id, workspaceContext),
+    );
+    await waitFor(() => expect(mocks.getProject).toHaveBeenCalledWith(project.id, workspaceContext));
+    expect(mocks.fetchProjectFiles).toHaveBeenCalledWith(project.id, {
+      workspaceContext,
+    });
     expect(onProjectsRefresh).toHaveBeenCalledTimes(1);
     expect(onOpenProject).toHaveBeenCalledWith(project.id);
     expect(screen.queryByText('Could not open the design system workspace.')).toBeNull();
@@ -3012,8 +3056,10 @@ describe('DesignSystemDetailView', () => {
       />,
     );
 
-    await waitFor(() => expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id));
-    await waitFor(() => expect(mocks.getProject).toHaveBeenCalledWith(system.projectId));
+    await waitFor(() =>
+      expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id, null),
+    );
+    await waitFor(() => expect(mocks.getProject).toHaveBeenCalledWith(system.projectId, null));
     expect(mocks.fetchProjectFiles).not.toHaveBeenCalled();
     expect(onOpenProject).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: 'Design Files' }));
@@ -3095,9 +3141,11 @@ describe('DesignSystemDetailView', () => {
 
     await waitFor(() => expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(mocks.streamViaDaemon).toHaveBeenCalledTimes(1));
-    expect(mocks.getProject).toHaveBeenCalledWith(project.id);
+    expect(mocks.getProject).toHaveBeenCalledWith(project.id, null);
     expect(mocks.fetchProjectFiles).toHaveBeenCalledWith(project.id);
-    expect(mocks.createConversation).toHaveBeenCalledWith(project.id, 'Design system');
+    expect(mocks.createConversation).toHaveBeenCalledWith(project.id, 'Design system', {
+      workspaceContext: null,
+    });
     expect(mocks.streamViaDaemon).toHaveBeenCalledWith(
       expect.objectContaining({
         projectId: project.id,
@@ -3162,11 +3210,19 @@ describe('DesignSystemDetailView', () => {
     const button = await screen.findByTestId('new-conversation');
     fireEvent.click(button);
 
-    await waitFor(() => expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id));
-    await waitFor(() => expect(mocks.createConversation).toHaveBeenCalledWith(project.id, 'Design system'));
+    await waitFor(() =>
+      expect(mocks.ensureDesignSystemWorkspace).toHaveBeenCalledWith(system.id, null),
+    );
+    await waitFor(() =>
+      expect(mocks.createConversation).toHaveBeenCalledWith(project.id, 'Design system', {
+        workspaceContext: null,
+      }),
+    );
     expect(mocks.createConversation).toHaveBeenCalledTimes(1);
     expect(mocks.listConversations).not.toHaveBeenCalled();
-    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledWith(project.id, fresh.id));
+    await waitFor(() =>
+      expect(mocks.listMessages).toHaveBeenCalledWith(project.id, fresh.id, null),
+    );
   });
 
   it('clears a stale creation error after a successful new conversation retry', async () => {
@@ -3233,7 +3289,9 @@ describe('DesignSystemDetailView', () => {
     await waitFor(() => {
       expect(screen.queryByText('Could not create a design system conversation.')).toBeNull();
     });
-    await waitFor(() => expect(mocks.listMessages).toHaveBeenCalledWith(project.id, fresh.id));
+    await waitFor(() =>
+      expect(mocks.listMessages).toHaveBeenCalledWith(project.id, fresh.id, null),
+    );
   });
 
   it('passes the current UI locale to daemon workspace chat runs', async () => {

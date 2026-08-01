@@ -10,7 +10,20 @@ import {
 interface ProjectWorkspaceBinding {
   workspaceId?: unknown;
   visibility?: unknown;
+  resourceState?: unknown;
 }
+
+export type ProjectWorkspaceScopeBootstrapResult =
+  | {
+      ok: true;
+      scope: ProjectWorkspaceScope;
+    }
+  | {
+      ok: false;
+      status: 403 | 503;
+      code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' | 'WORKSPACE_DIRECTORY_UNAVAILABLE';
+      message: string;
+    };
 
 /**
  * Resolve a project's persisted workspace binding against the signed-in
@@ -54,7 +67,7 @@ export function resolveProjectWorkspaceScope(input: {
     (candidate) =>
       candidate.workspaceId === workspaceId &&
       candidate.memberStatus === 'active' &&
-      candidate.lifecycleState === 'active',
+      candidate.lifecycleState !== 'deleted',
   );
   if (!item) return unavailable();
 
@@ -85,50 +98,48 @@ export function resolveProjectWorkspaceScope(input: {
 }
 
 /**
- * Resolve one project's workspace scope for a SPECIFIC caller.
+ * Resolve the one headerless bootstrap read used by a fresh project deep link.
  *
- * Every project resolves to a workspace, and when the project itself does not
- * name one the answer is the workspace the caller is currently acting in —
- * there is nothing else an unbound project could sensibly belong to. Answering
- * `unbound` instead makes `projectWorkspaceScopeAuthorizesAmr` false, which
- * disables the chat composer's send button for an AMR run on that project
- * permanently, with nothing the user can do to clear it.
- *
- * A project that IS bound is resolved by {@link resolveProjectWorkspaceScope}
- * alone and the caller's own workspace is irrelevant to it. That asymmetry is
- * the billing-integrity rule, not an oversight: the scope carries
- * `workspaceMemberId`, which is the wallet that pays for the project's runs, so
- * a project pinned to workspace X read by a member of Y must answer X — or
- * `unavailable` — and never Y.
- *
- * The fallback resolves THROUGH the membership directory, so the
- * `workspaceMemberId` it hands back is always B's for that workspace and never
- * the request header's. A caller can therefore only select among workspaces
- * their signed-in identity is genuinely an active member of. Anything the
- * directory cannot confirm — B unreachable, the claimed workspace not an active
- * membership, or no caller identity at all — stays `unbound`: reporting "no
- * workspace" is strictly better than inventing a billing subject.
+ * This does not authorize project content. It discloses a persisted binding
+ * only after a fresh signed-in directory proves the caller is an active member
+ * of that exact Workspace. The web must then attach the returned context to
+ * every project data-plane request, which still passes the normal route gate.
  */
-export function resolveProjectWorkspaceScopeForCaller(input: {
+export function resolveProjectWorkspaceScopeBootstrap(input: {
   projectId: string;
   binding: ProjectWorkspaceBinding | null | undefined;
   directory: WorkspaceDirectoryFetchResult;
-  /** The caller's current workspace, or null when the request carries no workspace identity. */
-  callerWorkspaceId: string | null | undefined;
-}): ProjectWorkspaceScope {
-  const bound = resolveProjectWorkspaceScope(input);
-  if (bound.kind !== 'unbound') return bound;
-  const callerWorkspaceId =
-    typeof input.callerWorkspaceId === 'string' ? input.callerWorkspaceId.trim() : '';
-  if (!callerWorkspaceId) return bound;
-  const fallback = resolveProjectWorkspaceScope({
-    projectId: input.projectId,
-    // An unbound project is a private local draft. It is not shared with the
-    // team even when the workspace hosting it is one — the same `personal`
-    // visibility every other "claim this orphan into the current workspace"
-    // path writes (`ensureWorkspaceProjection`, `bindDuplicateIntoRequestWorkspace`).
-    binding: { workspaceId: callerWorkspaceId, visibility: 'personal' },
-    directory: input.directory,
-  });
-  return fallback.kind === 'personal' || fallback.kind === 'team' ? fallback : bound;
+}): ProjectWorkspaceScopeBootstrapResult {
+  if (!input.binding?.workspaceId) {
+    return {
+      ok: true,
+      scope: resolveProjectWorkspaceScope(input),
+    };
+  }
+  if (input.binding.resourceState === 'deleted') {
+    return {
+      ok: false,
+      status: 403,
+      code: 'WORKSPACE_PROJECT_PERMISSION_DENIED',
+      message: 'workspace project read is not allowed',
+    };
+  }
+  if (!input.directory.ok) {
+    return {
+      ok: false,
+      status: 503,
+      code: 'WORKSPACE_DIRECTORY_UNAVAILABLE',
+      message: 'workspace membership directory is unavailable',
+    };
+  }
+  const scope = resolveProjectWorkspaceScope(input);
+  if (scope.kind === 'unavailable' || scope.context === null) {
+    return {
+      ok: false,
+      status: 403,
+      code: 'WORKSPACE_PROJECT_PERMISSION_DENIED',
+      message: 'workspace project read is not allowed',
+    };
+  }
+  return { ok: true, scope };
 }

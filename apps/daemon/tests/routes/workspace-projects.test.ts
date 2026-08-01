@@ -8,6 +8,8 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startServer } from '../../src/server.js';
 import { registerProjectRoutes } from '../../src/routes/project/index.js';
 import { projectResourceIdFor } from '../../src/integrations/vela-team-projects.js';
+import type { WorkspaceDirectoryFetchResult } from '../../src/collab/vela-workspace-context.js';
+import { recoverPersistedTeamShareOwnership } from '../../src/collab/persisted-team-share.js';
 
 describe('workspace project routes', () => {
   let server: http.Server;
@@ -57,13 +59,32 @@ describe('workspace project routes', () => {
     expect(resp.status).toBe(200);
   }
 
-  async function list(memberId: string, query = '') {
-    return listInWorkspace(workspaceId, memberId, query);
+  async function createProjectInWorkspace(
+    id: string,
+    name: string,
+    memberId: string,
+    extra: Record<string, string> = {},
+  ) {
+    const resp = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: headers(memberId, extra),
+      body: JSON.stringify({ id, name, skillId: null, designSystemId: null }),
+    });
+    expect(resp.status).toBe(200);
   }
 
-  async function listInWorkspace(targetWorkspaceId: string, memberId: string, query = '') {
+  async function list(memberId: string, query = '', extra: Record<string, string> = {}) {
+    return listInWorkspace(workspaceId, memberId, query, extra);
+  }
+
+  async function listInWorkspace(
+    targetWorkspaceId: string,
+    memberId: string,
+    query = '',
+    extra: Record<string, string> = {},
+  ) {
     const resp = await fetch(`${baseUrl}/api/workspaces/${targetWorkspaceId}/projects${query}`, {
-      headers: workspaceHeaders(targetWorkspaceId, memberId),
+      headers: workspaceHeaders(targetWorkspaceId, memberId, extra),
     });
     if (resp.status !== 200) {
       throw new Error(`GET workspace projects failed ${resp.status}: ${await resp.text()}`);
@@ -71,10 +92,15 @@ describe('workspace project routes', () => {
     return resp.json() as Promise<{ projects: Array<any> }>;
   }
 
-  async function waitForWorkspaceProjectSyncState(memberId: string, projectId: string, syncState: string) {
+  async function waitForWorkspaceProjectSyncState(
+    memberId: string,
+    projectId: string,
+    syncState: string,
+    extra: Record<string, string> = {},
+  ) {
     let project: any;
     for (let i = 0; i < 40; i += 1) {
-      const body = await list(memberId, '?view=all');
+      const body = await list(memberId, '?view=all', extra);
       project = body.projects.find((item) => item.id === projectId);
       if (project?.syncState === syncState) return project;
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -259,7 +285,9 @@ describe('workspace project routes', () => {
     });
     expect(createResp.status).toBe(200);
 
-    const detailResp = await fetch(`${baseUrl}/api/projects/${projectId}`);
+    const detailResp = await fetch(`${baseUrl}/api/projects/${projectId}`, {
+      headers: workspaceHeaders(workspaceA, 'member-detail-a'),
+    });
     expect(detailResp.status).toBe(200);
     const detail = (await detailResp.json()) as {
       project: { id: string; workspaceId?: string | null };
@@ -311,7 +339,9 @@ describe('workspace project routes', () => {
     });
     expect(deleteResp.status).toBe(403);
 
-    const stillExists = await fetch(`${baseUrl}/api/projects/${projectId}`);
+    const stillExists = await fetch(`${baseUrl}/api/projects/${projectId}`, {
+      headers: headers('member-b'),
+    });
     expect(stillExists.status).toBe(200);
   });
 
@@ -375,7 +405,7 @@ describe('workspace project routes', () => {
       body: JSON.stringify({ projectIds: [projectId] }),
     });
 
-    expect(deleteResp.status).toBe(401);
+    expect(deleteResp.status).toBe(400);
     await expect(deleteResp.json()).resolves.toMatchObject({
       error: {
         code: 'WORKSPACE_CONTEXT_REQUIRED',
@@ -400,7 +430,10 @@ describe('workspace project routes', () => {
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${teamId}/move`, {
       method: 'POST',
-      headers: headers('member-view', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-view', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
       body: JSON.stringify({ visibility: 'team' }),
     });
     expect(moveResp.status).toBe(200);
@@ -485,16 +518,20 @@ describe('workspace project routes', () => {
     expect(row.currentUserAccess.canMoveToTeam).toBe(false);
   });
 
-  it('projects legacy rows for batch operations without requiring a prior list request', async () => {
+  it('supports batch operations on explicitly scoped projects without requiring a prior list request', async () => {
     const suffix = Date.now();
     const moveProjectId = `workspace-batch-move-${suffix}`;
     const deleteProjectId = `workspace-batch-delete-${suffix}`;
-    await createProject(moveProjectId, 'Direct batch move project');
-    await createProject(deleteProjectId, 'Direct batch delete project');
+    const teamHeaders = {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'admin',
+    };
+    await createProjectInWorkspace(moveProjectId, 'Direct batch move project', 'member-direct', teamHeaders);
+    await createProjectInWorkspace(deleteProjectId, 'Direct batch delete project', 'member-direct', teamHeaders);
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-move`, {
       method: 'POST',
-      headers: headers('member-direct', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-direct', teamHeaders),
       body: JSON.stringify({ projectIds: [moveProjectId], visibility: 'team' }),
     });
     expect(moveResp.status).toBe(200);
@@ -510,12 +547,12 @@ describe('workspace project routes', () => {
 
     const invalidMoveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-move`, {
       method: 'POST',
-      headers: headers('member-direct', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-direct', teamHeaders),
       body: JSON.stringify({ projectIds: [deleteProjectId, 123], visibility: 'team' }),
     });
     expect(invalidMoveResp.status).toBe(400);
 
-    const afterInvalidMove = await list('member-direct', '?view=all');
+    const afterInvalidMove = await list('member-direct', '?view=all', teamHeaders);
     const untouched = afterInvalidMove.projects.find((item: any) => item.id === deleteProjectId);
     expect(untouched).toMatchObject({
       visibility: 'personal',
@@ -525,19 +562,28 @@ describe('workspace project routes', () => {
 
     const invalidDeleteResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-delete`, {
       method: 'POST',
-      headers: headers('member-direct', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-direct', teamHeaders),
       body: JSON.stringify({ projectIds: [deleteProjectId, 123] }),
     });
     expect(invalidDeleteResp.status).toBe(400);
 
-    const afterInvalidDelete = await fetch(`${baseUrl}/api/projects/${deleteProjectId}`);
+    const afterInvalidDelete = await fetch(`${baseUrl}/api/projects/${deleteProjectId}`, {
+      headers: headers('member-direct', teamHeaders),
+    });
     expect(afterInvalidDelete.status).toBe(200);
-    const batchShareStatus = await fetch(`${baseUrl}/api/projects/${moveProjectId}/collab/status`);
+    const batchShareStatus = await fetch(`${baseUrl}/api/projects/${moveProjectId}/collab/status`, {
+      headers: headers('member-direct', teamHeaders),
+    });
     expect(batchShareStatus.status).toBe(200);
     const batchShare = await batchShareStatus.json() as { syncState: string; ownerMemberId: string | null };
     expect(['pending_upload', 'synced']).toContain(batchShare.syncState);
     expect(batchShare.ownerMemberId).toBe('member-direct');
-    const syncedProject = await waitForWorkspaceProjectSyncState('member-direct', moveProjectId, 'synced');
+    const syncedProject = await waitForWorkspaceProjectSyncState(
+      'member-direct',
+      moveProjectId,
+      'synced',
+      teamHeaders,
+    );
     expect(syncedProject).toMatchObject({
       id: moveProjectId,
       syncState: 'synced',
@@ -548,7 +594,7 @@ describe('workspace project routes', () => {
 
     const moveBackResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${moveProjectId}/move`, {
       method: 'POST',
-      headers: headers('member-direct', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-direct', teamHeaders),
       body: JSON.stringify({ visibility: 'personal' }),
     });
     // An admin who shared the project can move it back out of the team; the
@@ -566,14 +612,14 @@ describe('workspace project routes', () => {
     // (canMoveToPersonal requires the project to currently be team-shared).
     const batchMoveBackResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-move`, {
       method: 'POST',
-      headers: headers('member-direct', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-direct', teamHeaders),
       body: JSON.stringify({ projectIds: [moveProjectId], visibility: 'personal' }),
     });
     expect(batchMoveBackResp.status).toBe(403);
 
     const deleteResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-delete`, {
       method: 'POST',
-      headers: headers('member-direct', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-direct', teamHeaders),
       body: JSON.stringify({ projectIds: [deleteProjectId] }),
     });
     expect(deleteResp.status).toBe(200);
@@ -594,7 +640,7 @@ describe('workspace project routes', () => {
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
-      headers: headers('member-plain-sharer'),
+      headers: headers('member-plain-sharer', { 'x-od-workspace-type': 'team' }),
       body: JSON.stringify({ visibility: 'team' }),
     });
     expect(moveResp.status).toBe(200);
@@ -615,13 +661,120 @@ describe('workspace project routes', () => {
     expect(strangerMove.status).toBe(403);
   });
 
+  it('keeps Team shared-project access flags and unshare single-writer for workspace owners', async () => {
+    const suffix = Date.now();
+    const projectOwnerId = `member-project-owner-${suffix}`;
+    const workspaceOwnerId = `member-workspace-owner-${suffix}`;
+    const singleProjectId = `workspace-single-unshare-${suffix}`;
+    const batchProjectId = `workspace-batch-unshare-${suffix}`;
+    const projectOwnerHeaders = headers(projectOwnerId, {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'member',
+    });
+    const workspaceOwnerHeaders = headers(workspaceOwnerId, {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'owner',
+    });
+
+    for (const projectId of [singleProjectId, batchProjectId]) {
+      await createProjectInWorkspace(
+        projectId,
+        `Shared by ${projectOwnerId}`,
+        projectOwnerId,
+        { 'x-od-workspace-type': 'team' },
+      );
+      const share = await fetch(
+        `${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`,
+        {
+          method: 'POST',
+          headers: projectOwnerHeaders,
+          body: JSON.stringify({ visibility: 'team' }),
+        },
+      );
+      expect(share.status).toBe(200);
+    }
+
+    const workspaceOwnerList = await list(
+      workspaceOwnerId,
+      '?view=team',
+      {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'owner',
+      },
+    );
+    for (const projectId of [singleProjectId, batchProjectId]) {
+      const project = workspaceOwnerList.projects.find(
+        (item: any) => item.id === projectId,
+      );
+      expect(project).toMatchObject({
+        visibility: 'team',
+        createdByWorkspaceMemberId: projectOwnerId,
+        currentUserAccess: {
+          canRename: false,
+          canDelete: false,
+          canDuplicate: false,
+          canMoveToPersonal: false,
+          canRestoreVersion: false,
+        },
+      });
+    }
+
+    const singleUnshare = await fetch(
+      `${baseUrl}/api/workspaces/${workspaceId}/projects/${singleProjectId}/move`,
+      {
+        method: 'POST',
+        headers: workspaceOwnerHeaders,
+        body: JSON.stringify({ visibility: 'personal' }),
+      },
+    );
+    expect(singleUnshare.status).toBe(403);
+
+    const batchUnshare = await fetch(
+      `${baseUrl}/api/workspaces/${workspaceId}/projects/batch-move`,
+      {
+        method: 'POST',
+        headers: workspaceOwnerHeaders,
+        body: JSON.stringify({
+          projectIds: [batchProjectId],
+          visibility: 'personal',
+        }),
+      },
+    );
+    expect(batchUnshare.status).toBe(403);
+
+    const projectOwnerList = await list(
+      projectOwnerId,
+      '?view=team',
+      { 'x-od-workspace-type': 'team' },
+    );
+    for (const projectId of [singleProjectId, batchProjectId]) {
+      const project = projectOwnerList.projects.find(
+        (item: any) => item.id === projectId,
+      );
+      expect(project).toMatchObject({
+        visibility: 'team',
+        createdByWorkspaceMemberId: projectOwnerId,
+        currentUserAccess: {
+          canRename: true,
+          canDelete: true,
+          canDuplicate: true,
+          canMoveToPersonal: true,
+          canRestoreVersion: true,
+        },
+      });
+    }
+  });
+
   it('stamps the sharing member as owner when a legacy project moves to team', async () => {
     const projectId = `workspace-share-owner-${Date.now()}`;
     await createProject(projectId, 'Share owner project');
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
-      headers: headers('member-share-owner', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-share-owner', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
       body: JSON.stringify({ visibility: 'team' }),
     });
     expect(moveResp.status).toBe(200);
@@ -649,7 +802,10 @@ describe('workspace project routes', () => {
     const projectId = `workspace-direct-write-${Date.now()}`;
     await createProject(projectId, 'Direct write project');
 
-    const ownerHeaders = headers('member-write-owner', { 'x-od-workspace-role': 'admin' });
+    const ownerHeaders = headers('member-write-owner', {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'admin',
+    });
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
       headers: ownerHeaders,
@@ -663,6 +819,20 @@ describe('workspace project routes', () => {
       body: JSON.stringify({ name: 'index.html', content: '<h1>original</h1>' }),
     });
     expect(seedResp.status).toBe(200);
+
+    // Workspace governance does not transfer the shared project's single
+    // writer. Even a Workspace owner remains a read-only viewer when the
+    // catalog names another member as this project's owner.
+    const workspaceOwnerHeaders = headers('member-workspace-owner', {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'owner',
+    });
+    const privilegedWriteResp = await fetch(`${baseUrl}/api/projects/${projectId}/files`, {
+      method: 'POST',
+      headers: workspaceOwnerHeaders,
+      body: JSON.stringify({ name: 'owner-escalation.txt', content: 'must not land' }),
+    });
+    expect(privilegedWriteResp.status).toBe(403);
 
     const versionResp = await fetch(`${baseUrl}/api/projects/${projectId}/files/index.html/versions`, {
       method: 'POST',
@@ -761,9 +931,18 @@ describe('workspace project routes', () => {
     });
     expect(projectDeleteResp.status).toBe(403);
 
-    const blockedFile = await fetch(`${baseUrl}/api/projects/${projectId}/raw/blocked.txt`);
+    const blockedFile = await fetch(`${baseUrl}/api/projects/${projectId}/raw/blocked.txt`, {
+      headers: readOnlyHeaders,
+    });
     expect(blockedFile.status).toBe(404);
-    const projectResp = await fetch(`${baseUrl}/api/projects/${projectId}`);
+    const privilegedBlockedFile = await fetch(
+      `${baseUrl}/api/projects/${projectId}/raw/owner-escalation.txt`,
+      { headers: ownerHeaders },
+    );
+    expect(privilegedBlockedFile.status).toBe(404);
+    const projectResp = await fetch(`${baseUrl}/api/projects/${projectId}`, {
+      headers: readOnlyHeaders,
+    });
     const projectBody = await projectResp.json() as { project: { name: string } };
     expect(projectBody.project.name).toBe('Direct write project');
   });
@@ -782,7 +961,10 @@ describe('workspace project routes', () => {
     await createProject(teamProjectId, 'Headerless team fixture');
     await createProject(personalProjectId, 'Headerless personal fixture');
 
-    const ownerHeaders = headers('member-headerless-owner', { 'x-od-workspace-role': 'admin' });
+    const ownerHeaders = headers('member-headerless-owner', {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'admin',
+    });
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${teamProjectId}/move`, {
       method: 'POST',
       headers: ownerHeaders,
@@ -796,7 +978,7 @@ describe('workspace project routes', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Illicit headerless rename' }),
     });
-    expect(teamPatchResp.status).toBe(401);
+    expect(teamPatchResp.status).toBe(400);
     await expect(teamPatchResp.json()).resolves.toMatchObject({
       error: { code: 'WORKSPACE_CONTEXT_REQUIRED' },
     });
@@ -811,7 +993,9 @@ describe('workspace project routes', () => {
     });
     expect(personalPatchResp.status).toBe(200);
 
-    const stillNamed = await fetch(`${baseUrl}/api/projects/${teamProjectId}`);
+    const stillNamed = await fetch(`${baseUrl}/api/projects/${teamProjectId}`, {
+      headers: ownerHeaders,
+    });
     const stillNamedBody = await stillNamed.json() as { project: { name: string } };
     expect(stillNamedBody.project.name).toBe('Headerless team fixture');
   });
@@ -828,7 +1012,10 @@ describe('workspace project routes', () => {
     const projectId = `dup-workspace-bind-${Date.now()}`;
     await createProject(projectId, 'Duplicate workspace-bind fixture');
 
-    const ownerHeaders = headers('member-dup-owner', { 'x-od-workspace-role': 'admin' });
+    const ownerHeaders = headers('member-dup-owner', {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'admin',
+    });
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
       headers: ownerHeaders,
@@ -877,7 +1064,10 @@ describe('workspace project routes', () => {
     const projectId = `dup-of-dup-source-${suffix}`;
     await createProject(projectId, 'Duplicate-of-duplicate fixture');
 
-    const ownerHeaders = headers('member-dup-of-dup-owner', { 'x-od-workspace-role': 'owner' });
+    const ownerHeaders = headers('member-dup-of-dup-owner', {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'owner',
+    });
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
       headers: ownerHeaders,
@@ -976,7 +1166,10 @@ describe('workspace project routes', () => {
     const projectId = `workspace-direct-locked-${Date.now()}`;
     await createProject(projectId, 'Locked direct write project');
 
-    const ownerHeaders = headers('member-locked-owner', { 'x-od-workspace-role': 'admin' });
+    const ownerHeaders = headers('member-locked-owner', {
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'admin',
+    });
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
       headers: ownerHeaders,
@@ -985,6 +1178,7 @@ describe('workspace project routes', () => {
     expect(moveResp.status).toBe(200);
 
     const lockedHeaders = headers('member-locked-owner', {
+      'x-od-workspace-type': 'team',
       'x-od-workspace-role': 'admin',
       'x-od-workspace-lifecycle-state': 'locked',
     });
@@ -1036,7 +1230,9 @@ describe('workspace project routes', () => {
     });
     expect(memberResp.status).toBe(403);
 
-    const memberStillExists = await fetch(`${baseUrl}/api/projects/${memberProjectId}`);
+    const memberStillExists = await fetch(`${baseUrl}/api/projects/${memberProjectId}`, {
+      headers: headers('member-a'),
+    });
     expect(memberStillExists.status).toBe(200);
 
     const adminResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-delete`, {
@@ -1085,14 +1281,20 @@ describe('workspace project routes', () => {
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
-      headers: headers('member-delete-team', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-delete-team', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
       body: JSON.stringify({ visibility: 'team' }),
     });
     expect(moveResp.status).toBe(200);
 
     const deleteResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/batch-delete`, {
       method: 'POST',
-      headers: headers('member-delete-team', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-delete-team', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
       body: JSON.stringify({ projectIds: [projectId] }),
     });
 
@@ -1103,7 +1305,12 @@ describe('workspace project routes', () => {
       },
     });
 
-    const stillExists = await fetch(`${baseUrl}/api/projects/${projectId}`);
+    const stillExists = await fetch(`${baseUrl}/api/projects/${projectId}`, {
+      headers: headers('member-delete-team', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
+    });
     expect(stillExists.status).toBe(200);
   });
 
@@ -1214,6 +1421,139 @@ describe('workspace project routes', () => {
       await close(routeServer.server);
     }
   });
+
+  it.each([
+    ['syncing', 'pending_upload'],
+    ['failed', 'sync_failed'],
+  ] as const)(
+    'uses the catalog title without persisting a foreign mirror as locally owned (%s)',
+    async (remoteSyncState, expectedSyncState) => {
+    const projectId = `workspace-materialized-placeholder-${Date.now()}`;
+    const adminMemberId = 'member-admin-viewer';
+    const ownerMemberId = 'member-project-owner';
+    const resourceId = `project-resource-${projectId}`;
+    const rebindWorkspaceProject = vi.fn();
+    const teamProjectCatalog = {
+      list: vi.fn(async () => [
+        {
+          id: `catalog-wrong-workspace-${projectId}`,
+          workspaceId: 'ws-other',
+          projectId,
+          resourceId,
+          ownerMemberId,
+          displayName: 'Wrong workspace title',
+          syncState: 'synced',
+          lastSyncedVersionId: 'version-wrong-workspace',
+          createdAt: new Date(1).toISOString(),
+          updatedAt: new Date(2).toISOString(),
+          access: {
+            canView: true,
+            canComment: true,
+            canEdit: false,
+            frozen: false,
+          },
+        },
+        {
+          id: `catalog-${projectId}`,
+          workspaceId,
+          projectId,
+          resourceId,
+          ownerMemberId,
+          displayName: 'Owner project title',
+          syncState: remoteSyncState,
+          lastSyncedVersionId: 'version-1',
+          createdAt: new Date(10).toISOString(),
+          updatedAt: new Date(20).toISOString(),
+          access: {
+            canView: true,
+            canComment: true,
+            canEdit: false,
+            frozen: false,
+          },
+        },
+      ]),
+      upsert: vi.fn(),
+    };
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      teamProjectCatalog,
+      rebindWorkspaceProject,
+      workspaceRowOverrides: {
+        name: '共享项目',
+        visibility: 'team',
+        workspaceVisibility: 'team',
+        resourceHubResourceId: resourceId,
+        createdByWorkspaceMemberId: null,
+        updatedByWorkspaceMemberId: adminMemberId,
+        syncState: 'synced',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const resp = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects?view=team`, {
+        headers: headers(adminMemberId, {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'admin',
+        }),
+      });
+      expect(resp.status).toBe(200);
+      const body = await resp.json() as { projects: Array<any> };
+      expect(body.projects).toHaveLength(1);
+      expect(body.projects[0]).toMatchObject({
+        id: projectId,
+        name: 'Owner project title',
+        createdByWorkspaceMemberId: ownerMemberId,
+        updatedByWorkspaceMemberId: adminMemberId,
+        resourceHubResourceId: resourceId,
+        currentUserAccess: {
+          canRename: false,
+          canDelete: false,
+          canMoveToPersonal: false,
+        },
+        project: {
+          id: projectId,
+          name: 'Owner project title',
+        },
+        syncState: expectedSyncState,
+      });
+      expect(rebindWorkspaceProject).toHaveBeenCalledWith(
+        expect.anything(),
+        projectId,
+        expect.objectContaining({
+          workspaceId,
+          visibility: 'team',
+          createdByWorkspaceMemberId: null,
+          updatedByWorkspaceMemberId: adminMemberId,
+          resourceHubResourceId: resourceId,
+          syncState: expectedSyncState,
+        }),
+      );
+      const persistedPatch = rebindWorkspaceProject.mock.calls[0]?.[2] as {
+        createdByWorkspaceMemberId?: string | null;
+      };
+      expect(recoverPersistedTeamShareOwnership({
+        projectId,
+        workspaceId,
+        createdByWorkspaceMemberId: persistedPatch.createdByWorkspaceMemberId ?? null,
+        updatedByWorkspaceMemberId: adminMemberId,
+      })).toBeNull();
+      expect(teamProjectCatalog.list).toHaveBeenCalledTimes(1);
+      expect(teamProjectCatalog.list).toHaveBeenCalledWith({
+        memberId: adminMemberId,
+        teamId: workspaceId,
+        role: 'admin',
+        lifecycleState: 'active',
+      });
+    } finally {
+      await close(routeServer.server);
+    }
+    },
+  );
 
   it('does not merge remote team projects into a personal workspace list (isolation)', async () => {
     const remoteProjectId = `workspace-personal-leak-${Date.now()}`;
@@ -1740,11 +2080,19 @@ describe('workspace project routes', () => {
 
     const moveToTeam = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
-      headers: headers('member-frozen', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-frozen', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
       body: JSON.stringify({ visibility: 'team' }),
     });
     expect(moveToTeam.status).toBe(200);
-    const shareStatus = await fetch(`${baseUrl}/api/projects/${projectId}/collab/status`);
+    const shareStatus = await fetch(`${baseUrl}/api/projects/${projectId}/collab/status`, {
+      headers: headers('member-frozen', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
+    });
     expect(shareStatus.status).toBe(200);
     const share = await shareStatus.json() as { syncState: string; ownerMemberId: string | null };
     expect(['pending_upload', 'synced']).toContain(share.syncState);
@@ -1768,12 +2116,23 @@ describe('workspace project routes', () => {
     expect(moveToPersonal.status).toBe(403);
   });
 
-  it('honors workspace permission bits when sharing personal projects', async () => {
+  it('derives sharing authority from verified role instead of caller-supplied permission bits', async () => {
     const projectId = `workspace-share-permission-${Date.now()}`;
-    await createProject(projectId, 'Share permission project');
+    await createProjectInWorkspace(
+      projectId,
+      'Share permission project',
+      'member-share-permission',
+      {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      },
+    );
 
     const bodyResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects?visibility=personal`, {
-      headers: headers('member-share-permission', { 'x-od-workspace-role': 'admin' }),
+      headers: headers('member-share-permission', {
+        'x-od-workspace-type': 'team',
+        'x-od-workspace-role': 'admin',
+      }),
     });
     expect(bodyResp.status).toBe(200);
     const body = await bodyResp.json() as { projects: Array<any> };
@@ -1783,6 +2142,7 @@ describe('workspace project routes', () => {
 
     const restrictedList = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects?visibility=personal`, {
       headers: headers('member-share-permission', {
+        'x-od-workspace-type': 'team',
         'x-od-workspace-role': 'admin',
         'x-od-workspace-can-share-projects': 'false',
       }),
@@ -1796,12 +2156,13 @@ describe('workspace project routes', () => {
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
       method: 'POST',
       headers: headers('member-share-permission', {
+        'x-od-workspace-type': 'team',
         'x-od-workspace-role': 'admin',
         'x-od-workspace-can-share-projects': 'false',
       }),
       body: JSON.stringify({ visibility: 'team' }),
     });
-    expect(moveResp.status).toBe(403);
+    expect(moveResp.status).toBe(200);
   });
 });
 
@@ -1816,6 +2177,7 @@ function workspaceProjectRouteDeps({
   teamProjectCatalog,
   collabSync,
   updateWorkspaceProject,
+  rebindWorkspaceProject,
   workspaceRowOverrides,
 }: {
   workspaceId: string;
@@ -1828,6 +2190,7 @@ function workspaceProjectRouteDeps({
   teamProjectCatalog?: unknown;
   collabSync?: unknown;
   updateWorkspaceProject?: ReturnType<typeof vi.fn>;
+  rebindWorkspaceProject?: ReturnType<typeof vi.fn>;
   workspaceRowOverrides?: Record<string, unknown>;
 }) {
   const now = 1;
@@ -1878,7 +2241,8 @@ function workspaceProjectRouteDeps({
     projectStore: {
       insertProject: noop,
       validateLinkedDirs: () => ({ dirs: [] }),
-      getProject: () => project,
+      getProject: (_db: unknown, requestedProjectId: string) =>
+        requestedProjectId === projectId ? project : null,
       updateProject: noop,
       dbDeleteProject,
       removeProjectDir,
@@ -1896,7 +2260,7 @@ function workspaceProjectRouteDeps({
       listWorkspaceProjectBindings: () => new Map([[projectId, workspaceId]]),
       listWorkspaceProjects: () => [workspaceRow],
       updateWorkspaceProject: updateWorkspaceProject ?? noop,
-      rebindWorkspaceProject: noop,
+      rebindWorkspaceProject: rebindWorkspaceProject ?? noop,
     },
     projectFiles: {
       writeProjectFile: noop,
@@ -1956,3 +2320,265 @@ async function close(server: http.Server): Promise<void> {
     server.close((err) => (err ? reject(err) : resolve()));
   });
 }
+
+describe('GET /api/projects/:id/workspace-scope route bootstrap', () => {
+  const projectId = 'route-bootstrap-project-a';
+  const workspaceId = 'route-bootstrap-workspace-a';
+  const memberId = 'route-bootstrap-member-a';
+  const activeMembership = {
+    workspaceId,
+    workspaceName: 'Workspace A',
+    workspaceType: 'team' as const,
+    workspaceMemberId: memberId,
+    role: 'member' as const,
+    memberStatus: 'active' as const,
+    lifecycleState: 'active' as const,
+  };
+
+  async function startBootstrapRoute(options: {
+    directory?: () => Promise<WorkspaceDirectoryFetchResult>;
+    resourceState?: string;
+    unbound?: boolean;
+  } = {}) {
+    const deps = workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        ...(options.resourceState ? { resourceState: options.resourceState } : {}),
+      },
+    }) as any;
+    if (options.unbound) {
+      deps.projectStore.getWorkspaceProject = () => null;
+      deps.projectStore.getWorkspaceProjectByProjectId = () => null;
+    }
+    deps.fetchWorkspaceDirectory =
+      options.directory
+      ?? (async () => ({ ok: true, items: [activeMembership] }));
+    deps.authorizeProjectRequest = vi.fn(async (
+      req: express.Request,
+      res: express.Response,
+    ) => {
+      if (options.unbound) return true;
+      const claimedWorkspaceId = req.get('x-od-workspace-id');
+      const claimedMemberId = req.get('x-od-workspace-member-id');
+      if (!claimedWorkspaceId || !claimedMemberId) {
+        res.status(400).json({
+          error: { code: 'WORKSPACE_CONTEXT_INCOMPLETE' },
+        });
+        return false;
+      }
+      if (claimedWorkspaceId !== workspaceId || claimedMemberId !== memberId) {
+        res.status(403).json({
+          error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+        });
+        return false;
+      }
+      return true;
+    });
+    deps.http.sendApiError = (
+      res: express.Response,
+      status: number,
+      code: string,
+      message: string,
+      details?: Record<string, unknown>,
+    ) => res.status(status).json({ error: { code, message, ...details } });
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, deps);
+    return listen(app);
+  }
+
+  it('returns exact A scope headerlessly while keeping project content behind explicit A headers', async () => {
+    const routeServer = await startBootstrapRoute();
+    try {
+      const scope = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+      );
+      expect(scope.status).toBe(200);
+      await expect(scope.json()).resolves.toMatchObject({
+        scope: {
+          kind: 'team',
+          projectId,
+          workspaceId,
+          context: {
+            workspaceId,
+            workspaceMemberId: memberId,
+          },
+        },
+      });
+
+      const headerlessDetail = await fetch(
+        `${routeServer.url}/api/projects/${projectId}`,
+      );
+      expect(headerlessDetail.status).toBe(400);
+      const headerlessFiles = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/files`,
+      );
+      expect(headerlessFiles.status).not.toBe(200);
+
+      const scopedDetail = await fetch(
+        `${routeServer.url}/api/projects/${projectId}`,
+        {
+          headers: {
+            'x-od-workspace-id': workspaceId,
+            'x-od-workspace-member-id': memberId,
+          },
+        },
+      );
+      expect(scopedDetail.status).toBe(200);
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('keeps partial and wrong explicit claims on the ordinary fail-closed gate', async () => {
+    const routeServer = await startBootstrapRoute();
+    try {
+      const partial = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+        { headers: { 'x-od-workspace-id': workspaceId } },
+      );
+      expect(partial.status).toBe(400);
+      const wrong = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+        {
+          headers: {
+            'x-od-workspace-id': workspaceId,
+            'x-od-workspace-member-id': 'wrong-member',
+          },
+        },
+      );
+      expect(wrong.status).toBe(403);
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('does not disclose scope for nonmembers, removed/deleted memberships, or deleted resources', async () => {
+    const deniedCases = [
+      {
+        directory: async () => ({
+          ok: true,
+          items: [{ ...activeMembership, workspaceId: 'workspace-b' }],
+        }),
+      },
+      {
+        directory: async () => ({
+          ok: true,
+          items: [{ ...activeMembership, memberStatus: 'removed' as const }],
+        }),
+      },
+      {
+        directory: async () => ({
+          ok: true,
+          items: [{ ...activeMembership, lifecycleState: 'deleted' as const }],
+        }),
+      },
+      {
+        resourceState: 'deleted',
+      },
+    ];
+    for (const denied of deniedCases) {
+      const routeServer = await startBootstrapRoute(denied);
+      try {
+        const response = await fetch(
+          `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+        );
+        expect(response.status).toBe(403);
+        const text = await response.text();
+        expect(text).not.toContain(workspaceId);
+        expect(text).not.toContain(memberId);
+      } finally {
+        await close(routeServer.server);
+      }
+    }
+  });
+
+  it('returns retryable 503 on directory outage and 404 for a missing project', async () => {
+    const routeServer = await startBootstrapRoute({
+      directory: async () => {
+        throw new Error('directory down');
+      },
+    });
+    try {
+      const outage = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+      );
+      expect(outage.status).toBe(503);
+      await expect(outage.json()).resolves.toMatchObject({
+        error: {
+          code: 'WORKSPACE_DIRECTORY_UNAVAILABLE',
+          retryable: true,
+        },
+      });
+      const missing = await fetch(
+        `${routeServer.url}/api/projects/missing-project/workspace-scope`,
+      );
+      expect(missing.status).toBe(404);
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('keeps locked/frozen project reads available but read-only', async () => {
+    const routeServer = await startBootstrapRoute({
+      resourceState: 'frozen',
+      directory: async () => ({
+        ok: true,
+        items: [{ ...activeMembership, lifecycleState: 'locked' as const }],
+      }),
+    });
+    try {
+      const response = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+      );
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        scope: {
+          kind: 'team',
+          workspaceId,
+          context: {
+            lifecycleState: 'locked',
+            permissions: {
+              canShareProjects: false,
+              canWriteSyncedFiles: false,
+            },
+          },
+        },
+      });
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('preserves signed-out headerless scope and detail for an unbound local project', async () => {
+    const routeServer = await startBootstrapRoute({
+      unbound: true,
+      directory: async () => {
+        throw new Error('signed out');
+      },
+    });
+    try {
+      const scope = await fetch(
+        `${routeServer.url}/api/projects/${projectId}/workspace-scope`,
+      );
+      expect(scope.status).toBe(200);
+      await expect(scope.json()).resolves.toEqual({
+        scope: {
+          kind: 'unbound',
+          projectId,
+          workspaceId: null,
+          context: null,
+        },
+      });
+      expect(
+        (await fetch(`${routeServer.url}/api/projects/${projectId}`)).status,
+      ).toBe(200);
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+});

@@ -84,6 +84,19 @@ vi.mock('../../src/providers/project-events', () => ({
   useProjectFileEvents: vi.fn(),
 }));
 
+vi.mock('../../src/collab/useProjectWorkspaceScope', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/collab/useProjectWorkspaceScope')>()),
+  useProjectWorkspaceScope: (projectId: string) => ({
+    loading: false,
+    scope: {
+      kind: 'unbound',
+      projectId,
+      workspaceId: null,
+      context: null,
+    },
+  }),
+}));
+
 vi.mock('../../src/runtime/brands', async () => {
   const actual = await vi.importActual<typeof import('../../src/runtime/brands')>(
     '../../src/runtime/brands',
@@ -243,12 +256,12 @@ const conversation = (projectId: string): Conversation => ({
   updatedAt: 1,
 });
 
-function renderProjectView(
+function projectViewElement(
   currentProject: Project,
   onClearPendingPrompt = vi.fn(),
   overrides: Partial<ComponentProps<typeof ProjectView>> = {},
 ) {
-  return render(
+  return (
     <ProjectView
       project={currentProject}
       routeFileName={null}
@@ -269,8 +282,16 @@ function renderProjectView(
       onProjectChange={vi.fn()}
       onProjectsRefresh={vi.fn()}
       {...overrides}
-    />,
+    />
   );
+}
+
+function renderProjectView(
+  currentProject: Project,
+  onClearPendingPrompt = vi.fn(),
+  overrides: Partial<ComponentProps<typeof ProjectView>> = {},
+) {
+  return render(projectViewElement(currentProject, onClearPendingPrompt, overrides));
 }
 
 describe('ProjectView pending prompt seeding', () => {
@@ -338,6 +359,35 @@ describe('ProjectView pending prompt seeding', () => {
         workspaceItems: [workspaceItem],
       },
     }));
+  });
+
+  it('keeps the Home auto-send pending when preflight rejects transiently, then retries after recovery', async () => {
+    const projectId = 'auto-send-retry';
+    const currentProject = project(projectId, 'Create the artifact');
+    const onClearPendingPrompt = vi.fn();
+    const onOpenSettings = vi.fn();
+    window.sessionStorage.setItem(`od:auto-send-first:${projectId}`, '1');
+
+    const view = renderProjectView(currentProject, onClearPendingPrompt, {
+      config: { ...config, apiKey: '' },
+      onOpenSettings,
+    });
+
+    await waitFor(() => {
+      expect(onOpenSettings).toHaveBeenCalledWith('execution');
+    });
+    expect(mockedSaveMessage).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBe('1');
+
+    view.rerender(projectViewElement(currentProject, onClearPendingPrompt, {
+      config,
+      onOpenSettings,
+    }));
+
+    await waitFor(() => {
+      expect(mockedSaveMessage).toHaveBeenCalled();
+    });
+    expect(window.sessionStorage.getItem(`od:auto-send-first:${projectId}`)).toBeNull();
   });
 
   it('does not prefill when re-entering a project after the pending prompt was cleared', async () => {
@@ -653,7 +703,7 @@ describe('ProjectView pending prompt seeding', () => {
       expect(mockedContinueBrandExtraction).toHaveBeenCalledWith(projectId);
     });
     await waitFor(() => {
-      expect(mockedListMessages).toHaveBeenCalledWith(projectId, 'conv-brand-replacement');
+      expect(mockedListMessages).toHaveBeenCalledWith(projectId, 'conv-brand-replacement', null);
     });
     await waitFor(() => {
       expect(screen.getByTestId('active-conversation').textContent).toBe('conv-brand-replacement');

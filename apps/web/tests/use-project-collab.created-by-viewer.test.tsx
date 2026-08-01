@@ -22,8 +22,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   markProjectCreatedByViewer,
   resetProjectsCreatedByViewerCache,
+  resolveProjectWriterAuthority,
   useProjectCollab,
 } from '../src/collab/useProjectCollab';
+import {
+  createProject,
+  duplicatePluginAsProject,
+  duplicateProject,
+} from '../src/state/projects';
 import {
   lastResolvedTeamProjects,
   resetTeamProjectsCache,
@@ -31,13 +37,18 @@ import {
   useWorkspaceContext,
 } from '../src/collab/useWorkspaceContext';
 
-function teamContext(): WorkspaceCollabContext {
+function teamContext(
+  overrides: {
+    workspaceId?: string;
+    workspaceMemberId?: string;
+  } = {},
+): WorkspaceCollabContext {
   const role = 'member' as const;
   const lifecycleState = 'active' as const;
   return {
-    workspaceId: 'ws-1',
+    workspaceId: overrides.workspaceId ?? 'ws-1',
     workspaceType: 'team',
-    workspaceMemberId: 'wm-1',
+    workspaceMemberId: overrides.workspaceMemberId ?? 'wm-1',
     role,
     memberStatus: 'active',
     lifecycleState,
@@ -50,6 +61,8 @@ function teamContext(): WorkspaceCollabContext {
   };
 }
 
+const DEFAULT_TEAM_CONTEXT = teamContext();
+
 /** Resolves the workspace context only; the team catalog and collab status
  *  both hang forever — modeling the residual window where a brand-new
  *  project's own project view mounts before the (separate, shell-owned)
@@ -57,6 +70,13 @@ function teamContext(): WorkspaceCollabContext {
 function installContextOnlyResolvingFetch() {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const pathname = new URL(String(input), 'http://d.local').pathname;
+    if (pathname.endsWith('/workspace/directory')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [teamContext()] }),
+      } as unknown as Response;
+    }
     if (pathname.endsWith('/workspace/context')) {
       return { ok: true, status: 200, json: async () => ({ context: teamContext() }) } as unknown as Response;
     }
@@ -79,6 +99,59 @@ function installFullyHangingFetch() {
   globalThis.fetch = vi.fn(async () => new Promise<Response>(() => {})) as typeof fetch;
 }
 
+function installOtherOwnerStatusFetch() {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const pathname = new URL(String(input), 'http://d.local').pathname;
+    if (pathname.endsWith('/presence/heartbeat')) {
+      return Response.json({ present: [{ memberId: DEFAULT_TEAM_CONTEXT.workspaceMemberId }] });
+    }
+    if (pathname.endsWith('/collab/status')) {
+      return Response.json({
+        publishedVersion: 1,
+        syncState: 'synced',
+        ownerMemberId: 'wm-other-owner',
+      });
+    }
+    return Response.json({ ok: true });
+  }) as typeof fetch;
+}
+
+function installProjectCreationFetch() {
+  globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+    const pathname = new URL(String(input), 'http://d.local').pathname;
+    if (pathname === '/api/projects') {
+      return Response.json({
+        project: { id: 'p-home-create' },
+        conversationId: 'conv-home-create',
+      });
+    }
+    if (pathname.endsWith('/duplicate')) {
+      return Response.json({
+        project: { id: 'p-duplicate' },
+        conversationId: 'conv-duplicate',
+        copiedFiles: [],
+      });
+    }
+    if (pathname.endsWith('/duplicate-project')) {
+      return Response.json({
+        ok: true,
+        projectId: 'p-plugin-duplicate',
+        conversationId: 'conv-plugin-duplicate',
+        relPath: 'index.html',
+        project: { id: 'p-plugin-duplicate' },
+        sourcePluginId: 'plugin-a',
+        sourceEntry: 'index.html',
+        copiedFiles: 1,
+        skippedFiles: 0,
+        warnings: [],
+      });
+    }
+    return new Promise<Response>(() => {
+      /* collab status and presence remain unresolved */
+    });
+  }) as typeof fetch;
+}
+
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
@@ -97,48 +170,187 @@ afterEach(() => {
 });
 
 describe('useProjectCollab: project created by the viewer this session', () => {
+  it('lets explicit shared non-owner status override provisional ownership evidence', () => {
+    expect(resolveProjectWriterAuthority({
+      workspaceReadOnly: false,
+      workspaceContextReadOnly: false,
+      lostAccessAfterUnshare: false,
+      shared: true,
+      isOwner: false,
+      knownOwnedByViewer: true,
+      createdByViewerThisSession: true,
+      syncState: 'synced',
+    })).toBe('denied');
+  });
+
   it('still fails closed for an unmarked project while the team catalog has not loaded yet', async () => {
     // Sanity check the scenario: the catalog genuinely never warmed.
     await warmContextOnly();
-    expect(lastResolvedTeamProjects()).toBeNull();
+    expect(lastResolvedTeamProjects(DEFAULT_TEAM_CONTEXT)).toBeNull();
 
     installFullyHangingFetch();
-    const project = renderHook(() => useProjectCollab('p-unmarked'));
+    const project = renderHook(() => useProjectCollab('p-unmarked', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+    }));
 
     expect(project.result.current.viewerOnly).toBe(true);
+    expect(project.result.current.writerAuthority).toBe('pending');
   });
 
   it('does not fail closed for a project the viewer created this session, even before the team catalog loads', async () => {
     await warmContextOnly();
-    expect(lastResolvedTeamProjects()).toBeNull();
+    expect(lastResolvedTeamProjects(DEFAULT_TEAM_CONTEXT)).toBeNull();
 
     installFullyHangingFetch();
-    markProjectCreatedByViewer('p-new');
-    const project = renderHook(() => useProjectCollab('p-new'));
+    markProjectCreatedByViewer('p-new', DEFAULT_TEAM_CONTEXT);
+    const project = renderHook(() => useProjectCollab('p-new', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+    }));
 
     await waitFor(() => {
       expect(project.result.current.viewerOnly).toBe(false);
+      expect(project.result.current.writerAuthority).toBe('allowed');
     });
+  });
+
+  it('lets explicit other-owner status revoke a stale same-session writer marker', async () => {
+    markProjectCreatedByViewer('p-reassigned', DEFAULT_TEAM_CONTEXT);
+    installOtherOwnerStatusFetch();
+
+    const project = renderHook(() => useProjectCollab('p-reassigned', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+    }));
+
+    await waitFor(() => expect(project.result.current.syncState).toBe('synced'));
+    expect(project.result.current.isOwner).toBe(false);
+    expect(project.result.current.viewerOnly).toBe(true);
+    expect(project.result.current.writerAuthority).toBe('denied');
+  });
+
+  it('keeps a Home-created project writable while its exact project scope is still loading', async () => {
+    installProjectCreationFetch();
+    await createProject({
+      name: 'Home project',
+      skillId: null,
+      designSystemId: null,
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+    });
+
+    const project = renderHook(() => useProjectCollab('p-home-create', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+      workspaceContextLoading: true,
+    }));
+
+    expect(project.result.current.viewerOnly).toBe(false);
+  });
+
+  it('keeps a duplicated project writable while its exact project scope is still loading', async () => {
+    installProjectCreationFetch();
+    await duplicateProject('p-source', {}, DEFAULT_TEAM_CONTEXT);
+
+    const project = renderHook(() => useProjectCollab('p-duplicate', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+      workspaceContextLoading: true,
+    }));
+
+    expect(project.result.current.viewerOnly).toBe(false);
+  });
+
+  it('keeps a template Remix writable while its exact project scope is still loading', async () => {
+    installProjectCreationFetch();
+    await duplicatePluginAsProject('plugin-a', {}, DEFAULT_TEAM_CONTEXT);
+
+    const project = renderHook(() => useProjectCollab('p-plugin-duplicate', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+      workspaceContextLoading: true,
+    }));
+
+    expect(project.result.current.viewerOnly).toBe(false);
+  });
+
+  it('keeps an unmarked project fail-closed while exact project scope is loading', async () => {
+    installFullyHangingFetch();
+    const project = renderHook(() => useProjectCollab('p-not-created-here', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+      workspaceContextLoading: true,
+    }));
+
+    expect(project.result.current.viewerOnly).toBe(true);
   });
 
   it('scopes the signal to the exact project id — an unrelated project still fails closed', async () => {
     await warmContextOnly();
 
     installFullyHangingFetch();
-    markProjectCreatedByViewer('p-new');
-    const project = renderHook(() => useProjectCollab('p-someone-elses'));
+    markProjectCreatedByViewer('p-new', DEFAULT_TEAM_CONTEXT);
+    const project = renderHook(() => useProjectCollab('p-someone-elses', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+    }));
 
     expect(project.result.current.viewerOnly).toBe(true);
   });
 
   it('clears between tests via the reset seam', async () => {
-    markProjectCreatedByViewer('p-leftover');
+    markProjectCreatedByViewer('p-leftover', DEFAULT_TEAM_CONTEXT);
     resetProjectsCreatedByViewerCache();
 
     await warmContextOnly();
     installFullyHangingFetch();
-    const project = renderHook(() => useProjectCollab('p-leftover'));
+    const project = renderHook(() => useProjectCollab('p-leftover', {
+      workspaceContext: DEFAULT_TEAM_CONTEXT,
+    }));
 
+    expect(project.result.current.viewerOnly).toBe(true);
+  });
+
+  it('does not carry a same-id creation signal from workspace A into workspace B', async () => {
+    const workspaceA = teamContext({ workspaceId: 'ws-a', workspaceMemberId: 'wm-a' });
+    const workspaceB = teamContext({ workspaceId: 'ws-b', workspaceMemberId: 'wm-b' });
+    markProjectCreatedByViewer('p-same-id', workspaceA);
+
+    const hangingFetch = (async () => new Promise<Response>(() => {})) as typeof fetch;
+    const project = renderHook(
+      ({ workspaceContext }) => useProjectCollab('p-same-id', {
+        workspaceContext,
+        fetch: hangingFetch,
+      }),
+      { initialProps: { workspaceContext: workspaceA } },
+    );
+    expect(project.result.current.viewerOnly).toBe(false);
+
+    project.rerender({ workspaceContext: workspaceB });
+    await waitFor(() => {
+      expect(project.result.current.viewerOnly).toBe(true);
+    });
+  });
+
+  it('keeps a created project read-only once daemon status confirms another owner', async () => {
+    const workspace = teamContext({ workspaceId: 'ws-b', workspaceMemberId: 'wm-viewer' });
+    markProjectCreatedByViewer('p-now-shared', workspace);
+
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      let payload: unknown = { ok: true };
+      if (pathname.endsWith('/presence/heartbeat')) {
+        payload = { present: [{ memberId: 'wm-viewer' }] };
+      } else if (pathname.endsWith('/collab/status')) {
+        payload = {
+          publishedVersion: 2,
+          materializedVersion: 2,
+          syncState: 'synced',
+          ownerMemberId: 'wm-someone-else',
+        };
+      }
+      return { ok: true, status: 200, json: async () => payload } as unknown as Response;
+    }) as typeof fetch;
+    const project = renderHook(() => useProjectCollab('p-now-shared', {
+      workspaceContext: workspace,
+      fetch: fetchImpl,
+    }));
+
+    await waitFor(() => {
+      expect(project.result.current.syncState).toBe('synced');
+    });
     expect(project.result.current.viewerOnly).toBe(true);
   });
 });

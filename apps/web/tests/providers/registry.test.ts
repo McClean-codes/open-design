@@ -13,13 +13,16 @@ import {
   DEFAULT_DEPLOY_PROVIDER_ID,
   deletePreviewComment,
   deployProjectFile,
+  createDesignSystemDraft,
   fetchAgentsStream,
   fetchCloudflarePagesZones,
   fetchDeployConfig,
+  fetchDesignSystemsResult,
   fetchAppVersionInfo,
   fetchConnectorDetail,
   fetchConnectorDiscovery,
   fetchPluginExampleHtml,
+  fetchPluginAssetText,
   fetchPluginPreviewHtml,
   fetchProjectDesignSystemPackageAudit,
   fetchProjectFiles,
@@ -67,6 +70,62 @@ function agentStreamResponse(text: string): Response {
     },
   );
 }
+
+describe('design-system Workspace scope', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('attaches the captured Workspace/member identity to catalog reads', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ designSystems: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const context = personalWorkspaceContext();
+
+    await expect(fetchDesignSystemsResult(context)).resolves.toEqual({
+      ok: true,
+      designSystems: [],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/design-systems', {
+      headers: expect.objectContaining({
+        'x-od-workspace-id': context.workspaceId,
+        'x-od-workspace-member-id': context.workspaceMemberId,
+      }),
+    });
+  });
+
+  it('attaches the same identity to design-system creation', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({
+        designSystem: {
+          id: 'user:brand-a',
+          title: 'Brand A',
+          category: 'Custom',
+          summary: '',
+          swatches: [],
+          surface: 'web',
+          body: '# Brand A',
+          source: 'user',
+          status: 'draft',
+          isEditable: true,
+        },
+      }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const context = personalWorkspaceContext();
+
+    await createDesignSystemDraft({ title: 'Brand A' }, context);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/design-systems', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({
+        'x-od-workspace-id': context.workspaceId,
+        'x-od-workspace-member-id': context.workspaceMemberId,
+      }),
+    }));
+  });
+});
 
 describe('fetchAgentsStream', () => {
   afterEach(() => {
@@ -198,6 +257,59 @@ describe('fetchProjectFiles', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
     await expect(background).resolves.toEqual([]);
     await expect(foreground).resolves.toEqual(files);
+  });
+
+  it('re-reads after a successful mutation overtakes an in-flight file list', async () => {
+    const workspaceContext = personalWorkspaceContext();
+    const staleFiles = [{
+      name: 'stale.html',
+      path: 'stale.html',
+      kind: 'html',
+      mtime: 1,
+      size: 1,
+      mime: 'text/html',
+    }];
+    const freshFiles = [{
+      name: 'fresh.html',
+      path: 'fresh.html',
+      kind: 'html',
+      mtime: 2,
+      size: 2,
+      mime: 'text/html',
+    }];
+    let resolveStaleRead!: (response: Response) => void;
+    const staleRead = new Promise<Response>((resolve) => {
+      resolveStaleRead = resolve;
+    });
+    let fileListReads = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url === '/api/projects/project-mutation-race/files') {
+        fileListReads += 1;
+        if (fileListReads === 1) return staleRead;
+        return new Response(JSON.stringify({ files: freshFiles }), { status: 200 });
+      }
+      if (url === '/api/projects/project-mutation-race/upload' && init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          files: [{ name: 'fresh.html', path: 'fresh.html', size: 2 }],
+        }), { status: 200 });
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const initialRead = fetchProjectFiles('project-mutation-race', { workspaceContext });
+    await vi.waitFor(() => expect(fileListReads).toBe(1));
+
+    const upload = new File(['ok'], 'fresh.html', { type: 'text/html' });
+    await expect(
+      uploadProjectFiles('project-mutation-race', [upload], undefined, workspaceContext),
+    ).resolves.toMatchObject({ uploaded: [{ path: 'fresh.html' }], failed: [] });
+
+    resolveStaleRead(new Response(JSON.stringify({ files: staleFiles }), { status: 200 }));
+
+    await expect(initialRead).resolves.toEqual(freshFiles);
+    expect(fileListReads).toBe(2);
   });
 
   it('keeps ordinary live-artifact reads independent from cancellable card scans', async () => {
@@ -658,6 +770,34 @@ describe('fetchPluginExampleHtml', () => {
     await expect(
       fetchPluginExampleHtml('example-live-artifact', 'index'),
     ).resolves.toEqual({ error: 'HTTP 500' });
+  });
+});
+
+describe('Workspace-scoped resource reads', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('sends the exact Workspace/member headers on skill, plugin and asset fetches', async () => {
+    const context = personalWorkspaceContext();
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response('<html>ok</html>', { status: 200 }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchSkillExample('skill-a', 'html', context);
+    await fetchPluginPreviewHtml('plugin-a', context);
+    await fetchPluginExampleHtml('plugin-a', 'example-a', context);
+    await fetchPluginAssetText('plugin-a', './DESIGN.md', context);
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    for (const [, init] of fetchMock.mock.calls) {
+      const headers = new Headers(init?.headers);
+      expect(headers.get('x-od-workspace-id')).toBe(context.workspaceId);
+      expect(headers.get('x-od-workspace-member-id')).toBe(context.workspaceMemberId);
+    }
   });
 });
 

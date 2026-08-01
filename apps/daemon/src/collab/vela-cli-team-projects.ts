@@ -9,6 +9,8 @@ import {
   runVelaCommand,
   velaWorkspaceCommandOptions,
 } from '../integrations/vela-command.js';
+import type { ResourceHubPrincipal } from './resource-principal.js';
+import { createSwrCache, type SwrCache } from './swr-cache.js';
 
 const PROJECT_RESOURCE_PREFIX = 'project-';
 
@@ -25,12 +27,11 @@ interface VelaCliTeamProjectCatalogOptions {
   run?: RunVelaTeamProjects;
   runResource?: RunVelaResources;
   supportsTeamProjects?: () => boolean | Promise<boolean>;
-  getWorkspaceId?: () => string | null | undefined;
 }
 
 export interface VelaTeamProjectCatalog {
-  list(workspaceId?: string): Promise<TeamProject[]>;
-  get(projectId: string, workspaceId?: string): Promise<TeamProject | null>;
+  list(workspaceId: string): Promise<TeamProject[]>;
+  get(projectId: string, workspaceId: string): Promise<TeamProject | null>;
   upsert(input: {
     projectId: string;
     resourceId?: string;
@@ -38,8 +39,8 @@ export interface VelaTeamProjectCatalog {
     syncState?: 'pending_upload' | 'syncing' | 'synced' | 'failed';
     lastSyncedVersionId?: string | null;
     metadata?: Record<string, unknown> | null;
-  }): Promise<void>;
-  remove(projectId: string): Promise<void>;
+  }, principal?: ResourceHubPrincipal | null): Promise<void>;
+  remove(projectId: string, principal?: ResourceHubPrincipal | null): Promise<void>;
 }
 
 type TeamProjectWire = {
@@ -82,16 +83,14 @@ export function createVelaCliTeamProjectCatalog(
 ): VelaTeamProjectCatalog {
   const run = options.run ?? defaultRunVelaTeamProjects;
   const runResource = options.runResource ?? defaultRunVelaResources;
-  const getWorkspaceId = () => options.getWorkspaceId?.()?.trim() || undefined;
   const supportsTeamProjects = createTeamProjectsCapabilityCheck(
     run,
     options.supportsTeamProjects,
-    getWorkspaceId,
   );
 
   async function runJson<T>(
     args: string[],
-    workspaceId = getWorkspaceId(),
+    workspaceId: string,
   ): Promise<T> {
     const stdout = await run(args, workspaceId);
     const trimmed = stdout.trim();
@@ -99,9 +98,9 @@ export function createVelaCliTeamProjectCatalog(
     return JSON.parse(trimmed) as T;
   }
 
-  async function list(workspaceId?: string): Promise<TeamProject[]> {
-    const resolvedWorkspaceId = workspaceId?.trim() || getWorkspaceId();
-    if (!(await supportsTeamProjects())) {
+  async function list(workspaceId: string): Promise<TeamProject[]> {
+    const resolvedWorkspaceId = requireWorkspaceId(workspaceId);
+    if (!(await supportsTeamProjects(resolvedWorkspaceId))) {
       const resources = await listSharedProjectResources(
         runResource,
         resolvedWorkspaceId,
@@ -123,7 +122,7 @@ export function createVelaCliTeamProjectCatalog(
     list,
 
     async get(projectId, workspaceId): Promise<TeamProject | null> {
-      const resolvedWorkspaceId = workspaceId?.trim() || getWorkspaceId();
+      const resolvedWorkspaceId = requireWorkspaceId(workspaceId);
       if (exactLookupUnavailable) {
         return (await list(resolvedWorkspaceId))
           .find((project) => project.projectId === projectId) ?? null;
@@ -145,11 +144,12 @@ export function createVelaCliTeamProjectCatalog(
       }
     },
 
-    async upsert(input): Promise<void> {
+    async upsert(input, principal): Promise<void> {
+      const workspaceId = requirePrincipalWorkspaceId(principal);
       // Older packaged Vela builds expose only the resource index. The project
       // push writes the same discovery metadata there, so no second catalog
       // write is required in compatibility mode.
-      if (!(await supportsTeamProjects())) return;
+      if (!(await supportsTeamProjects(workspaceId))) return;
       const args = [
         'upsert',
         input.projectId,
@@ -164,14 +164,15 @@ export function createVelaCliTeamProjectCatalog(
       if (input.metadata && Object.keys(input.metadata).length > 0) {
         args.push('--metadata-json', JSON.stringify(input.metadata));
       }
-      await run(args, getWorkspaceId());
+      await run(args, workspaceId);
     },
 
-    async remove(projectId): Promise<void> {
+    async remove(projectId, principal): Promise<void> {
+      const workspaceId = requirePrincipalWorkspaceId(principal);
       // The resource adapter removes the resource-index row in compatibility
       // mode; there is no separate catalog row to delete.
-      if (!(await supportsTeamProjects())) return;
-      await run(['remove', projectId], getWorkspaceId());
+      if (!(await supportsTeamProjects(workspaceId))) return;
+      await run(['remove', projectId], workspaceId);
     },
   };
 }
@@ -181,40 +182,60 @@ export function createVelaCliTeamProjectCatalogClient(
 ): VelaTeamProjectCatalogClient {
   const run = options.run ?? defaultRunVelaTeamProjects;
   const runResource = options.runResource ?? defaultRunVelaResources;
-  const getWorkspaceId = () => options.getWorkspaceId?.()?.trim() || undefined;
   const supportsTeamProjects = createTeamProjectsCapabilityCheck(
     run,
     options.supportsTeamProjects,
-    getWorkspaceId,
   );
 
-  async function runJson<T>(args: string[]): Promise<T> {
-    const stdout = await run(args, getWorkspaceId());
+  async function runJson<T>(args: string[], workspaceId: string): Promise<T> {
+    const stdout = await run(args, workspaceId);
     const trimmed = stdout.trim();
     if (!trimmed) return {} as T;
     return JSON.parse(trimmed) as T;
   }
 
   return {
-    async list(): Promise<VelaTeamProjectRecord[]> {
-      if (!(await supportsTeamProjects())) {
+    async list(principal): Promise<VelaTeamProjectRecord[]> {
+      // Capture before the first await. Capability detection may itself await,
+      // during which another tab can switch the daemon's active Workspace.
+      const workspaceId = principal.teamId.trim();
+      if (!workspaceId) throw new Error('explicit workspace scope is required');
+      if (!(await supportsTeamProjects(workspaceId))) {
         const resources = await listSharedProjectResources(
           runResource,
-          getWorkspaceId(),
+          workspaceId,
         );
-        return resources.map(toFallbackVelaTeamProjectRecord);
+        const records = resources.map(toFallbackVelaTeamProjectRecord);
+        if (records.some((record) => record.workspaceId !== workspaceId)) {
+          throw new Error('incomplete team project catalog: workspace mismatch');
+        }
+        return records;
       }
-      const payload = await runJson<TeamProjectsListWire>(['list']);
-      return Array.isArray(payload.projects)
-        ? payload.projects
-            .map((project) => toVelaTeamProjectRecord(project))
-            .filter((project): project is VelaTeamProjectRecord => project != null)
-        : [];
+      const payload = await runJson<TeamProjectsListWire>(['list'], workspaceId);
+      if (!Array.isArray(payload.projects)) {
+        throw new Error('incomplete team project catalog: projects are missing');
+      }
+      const records = payload.projects.map((project) =>
+        toVelaTeamProjectRecord(project),
+      );
+      if (records.some((project) => project == null)) {
+        throw new Error('incomplete team project catalog: invalid project row');
+      }
+      const completeRecords = records as VelaTeamProjectRecord[];
+      if (completeRecords.some((project) => project.workspaceId !== workspaceId)) {
+        throw new Error('incomplete team project catalog: workspace mismatch');
+      }
+      return completeRecords;
     },
 
-    async upsert(input: UpsertVelaTeamProjectInput): Promise<VelaTeamProjectRecord | null> {
+    async upsert(
+      input: UpsertVelaTeamProjectInput,
+      principal,
+    ): Promise<VelaTeamProjectRecord | null> {
+      const workspaceId = principal.teamId.trim();
+      if (!workspaceId) throw new Error('explicit workspace scope is required');
       // See the catalog adapter above: resource push owns the fallback index.
-      if (!(await supportsTeamProjects())) return null;
+      if (!(await supportsTeamProjects(workspaceId))) return null;
       const args = [
         'upsert',
         input.projectId,
@@ -226,9 +247,49 @@ export function createVelaCliTeamProjectCatalogClient(
       if (input.lastSyncedVersionId?.trim()) {
         args.push('--last-synced-version-id', input.lastSyncedVersionId.trim());
       }
-      const stdout = await run(args, getWorkspaceId());
+      const stdout = await run(args, workspaceId);
       return toVelaTeamProjectRecord(JSON.parse(stdout.trim()) as unknown);
     },
+  };
+}
+
+/**
+ * Short-lived read cache for request-scoped project catalogs.
+ *
+ * One cache instance is created per complete principal identity. The fetcher
+ * closes over that immutable principal, so a daemon-wide Workspace switch can
+ * neither change the request sent to Vela nor place B's response in A's entry.
+ */
+export function createScopedVelaTeamProjectCatalogClientCache(
+  client: VelaTeamProjectCatalogClient,
+  freshMs = 3000,
+): VelaTeamProjectCatalogClient {
+  const lists = new Map<string, SwrCache<VelaTeamProjectRecord[]>>();
+  const scopeKey = (principal: ResourceHubPrincipal): string =>
+    JSON.stringify([
+      principal.teamId,
+      principal.memberId,
+      principal.role,
+      principal.lifecycleState,
+      principal.workspaceType ?? null,
+    ]);
+
+  return {
+    list(principal) {
+      const key = scopeKey(principal);
+      let list = lists.get(key);
+      if (!list) {
+        const capturedPrincipal = { ...principal };
+        list = createSwrCache(
+          () => client.list(capturedPrincipal),
+          () => key,
+          freshMs,
+        );
+        lists.set(key, list);
+      }
+      return list();
+    },
+    upsert: (input, principal) => client.upsert(input, principal),
   };
 }
 
@@ -377,17 +438,17 @@ function errorMessage(error: unknown): string {
 function createTeamProjectsCapabilityCheck(
   run: RunVelaTeamProjects,
   injected?: () => boolean | Promise<boolean>,
-  getWorkspaceId?: () => string | undefined,
-): () => Promise<boolean> {
+): (workspaceId: string) => Promise<boolean> {
   // The packaged dependency can lag the source-built CLI. Probe once per
   // adapter so source builds use the richer catalog while older builds retain
   // resource-index discovery without a version pin.
   let result: Promise<boolean> | null = null;
-  return () => {
+  return (workspaceId) => {
+    const exactWorkspaceId = requireWorkspaceId(workspaceId);
     if (!injected && run === defaultRunVelaTeamProjects) {
       defaultTeamProjectsCapability ??= run(
         ['--help'],
-        getWorkspaceId?.(),
+        exactWorkspaceId,
       ).then(
         () => true,
         () => false,
@@ -396,7 +457,7 @@ function createTeamProjectsCapabilityCheck(
     }
     result ??= injected
       ? Promise.resolve().then(injected)
-      : run(['--help'], getWorkspaceId?.()).then(
+      : run(['--help'], exactWorkspaceId).then(
           () => true,
           () => false,
         );
@@ -408,14 +469,41 @@ let defaultTeamProjectsCapability: Promise<boolean> | null = null;
 
 async function listSharedProjectResources(
   runResource: RunVelaResources,
-  workspaceId?: string,
+  workspaceId: string,
 ): Promise<SharedResourceWire[]> {
   const stdout = await runResource(['shared', '--json'], workspaceId);
   const trimmed = stdout.trim();
-  if (!trimmed) return [];
+  if (!trimmed) {
+    throw new Error('incomplete shared project catalog: empty response');
+  }
   const payload = JSON.parse(trimmed) as SharedResourcesListWire;
-  if (!Array.isArray(payload.resources)) return [];
-  return payload.resources.filter(isSharedProjectResource);
+  if (!Array.isArray(payload.resources)) {
+    throw new Error('incomplete shared project catalog: resources are missing');
+  }
+  const projectRows = payload.resources.filter(
+    (value) =>
+      Boolean(value)
+      && typeof value === 'object'
+      && (value as Record<string, unknown>).kind === 'project',
+  );
+  if (projectRows.some((value) => !isSharedProjectResource(value))) {
+    throw new Error('incomplete shared project catalog: invalid project row');
+  }
+  return projectRows as SharedResourceWire[];
+}
+
+function requireWorkspaceId(workspaceId: string): string {
+  const exactWorkspaceId = workspaceId.trim();
+  if (!exactWorkspaceId) {
+    throw new Error('explicit workspace scope is required');
+  }
+  return exactWorkspaceId;
+}
+
+function requirePrincipalWorkspaceId(
+  principal: ResourceHubPrincipal | null | undefined,
+): string {
+  return requireWorkspaceId(principal?.teamId ?? '');
 }
 
 function isSharedProjectResource(value: unknown): value is SharedResourceWire {

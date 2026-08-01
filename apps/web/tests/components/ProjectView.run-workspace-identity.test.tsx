@@ -32,7 +32,7 @@
 // pre-run balance gate receives the same null and silently prices the run
 // against the ACCOUNT wallet instead of the team's.
 
-import { cleanup, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -45,11 +45,14 @@ import { ProjectView } from '../../src/components/ProjectView';
 import type { ProjectWorkspaceScopeState } from '../../src/collab/useProjectWorkspaceScope';
 import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
 import { streamViaDaemon } from '../../src/providers/daemon';
+import { useProjectFileEvents } from '../../src/providers/project-events';
 import { checkAmrBalanceGate } from '../../src/runtime/amr-balance-gate';
 import {
   createConversation,
   listConversations,
   listMessages,
+  loadTabs,
+  persistTabsToDaemonNow,
 } from '../../src/state/projects';
 import { fetchPreviewComments } from '../../src/providers/registry';
 import { fetchBrands } from '../../src/runtime/brands';
@@ -84,8 +87,25 @@ const CALLER_CONTEXT: WorkspaceCollabContext = {
   permissions: buildWorkspacePermissions({ role: 'member', lifecycleState: 'active' }),
 } as WorkspaceCollabContext;
 
+const PERSONAL_CONTEXT: WorkspaceCollabContext = {
+  ...CALLER_CONTEXT,
+  workspaceId: 'personal-workspace',
+  workspaceType: 'personal',
+  workspaceMemberId: 'personal-member',
+  planId: 'plus',
+} as WorkspaceCollabContext;
+
 const workspaceScopeMocks = vi.hoisted(() => ({
   projectScope: { loading: true, scope: null } as ProjectWorkspaceScopeState,
+  ambientContext: null as WorkspaceCollabContext | null,
+}));
+const chatPaneSpy = vi.hoisted(() => vi.fn());
+const resourceContextObservations = vi.hoisted(
+  () => [] as Array<WorkspaceCollabContext | null>,
+);
+const projectCollabMocks = vi.hoisted(() => ({
+  writerAuthority: 'allowed' as 'allowed' | 'denied' | 'pending',
+  viewerOnly: false,
 }));
 
 vi.mock('../../src/i18n', () => ({
@@ -99,12 +119,36 @@ vi.mock('../../src/providers/anthropic', () => ({ streamMessage: vi.fn() }));
 
 vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>()),
-  useWorkspaceContext: () => ({ context: CALLER_CONTEXT, loading: false }),
+  useWorkspaceContext: () => ({
+    context: workspaceScopeMocks.ambientContext,
+    loading: false,
+  }),
 }));
 
 vi.mock('../../src/collab/useProjectWorkspaceScope', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/collab/useProjectWorkspaceScope')>()),
   useProjectWorkspaceScope: () => workspaceScopeMocks.projectScope,
+}));
+
+vi.mock('../../src/collab/useProjectCollab', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/collab/useProjectCollab')>()),
+  useProjectCollab: () => ({
+    enabled: true,
+    member: null,
+    present: [],
+    publishedVersion: null,
+    syncState: null,
+    viewerOnly: projectCollabMocks.viewerOnly,
+    writerAuthority: projectCollabMocks.writerAuthority,
+    isOwner: projectCollabMocks.writerAuthority === 'allowed',
+    ownerDisplayName: null,
+    ownerRole: null,
+    downloadPending: false,
+    reportChange: () => undefined,
+    requestPublish: () => undefined,
+    refreshPresence: () => undefined,
+    checkStatusNow: () => undefined,
+  }),
 }));
 
 vi.mock('../../src/providers/daemon', () => ({
@@ -167,6 +211,7 @@ vi.mock('../../src/state/projects', async () => {
     loadTabs: vi.fn().mockResolvedValue({ tabs: [], active: null }),
     patchConversation: vi.fn(),
     patchProject: vi.fn(),
+    persistTabsToDaemonNow: vi.fn(),
     saveMessage: vi.fn(),
     saveTabs: vi.fn(),
   };
@@ -176,17 +221,73 @@ vi.mock('../../src/components/AppChromeHeader', () => ({
   AppChromeHeader: ({ children }: { children: ReactNode }) => <header>{children}</header>,
 }));
 vi.mock('../../src/components/AvatarMenu', () => ({ AvatarMenu: () => null }));
-vi.mock('../../src/components/FileWorkspace', () => ({
-  DESIGN_SYSTEM_TAB: '__design_system__',
-  FileWorkspace: () => <div data-testid="file-workspace" />,
-}));
+vi.mock('../../src/components/FileWorkspace', async () => {
+  const { useProjectCollabContext } = await import('../../src/collab/collab-context');
+  return {
+    DESIGN_SYSTEM_TAB: '__design_system__',
+    FileWorkspace: ({
+      onTabsStateChange,
+    }: {
+      onTabsStateChange?: (state: { tabs: string[]; active: string | null }) => void;
+    }) => {
+      const { workspaceContext } = useProjectCollabContext();
+      resourceContextObservations.push(workspaceContext);
+      return (
+        <div data-testid="file-workspace">
+          <button
+            type="button"
+            data-testid="queue-tab-write"
+            onClick={() => onTabsStateChange?.({
+              tabs: ['index.html'],
+              active: 'index.html',
+            })}
+          >
+            queue tab write
+          </button>
+          <button
+            type="button"
+            data-testid="queue-alt-tab-write"
+            onClick={() => onTabsStateChange?.({
+              tabs: ['index.html', 'about.html'],
+              active: 'about.html',
+            })}
+          >
+            queue alternate tab write
+          </button>
+        </div>
+      );
+    },
+  };
+});
 vi.mock('../../src/components/Loading', () => ({
   CenteredLoader: () => <div data-testid="loader" />,
 }));
 vi.mock('../../src/components/ChatPane', () => ({
-  ChatPane: (props: { activeConversationId?: string | null }) => (
-    <div data-testid="active-conversation">{props.activeConversationId ?? ''}</div>
-  ),
+  ChatPane: (props: {
+    activeConversationId?: string | null;
+    sendDisabled?: boolean;
+    queuedItems?: Array<{ prompt: string }>;
+    onSend?: (
+      prompt: string,
+      attachments: [],
+      commentAttachments: [],
+    ) => unknown;
+  }) => {
+    chatPaneSpy(props);
+    return (
+      <div>
+        <div data-testid="active-conversation">{props.activeConversationId ?? ''}</div>
+        <button
+          type="button"
+          data-testid="normal-send"
+          disabled={props.sendDisabled}
+          onClick={() => props.onSend?.('normal prompt', [], [])}
+        >
+          send
+        </button>
+      </div>
+    );
+  },
 }));
 
 const mockedStreamViaDaemon = vi.mocked(streamViaDaemon);
@@ -194,8 +295,11 @@ const mockedCheckAmrBalanceGate = vi.mocked(checkAmrBalanceGate);
 const mockedListConversations = vi.mocked(listConversations);
 const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
+const mockedLoadTabs = vi.mocked(loadTabs);
+const mockedPersistTabsToDaemonNow = vi.mocked(persistTabsToDaemonNow);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
 const mockedFetchBrands = vi.mocked(fetchBrands);
+const mockedUseProjectFileEvents = vi.mocked(useProjectFileEvents);
 
 /** AMR on a daemon runtime — the reported configuration. */
 const config: AppConfig = {
@@ -216,6 +320,14 @@ const conversation = (projectId: string): Conversation => ({
   createdAt: 1,
   updatedAt: 1,
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 /**
  * The project Home just created from the example card: bound to the team
@@ -291,6 +403,7 @@ function renderProjectView(overrides: Partial<ComponentProps<typeof ProjectView>
 
 describe('a Home auto-send identifies its caller before the project scope resolves', () => {
   beforeEach(() => {
+    resourceContextObservations.length = 0;
     window.sessionStorage.clear();
     window.localStorage.clear();
     resetWorkspaceContextCache();
@@ -304,7 +417,12 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     mockedListMessages.mockResolvedValue([]);
     mockedFetchPreviewComments.mockResolvedValue([]);
     mockedFetchBrands.mockResolvedValue([]);
+    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
     workspaceScopeMocks.projectScope = { loading: true, scope: null };
+    workspaceScopeMocks.ambientContext = CALLER_CONTEXT;
+    projectCollabMocks.writerAuthority = 'allowed';
+    projectCollabMocks.viewerOnly = false;
+    mockedLoadTabs.mockResolvedValue({ tabs: [], active: null });
     // Home's hand-off: this flag is what makes ProjectView fire the seeded
     // prompt without a second click.
     window.sessionStorage.setItem(`od:auto-send-first:${PROJECT_ID}`, '1');
@@ -312,6 +430,7 @@ describe('a Home auto-send identifies its caller before the project scope resolv
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     resetWorkspaceContextCache();
@@ -321,9 +440,32 @@ describe('a Home auto-send identifies its caller before the project scope resolv
   // no `x-od-workspace-*` and the daemon refuses the send with 401
   // WORKSPACE_CONTEXT_REQUIRED.
   it('passes the caller\'s workspace context to POST /api/runs', async () => {
+    mockedCheckAmrBalanceGate.mockImplementation(async (scope) =>
+      scope
+        ? { kind: 'allow' }
+        : {
+            kind: 'hard',
+            reason: 'insufficient',
+            snapshot: {
+              status: 'available',
+              profile: 'prod',
+              user: null,
+              balanceUsd: '0',
+              updatedAt: null,
+              fetchedAt: new Date().toISOString(),
+              stale: false,
+              source: 'vela_api',
+            },
+          } as never,
+    );
     renderProjectView();
 
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+      workspaceType: 'team',
+      workspaceId: TEAM_WORKSPACE,
+      workspaceMemberId: TEAM_MEMBER,
+    });
     const options = mockedStreamViaDaemon.mock.calls[0]?.[0];
     expect(
       options?.workspaceContext,
@@ -331,10 +473,198 @@ describe('a Home auto-send identifies its caller before the project scope resolv
         + 'on a workspace-bound project',
     ).toEqual(CALLER_CONTEXT);
   });
+
+  it('reuses the matching Home Team preflight while the project scope read is pending', async () => {
+    window.sessionStorage.setItem(
+      `od:auto-send-amr-gate-witness:${PROJECT_ID}`,
+      JSON.stringify({
+        workspaceType: 'team',
+        workspaceId: TEAM_WORKSPACE,
+        workspaceMemberId: TEAM_MEMBER,
+      }),
+    );
+
+    renderProjectView();
+
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+    expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
+    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
+      CALLER_CONTEXT,
+    );
+  });
+
+  it('does not price a Team-bound project against Personal when its scope read is unavailable', async () => {
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      failure: 'unavailable',
+      scope: {
+        kind: 'unavailable',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'personal',
+        context: null,
+      },
+    };
+
+    renderProjectView();
+
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+    expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
+  });
+
+  it('consumes the Home handoff after an unavailable AMR gate durably queues it and starts it once after recovery', async () => {
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'personal',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'unavailable' });
+
+    const stableOverrides: Partial<ComponentProps<typeof ProjectView>> = {
+      project: project(),
+      agents: [{ id: 'amr', name: 'amr', available: true }] as unknown as AgentInfo[],
+      skills: [] as SkillSummary[],
+      designTemplates: [] as SkillSummary[],
+      designSystems: [] as DesignSystemSummary[],
+      onModeChange: vi.fn(),
+      onAgentChange: vi.fn(),
+      onAgentModelChange: vi.fn(),
+      onRefreshAgents: vi.fn(),
+      onOpenSettings: vi.fn(),
+      onBack: vi.fn(),
+      onClearPendingPrompt: vi.fn(),
+      onTouchProject: vi.fn(),
+      onProjectChange: vi.fn(),
+      onProjectsRefresh: vi.fn(),
+    };
+    const view = renderProjectView(stableOverrides);
+
+    await waitFor(() => {
+      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(latest?.queuedItems).toHaveLength(1);
+    });
+    expect(mockedStreamViaDaemon).not.toHaveBeenCalled();
+    expect(window.sessionStorage.getItem(`od:auto-send-first:${PROJECT_ID}`)).toBeNull();
+
+    view.rerender(projectViewElement({
+      ...stableOverrides,
+      config: { ...config, agentId: 'codex' },
+      agents: [{ id: 'codex', name: 'Codex', available: true }] as unknown as AgentInfo[],
+    }));
+
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      const latest = chatPaneSpy.mock.calls.at(-1)?.[0];
+      expect(latest?.queuedItems).toHaveLength(0);
+    });
+    expect(mockedStreamViaDaemon).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an explicitly Personal project on the Personal preflight', async () => {
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'personal',
+        projectId: PROJECT_ID,
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+        visibility: 'personal',
+        context: PERSONAL_CONTEXT as WorkspaceCollabContext & { workspaceType: 'personal' },
+      },
+    };
+
+    renderProjectView({
+      project: {
+        ...project(),
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+        workspaceType: 'personal',
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+        workspaceMemberId: PERSONAL_CONTEXT.workspaceMemberId,
+      });
+    });
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+  });
+
+  it('uses an exact Personal witness to preflight and adopt a confirmed unbound Home project', async () => {
+    workspaceScopeMocks.ambientContext = PERSONAL_CONTEXT;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    };
+
+    renderProjectView({
+      project: {
+        ...project(),
+        workspaceId: undefined,
+      },
+    });
+
+    await waitFor(() => {
+      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+        workspaceType: 'personal',
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+        workspaceMemberId: PERSONAL_CONTEXT.workspaceMemberId,
+      });
+    });
+    await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
+      PERSONAL_CONTEXT,
+    );
+  });
+
+  it.each([
+    ['a Team caller', CALLER_CONTEXT],
+    ['no caller', null],
+  ])(
+    'does not inspect the account wallet for an unbound normal send from %s',
+    async (_label, ambientContext) => {
+      window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+      workspaceScopeMocks.ambientContext = ambientContext;
+      workspaceScopeMocks.projectScope = {
+        loading: false,
+        scope: {
+          kind: 'unbound',
+          projectId: PROJECT_ID,
+          workspaceId: null,
+          context: null,
+        },
+      };
+
+      const view = renderProjectView({
+        project: {
+          ...project(),
+          pendingPrompt: '',
+          workspaceId: undefined,
+        },
+      });
+      const send = await waitFor(() => view.getByTestId('normal-send'));
+      expect(send).not.toBeDisabled();
+      fireEvent.click(send);
+
+      await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+      expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
+      expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toBeNull();
+    },
+  );
 });
 
 describe('a Home auto-send observes a project billing scope that settles after mount', () => {
   beforeEach(() => {
+    resourceContextObservations.length = 0;
     window.sessionStorage.clear();
     window.localStorage.clear();
     resetWorkspaceContextCache();
@@ -347,11 +677,17 @@ describe('a Home auto-send observes a project billing scope that settles after m
     mockedListMessages.mockResolvedValue([]);
     mockedFetchPreviewComments.mockResolvedValue([]);
     mockedFetchBrands.mockResolvedValue([]);
+    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
     workspaceScopeMocks.projectScope = { loading: true, scope: null };
+    workspaceScopeMocks.ambientContext = CALLER_CONTEXT;
+    projectCollabMocks.writerAuthority = 'allowed';
+    projectCollabMocks.viewerOnly = false;
+    mockedLoadTabs.mockResolvedValue({ tabs: [], active: null });
   });
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     resetWorkspaceContextCache();
@@ -410,5 +746,515 @@ describe('a Home auto-send observes a project billing scope that settles after m
       });
     });
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+  });
+
+  it('keeps established project data while the same workspace authority object settles', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    mockedListMessages.mockResolvedValue([{
+      id: 'existing-message',
+      role: 'assistant',
+      content: 'existing transcript',
+      createdAt: 1,
+    } as never]);
+
+    const view = renderProjectView({
+      project: {
+        ...project(),
+        pendingPrompt: '',
+      },
+    });
+    await waitFor(() => expect(mockedListMessages).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    const establishedResourceContext = resourceContextObservations.find(
+      (context) => context?.workspaceId === TEAM_WORKSPACE,
+    );
+    expect(establishedResourceContext).toBeTruthy();
+
+    const conversationsPending = deferred<Conversation[]>();
+    const messagesPending = deferred<never[]>();
+    mockedListConversations.mockImplementationOnce(() => conversationsPending.promise);
+    mockedListMessages.mockImplementationOnce(() => messagesPending.promise);
+
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'personal',
+        context: {
+          ...CALLER_CONTEXT,
+          permissions: { ...CALLER_CONTEXT.permissions },
+        } as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    await act(async () => {
+      view.rerender(projectViewElement({
+        project: {
+          ...project(),
+          pendingPrompt: '',
+        },
+      }));
+    });
+
+    expect(
+      mockedListConversations,
+      'same project/workspace/member revalidation must not restart the conversation load',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      mockedListMessages,
+      'same project/workspace/member revalidation must not blank and reload the transcript',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      mockedLoadTabs,
+      'same project/workspace/member revalidation must not clear and rehydrate open tabs',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      resourceContextObservations.at(-1),
+      'FileWorkspace/FileViewer consumers must keep one canonical context object',
+    ).toBe(establishedResourceContext);
+  });
+
+  it('flushes project A tabs with A authority after rendering project B', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    projectCollabMocks.writerAuthority = 'allowed';
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    const projectA: Project = {
+      ...project(),
+      pendingPrompt: '',
+    };
+    const projectBContext: WorkspaceCollabContext = {
+      ...CALLER_CONTEXT,
+      workspaceId: 'workspace-b',
+      workspaceMemberId: 'member-b',
+      teamId: 'workspace-b',
+      teamName: 'Workspace B',
+    };
+    const projectB: Project = {
+      ...projectA,
+      id: 'project-b',
+      name: 'Project B',
+      workspaceId: projectBContext.workspaceId,
+    };
+    const stableOverrides: Partial<ComponentProps<typeof ProjectView>> = {
+      project: projectA,
+      onModeChange: vi.fn(),
+      onAgentChange: vi.fn(),
+      onAgentModelChange: vi.fn(),
+      onRefreshAgents: vi.fn(),
+      onOpenSettings: vi.fn(),
+      onBack: vi.fn(),
+      onClearPendingPrompt: vi.fn(),
+      onTouchProject: vi.fn(),
+      onProjectChange: vi.fn(),
+      onProjectsRefresh: vi.fn(),
+    };
+    const view = renderProjectView(stableOverrides);
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(view.getByTestId('queue-tab-write'));
+    expect(mockedPersistTabsToDaemonNow).not.toHaveBeenCalled();
+
+    workspaceScopeMocks.ambientContext = projectBContext;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: projectB.id,
+        workspaceId: projectBContext.workspaceId,
+        visibility: 'personal',
+        context: projectBContext as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    view.rerender(projectViewElement({
+      ...stableOverrides,
+      project: projectB,
+    }));
+
+    await waitFor(() => {
+      expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledWith(
+        PROJECT_ID,
+        expect.objectContaining({
+          tabs: ['index.html'],
+          active: 'index.html',
+        }),
+        CALLER_CONTEXT,
+      );
+    });
+  });
+
+  it('keeps a read-only Team member tab-local and never sends a daemon PUT', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    projectCollabMocks.writerAuthority = 'denied';
+    projectCollabMocks.viewerOnly = true;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+
+    const view = renderProjectView({
+      project: { ...project(), pendingPrompt: '' },
+      routeFileName: 'index.html',
+    });
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    expect(mockedLoadTabs).toHaveBeenCalledWith(
+      PROJECT_ID,
+      CALLER_CONTEXT,
+      { reconcileNewerCacheToDaemon: false },
+    );
+    vi.useFakeTimers();
+    fireEvent.click(view.getByTestId('queue-alt-tab-write'));
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(mockedPersistTabsToDaemonNow).not.toHaveBeenCalled();
+  });
+
+  it.each(['pending', 'denied'] as const)(
+    'does not treat a missing local workspaceId as unbound when Team writer authority is %s',
+    async (writerAuthority) => {
+      window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+      projectCollabMocks.writerAuthority = writerAuthority;
+      projectCollabMocks.viewerOnly = writerAuthority === 'denied';
+      workspaceScopeMocks.projectScope = {
+        loading: false,
+        scope: {
+          kind: 'team',
+          projectId: PROJECT_ID,
+          workspaceId: TEAM_WORKSPACE,
+          visibility: 'team',
+          context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+        },
+      };
+
+      const view = renderProjectView({
+        project: {
+          ...project(),
+          pendingPrompt: '',
+          workspaceId: undefined,
+        },
+      });
+      await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+      expect(mockedLoadTabs).toHaveBeenCalledWith(
+        PROJECT_ID,
+        CALLER_CONTEXT,
+        { reconcileNewerCacheToDaemon: false },
+      );
+      vi.useFakeTimers();
+      fireEvent.click(view.getByTestId('queue-alt-tab-write'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+
+      expect(mockedPersistTabsToDaemonNow).not.toHaveBeenCalled();
+    },
+  );
+
+  it('coalesces confirmed-writer tab changes into one daemon PUT', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    projectCollabMocks.writerAuthority = 'allowed';
+    const view = renderProjectView({
+      project: { ...project(), pendingPrompt: '' },
+    });
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+
+    fireEvent.click(view.getByTestId('queue-tab-write'));
+    fireEvent.click(view.getByTestId('queue-alt-tab-write'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledTimes(1);
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledWith(
+      PROJECT_ID,
+      expect.objectContaining({
+        tabs: ['index.html', 'about.html'],
+        active: 'about.html',
+      }),
+      CALLER_CONTEXT,
+    );
+    vi.useRealTimers();
+  });
+
+  it('does not rewrite an unchanged routed tab for a confirmed writer', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    projectCollabMocks.writerAuthority = 'allowed';
+    mockedLoadTabs.mockResolvedValueOnce({
+      tabs: ['index.html'],
+      active: 'index.html',
+      hasSavedState: true,
+    });
+
+    renderProjectView({
+      project: { ...project(), pendingPrompt: '' },
+      routeFileName: 'index.html',
+    });
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    expect(mockedPersistTabsToDaemonNow).not.toHaveBeenCalled();
+  });
+
+  it('writes one changed routed tab for a confirmed writer', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    projectCollabMocks.writerAuthority = 'allowed';
+
+    renderProjectView({
+      project: { ...project(), pendingPrompt: '' },
+      routeFileName: 'index.html',
+    });
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledTimes(1);
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledWith(
+      PROJECT_ID,
+      expect.objectContaining({
+        tabs: ['index.html'],
+        active: 'index.html',
+      }),
+      CALLER_CONTEXT,
+    );
+  });
+
+  it('starts daemon tab persistence only after Team writer authority is allowed', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    projectCollabMocks.writerAuthority = 'pending';
+    projectCollabMocks.viewerOnly = false;
+    const stableOverrides = {
+      project: { ...project(), pendingPrompt: '' },
+    };
+    const view = renderProjectView(stableOverrides);
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+
+    fireEvent.click(view.getByTestId('queue-tab-write'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(mockedPersistTabsToDaemonNow).not.toHaveBeenCalled();
+
+    projectCollabMocks.writerAuthority = 'allowed';
+    view.rerender(projectViewElement(stableOverrides));
+    fireEvent.click(view.getByTestId('queue-alt-tab-write'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('preserves Personal project daemon tab persistence', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    projectCollabMocks.writerAuthority = 'denied';
+    workspaceScopeMocks.ambientContext = PERSONAL_CONTEXT;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'personal',
+        projectId: PROJECT_ID,
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+        visibility: 'personal',
+        context: PERSONAL_CONTEXT as WorkspaceCollabContext & { workspaceType: 'personal' },
+      },
+    };
+    const view = renderProjectView({
+      project: {
+        ...project(),
+        pendingPrompt: '',
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+      },
+    });
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    fireEvent.click(view.getByTestId('queue-tab-write'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledTimes(1);
+    expect(mockedPersistTabsToDaemonNow.mock.calls[0]?.[2]).toEqual(PERSONAL_CONTEXT);
+  });
+
+  it('preserves anonymous unbound project daemon tab persistence', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    projectCollabMocks.writerAuthority = 'pending';
+    workspaceScopeMocks.ambientContext = null;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    };
+    const view = renderProjectView({
+      project: {
+        ...project(),
+        pendingPrompt: '',
+        workspaceId: undefined,
+      },
+    });
+    await waitFor(() => expect(mockedLoadTabs).toHaveBeenCalledTimes(1));
+    vi.useFakeTimers();
+    fireEvent.click(view.getByTestId('queue-tab-write'));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+
+    expect(mockedPersistTabsToDaemonNow).toHaveBeenCalledTimes(1);
+    expect(mockedPersistTabsToDaemonNow.mock.calls[0]?.[2]).toBeNull();
+  });
+
+  it('gates bound-project SSE until exact project authority exists', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.ambientContext = null;
+    workspaceScopeMocks.projectScope = { loading: true, scope: null };
+    const stableProject = { ...project(), pendingPrompt: '' };
+    const view = renderProjectView({ project: stableProject });
+
+    await waitFor(() => expect(mockedUseProjectFileEvents).toHaveBeenCalled());
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[1]).toBe(false);
+
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+    view.rerender(projectViewElement({ project: stableProject }));
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[1]).toBe(true);
+
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: null,
+      failure: 'forbidden',
+    };
+    view.rerender(projectViewElement({ project: stableProject }));
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[1]).toBe(false);
+  });
+
+  it('does not treat a missing local workspaceId as settled unbound SSE authority', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.ambientContext = null;
+    workspaceScopeMocks.projectScope = { loading: true, scope: null };
+
+    renderProjectView({
+      project: {
+        ...project(),
+        pendingPrompt: '',
+        workspaceId: undefined,
+      },
+    });
+
+    await waitFor(() => expect(mockedUseProjectFileEvents).toHaveBeenCalled());
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[1]).toBe(false);
+  });
+
+  it('enables SSE for a settled Personal project scope', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.ambientContext = PERSONAL_CONTEXT;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'personal',
+        projectId: PROJECT_ID,
+        workspaceId: PERSONAL_CONTEXT.workspaceId,
+        visibility: 'personal',
+        context: PERSONAL_CONTEXT as WorkspaceCollabContext & { workspaceType: 'personal' },
+      },
+    };
+
+    renderProjectView({
+      project: {
+        ...project(),
+        pendingPrompt: '',
+        workspaceId: undefined,
+      },
+    });
+    await waitFor(() => expect(mockedUseProjectFileEvents).toHaveBeenCalled());
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[1]).toBe(true);
+  });
+
+  it('keeps anonymous unbound project SSE enabled', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.ambientContext = null;
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    };
+
+    renderProjectView({
+      project: {
+        ...project(),
+        pendingPrompt: '',
+        workspaceId: undefined,
+      },
+    });
+    await waitFor(() => expect(mockedUseProjectFileEvents).toHaveBeenCalled());
+    expect(mockedUseProjectFileEvents.mock.calls.at(-1)?.[1]).toBe(true);
   });
 });

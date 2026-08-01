@@ -16,7 +16,7 @@
 // the real owner's shared entry.
 
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
 import { DesignSystemsTab } from '../../src/components/DesignSystemsTab';
@@ -53,17 +53,36 @@ const TEAM_CONTEXT = {
   billingState: 'free',
   planId: null,
   teamId: 'ws-team',
+  permissions: {
+    canManageMembers: false,
+    canManageBilling: false,
+    canInviteMembers: false,
+    canManageAutoRecharge: false,
+    canShareProjects: true,
+    canWriteSyncedFiles: true,
+    canViewWorkspaceSettings: false,
+    canManageSharedResources: true,
+  },
 };
 
+const SECOND_TEAM_CONTEXT = {
+  ...TEAM_CONTEXT,
+  workspaceId: 'ws-second',
+  teamId: 'ws-second',
+  workspaceMemberId: 'mem-second',
+};
+
+let workspaceContext = TEAM_CONTEXT;
+
 vi.mock('../../src/collab/useWorkspaceContext', () => ({
-  useWorkspaceContext: () => ({ context: TEAM_CONTEXT, loading: false, refresh: vi.fn() }),
+  useWorkspaceContext: () => ({ context: workspaceContext, loading: false, refresh: vi.fn() }),
   useWorkspaceBilling: () => ({ membershipTier: '' }),
 }));
 
 // The sharer's OWN copy: `teamSynced` is never stamped on it (only on a
 // teammate's pulled copy — see `syncSharedTeamDesignSystem`'s `markTeamSynced`
-// in server.ts, which returns early `if (isOwnedByCurrentMember)`), so it
-// stays in the "mine" tab even after being shared.
+// in server.ts, which returns early `if (isOwnedByCurrentMember)`). The Team
+// index is therefore the authority that moves this summary out of Personal.
 const MY_SHARED_SYSTEM: DesignSystemSummary = {
   id: 'user:my-ds',
   title: 'My Design System',
@@ -100,25 +119,50 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-let shareCalls: string[];
+let shareCalls: string[] = [];
+let teamReadHeaders: Headers[] = [];
+let unshareCalls: Array<{ url: string; headers: Headers }> = [];
 
-function mockFetch(canUnshare: boolean, sharedId = 'user:my-ds') {
+function mockFetch(
+  canUnshare: boolean,
+  sharedId = 'user:my-ds',
+  initiallyShared = true,
+) {
+  let shared = initiallyShared;
   shareCalls = [];
+  teamReadHeaders = [];
+  unshareCalls = [];
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/api/workspace/design-systems/team')) {
+      teamReadHeaders.push(new Headers(init?.headers));
       return jsonResponse({
-        ids: [sharedId],
-        resources: [{ id: sharedId, canUnshare, ownerMemberId: 'mem-owner' }],
+        ids: shared ? [sharedId] : [],
+        resources: shared
+          ? [{ id: sharedId, canUnshare, ownerMemberId: 'mem-owner' }]
+          : [],
       });
     }
     if (url.includes('/share') && init?.method === 'POST') {
       shareCalls.push(url);
+      shared = true;
       return jsonResponse({ shared: true, version: shareCalls.length });
+    }
+    if (url.includes('/share') && init?.method === 'DELETE') {
+      unshareCalls.push({ url, headers: new Headers(init.headers) });
+      shared = false;
+      return jsonResponse({ unshared: true });
     }
     return jsonResponse({});
   }) as typeof fetch;
 }
+
+beforeEach(() => {
+  workspaceContext = TEAM_CONTEXT;
+  shareCalls = [];
+  teamReadHeaders = [];
+  unshareCalls = [];
+});
 
 afterEach(() => {
   cleanup();
@@ -140,18 +184,58 @@ function renderTab(systems: DesignSystemSummary[]) {
   );
 }
 
-async function openTeamTabAndSelect() {
+async function openTeamTabAndSelect(id = 'user:teammate-ds') {
   await waitFor(() => expect(screen.getByRole('tab', { name: /Team/i })).toBeTruthy());
   fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
-  await screen.findByTestId('design-kit-view-user:teammate-ds');
+  await screen.findByTestId(`design-kit-view-${id}`);
 }
 
 describe('DesignSystemsTab — repeat share reads as "sync" once already team-shared', () => {
+  it('moves an owner-shared design system out of Personal and keeps one Team entry', async () => {
+    mockFetch(true);
+    const view = renderTab([MY_SHARED_SYSTEM]);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('design-kit-view-user:my-ds')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
+    expect(await screen.findByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+    expect(screen.getAllByTestId('design-kit-view-user:my-ds')).toHaveLength(1);
+
+    view.unmount();
+    renderTab([MY_SHARED_SYSTEM]);
+    await waitFor(() => {
+      expect(screen.queryByTestId('design-kit-view-user:my-ds')).toBeNull();
+    });
+    await openTeamTabAndSelect('user:my-ds');
+    expect(screen.getAllByTestId('design-kit-view-user:my-ds')).toHaveLength(1);
+  });
+
+  it('moves a newly shared system immediately, without reusing the pre-share Team cache', async () => {
+    mockFetch(true, 'user:my-ds', false);
+    renderTab([MY_SHARED_SYSTEM]);
+
+    const actions = await screen.findByTestId('design-kit-more-actions');
+    fireEvent.click(actions);
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Share to team' }));
+
+    await waitFor(() => expect(shareCalls).toHaveLength(1));
+    await waitFor(() => {
+      expect(screen.queryByTestId('design-kit-view-user:my-ds')).toBeNull();
+    });
+    await openTeamTabAndSelect('user:my-ds');
+    expect(screen.getAllByTestId('design-kit-view-user:my-ds')).toHaveLength(1);
+    expect(teamReadHeaders).toHaveLength(2);
+  });
+
   it('keeps the action visible (relabeled "Sync to team") for the owner, and re-POSTs the same /share route on click', async () => {
     mockFetch(true);
     renderTab([MY_SHARED_SYSTEM]);
 
-    await waitFor(() => expect(screen.getByTestId('design-kit-view-user:my-ds')).toBeTruthy());
+    await openTeamTabAndSelect('user:my-ds');
+    expect(teamReadHeaders[0]?.get('x-od-workspace-id')).toBe('ws-team');
+    expect(teamReadHeaders[0]?.get('x-od-workspace-member-id')).toBe('mem-owner');
     fireEvent.click(await screen.findByTestId('design-kit-more-actions'));
 
     // The old "Share to team" wording is gone — the menu no longer looks like
@@ -164,6 +248,25 @@ describe('DesignSystemsTab — repeat share reads as "sync" once already team-sh
     expect(shareCalls[0]).toContain('/api/workspace/design-systems/user%3Amy-ds/share');
   });
 
+  it('carries the same workspace identity when removing a design system from the team', async () => {
+    mockFetch(true);
+    renderTab([MY_SHARED_SYSTEM]);
+
+    await openTeamTabAndSelect('user:my-ds');
+    fireEvent.click(await screen.findByTestId('design-kit-more-actions'));
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Remove from team' }));
+
+    await waitFor(() => expect(unshareCalls).toHaveLength(1));
+    expect(unshareCalls[0]?.url).toContain(
+      '/api/workspace/design-systems/user%3Amy-ds/share',
+    );
+    expect(unshareCalls[0]?.headers.get('x-od-workspace-id')).toBe('ws-team');
+    expect(unshareCalls[0]?.headers.get('x-od-workspace-member-id')).toBe('mem-owner');
+    fireEvent.click(screen.getByRole('tab', { name: /Your systems/i }));
+    expect(await screen.findByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+    expect(screen.getByRole('tab', { name: /Team/i }).textContent).toContain('0');
+  });
+
   it('hides both "share" and "sync" for a teammate-pulled copy the caller may not manage', async () => {
     // `canUnshare: false` mirrors a plain member viewing a system someone
     // else shared — the same shape `DesignSystemsTab.team-permissions.test.tsx`
@@ -173,8 +276,56 @@ describe('DesignSystemsTab — repeat share reads as "sync" once already team-sh
     renderTab([TEAMMATE_PULLED_SYSTEM]);
     await openTeamTabAndSelect();
 
+    fireEvent.click(screen.getByRole('tab', { name: /Your systems/i }));
+    expect(screen.queryByTestId('design-kit-view-user:teammate-ds')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
+    await screen.findByTestId('design-kit-view-user:teammate-ds');
     fireEvent.click(await screen.findByTestId('design-kit-more-actions'));
     expect(screen.queryByRole('menuitem', { name: 'Sync to team' })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: 'Share to team' })).toBeNull();
+  });
+
+  it('partitions the Team index immediately when switching Workspaces', async () => {
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      teamReadHeaders.push(headers);
+      const workspaceId = headers.get('x-od-workspace-id');
+      const shared = workspaceId === 'ws-team';
+      return jsonResponse({
+        ids: shared ? ['user:my-ds'] : [],
+        resources: shared
+          ? [{ id: 'user:my-ds', canUnshare: true, ownerMemberId: 'mem-owner' }]
+          : [],
+      });
+    }) as typeof fetch;
+    const view = renderTab([MY_SHARED_SYSTEM]);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('design-kit-view-user:my-ds')).toBeNull();
+    });
+    await openTeamTabAndSelect('user:my-ds');
+
+    workspaceContext = SECOND_TEAM_CONTEXT;
+    view.rerender(
+      <I18nProvider initial="en">
+        <DesignSystemsTab
+          loading={false}
+          systems={[MY_SHARED_SYSTEM]}
+          selectedId={null}
+          onSelect={() => {}}
+          onCreate={() => {}}
+          onOpenSystem={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    expect(screen.queryByTestId('design-kit-view-user:my-ds')).toBeNull();
+    fireEvent.click(screen.getByRole('tab', { name: /Your systems/i }));
+    expect(await screen.findByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+    await waitFor(() => {
+      expect(teamReadHeaders.some((headers) => (
+        headers.get('x-od-workspace-id') === 'ws-second'
+      ))).toBe(true);
+    });
   });
 });
