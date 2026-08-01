@@ -282,13 +282,22 @@ export const SearchableModelSelect = forwardRef<
       setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key !== 'Escape') return;
+      // Consume Escape in the capture phase so an outer surface's document
+      // listener (for example Settings) cannot close before this portalled
+      // picker gets a chance to handle the key. This also covers short model
+      // lists without a search input, where focus stays on the trigger outside
+      // the popover and the React popover handler never sees the event.
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+      buttonRef.current?.focus();
     };
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('keydown', onKeyDown, true);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('keydown', onKeyDown, true);
     };
   }, [open]);
 

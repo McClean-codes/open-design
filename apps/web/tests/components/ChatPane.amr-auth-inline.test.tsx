@@ -9,7 +9,7 @@
  * AmrLoginPill.test.tsx; here we only assert ChatPane's wiring.
  */
 
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { forwardRef, useEffect, type ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -98,6 +98,23 @@ function amrAuthFailedMessage(): ChatMessage {
         label: 'error',
         detail: 'AMR sign-in is required.',
         code: 'AMR_AUTH_REQUIRED',
+      },
+    ],
+  };
+}
+
+function localAgentAuthFailedMessage(): ChatMessage {
+  return {
+    ...amrAuthFailedMessage(),
+    id: 'msg-local-auth',
+    runId: 'run-local-auth',
+    agentId: 'codex',
+    events: [
+      {
+        kind: 'status',
+        label: 'error',
+        detail: 'Codex authorization expired.',
+        code: 'AGENT_AUTH_REQUIRED',
       },
     ],
   };
@@ -240,6 +257,38 @@ describe('ChatPane inline AMR auth', () => {
 
     expect(onConsume).toHaveBeenCalledTimes(1);
     expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('consumes a Settings handoff on a fresh exact mount even without an inline AMR failure', async () => {
+    fetchVelaLoginStatusMock.mockResolvedValue(signedIn);
+    const onRetry = vi.fn();
+    let available = true;
+    const onConsume = vi.fn(() => {
+      if (!available) return false;
+      available = false;
+      return true;
+    });
+    renderChat(onRetry, {
+      messages: [localAgentAuthFailedMessage()],
+      amrAuthRetryContinuation: {
+        projectId: 'project-1',
+        conversationId: 'conv-1',
+        assistantId: 'msg-local-auth',
+        workspaceIdentityKey:
+          'workspace-a:personal:member-a:owner:active:active:true:true',
+        originMountId: 'mount-before-settings',
+        accountIdAtArm: null,
+        createdAtMs: Date.now(),
+      },
+      amrAuthRetryMountId: 'mount-after-settings',
+      amrAuthRetryWorkspaceIdentityKey:
+        'workspace-a:personal:member-a:owner:active:active:true:true',
+      onConsumeAmrAuthRetryContinuation: onConsume,
+    });
+
+    await waitFor(() => expect(onRetry).toHaveBeenCalledTimes(1));
+    expect(onRetry.mock.calls[0]![0]).toMatchObject({ id: 'msg-local-auth' });
+    expect(onConsume).toHaveBeenCalledTimes(1);
   });
 
   it('retries an unbound local project on the same mount only after signed-out -> signed-in', () => {

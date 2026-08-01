@@ -973,6 +973,33 @@ export function WorkspaceTabsBar({
       return;
     }
 
+    // Settings is app-local rather than Workspace-owned. Keep that explicit
+    // destination when leaving a project-pinned Workspace scope for the same
+    // account's ambient scope, and through the failed-run CTA's anonymous ->
+    // signed-in authorization handoff. Rebuild from a fresh entry tab so no
+    // project tab crosses the scope boundary. Account A -> B still falls
+    // through to the fail-closed reset below.
+    const previousAccountBucket = accountBucketForScope(previous);
+    const nextAccountBucket = accountBucketForScope(identityScopeKey);
+    if (
+      route.kind === 'home'
+      && route.view === 'settings'
+      && (
+        previousAccountBucket === nextAccountBucket
+        || (previousAccountBucket === 'anon' && nextAccountBucket !== 'anon')
+      )
+    ) {
+      const rehomed = syncStateToRoute(freshHomeTabsState(), route);
+      persistedTabsStore.scopes[identityScopeKey] = {
+        state: rehomed,
+        updatedAt: Date.now(),
+      };
+      pendingScopeStateRef.current = { scopeKey: identityScopeKey, state: rehomed };
+      pendingScopeRouteRef.current = null;
+      setState(rehomed);
+      return;
+    }
+
     // Inline "Authorize & retry" must finish the same run in place. Re-home
     // only the live route tab (plus a fresh Home tab) when anonymous login
     // resolves either an unbound local project or an exact witness for the

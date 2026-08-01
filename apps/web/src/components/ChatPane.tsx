@@ -1381,6 +1381,19 @@ export function ChatPane({
     retryAssistant,
   ]);
   useEffect(() => {
+    if (!amrAuthRetryContinuation || inlineAmrLoginStatus?.loggedIn !== true) return;
+    // A Settings handoff remounts the whole project surface, so there is no
+    // inline AmrLoginPill callback to drive consumption. The fresh pane's own
+    // status read may request the one-shot retry; the common guard above still
+    // requires the exact project, conversation, failed assistant, account,
+    // fresh mount and Workspace authority.
+    consumeAmrAuthRetryIfAuthorized(inlineAmrLoginStatus);
+  }, [
+    amrAuthRetryContinuation,
+    consumeAmrAuthRetryIfAuthorized,
+    inlineAmrLoginStatus,
+  ]);
+  useEffect(() => {
     if (
       amrAuthRetrySignedOutWitnessRef.current
       && amrAuthRetrySignedOutWitnessRef.current !== amrAuthRetryContinuation

@@ -601,6 +601,12 @@ export type ProjectRouteSurfaceState =
   | 'materialization-failed'
   | 'daemon-unavailable';
 
+interface SettingsReturnTarget {
+  route: Extract<Route, { kind: 'project' }>;
+  accountGeneration: number;
+  identityScopeKey: string;
+}
+
 /**
  * The project route must never use `!activeProject` as an unbounded loading
  * condition. Once the initial list is complete, every absent-project path is
@@ -1001,6 +1007,9 @@ function AppInner() {
   // can't overwrite the saved state with `''` before hydration lands.
   const [composioConfigLoading, setComposioConfigLoading] = useState(true);
   const route = useRoute();
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const settingsReturnTargetRef = useRef<SettingsReturnTarget | null>(null);
   const workspaceProjectView = workspaceProjectListViewForRoute(route);
   // Read-only mirror for the boot effect. The boot pass needs to know which
   // project list to seed, but it must NOT restart when that answer changes:
@@ -1289,7 +1298,7 @@ function AppInner() {
     const previousStatus = amrLoginStatusRef.current;
     const wasLoggedIn = previousStatus?.loggedIn === true;
     const pendingRetry = amrAuthRetryContinuationRef.current;
-    if (
+    const accountChangedWhileAuthorizing = Boolean(
       pendingRetry
       && (
         (wasLoggedIn && status.loggedIn === false)
@@ -1299,11 +1308,37 @@ function AppInner() {
           && status.user?.id !== pendingRetry.accountIdAtArm
         )
       )
-    ) {
+    );
+    if (accountChangedWhileAuthorizing && pendingRetry) {
       clearAmrAuthRetryContinuation(pendingRetry);
     }
     amrLoginStatusRef.current = status;
     setAmrLoginStatus(status);
+    const currentRoute = routeRef.current;
+    if (
+      pendingRetry
+      && !accountChangedWhileAuthorizing
+      && status.loggedIn === true
+      && status.user?.id
+      && (
+        pendingRetry.accountIdAtArm === null
+        || pendingRetry.accountIdAtArm === status.user.id
+      )
+      && currentRoute.kind === 'home'
+      && currentRoute.view === 'settings'
+    ) {
+      // The Settings page intentionally unmounts ProjectView while AMR login
+      // completes. Return only to the exact failed conversation carried by the
+      // App-owned continuation; the fresh ProjectView must still prove its
+      // persisted Workspace authority before ChatPane may consume the retry.
+      settingsReturnTargetRef.current = null;
+      navigate({
+        kind: 'project',
+        projectId: pendingRetry.projectId,
+        conversationId: pendingRetry.conversationId,
+        fileName: null,
+      }, { replace: true });
+    }
     if (
       status.loggedIn === true
       && (
@@ -2300,14 +2335,20 @@ function AppInner() {
         const usesAmrCloud =
           executionConfig.mode === 'daemon'
           && executionConfig.agentId === AMR_AGENT_ID;
+        const isExplicitlySignedOut =
+          amrLoginStatusRef.current?.loggedIn === false;
         createWorkspaceContext = resolvedWorkspaceContextForWrite(
           workspaceContextStateRef.current,
           {
-            // Creating a local/BYOK project is a daemon-local operation and
-            // must remain available when Vela/AMR workspace discovery is slow
-            // or offline. AMR Cloud still requires authoritative scope and all
-            // other Workspace writes retain the helper's fail-closed default.
-            unavailablePolicy: usesAmrCloud ? 'reject' : 'unscoped',
+            // Local/BYOK may create without AMR Workspace authority only after
+            // the independent login read explicitly proves there is no AMR
+            // identity. An unknown or signed-in identity can still own a Team
+            // Workspace whose directory read is merely slow/unavailable, so
+            // executor selection must not silently turn that Team project into
+            // an unscoped Personal one. Unsupported/settled no-workspace states
+            // already retain their explicit compatibility behavior below.
+            unavailablePolicy:
+              !usesAmrCloud && isExplicitlySignedOut ? 'unscoped' : 'reject',
           },
         );
         if (
@@ -3251,6 +3292,13 @@ function AppInner() {
   useEffect(() => {
     const pending = amrAuthRetryContinuationRef.current;
     if (!pending) return;
+    if (route.kind === 'home' && route.view === 'settings') {
+      // This is the one permitted non-project route: the failed-turn CTA
+      // deliberately opens AMR Settings and ProjectView unmounts while the
+      // authorization attempt is in flight. Every other route exit clears the
+      // continuation below.
+      return;
+    }
     if (!routeStillMatchesAmrAuthRetryContinuation(pending, route)) {
       clearAmrAuthRetryContinuation(pending);
       return;
@@ -3479,6 +3527,7 @@ function AppInner() {
     opts?: { highlight?: SettingsHighlight },
   ) => {
     if (section === 'composio' || section === 'mcpClient' || section === 'integrations') {
+      settingsReturnTargetRef.current = null;
       setIntegrationInitialTab(
         section === 'composio'
           ? 'connectors'
@@ -3489,11 +3538,20 @@ function AppInner() {
       navigate({ kind: 'home', view: 'integrations' });
       return;
     }
+    const currentRoute = routeRef.current;
+    settingsReturnTargetRef.current =
+      currentRoute.kind === 'project' && identityScopeKey !== null
+        ? {
+            route: { ...currentRoute },
+            accountGeneration: currentWorkspaceAccountGeneration(),
+            identityScopeKey,
+          }
+        : null;
     setSettingsWelcome(false);
     setSettingsInitialSection(section);
     setSettingsHighlight(opts?.highlight ?? null);
     navigate({ kind: 'home', view: 'settings' });
-  }, []);
+  }, [identityScopeKey]);
 
   // Entry point from the failed-run AMR nudge: open Settings on the execution
   // section and flag the AMR agent card for a one-shot scroll-into-view +
@@ -3503,11 +3561,20 @@ function AppInner() {
   }, [openSettings]);
 
   const openPetSettings = useCallback(() => {
+    const currentRoute = routeRef.current;
+    settingsReturnTargetRef.current =
+      currentRoute.kind === 'project' && identityScopeKey !== null
+        ? {
+            route: { ...currentRoute },
+            accountGeneration: currentWorkspaceAccountGeneration(),
+            identityScopeKey,
+          }
+        : null;
     setSettingsWelcome(false);
     setSettingsInitialSection('pet');
     setSettingsHighlight(null);
     navigate({ kind: 'home', view: 'settings' });
-  }, []);
+  }, [identityScopeKey]);
 
   const openMcpSettings = useCallback(() => {
     setIntegrationInitialTab('mcp');
@@ -3673,7 +3740,18 @@ function AppInner() {
     settingsDraftConfigRef.current = null;
     setSettingsHighlight(null);
     if (route.kind === 'home' && route.view === 'settings') {
-      navigate({ kind: 'home', view: 'home' });
+      const returnTarget = settingsReturnTargetRef.current;
+      settingsReturnTargetRef.current = null;
+      const returnIdentityStillMatches = Boolean(
+        returnTarget
+        && returnTarget.accountGeneration === currentWorkspaceAccountGeneration()
+        && returnTarget.identityScopeKey === identityScopeKey
+      );
+      navigate(
+        returnIdentityStillMatches && returnTarget
+          ? returnTarget.route
+          : { kind: 'home', view: 'home' },
+      );
     }
   };
 

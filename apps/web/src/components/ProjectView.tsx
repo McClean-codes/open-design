@@ -23,7 +23,6 @@ import {
   fetchChatRunStatus,
   GENERIC_DAEMON_DISCONNECT_CODE,
   GENERIC_DAEMON_DISCONNECT_MESSAGE,
-  fetchVelaLoginStatus,
   listActiveChatRuns,
   listProjectRuns,
   publishDaemonRunFinishedEvent,
@@ -7727,20 +7726,40 @@ export function ProjectView({
     [currentConversationActionDisabled, handleSend],
   );
 
-  // "Switch to AMR & retry" from the failed-run card: switch the run to AMR,
-  // open Settings on the AMR controls so the user can sign in / authorize /
-  // top up, and arm an auto-retry that fires once AMR is selected AND signed
-  // in (see the effect below).
-  const [pendingAmrRetry, setPendingAmrRetry] = useState<ChatMessage | null>(null);
+  // "Switch to AMR & retry" crosses the Settings route, which intentionally
+  // unmounts this ProjectView. Arm the exact failed turn in App before any
+  // config or navigation write; a fresh ProjectView may consume it only after
+  // re-proving the same project, conversation and Workspace authority.
   const handleSwitchToAmrAndRetry = useCallback(
     (failedAssistant: ChatMessage) => {
       if (currentConversationActionDisabled) return;
+      if (
+        activeConversationId
+        && amrAuthRetryMountIdRef.current
+        && onArmAmrAuthRetryContinuation
+      ) {
+        onArmAmrAuthRetryContinuation({
+          projectId: project.id,
+          conversationId: activeConversationId,
+          assistantId: failedAssistant.id,
+          workspaceIdentityKey: projectRunAuthorityKey,
+          originMountId: amrAuthRetryMountIdRef.current,
+        });
+      }
       onModeChange('daemon');
       onAgentChange('amr');
       onOpenAmrSettings?.();
-      setPendingAmrRetry(failedAssistant);
     },
-    [currentConversationActionDisabled, onModeChange, onAgentChange, onOpenAmrSettings],
+    [
+      activeConversationId,
+      currentConversationActionDisabled,
+      onAgentChange,
+      onArmAmrAuthRetryContinuation,
+      onModeChange,
+      onOpenAmrSettings,
+      project.id,
+      projectRunAuthorityKey,
+    ],
   );
   // PR #3157: Antigravity's `agy -p` cannot complete OAuth on its own,
   // so the auth banner offers a one-click "Sign in via terminal"
@@ -7765,35 +7784,6 @@ export function ProjectView({
       console.warn('[antigravity] oauth-launch threw:', err);
     }
   }, []);
-  // Poll the AMR login status while a retry is armed, rather than only reacting
-  // to the AmrLoginPill's status event — the user may close Settings (which
-  // unmounts the pill and stops its polling) before finishing sign-in in the
-  // browser. Polling here keeps working regardless of the pill's lifecycle.
-  // Fires once AMR is the selected agent AND the account is signed in.
-  useEffect(() => {
-    if (!pendingAmrRetry) return;
-    let cancelled = false;
-    const tryRetry = async () => {
-      if (cancelled) return;
-      if (!(config.mode === 'daemon' && config.agentId === 'amr')) return;
-      const status = await fetchVelaLoginStatus().catch(() => null);
-      if (cancelled || status?.loggedIn !== true) return;
-      setPendingAmrRetry(null);
-      handleRetry(pendingAmrRetry);
-    };
-    void tryRetry();
-    const interval = setInterval(() => void tryRetry(), 2000);
-    // Give up after a few minutes so we never poll forever.
-    const stop = setTimeout(() => {
-      if (!cancelled) setPendingAmrRetry(null);
-    }, 5 * 60 * 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(interval);
-      clearTimeout(stop);
-    };
-  }, [pendingAmrRetry, config.mode, config.agentId, handleRetry]);
-
   useEffect(() => {
     if (!autoAuditRepairSeed) return;
     if (!activeConversationId) return;
