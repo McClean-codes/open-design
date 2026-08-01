@@ -445,6 +445,18 @@ describe('createProject', () => {
     })).toThrow('Workspace context is unavailable');
   });
 
+  it('allows an explicitly local project-create caller to remain unscoped while workspace sync is unresolved', () => {
+    expect(resolvedWorkspaceContextForWrite(
+      { context: null, loading: true },
+      { unavailablePolicy: 'unscoped' },
+    )).toBeNull();
+
+    expect(resolvedWorkspaceContextForWrite(
+      { context: null, loading: false, failure: 'unavailable' },
+      { unavailablePolicy: 'unscoped' },
+    )).toBeNull();
+  });
+
   it('preserves explicit anonymous and old-daemon headerless compatibility', () => {
     expect(resolvedWorkspaceContextForWrite({
       context: null,

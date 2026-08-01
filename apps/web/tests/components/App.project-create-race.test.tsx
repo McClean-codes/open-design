@@ -752,6 +752,40 @@ describe('App project creation routing', () => {
     expect(window.location.pathname).toBe('/projects/project-new');
   });
 
+  it.each([
+    ['Local CLI', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
+    ['BYOK', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],
+  ])(
+    'lets %s create an unscoped project while AMR workspace discovery is unavailable',
+    async (_label, executionConfig) => {
+      mockedLoadConfig.mockReturnValue(executionConfig);
+      mockedListProjects.mockResolvedValue([]);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          const pathname = new URL(String(input), 'http://d.local').pathname;
+          if (pathname.endsWith('/workspace/directory')) {
+            return new Promise<Response>(() => {});
+          }
+          return new Response('{}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+
+      render(<App />);
+      fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+      await waitFor(() => {
+        expect(mockedCreateProject).toHaveBeenCalledWith(
+          expect.objectContaining({ workspaceContext: null }),
+        );
+      });
+      expect(screen.getByTestId('project-title').textContent).toBe('Fresh project');
+    },
+  );
+
   it('routes "create with this design system" through the default design router, not a prototype', async () => {
     mockedListProjects.mockResolvedValue([existingProject]);
 

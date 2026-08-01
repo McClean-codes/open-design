@@ -2221,8 +2221,19 @@ function AppInner() {
       let createWorkspaceContext: WorkspaceCollabContext | null = null;
       let result;
       try {
+        const executionConfig = configRef.current;
+        const usesAmrCloud =
+          executionConfig.mode === 'daemon'
+          && executionConfig.agentId === AMR_AGENT_ID;
         createWorkspaceContext = resolvedWorkspaceContextForWrite(
           workspaceContextStateRef.current,
+          {
+            // Creating a local/BYOK project is a daemon-local operation and
+            // must remain available when Vela/AMR workspace discovery is slow
+            // or offline. AMR Cloud still requires authoritative scope and all
+            // other Workspace writes retain the helper's fail-closed default.
+            unavailablePolicy: usesAmrCloud ? 'reject' : 'unscoped',
+          },
         );
         if (
           input.amrGatePrecheckWitness &&
