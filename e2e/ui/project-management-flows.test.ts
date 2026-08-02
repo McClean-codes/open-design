@@ -1271,7 +1271,13 @@ async function wireTeamRunBalanceFixtures(
     personalBalanceUsd: string;
     teamBalanceUsd: string;
   },
-): Promise<void> {
+): Promise<{
+  personalWalletRequests: () => number;
+  resetBalanceRequests: () => void;
+  teamBillingRequests: () => number;
+}> {
+  let personalWalletRequestCount = 0;
+  let teamBillingRequestCount = 0;
   await page.route('**/api/app-config', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -1325,6 +1331,9 @@ async function wireTeamRunBalanceFixtures(
     });
   });
   await page.route('**/api/integrations/vela/wallet**', async (route) => {
+    if (new URL(route.request().url()).pathname === '/api/integrations/vela/wallet') {
+      personalWalletRequestCount += 1;
+    }
     await route.fulfill({
       json: {
         status: 'available',
@@ -1371,6 +1380,7 @@ async function wireTeamRunBalanceFixtures(
       return;
     }
     if (pathname === '/api/workspace/billing') {
+      teamBillingRequestCount += 1;
       await route.fulfill({
         json: {
           summary: null,
@@ -1410,12 +1420,19 @@ async function wireTeamRunBalanceFixtures(
     }
     await route.fallback();
   });
+  return {
+    personalWalletRequests: () => personalWalletRequestCount,
+    resetBalanceRequests: () => {
+      personalWalletRequestCount = 0;
+      teamBillingRequestCount = 0;
+    },
+    teamBillingRequests: () => teamBillingRequestCount,
+  };
 }
 
 async function createBoundTeamProject(
   page: Page,
   projectName: string,
-  pendingPrompt?: string,
 ): Promise<{ projectId: string; conversationId: string }> {
   const response = await retryProjectCreate(page, projectName);
   const created = (await response.json()) as {
@@ -1424,7 +1441,6 @@ async function createBoundTeamProject(
   };
   const bindProject = (project: Record<string, unknown>) => ({
     ...project,
-    ...(pendingPrompt ? { pendingPrompt } : {}),
     workspaceId: TEAM_RUN_CONTEXT.workspaceId,
     visibility: 'personal',
     createdByWorkspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
@@ -1465,6 +1481,20 @@ async function createBoundTeamProject(
         : body,
     });
   });
+  await page.route(`**/api/projects/${created.project.id}/collab/status`, async (route) => {
+    await route.fulfill({
+      json: {
+        publishedVersion: 1,
+        materializedVersion: 1,
+        awaitingFirstMaterialization: false,
+        syncState: 'synced',
+        ownerMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+        ownerDisplayName: 'Team Run Owner',
+        ownerRole: TEAM_RUN_CONTEXT.role,
+        contentTransferState: null,
+      },
+    });
+  });
   return {
     projectId: created.project.id,
     conversationId: created.conversationId,
@@ -1474,31 +1504,13 @@ async function createBoundTeamProject(
 test('[P0] Team project send keeps exact Team run scope while its first scope read is pending', async ({ page }) => {
   test.setTimeout(60_000);
   const prompt = 'Run against the Team workspace while its scope read is still pending.';
-  await wireTeamRunBalanceFixtures(page, {
+  const balanceRequests = await wireTeamRunBalanceFixtures(page, {
     personalBalanceUsd: '0.00',
     teamBalanceUsd: '99.97',
   });
   const { projectId, conversationId } = await createBoundTeamProject(
     page,
     'Pending Team scope run witness',
-    prompt,
-  );
-  await page.addInitScript(
-    ({ id, witness }) => {
-      window.sessionStorage.setItem(`od:auto-send-first:${id}`, '1');
-      window.sessionStorage.setItem(
-        `od:auto-send-amr-gate-witness:${id}`,
-        JSON.stringify(witness),
-      );
-    },
-    {
-      id: projectId,
-      witness: {
-        workspaceType: TEAM_RUN_CONTEXT.workspaceType,
-        workspaceId: TEAM_RUN_CONTEXT.workspaceId,
-        workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
-      },
-    },
   );
   let releaseScope!: () => void;
   const scopeGate = new Promise<void>((resolve) => {
@@ -1541,6 +1553,10 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
   await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
   await expectWorkspaceReady(page);
   await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+  await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+  balanceRequests.resetBalanceRequests();
+  await page.getByTestId('chat-composer-input').fill(prompt);
+  await page.getByTestId('chat-send').click();
 
   await expect.poll(() => runHeaders.length).toBe(1);
   releaseScope();
@@ -1551,20 +1567,32 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
   // Run scope is an HTTP authority header contract. The daemon intentionally
   // does not duplicate this mutable principal into ChatRequest JSON.
   expect(runBodies[0]?.currentPrompt).toBe(prompt);
+  expect(balanceRequests.teamBillingRequests()).toBe(1);
+  // Team preflight reads the account snapshot once for signed-in identity
+  // metadata only; Personal $0 is not the balance oracle and cannot veto the
+  // Team-funded run proved above.
+  expect(balanceRequests.personalWalletRequests()).toBe(1);
   await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
 });
 
 test('[P0] Team project balance gate ignores funded Personal wallet and blocks on empty Team wallet', async ({ page }) => {
   test.setTimeout(60_000);
-  await wireTeamRunBalanceFixtures(page, {
-    personalBalanceUsd: '88.00',
+  const balanceRequests = await wireTeamRunBalanceFixtures(page, {
+    personalBalanceUsd: '99.97',
     teamBalanceUsd: '0.00',
   });
   const { projectId, conversationId } = await createBoundTeamProject(
     page,
     'Empty Team wallet run witness',
   );
+  let releaseScope!: () => void;
+  const scopeGate = new Promise<void>((resolve) => {
+    releaseScope = resolve;
+  });
+  let scopeRequests = 0;
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
+    scopeRequests += 1;
+    if (scopeRequests > 1) await scopeGate;
     await route.fulfill({
       json: {
         scope: {
@@ -1584,6 +1612,9 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
 
   await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
   await expectWorkspaceReady(page);
+  await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+  await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+  balanceRequests.resetBalanceRequests();
   await page.getByTestId('chat-composer-input').fill(
     'Do not charge the funded Personal wallet for this Team project.',
   );
@@ -1591,7 +1622,11 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
 
   const dialog = page.getByTestId('amr-balance-dialog');
   await expect(dialog).toBeVisible();
+  releaseScope();
   await expect(dialog).toContainText('$0.00');
+  expect(balanceRequests.teamBillingRequests()).toBe(1);
+  // Conversely, funded Personal identity metadata cannot override Team $0.
+  expect(balanceRequests.personalWalletRequests()).toBe(1);
   await runRequests.expectNone({
     message: 'An empty Team wallet must block before POST /api/runs',
   });
