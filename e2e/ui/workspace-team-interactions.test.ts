@@ -482,9 +482,22 @@ test('[P0] account replacement never paints the previous account workspace or pr
 });
 
 test('[P0] team owner completes a multi-row invite with explicit roles', async ({ page }) => {
+  await page.addInitScript(
+    ({ workspaceId, workspaceMemberId }) => {
+      window.sessionStorage.setItem(
+        'od.workspaceSelection.v1',
+        JSON.stringify({ workspaceId, workspaceMemberId }),
+      );
+    },
+    {
+      workspaceId: TEAM_OWNER.workspaceId,
+      workspaceMemberId: TEAM_OWNER.workspaceMemberId,
+    },
+  );
   const mocks = await wireWorkspaceMocks(page, TEAM_OWNER, [PERSONAL, TEAM_OWNER]);
   await gotoHome(page);
   await ensureRailOpen(page);
+  await expect(page.getByTestId('workspace-switcher')).toContainText(TEAM_OWNER.workspaceName);
 
   await page.getByTestId('workspace-switcher').click();
   await page.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }).click();
@@ -715,7 +728,7 @@ test('[P0] plugin owner shares, syncs, and removes a workspace resource from the
   await expect(card.getByRole('menuitem', { name: 'Share with team' })).toBeVisible();
 });
 
-test('[P1] teammate plugin stays Team-only while shared and returns cleanly to Personal after retraction', async ({
+test('[P1] same-id Personal plugin stays masked by Team projection until retraction', async ({
   page,
 }) => {
   await wireWorkspaceMocks(page, TEAM_MEMBER, [TEAM_MEMBER]);
@@ -798,13 +811,22 @@ test('[P1] design-system owner shares, syncs, and removes the resource from its 
   await page.getByRole('menuitem', { name: 'Share to team' }).click();
   await expect.poll(() => resourceMocks.mutations).toEqual(['POST']);
 
-  await detail.getByTestId('design-kit-more-actions').click();
+  await expect(card).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Team' }).click();
+  await expect(card).toBeVisible();
+  await card.click();
+  const teamDetail = page.getByTestId(`design-system-detail-${LOCAL_DESIGN_SYSTEM.id}`);
+  await teamDetail.getByTestId('design-kit-more-actions').click();
   await expect(page.getByRole('menuitem', { name: 'Sync to team' })).toBeVisible();
   await page.getByRole('menuitem', { name: 'Remove from team' }).click();
   await expect.poll(() => resourceMocks.mutations).toEqual(['POST', 'DELETE']);
 
+  await expect(card).toHaveCount(0);
+  await page.getByRole('tab', { name: 'Your systems' }).click();
   await expect(card).toBeVisible();
-  await detail.getByTestId('design-kit-more-actions').click();
+  await card.click();
+  const personalDetail = page.getByTestId(`design-system-detail-${LOCAL_DESIGN_SYSTEM.id}`);
+  await personalDetail.getByTestId('design-kit-more-actions').click();
   await expect(page.getByRole('menuitem', { name: 'Share to team' })).toBeVisible();
 });
 
@@ -1338,6 +1360,7 @@ async function gotoHome(page: Page): Promise<void> {
     timeout: T.long,
   });
   await expect(page.getByTestId('home-hero')).toBeVisible({ timeout: T.medium });
+  await ensureRailOpen(page);
   await expect(page.getByTestId('workspace-switcher')).toBeAttached();
 }
 
@@ -1604,7 +1627,10 @@ async function wireTeammatePluginResourceMocks(
 
   await page.route('**/api/plugins**', async (route) => {
     if (route.request().method() === 'GET') {
-      await route.fulfill({ json: { plugins: shared ? [LOCAL_PLUGIN] : [] } });
+      // Model a pre-existing Personal install with the same id as the Team
+      // projection. Retraction removes only the Team projection, revealing
+      // this independent local resource; it does not reclassify a Team mirror.
+      await route.fulfill({ json: { plugins: [LOCAL_PLUGIN] } });
       return;
     }
     await route.fallback();
