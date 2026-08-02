@@ -47,7 +47,7 @@ export interface DesignFilesNavState {
 interface Props {
   projectId: string;
   filesRefreshKey?: number;
-  /** Read-only viewer of a team-shared project: withholds create/upload actions. */
+  /** Read-only viewer of a team-shared project: disables project mutations. */
   viewerOnly?: boolean;
   /**
    * True while a non-owner member's local mirror has not yet caught up to the
@@ -1160,25 +1160,6 @@ export function DesignFilesPanel({
           <span>{t('designFiles.library.label')}</span>
         </button>
       ) : null}
-      <button type="button" onClick={onNewSketch} title={t('designFiles.newSketch')}>
-        <Icon name="pencil" size={13} />
-        <span>{t('designFiles.newSketch')}</span>
-      </button>
-      {/* `onPaste` is a historical prop name — the action creates a new blank
-          Markdown document, so it is labelled for what it does. */}
-      <button type="button" onClick={onPaste} title={t('designFiles.newDocumentTitle')}>
-        <Icon name="file" size={13} />
-        <span>{t('designFiles.newDocument')}</span>
-      </button>
-      <button
-        type="button"
-        data-testid="design-files-upload-trigger"
-        onClick={onUpload}
-        title={t('designFiles.upload.title')}
-      >
-        <Icon name="upload" size={13} />
-        <span>{t('designFiles.upload.label')}</span>
-      </button>
       {onCreateDesignSystemFromProject || onDuplicateProject ? (
         <div className="df-project-menu-anchor" ref={projectMenuRef}>
           <button
@@ -1397,20 +1378,49 @@ export function DesignFilesPanel({
                   <span className="df-empty-title">
                     {t('designFiles.empty')}
                   </span>
-                  {/* Product call: the empty state shows this component with its
-                      CTAs for EVERY empty project, shared read-only ones
-                      included — the create actions themselves stay guarded by
-                      the read-only enforcement downstream. */}
+                  {/* Keep starter actions discoverable in shared read-only
+                      projects, but disable every project mutation in place. */}
                   <div className="df-empty-actions">
                     <button
                       type="button"
                       className="df-empty-cta df-empty-cta-primary"
                       data-testid="design-files-empty-new-sketch"
+                      disabled={viewerOnly}
                       onClick={onNewSketch}
-                      title={t('designFiles.newSketch')}
+                      title={viewerOnly
+                        ? t('fileViewer.readonlySharedNoExport')
+                        : t('designFiles.newSketch')}
                     >
                       <Icon name="pencil" size={13} />
                       <span>{t('designFiles.newSketch')}</span>
+                    </button>
+                    {/* `onPaste` is a historical prop name — the action creates
+                        a new blank Markdown document. */}
+                    <button
+                      type="button"
+                      className="df-empty-cta df-empty-cta-doc"
+                      data-testid="design-files-empty-new-document"
+                      disabled={viewerOnly}
+                      onClick={onPaste}
+                      title={viewerOnly
+                        ? t('fileViewer.readonlySharedNoExport')
+                        : t('designFiles.newDocumentTitle')}
+                    >
+                      <Icon name="file" size={13} />
+                      <span>{t('designFiles.newDocument')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="df-empty-cta df-empty-cta-upload"
+                      data-testid="design-files-upload-trigger"
+                      disabled={viewerOnly}
+                      onClick={onUpload}
+                      title={viewerOnly
+                        ? t('fileViewer.readonlySharedNoExport')
+                        : t('designFiles.upload.title')}
+                    >
+                      <Icon name="upload" size={13} />
+                      <span>{t('designFiles.upload.label')}</span>
                     </button>
                     {onOpenBrowser ? (
                       <button
@@ -1430,8 +1440,11 @@ export function DesignFilesPanel({
                         type="button"
                         className="df-empty-cta df-empty-cta-tertiary"
                         data-testid="design-files-empty-create-design-system"
+                        disabled={viewerOnly}
                         onClick={onCreateDesignSystem}
-                        title={t('dsManager.createTitle')}
+                        title={viewerOnly
+                          ? t('fileViewer.readonlySharedNoExport')
+                          : t('dsManager.createTitle')}
                       >
                         <Icon name="blocks" size={14} />
                         <span>{t('dsManager.createTitle')}</span>

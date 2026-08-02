@@ -28,6 +28,7 @@ import { join } from 'node:path';
 
 import { describe, expect, test } from 'vitest';
 
+import { AMR_TEST_WORKSPACE_HEADERS } from '@/vitest/amr';
 import { requestJson } from '@/vitest/http';
 import { listMessages } from '@/vitest/messages';
 import { startRun, waitForRunStatus } from '@/vitest/runs';
@@ -247,6 +248,7 @@ describe('AMR chat-run end-to-end', () => {
           pendingPrompt: null,
           skillId: null,
         },
+        headers: { ...AMR_TEST_WORKSPACE_HEADERS },
       });
       const projectId = project.project.id;
       const conversationId = project.conversationId;
@@ -270,7 +272,7 @@ describe('AMR chat-run end-to-end', () => {
         projectId,
         reasoning: 'default',
         skillId: null,
-      });
+      }, { ...AMR_TEST_WORKSPACE_HEADERS });
       expect(run.runId).toMatch(/[a-z0-9-]/i);
 
       // Override the per-process FAKE_VELA_TEXT so the assertion below is
@@ -284,11 +286,17 @@ describe('AMR chat-run end-to-end', () => {
       void ASSISTANT_TEXT;
 
       const finalStatus = await waitForRunStatus(webUrl, run.runId, 'succeeded', {
+        headers: { ...AMR_TEST_WORKSPACE_HEADERS },
         timeoutMs: 30_000,
       });
       expect(finalStatus.status).toBe('succeeded');
 
-      const messages = await listMessages(webUrl, projectId, conversationId);
+      const messages = await listMessages(
+        webUrl,
+        projectId,
+        conversationId,
+        { ...AMR_TEST_WORKSPACE_HEADERS },
+      );
       const assistantMessage = messages.find((m) => m.id === assistantMessageId);
       if (assistantMessage) {
         expect(assistantMessage.content).toContain('Hello from the e2e fake vela');

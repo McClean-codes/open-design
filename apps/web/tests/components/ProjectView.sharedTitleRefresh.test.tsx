@@ -31,7 +31,12 @@ import {
   loadTabs,
   ProjectConversationsHttpError,
 } from '../../src/state/projects';
-import { fetchPreviewComments } from '../../src/providers/registry';
+import {
+  fetchPreviewComments,
+  invalidateProjectFilesCache,
+} from '../../src/providers/registry';
+
+const fileWorkspaceRenderSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('../../src/i18n', () => ({
   useT: () => (key: string) => key,
@@ -123,6 +128,7 @@ vi.mock('../../src/providers/registry', async () => {
     fetchLiveArtifacts: vi.fn().mockResolvedValue([]),
     fetchPreviewComments: vi.fn(),
     fetchProjectFiles: vi.fn().mockResolvedValue([]),
+    invalidateProjectFilesCache: vi.fn(),
     fetchSkill: vi.fn(),
     getTemplate: vi.fn(),
     patchPreviewCommentStatus: vi.fn(),
@@ -161,25 +167,34 @@ vi.mock('../../src/components/FileWorkspace', () => ({
   DESIGN_SYSTEM_TAB: '__design_system__',
   FileWorkspace: ({
     projectName,
+    filesRefreshKey = 0,
     focusMode = false,
     onFocusModeChange,
   }: {
     projectName: string;
+    filesRefreshKey?: number;
     focusMode?: boolean;
     onFocusModeChange?: (focused: boolean) => void;
-  }) => (
-    <div data-project-name={projectName} data-testid="file-workspace">
-      {focusMode ? (
-        <button
-          type="button"
-          data-testid="workspace-focus-toggle"
-          onClick={() => onFocusModeChange?.(false)}
-        >
-          show chat
-        </button>
-      ) : null}
-    </div>
-  ),
+  }) => {
+    fileWorkspaceRenderSpy(filesRefreshKey);
+    return (
+      <div
+        data-files-refresh-key={filesRefreshKey}
+        data-project-name={projectName}
+        data-testid="file-workspace"
+      >
+        {focusMode ? (
+          <button
+            type="button"
+            data-testid="workspace-focus-toggle"
+            onClick={() => onFocusModeChange?.(false)}
+          >
+            show chat
+          </button>
+        ) : null}
+      </div>
+    );
+  },
 }));
 
 vi.mock('../../src/components/Loading', () => ({
@@ -202,6 +217,7 @@ const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
 const mockedLoadTabs = vi.mocked(loadTabs);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
+const mockedInvalidateProjectFilesCache = vi.mocked(invalidateProjectFilesCache);
 const mockedGetProject = vi.mocked(getProject);
 
 const onProjectChangeMock = vi.fn();
@@ -407,6 +423,35 @@ describe('ProjectView shared-project title refresh on project-metadata-changed',
 
     expect(document.querySelector('.split')).not.toHaveClass('split-focus');
     expect(screen.queryByTestId('workspace-focus-toggle')).toBeNull();
+  });
+
+  it('invalidates the exact Workspace file-list authority before publishing an SSE refresh', async () => {
+    const workspace = teamWorkspaceContext();
+    const sharedProject = { ...project, workspaceId: workspace.workspaceId };
+    renderProjectView(sharedProject, { workspaceContextOverride: workspace });
+
+    mockedInvalidateProjectFilesCache.mockClear();
+    fileWorkspaceRenderSpy.mockClear();
+    dispatchProjectEvent({ type: 'file-changed', path: 'index.html', kind: 'change' });
+
+    await waitFor(() => {
+      expect(mockedInvalidateProjectFilesCache).toHaveBeenCalledWith(
+        sharedProject.id,
+        workspace,
+      );
+      expect(screen.getByTestId('file-workspace')).toHaveAttribute(
+        'data-files-refresh-key',
+        '1',
+      );
+    });
+
+    const refreshedRender = fileWorkspaceRenderSpy.mock.calls.findIndex(
+      ([filesRefreshKey]) => filesRefreshKey === 1,
+    );
+    expect(refreshedRender).toBeGreaterThanOrEqual(0);
+    expect(mockedInvalidateProjectFilesCache.mock.invocationCallOrder[0]).toBeLessThan(
+      fileWorkspaceRenderSpy.mock.invocationCallOrder[refreshedRender]!,
+    );
   });
 
   // recvqhwv6RPU1j: a member's first open of a team-shared project registers a

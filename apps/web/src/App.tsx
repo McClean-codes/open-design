@@ -85,7 +85,10 @@ import {
   listProjectRuns,
   type VelaLoginStatus,
 } from './providers/daemon';
-import { AMR_LOGIN_STATUS_EVENT } from './components/amrLoginPolling';
+import {
+  AMR_LOGIN_STATUS_EVENT,
+  amrLoginStatusEventReason,
+} from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
 import { fetchTeamProjectsCatalog } from './collab/team-projects-catalog';
 import { workspaceProjectHeaders } from './collab/workspace-identity';
@@ -132,6 +135,11 @@ import {
   amrBalanceGateScopesMatch,
   type AmrBalanceGateScope,
 } from './runtime/amr-balance-gate';
+import {
+  AMR_AUTH_RETRY_CONTINUATION_TTL_MS,
+  routeStillMatchesAmrAuthRetryContinuation,
+  type AmrAuthRetryContinuation,
+} from './runtime/amr-auth-retry-continuation';
 import { installFontRecovery } from './runtime/font-recovery';
 import {
   createDesignSystemProjectFromProject,
@@ -593,6 +601,12 @@ export type ProjectRouteSurfaceState =
   | 'materialization-failed'
   | 'daemon-unavailable';
 
+interface SettingsReturnTarget {
+  route: Extract<Route, { kind: 'project' }>;
+  accountGeneration: number;
+  identityScopeKey: string;
+}
+
 /**
  * The project route must never use `!activeProject` as an unbounded loading
  * condition. Once the initial list is complete, every absent-project path is
@@ -993,6 +1007,9 @@ function AppInner() {
   // can't overwrite the saved state with `''` before hydration lands.
   const [composioConfigLoading, setComposioConfigLoading] = useState(true);
   const route = useRoute();
+  const routeRef = useRef(route);
+  routeRef.current = route;
+  const settingsReturnTargetRef = useRef<SettingsReturnTarget | null>(null);
   const workspaceProjectView = workspaceProjectListViewForRoute(route);
   // Read-only mirror for the boot effect. The boot pass needs to know which
   // project list to seed, but it must NOT restart when that answer changes:
@@ -1205,6 +1222,55 @@ function AppInner() {
   // globals effect below reads it; the sync effects live next to the
   // other AMR plumbing further down.
   const [amrLoginStatus, setAmrLoginStatus] = useState<VelaLoginStatus | null>(null);
+  // Inline AMR auth can invalidate the caller identity and intentionally tear
+  // down ProjectView before the login poll reports success. Keep only the
+  // exact failed-turn continuation above that authorization lifetime; the
+  // fresh ProjectView must prove the same route + Workspace authority before
+  // it may consume this one-shot retry.
+  const [amrAuthRetryContinuation, setAmrAuthRetryContinuation] =
+    useState<AmrAuthRetryContinuation | null>(null);
+  const amrAuthRetryContinuationRef = useRef<AmrAuthRetryContinuation | null>(null);
+  const clearAmrAuthRetryContinuation = useCallback((expected?: AmrAuthRetryContinuation) => {
+    if (expected && amrAuthRetryContinuationRef.current !== expected) return;
+    amrAuthRetryContinuationRef.current = null;
+    setAmrAuthRetryContinuation(null);
+  }, []);
+  const armAmrAuthRetryContinuation = useCallback((
+    input: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+  ) => {
+    const next: AmrAuthRetryContinuation = {
+      ...input,
+      accountIdAtArm:
+        amrLoginStatusRef.current?.loggedIn === true
+          ? amrLoginStatusRef.current.user?.id ?? null
+          : null,
+      createdAtMs: Date.now(),
+    };
+    amrAuthRetryContinuationRef.current = next;
+    setAmrAuthRetryContinuation(next);
+  }, []);
+  const consumeAmrAuthRetryContinuation = useCallback((
+    expected: AmrAuthRetryContinuation,
+  ): boolean => {
+    if (amrAuthRetryContinuationRef.current !== expected) return false;
+    clearAmrAuthRetryContinuation(expected);
+    return true;
+  }, [clearAmrAuthRetryContinuation]);
+  useEffect(() => {
+    if (!amrAuthRetryContinuation) return;
+    const remainingMs =
+      amrAuthRetryContinuation.createdAtMs
+      + AMR_AUTH_RETRY_CONTINUATION_TTL_MS
+      - Date.now();
+    if (remainingMs <= 0) {
+      clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      clearAmrAuthRetryContinuation(amrAuthRetryContinuation);
+    }, remainingMs);
+    return () => window.clearTimeout(timeout);
+  }, [amrAuthRetryContinuation, clearAmrAuthRetryContinuation]);
   // The plan that gates free-tier surfaces (today: the post-generation artifact
   // upsell). vela's login status is ACCOUNT-scoped, so a member whose plan is
   // held by the team workspace reads `free` there and used to be shown the
@@ -1229,9 +1295,50 @@ function AppInner() {
     status: VelaLoginStatus,
     options: { forceModelRefresh?: boolean; restartOnSignIn?: boolean } = {},
   ) => {
-    const wasLoggedIn = amrLoginStatusRef.current?.loggedIn === true;
+    const previousStatus = amrLoginStatusRef.current;
+    const wasLoggedIn = previousStatus?.loggedIn === true;
+    const pendingRetry = amrAuthRetryContinuationRef.current;
+    const accountChangedWhileAuthorizing = Boolean(
+      pendingRetry
+      && (
+        (wasLoggedIn && status.loggedIn === false)
+        || (
+          status.loggedIn === true
+          && pendingRetry.accountIdAtArm !== null
+          && status.user?.id !== pendingRetry.accountIdAtArm
+        )
+      )
+    );
+    if (accountChangedWhileAuthorizing && pendingRetry) {
+      clearAmrAuthRetryContinuation(pendingRetry);
+    }
     amrLoginStatusRef.current = status;
     setAmrLoginStatus(status);
+    const currentRoute = routeRef.current;
+    if (
+      pendingRetry
+      && !accountChangedWhileAuthorizing
+      && status.loggedIn === true
+      && status.user?.id
+      && (
+        pendingRetry.accountIdAtArm === null
+        || pendingRetry.accountIdAtArm === status.user.id
+      )
+      && currentRoute.kind === 'home'
+      && currentRoute.view === 'settings'
+    ) {
+      // The Settings page intentionally unmounts ProjectView while AMR login
+      // completes. Return only to the exact failed conversation carried by the
+      // App-owned continuation; the fresh ProjectView must still prove its
+      // persisted Workspace authority before ChatPane may consume the retry.
+      settingsReturnTargetRef.current = null;
+      navigate({
+        kind: 'project',
+        projectId: pendingRetry.projectId,
+        conversationId: pendingRetry.conversationId,
+        fileName: null,
+      }, { replace: true });
+    }
     if (
       status.loggedIn === true
       && (
@@ -1241,7 +1348,7 @@ function AppInner() {
     ) {
       restartAmrPolling();
     }
-  }, [restartAmrPolling]);
+  }, [clearAmrAuthRetryContinuation, restartAmrPolling]);
 
   // Tab-scope identity key, fed to WorkspaceTabsBar so it can close every open
   // tab down to a single fresh Home tab whenever the caller's identity
@@ -1435,7 +1542,10 @@ function AppInner() {
       }
     };
     void sync();
-    const onStatusEvent = () => {
+    const onStatusEvent = (event: Event) => {
+      if (amrLoginStatusEventReason(event) === 'login-canceled') {
+        clearAmrAuthRetryContinuation();
+      }
       void sync({}, true);
     };
     const onReturnToApp = () => {
@@ -1451,7 +1561,7 @@ function AppInner() {
       window.removeEventListener('focus', onReturnToApp);
       document.removeEventListener('visibilitychange', onReturnToApp);
     };
-  }, [applyAmrLoginStatus, daemonLive]);
+  }, [applyAmrLoginStatus, clearAmrAuthRetryContinuation, daemonLive]);
 
   useEffect(() => {
     analytics.setUserId(
@@ -2221,8 +2331,25 @@ function AppInner() {
       let createWorkspaceContext: WorkspaceCollabContext | null = null;
       let result;
       try {
+        const executionConfig = configRef.current;
+        const usesAmrCloud =
+          executionConfig.mode === 'daemon'
+          && executionConfig.agentId === AMR_AGENT_ID;
+        const isExplicitlySignedOut =
+          amrLoginStatusRef.current?.loggedIn === false;
         createWorkspaceContext = resolvedWorkspaceContextForWrite(
           workspaceContextStateRef.current,
+          {
+            // Local/BYOK may create without AMR Workspace authority only after
+            // the independent login read explicitly proves there is no AMR
+            // identity. An unknown or signed-in identity can still own a Team
+            // Workspace whose directory read is merely slow/unavailable, so
+            // executor selection must not silently turn that Team project into
+            // an unscoped Personal one. Unsupported/settled no-workspace states
+            // already retain their explicit compatibility behavior below.
+            unavailablePolicy:
+              !usesAmrCloud && isExplicitlySignedOut ? 'unscoped' : 'reject',
+          },
         );
         if (
           input.amrGatePrecheckWitness &&
@@ -3162,6 +3289,40 @@ function AppInner() {
     ? projectRouteWorkspaceContext.context
     : null;
   projectRouteWorkspaceContextRef.current = activeProjectWorkspaceContext;
+  useEffect(() => {
+    const pending = amrAuthRetryContinuationRef.current;
+    if (!pending) return;
+    if (route.kind === 'home' && route.view === 'settings') {
+      // This is the one permitted non-project route: the failed-turn CTA
+      // deliberately opens AMR Settings and ProjectView unmounts while the
+      // authorization attempt is in flight. Every other route exit clears the
+      // continuation below.
+      return;
+    }
+    if (!routeStillMatchesAmrAuthRetryContinuation(pending, route)) {
+      clearAmrAuthRetryContinuation(pending);
+      return;
+    }
+    if (projectRouteWorkspaceContext.failure) {
+      clearAmrAuthRetryContinuation(pending);
+      return;
+    }
+    // A null context is the expected fail-closed refresh window. Wait for the
+    // fresh exact witness rather than borrowing or latching the old one.
+    if (
+      activeProjectWorkspaceContext
+      && workspaceIdentityCacheKey(activeProjectWorkspaceContext)
+        !== pending.workspaceIdentityKey
+    ) {
+      clearAmrAuthRetryContinuation(pending);
+    }
+  }, [
+    activeProjectWorkspaceContext,
+    amrAuthRetryContinuation,
+    clearAmrAuthRetryContinuation,
+    projectRouteWorkspaceContext.failure,
+    route,
+  ]);
   // Project tabs belong to the project's persisted Workspace authority, not
   // the shell's ambient selection. On a cold deep link the ambient context can
   // settle (or switch A -> B) after the exact project scope has already loaded;
@@ -3366,6 +3527,7 @@ function AppInner() {
     opts?: { highlight?: SettingsHighlight },
   ) => {
     if (section === 'composio' || section === 'mcpClient' || section === 'integrations') {
+      settingsReturnTargetRef.current = null;
       setIntegrationInitialTab(
         section === 'composio'
           ? 'connectors'
@@ -3376,11 +3538,20 @@ function AppInner() {
       navigate({ kind: 'home', view: 'integrations' });
       return;
     }
+    const currentRoute = routeRef.current;
+    settingsReturnTargetRef.current =
+      currentRoute.kind === 'project' && identityScopeKey !== null
+        ? {
+            route: { ...currentRoute },
+            accountGeneration: currentWorkspaceAccountGeneration(),
+            identityScopeKey,
+          }
+        : null;
     setSettingsWelcome(false);
     setSettingsInitialSection(section);
     setSettingsHighlight(opts?.highlight ?? null);
     navigate({ kind: 'home', view: 'settings' });
-  }, []);
+  }, [identityScopeKey]);
 
   // Entry point from the failed-run AMR nudge: open Settings on the execution
   // section and flag the AMR agent card for a one-shot scroll-into-view +
@@ -3390,11 +3561,20 @@ function AppInner() {
   }, [openSettings]);
 
   const openPetSettings = useCallback(() => {
+    const currentRoute = routeRef.current;
+    settingsReturnTargetRef.current =
+      currentRoute.kind === 'project' && identityScopeKey !== null
+        ? {
+            route: { ...currentRoute },
+            accountGeneration: currentWorkspaceAccountGeneration(),
+            identityScopeKey,
+          }
+        : null;
     setSettingsWelcome(false);
     setSettingsInitialSection('pet');
     setSettingsHighlight(null);
     navigate({ kind: 'home', view: 'settings' });
-  }, []);
+  }, [identityScopeKey]);
 
   const openMcpSettings = useCallback(() => {
     setIntegrationInitialTab('mcp');
@@ -3560,7 +3740,18 @@ function AppInner() {
     settingsDraftConfigRef.current = null;
     setSettingsHighlight(null);
     if (route.kind === 'home' && route.view === 'settings') {
-      navigate({ kind: 'home', view: 'home' });
+      const returnTarget = settingsReturnTargetRef.current;
+      settingsReturnTargetRef.current = null;
+      const returnIdentityStillMatches = Boolean(
+        returnTarget
+        && returnTarget.accountGeneration === currentWorkspaceAccountGeneration()
+        && returnTarget.identityScopeKey === identityScopeKey
+      );
+      navigate(
+        returnIdentityStillMatches && returnTarget
+          ? returnTarget.route
+          : { kind: 'home', view: 'home' },
+      );
     }
   };
 
@@ -3817,10 +4008,18 @@ function AppInner() {
             activeProjectWorkspaceContext,
           )}
           project={activeProject}
-          workspaceContextOverride={activeProjectWorkspaceContext}
+          workspaceContextOverride={
+            activeProject.workspaceId
+              ? activeProjectWorkspaceContext
+              : undefined
+          }
           projectAuthorizationKey={
             activeProjectAuthorizationKey ?? activeProject.id
           }
+          amrAuthRetryContinuation={amrAuthRetryContinuation}
+          onArmAmrAuthRetryContinuation={armAmrAuthRetryContinuation}
+          onConsumeAmrAuthRetryContinuation={consumeAmrAuthRetryContinuation}
+          onDiscardAmrAuthRetryContinuation={clearAmrAuthRetryContinuation}
           authoritativeProjectName={activeAuthoritativeProjectName}
           resolveAuthoritativeProjectName={resolveAuthoritativeProjectName}
           routeFileName={route.fileName}
@@ -3961,6 +4160,11 @@ function AppInner() {
         <WorkspaceTabsBar
           route={route}
           projects={projects}
+          activeProjectWorkspaceId={
+            route.kind === 'project' && activeProject
+              ? activeProject.workspaceId ?? null
+              : undefined
+          }
           onboardingCompleted={config.onboardingCompleted === true}
           identityScopeKey={workspaceTabsIdentityScopeKey}
         />

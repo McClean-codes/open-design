@@ -227,10 +227,6 @@ interface Props {
   onShareToOpenDesign?: () => void;
   shareToOpenDesignBusy?: boolean;
   variant?: NextStepActionsVariant;
-  // Accepted for API compatibility but no longer rendered here: the 扩展 /
-  // 设计百宝箱 quick pills moved out of this card to sit directly above the
-  // composer input (ChatPane renders them next to ChatComposer).
-  onOpenComposerPanel?: (which: 'plugins' | 'toolbox') => void;
 }
 
 const FLYOUT_GAP = 8;
@@ -341,7 +337,6 @@ export function NextStepActions({
   onShareToOpenDesign,
   shareToOpenDesignBusy = false,
   variant = 'default',
-  onOpenComposerPanel,
 }: Props) {
   const { t, locale } = useI18n();
   const analytics = useAnalytics();

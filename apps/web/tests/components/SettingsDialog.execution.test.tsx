@@ -2929,6 +2929,42 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     expect(screen.queryByLabelText(en['settings.modelCustomLabel'])).toBeNull();
   });
 
+  it('closes the AMR model picker with Escape without closing Settings', () => {
+    const view = renderSettingsDialog(
+      {
+        mode: 'daemon',
+        agentId: 'amr',
+        agentModels: { amr: { model: 'glm-5' } },
+      },
+      {
+        agents: [
+          {
+            ...amrAgent,
+            modelsSource: 'live',
+            models: [
+              { id: 'glm-5', label: 'GLM 5' },
+              { id: 'glm-5.1', label: 'GLM 5.1' },
+            ],
+          },
+        ],
+      },
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: /Local CLI/i }));
+    fireEvent.click(screen.getByTestId('settings-agent-select-amr'));
+
+    const modelPicker = screen.getByRole('combobox', {
+      name: en['settings.modelPicker'],
+    });
+    fireEvent.click(modelPicker);
+    expect(screen.getByTestId('settings-agent-model-popover-amr')).toBeTruthy();
+
+    fireEvent.keyDown(modelPicker, { key: 'Escape' });
+
+    expect(screen.queryByTestId('settings-agent-model-popover-amr')).toBeNull();
+    expect(view.onClose).not.toHaveBeenCalled();
+  });
+
   it('shows an empty state when no local CLI agents are detected', () => {
     renderSettingsDialog(
       { mode: 'daemon', agentId: null },

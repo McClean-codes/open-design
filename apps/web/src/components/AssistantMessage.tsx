@@ -421,9 +421,6 @@ interface Props {
   nextStepSkills?: SkillSummary[];
   toolboxSkillNames?: Partial<Record<DesignToolboxActionId, string | null>>;
   nextStepVariant?: NextStepActionsVariant;
-  // Quick-access pills above the next-step card — open the composer "+" menu
-  // on the 扩展 (plugins) or 设计百宝箱 (toolbox) flyout.
-  onNextStepOpenComposerPanel?: (which: 'plugins' | 'toolbox') => void;
 }
 
 // Props compared by reference to decide whether a memoized AssistantMessage can
@@ -548,7 +545,6 @@ function AssistantMessageImpl({
   nextStepSkills,
   toolboxSkillNames,
   nextStepVariant = 'default',
-  onNextStepOpenComposerPanel,
 }: Props) {
   const t = useT();
   // Thinking text renders markdown too — its file links must route in-app
@@ -1141,7 +1137,6 @@ function AssistantMessageImpl({
             onShareToOpenDesign={showOpenDesignSubmission ? onShareToOpenDesign : undefined}
             shareToOpenDesignBusy={shareToOpenDesignBusy}
             variant={effectiveNextStepVariant}
-            onOpenComposerPanel={isLast ? onNextStepOpenComposerPanel : undefined}
           />
         ) : null}
       </div>

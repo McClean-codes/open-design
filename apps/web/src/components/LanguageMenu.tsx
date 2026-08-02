@@ -52,7 +52,7 @@ export function LanguageMenu({
         onClick={() => setOpen((v) => !v)}
         title={LOCALE_LABEL[locale]}
       >
-        <Icon name="languages" size={compact ? 20 : 12} />
+        <Icon name="translate" size={compact ? 20 : 12} />
         {compact ? null : (
           <>
             <span>{LOCALE_LABEL[locale]}</span>

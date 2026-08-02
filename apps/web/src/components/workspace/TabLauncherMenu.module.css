@@ -9,10 +9,13 @@
   max-width: calc(100vw - 24px);
   display: flex;
   flex-direction: column;
-  /* Solid panel, not frosted glass: the launcher floats over arbitrary page
-     content (often dark artifacts), where translucency made rows unreadable. */
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
+  /* Frosted glass restored (dogfood 2026-07-28): the launcher goes back to
+     the glass material — the solid-panel swap from the popover-simplification
+     batch dropped the depth the rest of the floating chrome carries. */
+  background: var(--glass-regular);
+  -webkit-backdrop-filter: var(--glass-backdrop);
+  backdrop-filter: var(--glass-backdrop);
+  border: 1px solid var(--material-separator);
   border-radius: var(--radius);
   box-shadow: var(--shadow-lg);
   overflow: hidden;

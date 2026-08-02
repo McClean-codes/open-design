@@ -7393,6 +7393,7 @@ function HtmlViewer({
   const [templateSaveError, setTemplateSaveError] = useState<string | null>(null);
   const [deployment, setDeployment] = useState<WebDeploymentInfo | null>(null);
   const [deploymentsByProvider, setDeploymentsByProvider] = useState<Partial<Record<WebDeployProviderId, WebDeploymentInfo>>>({});
+  const deploymentsLoadSeqRef = useRef(0);
   const [deployModalOpen, setDeployModalOpen] = useState(false);
   const [deployModalIntent, setDeployModalIntent] = useState<'deploy' | 'social-share'>('deploy');
   const closeDeployModal = useCallback(() => {
@@ -8681,13 +8682,14 @@ function HtmlViewer({
   ]);
 
   useEffect(() => {
+    const requestSeq = ++deploymentsLoadSeqRef.current;
     let cancelled = false;
     setDeployResult(null);
     setDeployError(null);
     setCopiedDeployLink(null);
     setDeployPhase('idle');
     void fetchProjectDeployments(projectId, workspaceContext).then((items) => {
-      if (cancelled) return;
+      if (cancelled || deploymentsLoadSeqRef.current !== requestSeq) return;
       const nextDeploymentsByProvider = deploymentMapForCurrentFile(items);
       const current = nextDeploymentsByProvider[deployProviderId] ?? null;
       setDeploymentsByProvider(nextDeploymentsByProvider);
@@ -8698,6 +8700,28 @@ function HtmlViewer({
       cancelled = true;
     };
   }, [projectId, file.name, deployProviderId, workspaceContext]);
+
+  // A retained HtmlViewer stays mounted while the user visits Design Files and
+  // comes back, so its initial deployment snapshot can legitimately be older
+  // than the Share/Export popover. Refresh on demand when that popover opens;
+  // the shared sequence fence prevents an older identity-load response from
+  // overwriting this newer snapshot.
+  useEffect(() => {
+    if (!deployMenuOpen) return;
+    const requestSeq = ++deploymentsLoadSeqRef.current;
+    let cancelled = false;
+    void fetchProjectDeployments(projectId, workspaceContext).then((items) => {
+      if (cancelled || deploymentsLoadSeqRef.current !== requestSeq) return;
+      const nextDeploymentsByProvider = deploymentMapForCurrentFile(items);
+      const current = nextDeploymentsByProvider[deployProviderId] ?? null;
+      setDeploymentsByProvider(nextDeploymentsByProvider);
+      setDeployment(current ?? null);
+      setDeployResult(current ?? null);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [deployMenuOpen, projectId, file.name, deployProviderId, workspaceContext]);
 
   const routingHtmlSource = source ?? routingSource ?? lastGoodSourceForRoutingRef.current;
   const passiveLargeHtmlPreview = shouldDeferPassivePreviewSource && source === null;

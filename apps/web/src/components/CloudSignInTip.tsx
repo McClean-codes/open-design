@@ -21,29 +21,18 @@ import {
 
 const DISMISSED_KEY = 'od.entry.cloudSignInTip.dismissed';
 
-function readDismissed(): boolean {
-  try {
-    return window.localStorage.getItem(DISMISSED_KEY) === '1';
-  } catch {
-    return false;
-  }
-}
-
 /**
- * recvqbkcLqIFH7: a user who ever closed this card (while poking around
- * signed-out, or on a personal/local workspace) had that dismissal persist
- * in localStorage FOREVER — including through a later real sign-in and
- * sign-out. Since this card is the rail's only visible sign-in entry point
- * once `context` goes back to null, that stale flag silently deleted the
- * user's only way back in: the rail footer rendered empty, with no error
- * and no other affordance.
+ * recvqbkcLqIFH7: a user who ever closed this card (back when it had a close
+ * button) had that dismissal persist in localStorage FOREVER — including
+ * through a later real sign-in and sign-out. Since this card is the rail's
+ * only visible sign-in entry point once `context` goes back to null, that
+ * stale flag silently deleted the user's only way back in: the rail footer
+ * rendered empty, with no error and no other affordance.
  *
- * A real, deliberate sign-out (the account menu's 退出登录) is exactly the
- * moment the card must be guaranteed to come back, so EntryNavRail calls
- * this right alongside its other post-sign-out notifications. It must NOT
- * be called on every workspace-context refresh — only on an explicit
- * sign-out — or a dismiss made while merely browsing signed-out would keep
- * getting undone by unrelated context polls.
+ * The card no longer has a close button (nothing sets this key anymore), so
+ * this is now legacy cleanup for accounts that dismissed it before that
+ * change shipped — EntryNavRail still calls it on every real sign-out so a
+ * pre-existing stale flag can't resurface the bug.
  */
 export function resetCloudSignInTipDismissal(): void {
   try {
@@ -106,7 +95,6 @@ export function RailAccountSyncTip() {
  */
 export function CloudSignInTip() {
   const { t } = useI18n();
-  const [dismissed, setDismissed] = useState<boolean>(readDismissed);
   const [state, setState] = useState<TipState>('idle');
   const [status, setStatus] = useState<VelaLoginStatus | null>(null);
   const cancelledRef = useRef(false);
@@ -180,9 +168,16 @@ export function CloudSignInTip() {
     notifyAmrLoginStatusChanged('login-canceled');
   }
 
-  if (dismissed) return null;
-
   const signing = state === 'signing';
+
+  const headBadge = (
+    <div className="entry-local-mode-tip__head">
+      <span className="entry-local-mode-tip__login-badge">
+        <Icon name="log-in" size={14} />
+        {t('settings.amrLogin')}
+      </span>
+    </div>
+  );
 
   return (
     <section
@@ -201,31 +196,9 @@ export function CloudSignInTip() {
       aria-label={t('entry.cloudCalloutTitle')}
       data-testid="entry-cloud-signin-tip"
     >
-      <button
-        type="button"
-        className="entry-local-mode-tip__close"
-        onClick={(event) => {
-          event.stopPropagation();
-          if (signing) void cancel();
-          setDismissed(true);
-          try {
-            window.localStorage.setItem(DISMISSED_KEY, '1');
-          } catch {
-            // best-effort persistence
-          }
-        }}
-        aria-label={t('entry.cloudCalloutDismissAria')}
-      >
-        <Icon name="close" size={14} />
-      </button>
-      <div className="entry-local-mode-tip__head">
-        <span className="entry-local-mode-tip__icon" aria-hidden>
-          {signing ? <Icon name="spinner" size={14} /> : <Icon name="terminal" size={14} />}
-        </span>
-        <strong>{t('entry.cloudCalloutTitle')}</strong>
-      </div>
       {signing ? (
         <>
+          {headBadge}
           <p>{t('settings.amrSigningIn')}</p>
           {status?.activationUrl ? (
             <div className="amr-login-activation" role="group">
@@ -259,9 +232,15 @@ export function CloudSignInTip() {
           </button>
         </>
       ) : state === 'error' ? (
-        <p role="alert">{t('settings.amrLoginErrorCompact')}</p>
+        <>
+          {headBadge}
+          <p role="alert">{t('settings.amrLoginErrorCompact')}</p>
+        </>
       ) : (
-        <p>{t('entry.cloudCalloutBody')}</p>
+        <>
+          <p>{t('entry.cloudCalloutBody')}</p>
+          {headBadge}
+        </>
       )}
     </section>
   );

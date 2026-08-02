@@ -58,14 +58,25 @@ export type WorkspaceContextForWrite = {
   failure?: 'unsupported' | 'unavailable';
 };
 
+export type WorkspaceContextWriteResolutionOptions = {
+  /**
+   * `unscoped` is reserved for callers whose operation is genuinely local and
+   * does not require AMR Workspace authority. All Workspace-owned writes keep
+   * the default `reject` policy.
+   */
+  unavailablePolicy?: 'reject' | 'unscoped';
+};
+
 /**
  * Preserve headerless old-daemon/anonymous compatibility, but never collapse
  * an unresolved or unavailable modern workspace authority into "anonymous".
  */
 export function resolvedWorkspaceContextForWrite(
   state: WorkspaceContextForWrite,
+  options: WorkspaceContextWriteResolutionOptions = {},
 ): WorkspaceCollabContext | null {
   if (state.loading || state.failure === 'unavailable') {
+    if (options.unavailablePolicy === 'unscoped') return null;
     throw new Error('Workspace context is unavailable. Try again when workspace sync finishes.');
   }
   return state.context;

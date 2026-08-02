@@ -13,19 +13,27 @@
   --entry-rail-width: 236px;
 }
 
+/* `.entry-shell` is always mounted inside `.workspace-shell__body`, which
+   reserves its own space above for the app's persistent tab-chrome header
+   (shell.css: `.workspace-shell` grid rows `44px minmax(0, 1fr)`) and already
+   sizes any direct `.entry-shell` child to `height: 100%` accordingly. A
+   `min-height: 100vh` here would force this element past that correctly
+   -computed height by the header's height, overflowing the bottom of
+   `.workspace-shell__body`'s `overflow: hidden` box — clipping this view's
+   own bottom content (e.g. the art panel's bottom padding) instead of
+   scrolling it. Rely on the inherited height instead of re-asserting 100vh. */
 .entry-shell--onboarding {
   position: relative;
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  min-height: 100vh;
   padding: 0;
   background: var(--bg);
 }
 
 .entry-onboarding-modal {
   width: 100%;
-  height: 100vh;
+  height: 100%;
   overflow: auto;
   border-radius: 0;
   background: var(--bg);
@@ -382,10 +390,10 @@
      3 + 5 + 1 = 9px, matching the sides' 8 + 1px ring inset. */
   bottom: 3px;
   display: grid;
-  gap: 4px;
+  gap: 8px;
   width: auto;
   margin: 0;
-  padding: 9px 28px 9px 10px;
+  padding: 8px;
   box-sizing: border-box;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -411,50 +419,32 @@
   transform: translateY(-1px);
 }
 .entry-local-mode-tip__head {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   color: var(--text-strong);
 }
-.entry-local-mode-tip__head strong {
+.entry-local-mode-tip__login-badge {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 30px;
   overflow: hidden;
+  padding: 0 16px;
+  border-radius: var(--radius-pill, 999px);
+  background: var(--accent);
+  color: #00ff08;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.entry-local-mode-tip__icon {
-  display: grid;
-  flex: 0 0 auto;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  border-radius: var(--radius-large, 8px);
-  background: var(--accent-tint);
-  color: var(--accent);
-}
 .entry-local-mode-tip p {
   margin: 0;
-}
-.entry-local-mode-tip__close {
-  position: absolute;
-  top: 7px;
-  right: 7px;
-  display: grid;
-  place-items: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-large, 8px);
-  background: transparent;
-  color: var(--text-faint);
-  cursor: pointer;
-}
-.entry-local-mode-tip__close:hover {
-  background: var(--bg-subtle);
-  color: var(--text);
 }
 /* While the vela device-auth flow is pending the card stops being a button:
    the body swaps to a progress line + cancel, so the hover lift would lie. */
@@ -2361,9 +2351,18 @@
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: filter 120ms;
+  transition:
+    background-color 140ms var(--ease-out),
+    transform 140ms var(--ease-out);
 }
-.entry-blank__cta:hover { filter: brightness(1.05); }
+/* brightness(1.05) on a near-black fill was imperceptible — and the doubled
+   selector also outranks the global button:hover primitive so the ink fill
+   can't get swapped to gray. Same ink-toward-green hover as the community
+   pills, plus a 1px lift. */
+.entry-blank__cta:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text-strong) 84%, var(--brand, #87ea5c));
+  transform: translateY(-1px);
+}
 .entry-section__head {
   display: flex;
   align-items: baseline;
@@ -2400,43 +2399,112 @@
   justify-items: center;
 }
 
-/* Connect step, cloud sign-in landing. Replaces the grid layout with a
-   centered single column: a top-left language/theme bar, the centered CTA
-   block, and a footer pinned to the bottom. */
-.onboarding-view--cloud {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+/* Connect step, cloud sign-in landing. Split layout: a left pane (top-left
+   language/theme bar, the left-aligned CTA block, and a footer pinned to the
+   pane's bottom) and a full-bleed art panel filling the right half.
+   Double-class selector: `.onboarding-view` alone (base rule above, plus its
+   several width/padding media queries further down this file) would
+   otherwise win ties by source order against a single-class `--cloud`
+   override at some breakpoints, re-introducing the base padding/width and —
+   critically — its `align-content: start`, which stops the grid row at its
+   content height instead of stretching it, leaving the art panel short with
+   a blank gap. The extra specificity makes every override here unconditional. */
+.onboarding-view.onboarding-view--cloud {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: stretch;
+  align-content: stretch;
   position: relative;
   width: 100%;
   max-width: none;
-  min-height: 100%;
+  /* `height` (not `min-height`) so the value is a definite length the grid
+     row — and in turn the `__art` column's `height: 100%` image — can
+     actually stretch to fill. A `min-height` floor only widens this box's
+     own rendered height; it does not make an "auto" row track definite, so
+     the row still sizes to content and the art panel stops short with a
+     blank gap below it. */
+  height: 100%;
   margin: 0;
-  padding: 72px 24px 64px;
+  padding: 0;
   gap: 0;
 }
 
-.onboarding-cloud__topbar {
-  position: absolute;
-  top: 18px;
-  right: 22px;
+.onboarding-cloud__pane {
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  min-height: 0;
+  padding: 72px 64px 64px;
 }
 
-/* Brand mark above the title; the glyph itself comes from the shared
-   .od-brand-glyph primitive. */
-.onboarding-cloud__logo {
+/* `min-height: 0` (alongside `min-width: 0`) opts this grid item out of its
+   automatic content-based minimum size. Without it, the `<img>`'s intrinsic
+   aspect ratio still counts as this column's minimum block size even though
+   the img itself is `height: 100%` — `align-content: stretch` can grow a
+   track but never shrink it below that minimum, so the column (and the
+   image) end up as tall as the image's natural aspect ratio at this column's
+   width, overflowing past the section's actual height instead of matching it. */
+.onboarding-cloud__art {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 8px 8px 0;
+}
+
+.onboarding-cloud__art img {
   display: block;
-  width: 52px;
-  height: 52px;
-  margin-bottom: 22px;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-md, 8px);
+  object-fit: cover;
 }
 
-/* Compact, icon-only language switcher used in the cloud landing top bar —
-   matches the round theme toggle next to it instead of the labelled foot-pill. */
+/* Below this width, the two-column grid can no longer give the text pane its
+   full designed width (.onboarding-cloud__center's 440px) alongside the art
+   panel — half the viewport minus the pane's 64px side padding drops under
+   440px once the viewport is narrower than 2 * (440 + 64 + 64) = 1136px.
+   Stack to a single column and hide the art before the text pane gets
+   cramped, rather than waiting until it visibly wraps. */
+@media (max-width: 1136px) {
+  .onboarding-view.onboarding-view--cloud {
+    grid-template-columns: 1fr;
+  }
+
+  .onboarding-cloud__art {
+    display: none;
+  }
+
+  .onboarding-cloud__pane {
+    align-items: center;
+    padding: 72px 24px 64px;
+  }
+
+  .onboarding-cloud__center {
+    align-items: center;
+    text-align: center;
+  }
+
+  .onboarding-cloud__body,
+  .onboarding-cloud__alts,
+  .onboarding-cloud__error {
+    text-align: center;
+  }
+
+  .onboarding-cloud__alts {
+    justify-content: center;
+  }
+
+  .onboarding-cloud__footer {
+    left: 24px;
+    justify-content: center;
+    text-align: center;
+  }
+}
+
+/* Compact, icon-only language switcher used next to the footer copyright
+   line. */
 .lang-pill--compact {
   width: 36px;
   height: 36px;
@@ -2521,7 +2589,6 @@
   outline-offset: 2px;
 }
 
-.onboarding-cloud__secondary,
 .onboarding-cloud__cancel {
   margin-top: 22px;
   border: 0;
@@ -2533,22 +2600,71 @@
   transition: color 160ms cubic-bezier(0.23, 1, 0.32, 1);
 }
 
-.onboarding-cloud__secondary:hover,
 .onboarding-cloud__cancel:hover {
   color: var(--text-strong);
 }
 
-/* Two secondary links ("local CLI" or "your own key") on one row. */
+/* Capsule treatment for the activation-retry card on THIS view only — the
+ * base `.amr-login-activation` rule (artifacts.css) stays untouched so
+ * Settings/AmrLoginPill and CloudSignInTip keep their compact inline card.
+ * Compound selector (not cascade order) guarantees this wins over the base
+ * padding/radius regardless of stylesheet import order. */
+.amr-login-activation.onboarding-cloud__activation {
+  padding: 16px;
+  border-radius: 28px;
+}
+
+/* Retry + dismiss sit side by side, together spanning the same width as the
+ * hint text above instead of shrink-wrapping to their own label width. */
+.onboarding-cloud__activation .amr-login-activation__actions {
+  width: 100%;
+  gap: 8px;
+}
+
+.onboarding-cloud__activation .amr-login-activation__open {
+  flex: 1;
+  justify-content: center;
+}
+
+.onboarding-cloud__activation-dismiss {
+  display: inline-flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 120ms, background 120ms, color 120ms;
+}
+
+.onboarding-cloud__activation-dismiss:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-subtle);
+  color: var(--text);
+}
+
+/* Two runtime-choice buttons ("local CLI" or "your own key") on one row,
+   centered as a unit under the full-width primary CTA above. */
 .onboarding-cloud__alts {
   display: flex;
   align-items: center;
   justify-content: center;
+  align-self: stretch;
   gap: 10px;
   margin-top: 22px;
 }
 
-.onboarding-cloud__alts .onboarding-cloud__secondary {
-  margin-top: 0;
+/* Double-class selector to out-specificity the shared Button module's
+   `.button`/`.subtle` rules (same 0-1-0 specificity) without `!important`. */
+.onboarding-cloud__alts .onboarding-cloud__alt-btn {
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: 14px;
 }
 
 .onboarding-cloud__alts-or {
@@ -2565,13 +2681,56 @@
 
 .onboarding-cloud__footer {
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 22px;
-  text-align: center;
+  left: 64px;
+  right: 24px;
+  /* An absolutely positioned child's containing block is the ancestor's
+     padding box, so this offset is NOT added on top of .onboarding-cloud__pane's
+     own 64px bottom padding — it replaces it. Match that 64px directly so the
+     footer's bottom edge lines up with the padding boundary the rest of the
+     pane's content already respects, instead of sitting almost flush with
+     the true edge. */
+  bottom: 64px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  text-align: left;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+/* Dim the copyright line only — NOT the whole footer, since the language
+   switcher's popover is a DOM descendant here (position: absolute doesn't
+   exempt it from an ancestor's opacity). A blanket opacity on
+   .onboarding-cloud__footer would wash the open dropdown out to match, so
+   the copyright text and the closed pill get their own opacity instead. */
+.onboarding-cloud__footer > span {
   opacity: 0.8;
+}
+
+/* Language switcher pill in the cloud landing footer — mirrors the entry
+   sidebar's `.entry-side-foot .foot-pill` look, scoped locally since this
+   footer sits outside that sidebar. Non-compact: shows the current
+   language label, not just the icon. */
+.onboarding-cloud__footer .foot-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  min-height: 26px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.onboarding-cloud__footer .foot-pill:hover {
+  background: var(--bg-panel);
+  border-color: var(--border-strong);
+  color: var(--text);
 }
 
 /* Back link from the expanded runtime chooser to the cloud landing.
@@ -4914,7 +5073,7 @@
   }
 
   .entry-onboarding-modal {
-    height: 100vh;
+    height: 100%;
     border-radius: 0;
   }
 
@@ -4979,7 +5138,7 @@
   }
 
   .entry-onboarding-modal {
-    height: 100vh;
+    height: 100%;
     border-radius: 0;
   }
 

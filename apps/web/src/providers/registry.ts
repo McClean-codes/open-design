@@ -79,7 +79,10 @@ import {
   openHostExternalUrl,
 } from '@open-design/host';
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
-import { sharedCancellableGet } from '../lib/shared-cancellable-get';
+import {
+  evictSharedCancellableGet,
+  sharedCancellableGet,
+} from '../lib/shared-cancellable-get';
 import { workspaceProjectHeaders } from '../state/projects';
 import {
   appendResourceQuery,
@@ -1713,6 +1716,32 @@ export async function createSocialSharePayload(
 
 // Project files — all paths are scoped under .od/projects/<id>/ on disk.
 
+function projectFilesCacheKey(
+  projectId: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
+  return `project-files:${projectId}:${workspaceIdentityCacheKey(workspaceContext)}`;
+}
+
+const projectFilesCacheGenerations = new Map<string, number>();
+
+/**
+ * Announce that one authority-scoped project file list is obsolete.
+ *
+ * This drops a settled shared read and advances the generation fence checked
+ * by any request already in flight. The next reader therefore cannot reuse a
+ * pre-event snapshot, and an overtaken request re-reads before it resolves to
+ * its caller.
+ */
+export function invalidateProjectFilesCache(
+  projectId: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): void {
+  const key = projectFilesCacheKey(projectId, workspaceContext);
+  projectFilesCacheGenerations.set(key, (projectFilesCacheGenerations.get(key) ?? 0) + 1);
+  evictSharedCancellableGet(key);
+}
+
 export async function fetchProjectFiles(
   projectId: string,
   options?: {
@@ -1726,8 +1755,10 @@ export async function fetchProjectFiles(
   // only when no reader is left awaiting it, so a foreground project read
   // can never be killed by an abandoned card scan.
   try {
+    const cacheKey = projectFilesCacheKey(projectId, options?.workspaceContext);
+    const cacheGeneration = projectFilesCacheGenerations.get(cacheKey) ?? 0;
     return await sharedCancellableGet(
-      `project-files:${projectId}:${workspaceIdentityCacheKey(options?.workspaceContext)}`,
+      cacheKey,
       async (signal): Promise<ProjectFile[]> => {
         const url = `/api/projects/${encodeURIComponent(projectId)}/files`;
         const resp = await fetch(url, {
@@ -1738,6 +1769,9 @@ export async function fetchProjectFiles(
         });
         if (!resp.ok) return [];
         const json = (await resp.json()) as { files: ProjectFile[] };
+        if ((projectFilesCacheGenerations.get(cacheKey) ?? 0) !== cacheGeneration) {
+          return fetchProjectFiles(projectId, options);
+        }
         return json.files ?? [];
       },
       { signal: options?.signal },
@@ -1833,7 +1867,9 @@ export async function deleteProjectFolder(
       },
       body: JSON.stringify({ path: folderPath }),
     });
-    return resp.ok;
+    if (!resp.ok) return false;
+    invalidateProjectFilesCache(projectId, workspaceContext);
+    return true;
   } catch {
     return false;
   }
@@ -2317,6 +2353,7 @@ export async function restoreProjectFileVersion(
       },
     );
     if (!resp.ok) return null;
+    invalidateProjectFilesCache(projectId, workspaceContext);
     return (await resp.json()) as RestoreProjectFileVersionResponse;
   } catch {
     return null;
@@ -2523,6 +2560,7 @@ export async function writeProjectTextFileDetailed(
         message: body.message || resp.statusText || 'Save failed',
       };
     }
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const json = (await resp.json()) as { file: ProjectFile };
     return { ok: true, file: json.file };
   } catch {
@@ -2546,6 +2584,7 @@ export async function writeProjectBase64File(
       body: JSON.stringify({ name, content: base64, encoding: 'base64' }),
     });
     if (!resp.ok) return null;
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
   } catch {
@@ -2569,6 +2608,7 @@ export async function uploadProjectFile(
       body: form,
     });
     if (!resp.ok) return null;
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const json = (await resp.json()) as { file: ProjectFile };
     return json.file;
   } catch {
@@ -2609,6 +2649,7 @@ export async function importProjectFigma(
       }
       return { ok: false, error: message };
     }
+    invalidateProjectFilesCache(projectId, workspaceContext);
     const result = (await resp.json()) as FigmaImportResult;
     return { ok: true, result };
   } catch (err) {
@@ -2681,6 +2722,7 @@ export async function uploadProjectFiles(
         break;
       }
 
+      invalidateProjectFilesCache(projectId, workspaceContext);
       const json = (await resp.json()) as {
         files: { name: string; path: string; size?: number; originalName?: string }[];
       };
@@ -2766,7 +2808,9 @@ export async function deleteProjectFile(
         ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
       },
     );
-    return resp.ok;
+    if (!resp.ok) return false;
+    invalidateProjectFilesCache(projectId, workspaceContext);
+    return true;
   } catch {
     return false;
   }
@@ -2790,6 +2834,7 @@ export async function renameProjectFile(
     const errorBody = await readApiErrorBody(resp);
     throw new Error(errorBody.message);
   }
+  invalidateProjectFilesCache(projectId, workspaceContext);
   return (await resp.json()) as RenameProjectFileResponse;
 }
 

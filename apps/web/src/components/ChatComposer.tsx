@@ -545,9 +545,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     // behind `openDesignToolbox` until the panel subsystem is removed wholesale.
     const [designToolboxOpen, setDesignToolboxOpen] = useState(false);
     const [pluginsPanelOpen, setPluginsPanelOpen] = useState(false);
-    // Shared close timer for the two hover-opened standalone popovers (插件 /
-    // 设计百宝箱). Leaving a quick pill schedules a close; re-entering the pill
-    // or the popup cancels it, so the pointer can travel pill → popup freely.
+    // Shared close timer for the two legacy standalone popovers (插件 /
+    // 设计百宝箱).
     const panelCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     function cancelComposerPanelClose() {
       if (panelCloseTimerRef.current) {
@@ -566,15 +565,21 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     useEffect(() => () => {
       if (panelCloseTimerRef.current) clearTimeout(panelCloseTimerRef.current);
     }, []);
-    // The quick pill a standalone popover was opened from. Both popovers move
-    // focus inside themselves (the plugins pane autofocuses its search box), so
-    // a dismissal has to hand focus back — the pill lives in the host above the
-    // composer and is the only control still mounted afterwards.
+    // The control a standalone popover was opened from. Explicit openers are
+    // preferred, but imperative callers that run synchronously from a click can
+    // omit one: capture the active control before focus moves into the panel.
     const panelOpenerRef = useRef<HTMLElement | null>(null);
+    function resolveStandalonePanelOpener(opener?: HTMLElement | null): HTMLElement | null {
+      if (opener) return opener;
+      const activeElement = document.activeElement;
+      return activeElement instanceof HTMLElement && activeElement !== document.body
+        ? activeElement
+        : null;
+    }
     /** Close whichever standalone popover is open BECAUSE THE USER DISMISSED IT
-     *  (Escape, backdrop) and return focus to the pill that opened it. Paths
+     *  (Escape, backdrop) and return focus to the control that opened it. Paths
      *  where the user picked something keep the plain setters: the composer
-     *  takes focus there, and pulling it back to the pill would fight that. */
+     *  takes focus there, and pulling it back to the opener would fight that. */
     function dismissStandalonePanels() {
       cancelComposerPanelClose();
       setPluginsPanelOpen(false);
@@ -603,8 +608,8 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
       document.addEventListener('keydown', onKey);
       return () => document.removeEventListener('keydown', onKey);
     }, [openStandalonePanel]);
-    // External "+"-menu open request (next-step quick pills) — nonce-keyed so
-    // every pill click re-opens even after the menu was dismissed.
+    // External "+"-menu open request — nonce-keyed so every request re-opens
+    // even after the menu was dismissed.
     const [plusMenuOpenRequest, setPlusMenuOpenRequest] = useState<
       { nonce: number; submenu?: PlusMenuSubmenu } | null
     >(null);
@@ -1206,7 +1211,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         openDesignToolbox: (opener?: HTMLElement | null) => {
           cancelComposerPanelClose();
           setComposerEngaged(true);
-          panelOpenerRef.current = opener ?? null;
+          panelOpenerRef.current = resolveStandalonePanelOpener(opener);
           // The two popovers share one anchor spot — opening one closes the
           // other so hover-switching between the pills swaps panels.
           setPluginsPanelOpen(false);
@@ -1215,7 +1220,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
         openPluginsPanel: (opener?: HTMLElement | null) => {
           cancelComposerPanelClose();
           setComposerEngaged(true);
-          panelOpenerRef.current = opener ?? null;
+          panelOpenerRef.current = resolveStandalonePanelOpener(opener);
           setDesignToolboxOpen(false);
           setPluginsPanelOpen(true);
         },
@@ -3252,10 +3257,53 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
                 trackComposerBar({ element: 'design_system_open' });
                 openDesignSystemPicker();
               } : undefined}
-              // No toolboxLabel / renderToolbox, and hidePluginsRow: 插件 and
-              // 设计百宝箱 left this menu — the quick pills above the input
-              // open their standalone popovers instead.
-              hidePluginsRow
+              // 插件 and 设计百宝箱 live inside the "+" menu (right below
+              // 工作目录) as hover-expand submenus. The toolbox flyout reuses
+              // the same DesignToolboxPanel the standalone popover renders.
+              toolboxLabel={t('chat.designToolbox.title')}
+              renderToolbox={(close) => (
+                <DesignToolboxPanel
+                  workspaceContext={workspaceContext}
+                  actions={DESIGN_TOOLBOX_ACTIONS}
+                  skills={skills}
+                  plugins={pluginsForComposer}
+                  mcpServers={enabledMcpServers}
+                  mcpTemplates={mcpTemplates}
+                  connectors={connectors}
+                  projectFiles={projectFiles}
+                  activeSkillIds={stagedSkills.map((skill) => skill.id)}
+                  activePluginId={activeAppliedPlugin?.pluginId ?? pinnedPluginId ?? null}
+                  activeMcpServerIds={stagedMcpServers.map((server) => server.id)}
+                  activeConnectorIds={stagedConnectors.map((connector) => connector.id)}
+                  activeFilePaths={staged.map((item) => item.path)}
+                  onOpened={() => trackDesignToolbox({ element: 'design_toolbox_open' })}
+                  onPickAction={(action) => {
+                    trackDesignToolbox({
+                      element: 'design_toolbox_action',
+                      toolbox_action_id: action.id,
+                    });
+                    applyDesignToolboxAction(action);
+                    close();
+                  }}
+                  onPickSkill={(skill) => {
+                    trackDesignToolbox({
+                      element: 'design_toolbox_resource',
+                      resource_kind: 'skill',
+                      resource_id: skill.id,
+                    });
+                    applyDesignToolboxSkill(skill);
+                    close();
+                  }}
+                  onPickResource={(resource) => {
+                    trackDesignToolbox({
+                      element: 'design_toolbox_resource',
+                      ...designToolboxResourceTracking(resource),
+                    });
+                    applyDesignToolboxResource(resource);
+                    close();
+                  }}
+                />
+              )}
             />
             {/* #5517: the design-system picker sits inline in the composer's
                 icon row (palette icon) instead of the staged-context bar. */}

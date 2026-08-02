@@ -13,6 +13,7 @@ import { ProjectConversationsHttpError } from '../../src/state/projects';
 import type { SettingsSection } from '../../src/components/SettingsDialog';
 import type { ProjectWorkspaceScopeState } from '../../src/collab/useProjectWorkspaceScope';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
+import type { AmrAuthRetryContinuation } from '../../src/runtime/amr-auth-retry-continuation';
 import type {
   AgentInfo,
   AppConfig,
@@ -3044,6 +3045,7 @@ describe('ProjectView conversation run isolation', () => {
     const onModeChange = vi.fn();
     const onAgentChange = vi.fn();
     const onOpenAmrSettings = vi.fn();
+    const onArmAmrAuthRetryContinuation = vi.fn();
     streamViaDaemon.mockImplementation(
       async (options: {
         onRunCreated?: (runId: string) => void;
@@ -3077,7 +3079,12 @@ describe('ProjectView conversation run isolation', () => {
           models: [{ id: 'glm-5', label: 'GLM 5' }],
         },
       ],
-      { onModeChange, onAgentChange, onOpenAmrSettings },
+      {
+        onModeChange,
+        onAgentChange,
+        onOpenAmrSettings,
+        onArmAmrAuthRetryContinuation,
+      },
     );
 
     await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
@@ -3093,13 +3100,27 @@ describe('ProjectView conversation run isolation', () => {
     expect(onModeChange).toHaveBeenCalledWith('daemon');
     expect(onAgentChange).toHaveBeenCalledWith('amr');
     expect(onOpenAmrSettings).toHaveBeenCalledTimes(1);
+    expect(onArmAmrAuthRetryContinuation).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: project.id,
+      conversationId: 'conv-a',
+      assistantId: expect.any(String),
+      originMountId: expect.any(String),
+      workspaceIdentityKey: expect.any(String),
+    }));
+    expect(onArmAmrAuthRetryContinuation.mock.invocationCallOrder[0]).toBeLessThan(
+      onModeChange.mock.invocationCallOrder[0]!,
+    );
+    expect(onArmAmrAuthRetryContinuation.mock.invocationCallOrder[0]).toBeLessThan(
+      onOpenAmrSettings.mock.invocationCallOrder[0]!,
+    );
     expect(screen.getByTestId('streaming-state').textContent).toBe('idle');
   });
 
-  it('auto-retries after AMR authorization succeeds', async () => {
+  it('leaves retry ownership with the App continuation while Settings is open', async () => {
     conversationAMessages = [];
     fetchChatRunStatus.mockResolvedValue(null);
     fetchVelaLoginStatus.mockResolvedValue({ loggedIn: true });
+    const onArmAmrAuthRetryContinuation = vi.fn();
     streamViaDaemon.mockImplementation(
       async (options: {
         onRunCreated?: (runId: string) => void;
@@ -3134,7 +3155,10 @@ describe('ProjectView conversation run isolation', () => {
           models: [{ id: 'glm-5', label: 'GLM 5' }],
         },
       ],
-      { onOpenAmrSettings: vi.fn() },
+      {
+        onOpenAmrSettings: vi.fn(),
+        onArmAmrAuthRetryContinuation,
+      },
     );
 
     await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
@@ -3147,8 +3171,9 @@ describe('ProjectView conversation run isolation', () => {
 
     fireEvent.click(screen.getByTestId('workspace-authorize'));
 
-    await waitFor(() => expect(fetchVelaLoginStatus).toHaveBeenCalled());
-    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(2));
+    expect(onArmAmrAuthRetryContinuation).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(streamViaDaemon).toHaveBeenCalledTimes(1);
   });
 
   it('routes Chat retry and terminal launch recovery for antigravity auth failures', async () => {
@@ -3313,6 +3338,9 @@ function renderProjectView(
     onAgentChange?: (agentId: string) => void;
     onOpenSettings?: (section?: SettingsSection) => void;
     onOpenAmrSettings?: () => void;
+    onArmAmrAuthRetryContinuation?: (
+      continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+    ) => void;
   } = {},
 ) {
   return render(projectViewElement(renderConfig, renderProject, renderAgents, handlers));
@@ -3330,6 +3358,9 @@ function projectViewElement(
     onAgentChange?: (agentId: string) => void;
     onOpenSettings?: (section?: SettingsSection) => void;
     onOpenAmrSettings?: () => void;
+    onArmAmrAuthRetryContinuation?: (
+      continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+    ) => void;
   } = {},
 ) {
   return (
@@ -3348,6 +3379,7 @@ function projectViewElement(
       onRefreshAgents={() => {}}
       onOpenSettings={handlers.onOpenSettings ?? (() => {})}
       onOpenAmrSettings={handlers.onOpenAmrSettings}
+      onArmAmrAuthRetryContinuation={handlers.onArmAmrAuthRetryContinuation}
       onBack={() => {}}
       onClearPendingPrompt={() => {}}
       onTouchProject={() => {}}

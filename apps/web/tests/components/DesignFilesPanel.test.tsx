@@ -157,7 +157,7 @@ describe("DesignFilesPanel sections", () => {
     expect(document.querySelector(".df-page-btn")).toBeNull();
   });
 
-  it("renders a single-line toolbar with file actions and no up/refresh buttons", () => {
+  it("renders a single-line toolbar with no up/refresh buttons, and no new-document/upload actions once files exist", () => {
     renderPanel([file({ name: "page.html", kind: "html" })]);
 
     expect(document.querySelector(".df-topbar")).toBeTruthy();
@@ -165,34 +165,79 @@ describe("DesignFilesPanel sections", () => {
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     expect(document.querySelector(".df-up-btn")).toBeNull();
     expect(document.querySelector(".df-refresh-control")).toBeNull();
-    expect(screen.getByTestId("design-files-upload-trigger")).toBeTruthy();
+    // New-document / upload moved into the empty state only; see below.
+    expect(screen.queryByTestId("design-files-upload-trigger")).toBeNull();
+    expect(screen.queryByTestId("design-files-empty-new-document")).toBeNull();
   });
 
   it("shows prioritized project starter actions in the empty state", () => {
     const onNewSketch = vi.fn();
     const onOpenBrowser = vi.fn();
     const onCreateDesignSystem = vi.fn();
+    const onPaste = vi.fn();
+    const onUpload = vi.fn();
 
     renderPanel([], {
       onNewSketch,
       onOpenBrowser,
       onCreateDesignSystem,
+      onPaste,
+      onUpload,
     });
 
     fireEvent.click(screen.getByTestId("design-files-empty-new-sketch"));
     fireEvent.click(screen.getByTestId("design-files-empty-open-browser"));
     fireEvent.click(screen.getByTestId("design-files-empty-create-design-system"));
+    fireEvent.click(screen.getByTestId("design-files-empty-new-document"));
+    fireEvent.click(screen.getByTestId("design-files-upload-trigger"));
 
     expect(onNewSketch).toHaveBeenCalledTimes(1);
     expect(onOpenBrowser).toHaveBeenCalledTimes(1);
     expect(onCreateDesignSystem).toHaveBeenCalledTimes(1);
+    expect(onPaste).toHaveBeenCalledTimes(1);
+    expect(onUpload).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the empty-state starter actions for read-only shared viewers", () => {
-    renderPanel([], { viewerOnly: true, onCreateDesignSystem: vi.fn() });
+  it("keeps empty-state actions visible but disables mutations for read-only shared viewers", () => {
+    const onNewSketch = vi.fn();
+    const onOpenBrowser = vi.fn();
+    const onCreateDesignSystem = vi.fn();
+    const onPaste = vi.fn();
+    const onUpload = vi.fn();
 
-    expect(screen.getByTestId("design-files-empty-new-sketch")).toBeTruthy();
-    expect(screen.getByTestId("design-files-empty-create-design-system")).toBeTruthy();
+    renderPanel([], {
+      viewerOnly: true,
+      onNewSketch,
+      onOpenBrowser,
+      onCreateDesignSystem,
+      onPaste,
+      onUpload,
+    });
+
+    const mutationButtons = [
+      screen.getByTestId("design-files-empty-new-sketch"),
+      screen.getByTestId("design-files-empty-new-document"),
+      screen.getByTestId("design-files-upload-trigger"),
+      screen.getByTestId("design-files-empty-create-design-system"),
+    ];
+    for (const button of mutationButtons) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute(
+        "title",
+        "Shared project is read-only: you can comment, but cannot edit or export.",
+      );
+      fireEvent.click(button);
+    }
+
+    expect(onNewSketch).not.toHaveBeenCalled();
+    expect(onCreateDesignSystem).not.toHaveBeenCalled();
+    expect(onPaste).not.toHaveBeenCalled();
+    expect(onUpload).not.toHaveBeenCalled();
+
+    const openBrowser = screen.getByTestId("design-files-empty-open-browser");
+    expect(openBrowser).not.toBeDisabled();
+    fireEvent.click(openBrowser);
+    expect(onOpenBrowser).toHaveBeenCalledTimes(1);
   });
 
   it("groups files into category tabs and shows one group at a time", () => {

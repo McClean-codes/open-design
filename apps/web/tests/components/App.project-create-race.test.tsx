@@ -1,10 +1,14 @@
 // @vitest-environment jsdom
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { buildWorkspacePermissions } from '@open-design/contracts';
+import {
+  buildWorkspacePermissions,
+  type WorkspaceCollabContext,
+} from '@open-design/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/App';
+import { notifyAmrLoginStatusChanged } from '../../src/components/amrLoginPolling';
 import type { ProjectNameAuthorityResolution } from '../../src/components/ProjectView';
 import type { AgentInfo, AppConfig, Project } from '../../src/types';
 import {
@@ -39,8 +43,11 @@ import {
   notifyWorkspaceContextRefresh,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
+  workspaceIdentityCacheKey,
 } from '../../src/collab/useWorkspaceContext';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+import type { AmrAuthRetryContinuation } from '../../src/runtime/amr-auth-retry-continuation';
+import type { VelaLoginStatus } from '../../src/providers/daemon';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
 vi.mock('../../src/components/EntryView', () => ({
@@ -49,11 +56,13 @@ vi.mock('../../src/components/EntryView', () => ({
     onDeleteProject,
     onImportFolderResponse,
     onOpenProject,
+    onOpenSettings,
     onRefreshAgents,
     agents,
+    amrLoggedIn,
     projects,
   }: {
-    onCreateProject: (input: unknown) => void;
+    onCreateProject: (input: unknown) => boolean | Promise<boolean>;
     onDeleteProject: (id: string) => void;
     onImportFolderResponse?: (response: {
       conversationId: string;
@@ -71,22 +80,25 @@ vi.mock('../../src/components/EntryView', () => ({
         workspaceMemberId: string | null;
       },
     ) => Promise<boolean> | boolean | void;
+    onOpenSettings: () => void;
     onRefreshAgents: () => void | Promise<void>;
     agents: AgentInfo[];
+    amrLoggedIn?: boolean | null;
     projects: Project[];
   }) => (
     <main>
       <div data-testid="entry-home-surface" />
+      <div data-testid="amr-login-status">{String(amrLoggedIn)}</div>
       <button
         type="button"
-        onClick={() =>
-          onCreateProject({
+        onClick={() => {
+          void Promise.resolve(onCreateProject({
             name: 'Fresh project',
             skillId: null,
             designSystemId: null,
             metadata: { kind: 'prototype' },
-          })
-        }
+          })).catch(() => {});
+        }}
       >
         Create project
       </button>
@@ -134,6 +146,9 @@ vi.mock('../../src/components/EntryView', () => ({
       </button>
       <button type="button" onClick={() => void onRefreshAgents()}>
         Refresh agents
+      </button>
+      <button type="button" onClick={onOpenSettings}>
+        Open settings from home
       </button>
       <button type="button" onClick={() => void onOpenProject('project-missing')}>
         Open missing project
@@ -235,6 +250,12 @@ vi.mock('../../src/components/ProjectView', () => ({
     authoritativeProjectName,
     projectAuthorizationKey,
     resolveAuthoritativeProjectName,
+    amrAuthRetryContinuation,
+    onArmAmrAuthRetryContinuation,
+    onConsumeAmrAuthRetryContinuation,
+    onOpenAmrSettings,
+    onOpenSettings,
+    workspaceContextOverride,
   }: {
     onBack: () => void;
     onCreateProjectFromDesignSystem?: (designSystemId: string, title: string) => Promise<void> | void;
@@ -247,14 +268,30 @@ vi.mock('../../src/components/ProjectView', () => ({
       projectId: string,
       expectedAuthorizationKey: string,
     ) => Promise<ProjectNameAuthorityResolution>;
+    amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
+    onArmAmrAuthRetryContinuation?: (
+      continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+    ) => void;
+    onConsumeAmrAuthRetryContinuation?: (
+      continuation: AmrAuthRetryContinuation,
+    ) => boolean;
+    onOpenAmrSettings?: () => void;
+    onOpenSettings?: () => void;
+    workspaceContextOverride?: WorkspaceCollabContext | null;
   }) => (
     <main data-testid="project-view">
       <span data-testid="project-title">{project.name}</span>
       <span data-testid="project-authoritative-title">{authoritativeProjectName ?? 'none'}</span>
       <span data-testid="project-workspace-id">{project.workspaceId ?? 'unbound'}</span>
       <span data-testid="project-route-conversation">{routeConversationId ?? 'none'}</span>
+      <span data-testid="project-auth-continuation">
+        {amrAuthRetryContinuation?.assistantId ?? 'none'}
+      </span>
       <button type="button" onClick={onBack}>
         Back to projects
+      </button>
+      <button type="button" onClick={onOpenSettings}>
+        Open settings from project
       </button>
       <button type="button" onClick={() => void onProjectsRefresh()}>
         Refresh projects
@@ -276,12 +313,60 @@ vi.mock('../../src/components/ProjectView', () => ({
       >
         Refresh catalog title
       </button>
+      <button
+        type="button"
+        onClick={() => onArmAmrAuthRetryContinuation?.({
+          projectId: project.id,
+          conversationId: routeConversationId ?? 'conv-auth',
+          assistantId: 'assistant-auth-failure',
+          originMountId: 'origin-mount',
+          workspaceIdentityKey: workspaceIdentityCacheKey(workspaceContextOverride),
+        })}
+      >
+        Arm auth continuation
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          onArmAmrAuthRetryContinuation?.({
+            projectId: project.id,
+            conversationId: routeConversationId ?? 'conv-auth',
+            assistantId: 'assistant-auth-failure',
+            originMountId: 'origin-mount',
+            workspaceIdentityKey: workspaceIdentityCacheKey(workspaceContextOverride),
+          });
+          onOpenAmrSettings?.();
+        }}
+      >
+        Authorize in settings
+      </button>
+      <button
+        type="button"
+        disabled={!amrAuthRetryContinuation}
+        onClick={() => {
+          if (amrAuthRetryContinuation) {
+            onConsumeAmrAuthRetryContinuation?.(amrAuthRetryContinuation);
+          }
+        }}
+      >
+        Consume auth continuation
+      </button>
     </main>
   ),
 }));
 
 vi.mock('../../src/components/WorkspaceTabsBar', () => ({
-  WorkspaceTabsBar: () => null,
+  WorkspaceTabsBar: ({
+    activeProjectWorkspaceId,
+  }: {
+    activeProjectWorkspaceId?: string | null;
+  }) => (
+    <span data-testid="workspace-tabs-active-project-workspace">
+      {activeProjectWorkspaceId === undefined
+        ? 'unresolved'
+        : activeProjectWorkspaceId ?? 'personal'}
+    </span>
+  ),
   openWorkspaceTab: () => {},
 }));
 
@@ -294,7 +379,13 @@ vi.mock('../../src/components/pet/pets', () => ({
 }));
 
 vi.mock('../../src/components/SettingsDialog', () => ({
-  SettingsDialog: () => null,
+  SettingsDialog: ({ onClose }: { onClose: () => void }) => (
+    <div data-testid="settings-surface">
+      <button type="button" onClick={onClose}>
+        Close settings
+      </button>
+    </div>
+  ),
   switchApiProtocolConfig: (config: AppConfig) => config,
   updateCurrentApiProtocolConfig: (config: AppConfig) => config,
 }));
@@ -750,6 +841,137 @@ describe('App project creation routing', () => {
 
     expect(screen.getByTestId('project-title').textContent).toBe('Fresh project');
     expect(window.location.pathname).toBe('/projects/project-new');
+  });
+
+  it.each([
+    ['Local CLI', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
+    ['BYOK', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],
+  ])(
+    'lets %s create an unscoped project while AMR workspace discovery is unavailable',
+    async (_label, executionConfig) => {
+      mockedLoadConfig.mockReturnValue(executionConfig);
+      mockedListProjects.mockResolvedValue([]);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          const pathname = new URL(String(input), 'http://d.local').pathname;
+          if (pathname.endsWith('/integrations/vela/status')) {
+            return new Response(JSON.stringify({
+              loggedIn: false,
+              profile: 'default',
+              user: null,
+              configPath: '/test/vela.json',
+            }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          if (pathname.endsWith('/workspace/directory')) {
+            return new Promise<Response>(() => {});
+          }
+          return new Response('{}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+
+      render(<App />);
+      await screen.findByText('false', { selector: '[data-testid="amr-login-status"]' });
+      fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+      await waitFor(() => {
+        expect(mockedCreateProject).toHaveBeenCalledWith(
+          expect.objectContaining({ workspaceContext: null }),
+        );
+      });
+      expect(screen.getByTestId('project-title').textContent).toBe('Fresh project');
+    },
+  );
+
+  it.each([
+    ['Local CLI', 'loading', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
+    ['BYOK', 'unavailable', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],
+  ])(
+    'keeps %s project creation fail-closed for a signed-in account while Team workspace discovery is %s',
+    async (_label, discoveryState, executionConfig) => {
+      mockedLoadConfig.mockReturnValue(executionConfig);
+      mockedListProjects.mockResolvedValue([]);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL) => {
+          const pathname = new URL(String(input), 'http://d.local').pathname;
+          if (pathname.endsWith('/integrations/vela/status')) {
+            return new Response(JSON.stringify({
+              loggedIn: true,
+              profile: 'default',
+              user: { id: 'account-team-member' },
+              configPath: '/test/vela.json',
+            }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          if (pathname.endsWith('/workspace/directory')) {
+            if (discoveryState === 'loading') return new Promise<Response>(() => {});
+            return new Response('{}', { status: 503 });
+          }
+          return new Response('{}', {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }),
+      );
+
+      render(<App />);
+      await screen.findByText('true', { selector: '[data-testid="amr-login-status"]' });
+      fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+      await waitFor(() => {
+        expect(mockedCreateProject).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it('keeps AMR Cloud project creation fail-closed while workspace discovery is loading even when signed out', async () => {
+    mockedLoadConfig.mockReturnValue({
+      ...baseConfig,
+      mode: 'daemon',
+      agentId: 'amr',
+    });
+    mockedListProjects.mockResolvedValue([]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (pathname.endsWith('/integrations/vela/status')) {
+          return new Response(JSON.stringify({
+            loggedIn: false,
+            profile: 'default',
+            user: null,
+            configPath: '/test/vela.json',
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (pathname.endsWith('/workspace/directory')) {
+          return new Promise<Response>(() => {});
+        }
+        return new Response('{}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+
+    render(<App />);
+    await screen.findByText('false', { selector: '[data-testid="amr-login-status"]' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+    await waitFor(() => {
+      expect(mockedCreateProject).not.toHaveBeenCalled();
+    });
   });
 
   it('routes "create with this design system" through the default design router, not a prototype', async () => {
@@ -1793,6 +2015,256 @@ describe('App project creation routing', () => {
       expect(screen.getByTestId('project-title').textContent).toBe('Catalog rename');
       expect(screen.getByTestId('project-authoritative-title').textContent).toBe('Catalog rename');
       expect(screen.getByTestId('project-workspace-id').textContent).toBe('ws-1');
+    });
+  });
+
+  it('passes the active project persisted Workspace to the tab switch guard', async () => {
+    stubWorkspaceContext('ws-1', 'wm-1');
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-1',
+    }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-tabs-active-project-workspace').textContent).toBe(
+        'ws-1',
+      );
+    });
+  });
+
+  it('owns one AMR auth continuation above ProjectView and clears it after consume, cancel, or route exit', async () => {
+    stubWorkspaceContext('ws-1', 'wm-1');
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-1',
+    }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Arm auth continuation' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
+        'assistant-auth-failure',
+      );
+    });
+
+    const refreshedIdentity = deferred<void>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (
+          pathname.endsWith('/workspace/directory')
+          || pathname.endsWith('/workspace/context')
+        ) {
+          await refreshedIdentity.promise;
+        }
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([workspaceContext('ws-1', 'wm-1')])
+              : pathname.endsWith('/workspace/context')
+                ? workspaceContextPayload('ws-1', 'wm-1')
+                : {},
+        } as Response;
+      }),
+    );
+    act(() => notifyWorkspaceContextRefresh());
+    await waitFor(() => expect(screen.queryByTestId('project-view')).toBeNull());
+    await act(async () => {
+      refreshedIdentity.resolve();
+      await refreshedIdentity.promise;
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
+        'assistant-auth-failure',
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Consume auth continuation' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Arm auth continuation' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
+        'assistant-auth-failure',
+      );
+    });
+    act(() => notifyAmrLoginStatusChanged('login-canceled'));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Arm auth continuation' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
+        'assistant-auth-failure',
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Back to projects' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe('none');
+    });
+  });
+
+  it('preserves an exact retry through Settings and returns to its project after sign-in', async () => {
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-1',
+    }]);
+    let loginStatus: VelaLoginStatus = {
+      loggedIn: false,
+      profile: 'test',
+      user: null,
+      configPath: '',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([workspaceContext('ws-1', 'wm-1')])
+              : pathname.endsWith('/workspace/context')
+                ? workspaceContextPayload('ws-1', 'wm-1')
+                : pathname.endsWith('/integrations/vela/status')
+                  ? loginStatus
+                  : {},
+        } as Response;
+      }),
+    );
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Authorize in settings' }));
+    await screen.findByTestId('settings-surface');
+    expect(window.location.pathname).toBe('/settings');
+
+    loginStatus = {
+      loggedIn: true,
+      profile: 'test',
+      user: { id: 'account-a', email: 'account-a@example.com', plan: 'free' },
+      configPath: '',
+    };
+    act(() => notifyAmrLoginStatusChanged());
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/projects/project-existing/conversations/conv-auth');
+      expect(screen.getByTestId('project-auth-continuation').textContent).toBe(
+        'assistant-auth-failure',
+      );
+    });
+  });
+
+  it('returns from full-page Settings to the exact project conversation and file route', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/projects/project-existing/conversations/conv-exact/files/nested%2Fartifact.html',
+    );
+    stubWorkspaceContext('ws-1', 'wm-1');
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-1',
+    }]);
+
+    render(<App />);
+    await screen.findByTestId('project-view');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings from project' }));
+    await screen.findByTestId('settings-surface');
+    expect(window.location.pathname).toBe('/settings');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe(
+        '/projects/project-existing/conversations/conv-exact/files/nested/artifact.html',
+      );
+      expect(screen.getByTestId('project-route-conversation').textContent).toBe('conv-exact');
+    });
+  });
+
+  it('returns home when full-page Settings was opened from home', async () => {
+    mockedListProjects.mockResolvedValue([]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open settings from home' }));
+    await screen.findByTestId('settings-surface');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/');
+      expect(screen.getByTestId('entry-home-surface')).toBeTruthy();
+    });
+  });
+
+  it('fails closed instead of reopening a project after the Settings workspace changes', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/projects/project-existing/conversations/conv-exact',
+    );
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-1',
+    }]);
+    const loginStatus: VelaLoginStatus = {
+      loggedIn: true,
+      profile: 'test',
+      user: { id: 'account-a', email: 'account-a@example.com', plan: 'free' },
+      configPath: '',
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([
+                  workspaceContext('ws-1', 'wm-1'),
+                  workspaceContext('ws-2', 'wm-2'),
+                ])
+              : pathname.endsWith('/workspace/context')
+                ? workspaceContextPayload('ws-1', 'wm-1')
+                : pathname.endsWith('/integrations/vela/status')
+                  ? loginStatus
+                  : {},
+        } as Response;
+      }),
+    );
+
+    render(<App />);
+    await screen.findByTestId('project-view');
+    fireEvent.click(screen.getByRole('button', { name: 'Open settings from project' }));
+    await screen.findByTestId('settings-surface');
+
+    act(() => {
+      notifyWorkspaceContextRefresh({
+        context: workspaceContext('ws-2', 'wm-2'),
+      });
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Close settings' }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/');
+      expect(screen.getByTestId('entry-home-surface')).toBeTruthy();
     });
   });
 

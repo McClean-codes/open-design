@@ -48,10 +48,12 @@ export type IconName =
   | 'import'
   | 'info'
   | 'kanban'
+  | 'key'
   | 'layers-filled'
   | 'languages'
   | 'layout'
   | 'lightbulb'
+  | 'arrow-right'
   | 'link'
   | 'lock'
   | 'mail'
@@ -79,6 +81,7 @@ export type IconName =
   | 'present'
   | 'refresh'
   | 'reload'
+  | 'robot'
   | 'search'
   | 'send'
   | 'settings'
@@ -94,6 +97,7 @@ export type IconName =
   | 'terminal'
   | 'thumbs-down'
   | 'thumbs-up'
+  | 'translate'
   | 'tweaks'
   | 'undo'
   | 'redo'
@@ -118,6 +122,7 @@ interface Props extends Omit<SVGProps<SVGSVGElement>, 'name'> {
 const REMIX_ICON: Partial<Record<IconName, string>> = {
   'alert-triangle': 'error-warning-line',
   'arrow-left': 'arrow-left-line',
+  'arrow-right': 'arrow-right-line',
   'arrow-up': 'arrow-up-line',
   artboard: 'artboard-2-line',
   attach: 'attachment-2',
@@ -161,6 +166,7 @@ const REMIX_ICON: Partial<Record<IconName, string>> = {
   info: 'information-line',
   'integrations-filled': 'puzzle-fill',
   kanban: 'kanban-view',
+  key: 'key-2-line',
   languages: 'translate-2',
   'layers-filled': 'stack-fill',
   layout: 'layout-line',
@@ -189,6 +195,7 @@ const REMIX_ICON: Partial<Record<IconName, string>> = {
   puzzle: 'puzzle-line',
   refresh: 'refresh-line',
   reload: 'reset-left-line',
+  robot: 'robot-2-line',
   search: 'search-line',
   send: 'send-plane-2-line',
   settings: 'settings-3-line',
@@ -206,6 +213,7 @@ const REMIX_ICON: Partial<Record<IconName, string>> = {
   'thumbs-down': 'thumb-down-line',
   'thumbs-up': 'thumb-up-line',
   trash: 'delete-bin-line',
+  translate: 'translate',
   tweaks: 'sound-module-line',
   upload: 'upload-2-line',
   users: 'group-line',
