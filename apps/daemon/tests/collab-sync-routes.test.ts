@@ -3306,6 +3306,201 @@ describe('collab sync pull handle (daemon-internal proactive pull)', () => {
       .toEqual(Array(9).fill(profileReceivedAtMs));
   });
 
+  it('re-acquires one fresh authorized stage when promotion outlives the receipt', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-authorized-retry-'));
+    tempDirs.push(root);
+    const projectId = 'authorized-retry';
+    const stageDirs = [
+      path.join(root, `.${projectId}.od-pull-stage-first`),
+      path.join(root, `.${projectId}.od-pull-stage-second`),
+    ];
+    await Promise.all(stageDirs.map(async (stageDir) => {
+      await mkdir(stageDir);
+      await writeFile(path.join(stageDir, 'index.html'), '<title>Fresh stage</title>');
+    }));
+    let now = Date.parse('2026-08-02T10:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const cleanups = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
+    const stage = vi.fn(async () => {
+      const index = stage.mock.calls.length - 1;
+      return {
+        stageDir: stageDirs[index]!,
+        identity: { dev: String(index + 1), ino: String(index + 10) },
+        receipt: authorizedReceipt(projectId, 5),
+        cleanup: cleanups[index]!,
+      };
+    });
+    const promote = vi.fn(async (input: {
+      commit: () => { localRecordChanged: boolean };
+      validateReceipt: () => void;
+    }) => {
+      if (promote.mock.calls.length === 1) now += 3_000;
+      input.validateReceipt();
+      return input.commit();
+    });
+    const store = fakeProjectStore();
+    const materialize = vi.spyOn(store, 'materializeAuthorizedTeamMirror');
+
+    try {
+      const api = await startSyncServer(fixedShareContextProvider(true), {
+        projectStore: store,
+        resolvePullDir: (id) => path.join(root, id),
+        resolveSharedProject: resolvePulledSharedProject,
+        authorizedTeamProjectPull: {
+          journalDir: path.join(root, '.journals'),
+          getActiveWorkspaceSnapshot: () => ({
+            workspaceId: pullScope.workspaceId,
+            generation: 7,
+          }),
+          stage,
+          promote,
+        },
+      });
+
+      await expect(invokeThroughProactivePull(
+        api.handle,
+        projectId,
+        pullScope,
+        5,
+      )).resolves.toEqual({ status: 'pulled', version: 5 });
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    expect(stage).toHaveBeenCalledTimes(2);
+    expect(promote).toHaveBeenCalledTimes(2);
+    expect(materialize).toHaveBeenCalledTimes(1);
+    expect(cleanups[0]).toHaveBeenCalledTimes(1);
+    expect(cleanups[1]).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds stale authorized-stage recovery to one retry', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-authorized-retry-bound-'));
+    tempDirs.push(root);
+    const projectId = 'authorized-retry-bound';
+    const stageDirs = [
+      path.join(root, `.${projectId}.od-pull-stage-first`),
+      path.join(root, `.${projectId}.od-pull-stage-second`),
+    ];
+    await Promise.all(stageDirs.map(async (stageDir) => {
+      await mkdir(stageDir);
+      await writeFile(path.join(stageDir, 'index.html'), '<title>Bounded stage</title>');
+    }));
+    let now = Date.parse('2026-08-02T11:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const cleanups = [vi.fn(async () => undefined), vi.fn(async () => undefined)];
+    const stage = vi.fn(async () => {
+      const index = stage.mock.calls.length - 1;
+      return {
+        stageDir: stageDirs[index]!,
+        identity: { dev: String(index + 1), ino: String(index + 10) },
+        receipt: authorizedReceipt(projectId, 5),
+        cleanup: cleanups[index]!,
+      };
+    });
+    const promote = vi.fn(async (input: { validateReceipt: () => void }) => {
+      now += 3_000;
+      input.validateReceipt();
+      throw new Error('unreachable');
+    });
+    const store = fakeProjectStore();
+    const materialize = vi.spyOn(store, 'materializeAuthorizedTeamMirror');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const api = await startSyncServer(fixedShareContextProvider(true), {
+        projectStore: store,
+        resolvePullDir: (id) => path.join(root, id),
+        resolveSharedProject: resolvePulledSharedProject,
+        authorizedTeamProjectPull: {
+          journalDir: path.join(root, '.journals'),
+          getActiveWorkspaceSnapshot: () => ({
+            workspaceId: pullScope.workspaceId,
+            generation: 7,
+          }),
+          stage,
+          promote,
+        },
+      });
+
+      await expect(invokeThroughProactivePull(
+        api.handle,
+        projectId,
+        pullScope,
+        5,
+      )).resolves.toEqual({ status: 'register_failed' });
+    } finally {
+      nowSpy.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(stage).toHaveBeenCalledTimes(2);
+    expect(promote).toHaveBeenCalledTimes(2);
+    expect(materialize).not.toHaveBeenCalled();
+    expect(cleanups[0]).toHaveBeenCalledTimes(1);
+    expect(cleanups[1]).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reacquire a receipt when the expired stage cannot be cleaned', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-authorized-retry-cleanup-'));
+    tempDirs.push(root);
+    const projectId = 'authorized-retry-cleanup';
+    const stageDir = path.join(root, `.${projectId}.od-pull-stage-first`);
+    await mkdir(stageDir);
+    await writeFile(path.join(stageDir, 'index.html'), '<title>Unclean stage</title>');
+    let now = Date.parse('2026-08-02T12:00:00.000Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const cleanup = vi.fn(async () => {
+      throw new Error('stage cleanup failed');
+    });
+    const stage = vi.fn(async () => ({
+      stageDir,
+      identity: { dev: '1', ino: '10' },
+      receipt: authorizedReceipt(projectId, 5),
+      cleanup,
+    }));
+    const promote = vi.fn(async (input: { validateReceipt: () => void }) => {
+      now += 3_000;
+      input.validateReceipt();
+      throw new Error('unreachable');
+    });
+    const store = fakeProjectStore();
+    const materialize = vi.spyOn(store, 'materializeAuthorizedTeamMirror');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    try {
+      const api = await startSyncServer(fixedShareContextProvider(true), {
+        projectStore: store,
+        resolvePullDir: (id) => path.join(root, id),
+        resolveSharedProject: resolvePulledSharedProject,
+        authorizedTeamProjectPull: {
+          journalDir: path.join(root, '.journals'),
+          getActiveWorkspaceSnapshot: () => ({
+            workspaceId: pullScope.workspaceId,
+            generation: 7,
+          }),
+          stage,
+          promote,
+        },
+      });
+
+      await expect(invokeThroughProactivePull(
+        api.handle,
+        projectId,
+        pullScope,
+        5,
+      )).resolves.toEqual({ status: 'register_failed' });
+    } finally {
+      nowSpy.mockRestore();
+      warn.mockRestore();
+    }
+
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(promote).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(materialize).not.toHaveBeenCalled();
+  });
+
   it('coalesces direct, targeted, and broad recovery onto one stable authorized promotion', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'od-authorized-overlap-'));
     tempDirs.push(root);
@@ -3878,6 +4073,23 @@ describe('collab sync pull handle (daemon-internal proactive pull)', () => {
       workspaceId: pullScope.workspaceId as string | null,
       generation: 7,
     };
+    const stage = vi.fn(async () => ({
+      stageDir,
+      identity: { dev: '1', ino: '2' },
+      receipt: authorizedReceipt('authorized-log', 5),
+      cleanup: vi.fn(async () => undefined),
+    }));
+    const promote = vi.fn(async () => {
+      snapshot = { workspaceId: null, generation: 7 };
+      throw new Error(
+        'active workspace changed while Bearer abcdefghijklmnopqrstuvwxyz',
+        {
+          cause: new Error(
+            'journal rename failed for sk-live-abcdefghijklmnopqrstuvwxyz',
+          ),
+        },
+      );
+    });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
       const api = await startSyncServer(fixedShareContextProvider(true), {
@@ -3887,23 +4099,8 @@ describe('collab sync pull handle (daemon-internal proactive pull)', () => {
         authorizedTeamProjectPull: {
           journalDir: path.join(root, '.journals'),
           getActiveWorkspaceSnapshot: () => snapshot,
-          stage: vi.fn(async () => ({
-            stageDir,
-            identity: { dev: '1', ino: '2' },
-            receipt: authorizedReceipt('authorized-log', 5),
-            cleanup: vi.fn(async () => undefined),
-          })),
-          promote: vi.fn(async () => {
-            snapshot = { workspaceId: null, generation: 7 };
-            throw new Error(
-              'active workspace changed while Bearer abcdefghijklmnopqrstuvwxyz',
-              {
-                cause: new Error(
-                  'journal rename failed for sk-live-abcdefghijklmnopqrstuvwxyz',
-                ),
-              },
-            );
-          }),
+          stage,
+          promote,
         },
       });
 
@@ -3914,6 +4111,8 @@ describe('collab sync pull handle (daemon-internal proactive pull)', () => {
         5,
       )).resolves.toEqual({ status: 'register_failed' });
 
+      expect(stage).toHaveBeenCalledTimes(1);
+      expect(promote).toHaveBeenCalledTimes(1);
       expect(warn).toHaveBeenCalledWith(
         '[od] failed to promote authorized team project',
         {

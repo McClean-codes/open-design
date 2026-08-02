@@ -12,6 +12,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
+  isAuthorizedTeamProjectPullReceiptExpired,
   isAuthorizedTeamProjectPullUnavailable,
   stageAuthorizedTeamProjectPull,
   validateAuthorizedTeamProjectPullReceipt,
@@ -158,6 +159,45 @@ describe('authorized staged team-project pull', () => {
         nowMs: NOW,
       }),
     ).toThrow();
+  });
+
+  it.each([
+    ['at expiry', '2026-07-26T10:00:00.500Z'],
+    ['past expiry', '2026-07-26T10:00:00.499Z'],
+  ])('classifies only an actually expired receipt as retryable: %s', (_case, expiresAt) => {
+    let thrown: unknown;
+    try {
+      validateAuthorizedTeamProjectPullReceipt(receipt({
+        authorizedAt: '2026-07-26T09:59:58.500Z',
+        expiresAt,
+      }), {
+        projectId: 'project-1',
+        scope: SCOPE,
+        expectedVersion: 7,
+        nowMs: NOW,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isAuthorizedTeamProjectPullReceiptExpired(thrown)).toBe(true);
+  });
+
+  it('does not classify an overlong receipt envelope as retryable expiry', () => {
+    let thrown: unknown;
+    try {
+      validateAuthorizedTeamProjectPullReceipt(receipt({
+        authorizedAt: '2026-07-26T10:00:00.000Z',
+        expiresAt: '2026-07-26T10:00:02.001Z',
+      }), {
+        projectId: 'project-1',
+        scope: SCOPE,
+        expectedVersion: 7,
+        nowMs: NOW,
+      });
+    } catch (error) {
+      thrown = error;
+    }
+    expect(isAuthorizedTeamProjectPullReceiptExpired(thrown)).toBe(false);
   });
 
   it('accepts a fresh receipt whose authorization clock is slightly ahead locally', () => {
