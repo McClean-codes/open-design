@@ -58,6 +58,18 @@ const AMR_API_PROXY_PREFIX = '/api/integrations/vela/api-proxy';
 const VELA_MESSAGE_CENTER_PREFIX = '/api/integrations/vela/message-center';
 const VELA_PUBLIC_MESSAGE_CENTER_PREFIX = '/api/integrations/vela/message-center-public';
 const AMR_API_UPSTREAM_ORIGIN = 'https://amr-api.open-design.ai';
+const PROXY_HOP_BY_HOP_HEADERS = new Set([
+  'connection',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'proxy-connection',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade',
+]);
+const VELA_WORKSPACE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 /**
  * Upper bound, in ms, on how long a cold-cache `/status` read waits for the
@@ -198,6 +210,21 @@ function shouldStreamVelaProxyRequest(req: Request, body: Buffer | null): boolea
   return req.method !== 'GET' && req.method !== 'HEAD' && body == null;
 }
 
+function connectionHeaderTokens(value: string | string[] | undefined): Set<string> {
+  const values = Array.isArray(value) ? value : value === undefined ? [] : [value];
+  return new Set(
+    values
+      .flatMap((entry) => entry.split(','))
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+function isProxyHopByHopHeader(name: string, connectionTokens: Set<string>): boolean {
+  const lower = name.toLowerCase();
+  return PROXY_HOP_BY_HOP_HEADERS.has(lower) || connectionTokens.has(lower);
+}
+
 /**
  * Pipe one leg of the AMR proxy with an explicit source-error guard.
  *
@@ -226,16 +253,25 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
     return;
   }
   const target = new URL(suffix, AMR_API_UPSTREAM_ORIGIN);
+  if (!target.pathname.startsWith('/api/v1/')) {
+    res.status(404).json({ error: 'unknown_amr_api_proxy_path' });
+    return;
+  }
+  const workspaceId = req.headers['x-vela-workspace-id'];
+  if (
+    workspaceId !== undefined
+    && (Array.isArray(workspaceId) || !VELA_WORKSPACE_ID_PATTERN.test(workspaceId))
+  ) {
+    res.status(400).json({ error: 'invalid_workspace_id' });
+    return;
+  }
   const body = velaProxyRequestBody(req);
   const streamBody = shouldStreamVelaProxyRequest(req, body);
   const headers: Record<string, string | string[]> = {};
+  const requestConnectionTokens = connectionHeaderTokens(req.headers.connection);
   for (const [key, value] of Object.entries(req.headers)) {
     const lower = key.toLowerCase();
-    if (
-      lower === 'host' ||
-      lower === 'connection' ||
-      lower === 'transfer-encoding'
-    ) {
+    if (lower === 'host' || isProxyHopByHopHeader(lower, requestConnectionTokens)) {
       continue;
     }
     if (lower === 'content-length' && body) continue;
@@ -254,8 +290,14 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
     },
     (upstreamRes) => {
       res.status(upstreamRes.statusCode ?? 502);
+      const responseConnectionTokens = connectionHeaderTokens(upstreamRes.headers.connection);
       for (const [key, value] of Object.entries(upstreamRes.headers)) {
-        if (value !== undefined) res.setHeader(key, value);
+        if (
+          value !== undefined
+          && !isProxyHopByHopHeader(key, responseConnectionTokens)
+        ) {
+          res.setHeader(key, value);
+        }
       }
       pipeProxyStreamWithGuard(upstreamRes, res, (err) => {
         if (!res.headersSent) {
@@ -274,6 +316,11 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
       res.end();
     }
   });
+  const abortUpstream = () => {
+    if (!res.writableEnded && !upstream.destroyed) upstream.destroy();
+  };
+  req.once('aborted', abortUpstream);
+  res.once('close', abortUpstream);
   if (body) upstream.write(body);
   if (streamBody) {
     pipeProxyStreamWithGuard(req, upstream, () => upstream.destroy());

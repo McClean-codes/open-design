@@ -1987,6 +1987,289 @@ describe('ALL /api/integrations/vela/api-proxy/*', () => {
       requestSpy.mockRestore();
     }
   });
+
+  it('preserves a valid Workspace scope while stripping request hop-by-hop headers', async () => {
+    let forwardedHeaders: Record<string, string | string[]> | undefined;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, options, callback) => {
+      const upstream = new PassThrough() as any;
+      upstream.on('finish', () => {
+        forwardedHeaders = options?.headers as Record<string, string | string[]>;
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ ok: true }));
+      });
+      upstream.setTimeout = () => upstream;
+      return upstream;
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+
+    try {
+      const status = await new Promise<number>((resolve, reject) => {
+        const request = http.request(
+          {
+            hostname: daemonUrl.hostname,
+            port: daemonUrl.port,
+            method: 'GET',
+            path: '/api/integrations/vela/api-proxy/api/v1/workspaces/workspace_team-1/billing',
+            headers: {
+              'x-vela-workspace-id': 'workspace_team-1',
+              connection: 'x-test-hop',
+              'keep-alive': 'timeout=5',
+              'proxy-authorization': 'Basic test-only',
+              te: 'trailers',
+              trailer: 'x-test-checksum',
+              'transfer-encoding': 'chunked',
+              'x-test-hop': 'drop-me',
+            },
+          },
+          (response) => {
+            response.resume();
+            response.once('end', () => resolve(response.statusCode ?? 0));
+          },
+        );
+        request.on('error', reject);
+        request.end();
+      });
+
+      expect(status).toBe(200);
+      expect(forwardedHeaders?.['x-vela-workspace-id']).toBe('workspace_team-1');
+      expect(forwardedHeaders).not.toHaveProperty('connection');
+      expect(forwardedHeaders).not.toHaveProperty('keep-alive');
+      expect(forwardedHeaders).not.toHaveProperty('proxy-authorization');
+      expect(forwardedHeaders).not.toHaveProperty('te');
+      expect(forwardedHeaders).not.toHaveProperty('trailer');
+      expect(forwardedHeaders).not.toHaveProperty('transfer-encoding');
+      expect(forwardedHeaders).not.toHaveProperty('upgrade');
+      expect(forwardedHeaders).not.toHaveProperty('x-test-hop');
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('rejects normalized path escapes and malformed Workspace scope before proxying', async () => {
+    let upstreamRequestCount = 0;
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      upstreamRequestCount += 1;
+      const upstream = new PassThrough() as any;
+      upstream.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = { 'content-type': 'application/json' };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ unexpectedlyProxied: true }));
+      });
+      upstream.setTimeout = () => upstream;
+      return upstream;
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+    const rawGet = (pathName: string, workspaceHeaders?: string[]) =>
+      new Promise<{ status: number; body: unknown }>((resolve, reject) => {
+        const request = http.request(
+          {
+            hostname: daemonUrl.hostname,
+            port: daemonUrl.port,
+            method: 'GET',
+            path: pathName,
+            headers: workspaceHeaders === undefined
+              ? undefined
+              : { 'x-vela-workspace-id': workspaceHeaders },
+          },
+          (response) => {
+            const chunks: Buffer[] = [];
+            response.on('data', (chunk: Buffer | string) => {
+              chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+            });
+            response.on('end', () => {
+              resolve({
+                status: response.statusCode ?? 0,
+                body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+              });
+            });
+          },
+        );
+        request.on('error', reject);
+        request.end();
+      });
+
+    try {
+      const escaped = await rawGet(
+        '/api/integrations/vela/api-proxy/api/v1/%2e%2e/private',
+      );
+      const invalid = await rawGet(
+        '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
+        ['workspace/escape'],
+      );
+      const duplicate = await rawGet(
+        '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
+        ['workspace-a', 'workspace-b'],
+      );
+
+      expect(escaped).toEqual({ status: 404, body: { error: 'unknown_amr_api_proxy_path' } });
+      expect(invalid).toEqual({ status: 400, body: { error: 'invalid_workspace_id' } });
+      expect(duplicate).toEqual({ status: 400, body: { error: 'invalid_workspace_id' } });
+      expect(upstreamRequestCount).toBe(0);
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('strips upstream hop-by-hop response headers while preserving billing metadata', async () => {
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      const upstream = new PassThrough() as any;
+      upstream.on('finish', () => {
+        const upstreamRes = new PassThrough() as any;
+        upstreamRes.statusCode = 200;
+        upstreamRes.headers = {
+          connection: 'x-upstream-hop',
+          'x-upstream-hop': 'drop-me',
+          'keep-alive': 'timeout=5',
+          'proxy-authenticate': 'Basic',
+          'proxy-authorization': 'Basic test-only',
+          te: 'trailers',
+          trailer: 'x-test-checksum',
+          'transfer-encoding': 'chunked',
+          upgrade: 'websocket',
+          'x-request-id': 'billing-request-1',
+          'content-type': 'application/json',
+        };
+        callback?.(upstreamRes);
+        upstreamRes.end(JSON.stringify({ balanceUsd: '120.00' }));
+      });
+      upstream.setTimeout = () => upstream;
+      return upstream;
+    }) as typeof https.request);
+
+    try {
+      const response = await fetch(
+        `${baseUrl}/api/integrations/vela/api-proxy/api/v1/wallet/balance`,
+        { headers: { 'x-vela-workspace-id': 'workspace-team' } },
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers.get('x-request-id')).toBe('billing-request-1');
+      expect(response.headers.get('connection')).not.toBe('x-upstream-hop');
+      expect(response.headers.get('x-upstream-hop')).toBeNull();
+      expect(response.headers.get('keep-alive')).not.toBe('timeout=5');
+      for (const name of [
+        'proxy-authenticate',
+        'proxy-authorization',
+        'te',
+        'trailer',
+        'upgrade',
+      ]) {
+        expect(response.headers.get(name), name).toBeNull();
+      }
+    } finally {
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('destroys the upstream request when a streaming Workspace upload is aborted', async () => {
+    let upstreamRequest: PassThrough | undefined;
+    let markUpstreamCreated: (() => void) | undefined;
+    let markUpstreamDestroyed: (() => void) | undefined;
+    const upstreamCreated = new Promise<void>((resolve) => {
+      markUpstreamCreated = resolve;
+    });
+    const upstreamDestroyed = new Promise<void>((resolve) => {
+      markUpstreamDestroyed = resolve;
+    });
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation((() => {
+      upstreamRequest = new PassThrough();
+      upstreamRequest.once('close', () => markUpstreamDestroyed?.());
+      (upstreamRequest as any).setTimeout = () => upstreamRequest;
+      markUpstreamCreated?.();
+      return upstreamRequest as any;
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+
+    try {
+      const upload = http.request({
+        hostname: daemonUrl.hostname,
+        port: daemonUrl.port,
+        method: 'POST',
+        path: '/api/integrations/vela/api-proxy/api/v1/workspaces/import',
+        headers: {
+          'content-type': 'application/octet-stream',
+          'content-length': '1024',
+          'x-vela-workspace-id': 'workspace-upload',
+        },
+      });
+      upload.on('error', () => {});
+      const uploadClosed = new Promise<void>((resolve) => upload.once('close', resolve));
+      upload.write(Buffer.alloc(64, 1));
+      await upstreamCreated;
+      upload.destroy();
+      await uploadClosed;
+      await upstreamDestroyed;
+
+      expect(upstreamRequest?.destroyed).toBe(true);
+    } finally {
+      upstreamRequest?.destroy();
+      requestSpy.mockRestore();
+    }
+  });
+
+  it('destroys the upstream request when the downstream response closes', async () => {
+    let upstreamRequest: PassThrough | undefined;
+    let upstreamResponse: PassThrough | undefined;
+    let downstreamRequest: http.ClientRequest | undefined;
+    let markUpstreamDestroyed: (() => void) | undefined;
+    const upstreamDestroyed = new Promise<void>((resolve) => {
+      markUpstreamDestroyed = resolve;
+    });
+    let markResponseStarted: (() => void) | undefined;
+    const responseStarted = new Promise<void>((resolve) => {
+      markResponseStarted = resolve;
+    });
+    const requestSpy = vi.spyOn(https, 'request').mockImplementation(((_target, _options, callback) => {
+      upstreamRequest = new PassThrough();
+      upstreamRequest.once('close', () => markUpstreamDestroyed?.());
+      upstreamRequest.on('finish', () => {
+        upstreamResponse = new PassThrough();
+        (upstreamResponse as any).statusCode = 200;
+        (upstreamResponse as any).headers = { 'content-type': 'application/json' };
+        callback?.(upstreamResponse as any);
+        upstreamResponse.write('{"balanceUsd":');
+        markResponseStarted?.();
+      });
+      (upstreamRequest as any).setTimeout = () => upstreamRequest;
+      return upstreamRequest as any;
+    }) as typeof https.request);
+    const daemonUrl = new URL(baseUrl);
+
+    try {
+      const downstreamClosed = new Promise<void>((resolve, reject) => {
+        downstreamRequest = http.request(
+          {
+            hostname: daemonUrl.hostname,
+            port: daemonUrl.port,
+            method: 'GET',
+            path: '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
+            headers: { 'x-vela-workspace-id': 'workspace-close' },
+          },
+          (response) => {
+            response.once('data', () => response.destroy());
+            response.once('close', resolve);
+          },
+        );
+        downstreamRequest.on('error', reject);
+        downstreamRequest.end();
+      });
+      await responseStarted;
+      await downstreamClosed;
+      await upstreamDestroyed;
+
+      expect(upstreamRequest?.destroyed).toBe(true);
+    } finally {
+      downstreamRequest?.destroy();
+      upstreamRequest?.destroy();
+      upstreamResponse?.destroy();
+      requestSpy.mockRestore();
+    }
+  });
 });
 
 describe('ALL /api/integrations/vela/message-center/*', () => {
