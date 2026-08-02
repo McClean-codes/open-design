@@ -13,6 +13,16 @@ const AUTHORIZED_PULL_TIMEOUT_MS = 30_000;
 const RECEIPT_MAX_AGE_MS = 2_000;
 const MANIFEST_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 
+class AuthorizedTeamProjectPullReceiptExpiredError extends Error {
+  readonly code = 'AUTHORIZED_TEAM_PROJECT_PULL_RECEIPT_EXPIRED';
+}
+
+export function isAuthorizedTeamProjectPullReceiptExpired(
+  error: unknown,
+): boolean {
+  return error instanceof AuthorizedTeamProjectPullReceiptExpiredError;
+}
+
 export interface AuthorizedTeamProjectPullReceipt {
   schemaVersion: 1;
   workspaceId: string;
@@ -162,10 +172,14 @@ export function validateAuthorizedTeamProjectPullReceipt(
     !Number.isFinite(authorizedAt) ||
     !Number.isFinite(expiresAt) ||
     expiresAt <= authorizedAt ||
-    expiresAt - authorizedAt > RECEIPT_MAX_AGE_MS ||
-    nowMs > expiresAt
+    expiresAt - authorizedAt > RECEIPT_MAX_AGE_MS
   ) {
     throw new Error('authorized pull receipt is stale');
+  }
+  if (nowMs >= expiresAt) {
+    throw new AuthorizedTeamProjectPullReceiptExpiredError(
+      'authorized pull receipt is stale',
+    );
   }
 }
 

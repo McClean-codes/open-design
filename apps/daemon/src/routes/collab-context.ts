@@ -157,6 +157,13 @@ export interface RegisterCollabContextRoutesDeps {
    */
   fetchWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
   /**
+   * Force-refresh the membership authority after an invite continuation is
+   * consumed. The consume mutates B before the daemon's settled directory
+   * lease expires; refreshing here prevents the accepted Workspace from being
+   * rejected by the next exact-scope request as a stale non-membership.
+   */
+  refreshWorkspaceDirectoryAfterMutation?: () => Promise<WorkspaceDirectoryFetchResult>;
+  /**
    * Collab realtime hop-2 — the workspace-scoped invalidation SSE seams. When
    * both are provided the daemon registers `GET /api/workspace/events`; the route
    * adds its per-connection sink to `workspaceEventSinks` (fed by the
@@ -272,6 +279,11 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
     if (!nonce.trim()) return res.status(400).json({ error: 'missing_nonce' });
     const outcome = await consumeInvite(nonce);
     if (!outcome.ok) return res.status(outcome.status).json({ error: outcome.error });
+    // Consuming the one-time nonce has already committed the membership on B.
+    // Refresh the daemon's settled authority lease before the renderer makes
+    // its first exact-scope read. A refresh outage must not turn a successfully
+    // consumed, non-repeatable continuation into an HTTP failure.
+    await deps.refreshWorkspaceDirectoryAfterMutation?.().catch(() => undefined);
     return res.json({ context: outcome.context, workspaceMemberId: outcome.workspaceMemberId });
   });
 

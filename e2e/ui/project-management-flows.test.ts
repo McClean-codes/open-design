@@ -1238,6 +1238,466 @@ test('[P1] Open Design Cloud hard balance gate blocks a project send before a da
   );
 });
 
+const TEAM_RUN_CONTEXT = {
+  workspaceId: 'e2e-team-run-workspace',
+  workspaceName: 'E2E Team Run Workspace',
+  workspaceType: 'team' as const,
+  workspaceMemberId: 'e2e-team-run-member',
+  role: 'owner' as const,
+  memberStatus: 'active' as const,
+  lifecycleState: 'active' as const,
+  billingState: 'active' as const,
+  planId: 'team_plus',
+  seatSummary: {
+    seatLimit: 5,
+    usedSeats: 2,
+    availableSeats: 3,
+    isSeatFull: false,
+  },
+  permissions: {
+    canInviteMembers: true,
+    canManageBilling: true,
+    canViewWorkspaceSettings: true,
+    canManageSharedResources: true,
+    canShareProjects: true,
+    canWriteSyncedFiles: true,
+  },
+  workspaceSettingsUrl: 'https://console.example.test/workspace/e2e-team-run-workspace',
+};
+
+async function wireTeamRunBalanceFixtures(
+  page: Page,
+  options: {
+    personalBalanceUsd: string;
+    teamBalanceUsd: string;
+  },
+): Promise<{
+  personalWalletRequests: () => number;
+  resetBalanceRequests: () => void;
+  teamBillingRequests: () => number;
+  teamBillingQueries: () => Array<Record<string, string | null>>;
+}> {
+  let personalWalletRequestCount = 0;
+  let teamBillingRequestCount = 0;
+  const teamBillingQueries: Array<Record<string, string | null>> = [];
+  await page.route('**/api/app-config', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        config: {
+          mode: 'daemon',
+          apiKey: '',
+          baseUrl: 'https://api.anthropic.com',
+          model: 'claude-sonnet-4-5',
+          agentId: 'amr',
+          skillId: null,
+          designSystemId: null,
+          onboardingCompleted: true,
+          privacyDecisionAt: 1,
+          telemetry: { metrics: false, content: false, artifactManifest: false },
+          agentModels: {},
+          agentCliEnv: {},
+        },
+      },
+    });
+  });
+  await routeAgents(page, [
+    ...AGENTS,
+    {
+      id: 'amr',
+      name: 'Open Design Cloud',
+      bin: 'amr',
+      available: true,
+      version: 'cloud',
+      models: [{ id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' }],
+    },
+  ]);
+  await page.route('**/api/integrations/vela/status', async (route) => {
+    await route.fulfill({
+      json: {
+        loggedIn: true,
+        loginInFlight: false,
+        profile: 'test',
+        user: {
+          id: 'e2e-team-run-user',
+          email: 'team-run@example.com',
+          name: 'Team Run Owner',
+          plan: 'team_plus',
+        },
+        account: { plan: 'free', balanceUsd: options.personalBalanceUsd },
+        configPath: '/tmp/.amr/config.json',
+      },
+    });
+  });
+  await page.route('**/api/integrations/vela/wallet**', async (route) => {
+    if (new URL(route.request().url()).pathname === '/api/integrations/vela/wallet') {
+      personalWalletRequestCount += 1;
+    }
+    await route.fulfill({
+      json: {
+        status: 'available',
+        profile: 'local',
+        user: {
+          id: 'e2e-team-run-user',
+          email: 'team-run@example.com',
+          plan: 'free',
+        },
+        balanceUsd: options.personalBalanceUsd,
+        updatedAt: '2026-08-02T00:00:00.000Z',
+        fetchedAt: '2026-08-02T00:00:00.000Z',
+        stale: false,
+        source: 'vela_api',
+      },
+    });
+  });
+  await page.route('**/api/workspace/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const { pathname } = url;
+    if (request.method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    if (pathname === '/api/workspace/context') {
+      await route.fulfill({ json: { context: TEAM_RUN_CONTEXT } });
+      return;
+    }
+    if (pathname === '/api/workspace/directory') {
+      await route.fulfill({
+        json: {
+          items: [{
+            workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+            workspaceName: TEAM_RUN_CONTEXT.workspaceName,
+            workspaceType: TEAM_RUN_CONTEXT.workspaceType,
+            workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+            role: TEAM_RUN_CONTEXT.role,
+            memberStatus: TEAM_RUN_CONTEXT.memberStatus,
+            lifecycleState: TEAM_RUN_CONTEXT.lifecycleState,
+          }],
+          activeWorkspaceId: TEAM_RUN_CONTEXT.workspaceId,
+        },
+      });
+      return;
+    }
+    if (pathname === '/api/workspace/billing') {
+      teamBillingRequestCount += 1;
+      const query = {
+        scope: url.searchParams.get('scope'),
+        workspaceId: url.searchParams.get('workspaceId'),
+        freshness: url.searchParams.get('freshness'),
+      };
+      teamBillingQueries.push(query);
+      if (
+        query.scope !== 'workspace' ||
+        query.workspaceId !== TEAM_RUN_CONTEXT.workspaceId ||
+        (query.freshness !== null && query.freshness !== 'authoritative')
+      ) {
+        await route.fulfill({ status: 400, json: { error: 'unexpected_billing_scope' } });
+        return;
+      }
+      await route.fulfill({
+        json: {
+          summary: null,
+          workspaceBalance: {
+            billingScopeVersion: 2,
+            workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+            workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+            balanceUsd: options.teamBalanceUsd,
+            expiresAt: null,
+            updatedAt: '2026-08-02T00:00:00.000Z',
+          },
+          workspaceRuntime: {
+            workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+            workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+            status: 'fresh',
+            revision: '1',
+            observedAt: '2026-08-02T00:00:00.000Z',
+            softExpiresAt: '2099-08-02T00:00:30.000Z',
+            hardExpiresAt: '2099-08-02T00:02:00.000Z',
+            retryAt: null,
+            errorCode: null,
+            reason:
+              query.freshness === 'authoritative'
+                ? 'authoritative-action-read'
+                : 'explicit-billing-read',
+            sourceGapDetected: false,
+          },
+          ...(query.freshness === 'authoritative'
+            ? {
+                authoritativeWorkspaceRead: {
+                  workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+                  workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+                  observedAt: '2026-08-02T00:00:00.000Z',
+                },
+              }
+            : {}),
+        },
+      });
+      return;
+    }
+    if (pathname === '/api/workspace/projects/team') {
+      await route.fulfill({ json: { projects: [] } });
+      return;
+    }
+    await route.fallback();
+  });
+  return {
+    personalWalletRequests: () => personalWalletRequestCount,
+    resetBalanceRequests: () => {
+      personalWalletRequestCount = 0;
+      teamBillingRequestCount = 0;
+      teamBillingQueries.length = 0;
+    },
+    teamBillingRequests: () => teamBillingRequestCount,
+    teamBillingQueries: () => [...teamBillingQueries],
+  };
+}
+
+async function createBoundTeamProject(
+  page: Page,
+  projectName: string,
+): Promise<{ projectId: string; conversationId: string }> {
+  const response = await retryProjectCreate(page, projectName);
+  const created = (await response.json()) as {
+    project: Record<string, unknown> & { id: string };
+    conversationId: string;
+  };
+  const bindProject = (project: Record<string, unknown>) => ({
+    ...project,
+    workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+    visibility: 'personal',
+    createdByWorkspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+    updatedByWorkspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+  });
+
+  await page.route('**/api/projects', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const responseFromDaemon = await route.fetch();
+    const body = (await responseFromDaemon.json()) as {
+      projects?: Array<Record<string, unknown> & { id?: string }>;
+    };
+    await route.fulfill({
+      response: responseFromDaemon,
+      json: {
+        ...body,
+        projects: (body.projects ?? []).map((project) =>
+          project.id === created.project.id ? bindProject(project) : project),
+      },
+    });
+  });
+  await page.route(`**/api/projects/${created.project.id}`, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const responseFromDaemon = await route.fetch();
+    const body = (await responseFromDaemon.json()) as {
+      project?: Record<string, unknown>;
+    };
+    await route.fulfill({
+      response: responseFromDaemon,
+      json: body.project
+        ? { ...body, project: bindProject(body.project) }
+        : body,
+    });
+  });
+  await page.route(`**/api/projects/${created.project.id}/collab/status`, async (route) => {
+    await route.fulfill({
+      json: {
+        publishedVersion: 1,
+        materializedVersion: 1,
+        awaitingFirstMaterialization: false,
+        syncState: 'synced',
+        ownerMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+        ownerDisplayName: 'Team Run Owner',
+        ownerRole: TEAM_RUN_CONTEXT.role,
+        contentTransferState: null,
+      },
+    });
+  });
+  return {
+    projectId: created.project.id,
+    conversationId: created.conversationId,
+  };
+}
+
+test('[P0] Team project send keeps exact Team run scope while its first scope read is pending', async ({ page }) => {
+  test.setTimeout(60_000);
+  const prompt = 'Run against the Team workspace while its scope read is still pending.';
+  const balanceRequests = await wireTeamRunBalanceFixtures(page, {
+    personalBalanceUsd: '0.00',
+    teamBalanceUsd: '99.97',
+  });
+  const { projectId, conversationId } = await createBoundTeamProject(
+    page,
+    'Pending Team scope run witness',
+  );
+  let releaseScope!: () => void;
+  const scopeGate = new Promise<void>((resolve) => {
+    releaseScope = resolve;
+  });
+  let scopeRequests = 0;
+  let heldScopeHeaders: Record<string, string> | null = null;
+  await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
+    scopeRequests += 1;
+    // The shell first resolves the bound project route before it is allowed to
+    // mount ProjectView. Hold only ProjectView's own first scope read: this is
+    // the window in which the exact project binding + caller witness must keep
+    // the send Team-scoped instead of falling back to the Personal wallet.
+    if (scopeRequests > 1) {
+      heldScopeHeaders = await route.request().allHeaders();
+      await scopeGate;
+    }
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'team',
+          projectId,
+          workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: TEAM_RUN_CONTEXT,
+        },
+      },
+    });
+  });
+  const runBodies: Array<Record<string, unknown>> = [];
+  await routeSuccessfulRuns(page, {
+    bodies: runBodies,
+    runIdPrefix: 'pending-team-scope-run',
+    events: false,
+  });
+  const runHeaders: Array<Record<string, string>> = [];
+  await page.route('**/api/runs', async (route) => {
+    if (route.request().method() === 'POST') {
+      runHeaders.push(await route.request().allHeaders());
+    }
+    await route.fallback();
+  });
+
+  try {
+    await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+    await expectWorkspaceReady(page);
+    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+    expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
+      TEAM_RUN_CONTEXT.workspaceMemberId,
+    );
+    await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+    balanceRequests.resetBalanceRequests();
+    await page.getByTestId('chat-composer-input').fill(prompt);
+    await page.getByTestId('chat-send').click();
+
+    await expect.poll(() => runHeaders.length).toBe(1);
+    releaseScope();
+    expect(runHeaders[0]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect(runHeaders[0]?.['x-od-workspace-member-id']).toBe(
+      TEAM_RUN_CONTEXT.workspaceMemberId,
+    );
+    // Run scope is an HTTP authority header contract. The daemon intentionally
+    // does not duplicate this mutable principal into ChatRequest JSON.
+    expect(runBodies[0]?.currentPrompt).toBe(prompt);
+    expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
+    const teamBillingQueries = balanceRequests.teamBillingQueries();
+    expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
+    for (const query of teamBillingQueries) {
+      expect(query.scope).toBe('workspace');
+      expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
+      expect([null, 'authoritative']).toContain(query.freshness);
+    }
+    expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
+    // Team preflight reads the account snapshot once for signed-in identity
+    // metadata only; Personal $0 is not the balance oracle and cannot veto the
+    // Team-funded run proved above.
+    expect(balanceRequests.personalWalletRequests()).toBe(1);
+    await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
+  } finally {
+    releaseScope();
+  }
+});
+
+test('[P0] Team project balance gate ignores funded Personal wallet and blocks on empty Team wallet', async ({ page }) => {
+  test.setTimeout(60_000);
+  const balanceRequests = await wireTeamRunBalanceFixtures(page, {
+    personalBalanceUsd: '99.97',
+    teamBalanceUsd: '0.00',
+  });
+  const { projectId, conversationId } = await createBoundTeamProject(
+    page,
+    'Empty Team wallet run witness',
+  );
+  let releaseScope!: () => void;
+  const scopeGate = new Promise<void>((resolve) => {
+    releaseScope = resolve;
+  });
+  let scopeRequests = 0;
+  let heldScopeHeaders: Record<string, string> | null = null;
+  await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
+    scopeRequests += 1;
+    if (scopeRequests > 1) {
+      heldScopeHeaders = await route.request().allHeaders();
+      await scopeGate;
+    }
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'team',
+          projectId,
+          workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: TEAM_RUN_CONTEXT,
+        },
+      },
+    });
+  });
+  const runRequests = await routeSuccessfulRuns(page, {
+    runIdPrefix: 'should-not-use-personal-wallet',
+    events: false,
+  });
+
+  try {
+    await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+    await expectWorkspaceReady(page);
+    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+    expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
+      TEAM_RUN_CONTEXT.workspaceMemberId,
+    );
+    await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+    balanceRequests.resetBalanceRequests();
+    await page.getByTestId('chat-composer-input').fill(
+      'Do not charge the funded Personal wallet for this Team project.',
+    );
+    await page.getByTestId('chat-send').click();
+
+    const dialog = page.getByTestId('amr-balance-dialog');
+    await expect(dialog).toBeVisible();
+    releaseScope();
+    await expect(dialog).toContainText('$0.00');
+    expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
+    const teamBillingQueries = balanceRequests.teamBillingQueries();
+    expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
+    for (const query of teamBillingQueries) {
+      expect(query.scope).toBe('workspace');
+      expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
+      expect([null, 'authoritative']).toContain(query.freshness);
+    }
+    expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
+    // Conversely, funded Personal identity metadata cannot override Team $0.
+    expect(balanceRequests.personalWalletRequests()).toBe(1);
+    await runRequests.expectNone({
+      message: 'An empty Team wallet must block before POST /api/runs',
+    });
+  } finally {
+    releaseScope();
+  }
+});
+
 test('[P0] @critical project detail composer agent menu lets the user switch the model', async ({ page }) => {
   test.setTimeout(60_000);
   await page.goto('/');

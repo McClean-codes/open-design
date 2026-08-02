@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import http from 'node:http';
-import { buildWorkspacePermissions, buildWorkspaceSeatSummary } from '@open-design/contracts';
+import {
+  buildWorkspacePermissions,
+  buildWorkspaceSeatSummary,
+  type WorkspaceCollabContext,
+} from '@open-design/contracts';
 import {
   registerCollabContextRoutes,
   type RegisterCollabContextRoutesDeps,
@@ -55,7 +59,7 @@ const TEAM_HEADERS = {
 /** What `parseWorkspaceCollabContext` returns: the minimal input enriched with the
  *  fields it derives — workspaceId fallback, provider/billing defaults, and the
  *  permissions + seat summary derived through B's shared helpers. */
-const TEAM_CONTEXT_PARSED = {
+const TEAM_CONTEXT_PARSED: WorkspaceCollabContext = {
   workspaceId: 'wm-1',
   workspaceType: 'team',
   workspaceMemberId: 'wm-1',
@@ -1134,6 +1138,56 @@ describe('POST /api/workspace/invite', () => {
     });
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ results: [{ email: 'a@x.com', ok: false, error: 'create_404' }] });
+  });
+});
+
+describe('POST /api/workspace/invite/continue', () => {
+  it('refreshes membership authority before returning a consumed continuation', async () => {
+    const refreshWorkspaceDirectoryAfterMutation = vi.fn(async () => ({
+      ok: true as const,
+      items: [TEAM_DIRECTORY_ITEM],
+    }));
+    const api = await startContextServer({
+      consumeInvite: async () => ({
+        ok: true,
+        context: TEAM_CONTEXT_PARSED,
+        workspaceMemberId: 'wm-1',
+      }),
+      refreshWorkspaceDirectoryAfterMutation,
+    });
+
+    const response = await api.req('/api/workspace/invite/continue', {
+      method: 'POST',
+      body: { nonce: 'nonce-1' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(refreshWorkspaceDirectoryAfterMutation).toHaveBeenCalledOnce();
+    expect(response.body).toEqual({
+      context: TEAM_CONTEXT_PARSED,
+      workspaceMemberId: 'wm-1',
+    });
+  });
+
+  it('does not reverse a consumed continuation when authority refresh is unavailable', async () => {
+    const api = await startContextServer({
+      consumeInvite: async () => ({
+        ok: true,
+        context: TEAM_CONTEXT_PARSED,
+        workspaceMemberId: 'wm-1',
+      }),
+      refreshWorkspaceDirectoryAfterMutation: async () => {
+        throw new Error('directory unavailable');
+      },
+    });
+
+    const response = await api.req('/api/workspace/invite/continue', {
+      method: 'POST',
+      body: { nonce: 'nonce-1' },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body.workspaceMemberId).toBe('wm-1');
   });
 });
 
