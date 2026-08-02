@@ -780,6 +780,7 @@ import {
 } from './collab/sync-snapshot-store.js';
 import { createPersistentSyncCache } from './collab/persistent-sync-cache.js';
 import { createSwrCache } from './collab/swr-cache.js';
+import { invalidateTeamResourceListingCaches } from './collab/team-resource-list-cache.js';
 import { readVelaControlApiContext } from './integrations/vela.js';
 import { fetchVelaWorkspaceBillingProjection } from './integrations/vela-billing.js';
 import { createCollabPublishWatcher } from './collab/collab-publish-watcher.js';
@@ -5457,12 +5458,16 @@ export async function startServer({
     },
     run: runTeamResourceCommand,
   });
+  const designSystemsTeamList = cachedTeamResourceList(
+    designSystemsTeamShare,
+    syncSharedTeamDesignSystem,
+  );
   registerTeamResourceShareRoutes(app, {
     basePath: 'design-systems',
     resolveScope: resolveTeamResourceScope,
     syncSharedResource: syncSharedTeamDesignSystem,
     share: designSystemsTeamShare,
-    listTeam: cachedTeamResourceList(designSystemsTeamShare, syncSharedTeamDesignSystem),
+    listTeam: designSystemsTeamList,
   });
   const pluginsTeamShare = createTeamResourceShareService({
     kind: 'plugin',
@@ -5483,12 +5488,16 @@ export async function startServer({
     },
     run: runTeamResourceCommand,
   });
+  const pluginsTeamList = cachedTeamResourceList(
+    pluginsTeamShare,
+    syncSharedTeamPlugin,
+  );
   registerTeamResourceShareRoutes(app, {
     basePath: 'plugins',
     resolveScope: resolveTeamResourceScope,
     syncSharedResource: syncSharedTeamPlugin,
     share: pluginsTeamShare,
-    listTeam: cachedTeamResourceList(pluginsTeamShare, syncSharedTeamPlugin),
+    listTeam: pluginsTeamList,
   });
   const skillsTeamShare = createTeamResourceShareService({
     kind: 'skill',
@@ -5509,13 +5518,22 @@ export async function startServer({
     },
     run: runTeamResourceCommand,
   });
+  const skillsTeamList = cachedTeamResourceList(
+    skillsTeamShare,
+    syncSharedTeamSkill,
+  );
   registerTeamResourceShareRoutes(app, {
     basePath: 'skills',
     resolveScope: resolveTeamResourceScope,
     syncSharedResource: syncSharedTeamSkill,
     share: skillsTeamShare,
-    listTeam: cachedTeamResourceList(skillsTeamShare, syncSharedTeamSkill),
+    listTeam: skillsTeamList,
   });
+  const teamResourceListByKind = {
+    design_system: designSystemsTeamList,
+    plugin: pluginsTeamList,
+    skill: skillsTeamList,
+  };
 
   // Collab realtime for design-system/plugin/skill "team resource" sharing: react
   // to a `team-resources-changed` signal (hub push, wired above, OR the
@@ -5625,9 +5643,6 @@ export async function startServer({
   ): Promise<void> => {
     const requestedWorkspaceId = workspaceId?.trim();
     if (!requestedWorkspaceId) return;
-    // Hub pushes must not reconcile against the still-fresh shared-list cache
-    // populated immediately before a teammate's retraction.
-    sharedTeamResourcesCommand.invalidate(requestedWorkspaceId);
     // Background events carry only a Workspace id, not an HTTP request. Resolve
     // that exact membership from the directory at execution time rather than
     // relying on whichever resource request happened to run first in this
@@ -5637,6 +5652,17 @@ export async function startServer({
     const kinds = resourceKind
       ? RECONCILED_TEAM_RESOURCE_KINDS.filter((kind) => kind === resourceKind)
       : RECONCILED_TEAM_RESOURCE_KINDS;
+    // A Team listing has two SWR layers: the per-kind parsed/materialized
+    // response and the raw shared command underneath it. Drop both before the
+    // authoritative reconciliation pass so the next UI read cannot keep
+    // serving a pre-retraction outer response after the binding is tombstoned.
+    invalidateTeamResourceListingCaches({
+      ...(resourceKind ? { resourceKind } : {}),
+      scope,
+      providers: teamResourceListByKind,
+      invalidateSharedCommand: (exactWorkspaceId) =>
+        sharedTeamResourcesCommand.invalidate(exactWorkspaceId),
+    });
     await Promise.all(
       kinds.map((kind) => reconcileTeamResourceKind(kind, scope)),
     );

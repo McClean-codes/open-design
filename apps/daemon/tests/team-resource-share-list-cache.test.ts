@@ -3,6 +3,7 @@ import express from 'express';
 import http from 'node:http';
 import { registerTeamResourceShareRoutes } from '../src/routes/team-resource-share.js';
 import { createSwrCache } from '../src/collab/swr-cache.js';
+import { invalidateTeamResourceListingCaches } from '../src/collab/team-resource-list-cache.js';
 import type {
   TeamResourceRequestScope,
   TeamResourceShareRecord,
@@ -418,5 +419,85 @@ describe('team resource share success invalidates the cached /team listing', () 
     // (hubReadCalls would stay at 1) and 'b' would be missing here.
     expect(after.body.ids).toEqual(['a', 'b']);
     expect(hubReadCalls).toBe(2);
+  });
+});
+
+describe('background Team resource reconciliation invalidates the cached /team listing', () => {
+  it('drops the selected outer plugin listing before the next post-retraction read', async () => {
+    let records = [record('plugin-retracted')];
+    let sharedResourcesCalls = 0;
+    const service = {
+      async sharedResources() {
+        sharedResourcesCalls += 1;
+        return records;
+      },
+      async share() {
+        return null;
+      },
+      async unshare() {
+        return false;
+      },
+    } as unknown as TeamResourceShareService;
+    const outer = createSwrCache(
+      async () => {
+        const resources = await service.sharedResources(SCOPE);
+        return { ids: resources.map((resource) => resource.id), resources };
+      },
+      () => 'ws-1',
+      3000,
+    );
+    const listTeam = Object.assign(
+      async (_scope: TeamResourceRequestScope) => outer(),
+      { invalidate: (_scope: TeamResourceRequestScope) => outer.invalidate() },
+    );
+    const untouched = { invalidate: (_scope: TeamResourceRequestScope) => {} };
+    const req = await startServer({ basePath: 'plugins', share: service, listTeam });
+
+    const before = await req.get('/api/workspace/plugins/team');
+    expect(before.body.ids).toEqual(['plugin-retracted']);
+    expect(sharedResourcesCalls).toBe(1);
+
+    records = [];
+    invalidateTeamResourceListingCaches({
+      resourceKind: 'plugin',
+      scope: SCOPE,
+      providers: {
+        design_system: untouched,
+        plugin: listTeam,
+        skill: untouched,
+      },
+      invalidateSharedCommand: () => {},
+    });
+
+    const after = await req.get('/api/workspace/plugins/team');
+    expect(after.body.ids).toEqual([]);
+    expect(sharedResourcesCalls).toBe(2);
+  });
+
+  it('drops every outer kind for an unscoped reconnect or poll pass', () => {
+    const invalidations: string[] = [];
+    const provider = (kind: string) => ({
+      invalidate(scope: TeamResourceRequestScope) {
+        invalidations.push(`${kind}:${scope.principal.teamId}`);
+      },
+    });
+
+    invalidateTeamResourceListingCaches({
+      scope: SCOPE,
+      providers: {
+        design_system: provider('design_system'),
+        plugin: provider('plugin'),
+        skill: provider('skill'),
+      },
+      invalidateSharedCommand: (workspaceId) =>
+        invalidations.push(`shared:${workspaceId}`),
+    });
+
+    expect(invalidations).toEqual([
+      'design_system:ws-1',
+      'plugin:ws-1',
+      'skill:ws-1',
+      'shared:ws-1',
+    ]);
   });
 });
