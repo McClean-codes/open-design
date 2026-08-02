@@ -755,11 +755,15 @@ test('[P1] same-id Personal plugin stays masked by Team projection until retract
   resourceMocks.retract();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(card).toHaveCount(0, { timeout: 15_000 });
+  await page.getByTestId('entry-nav-plugins').click();
+  await expect(pluginsView).toBeVisible();
   await pluginsView.getByTestId('plugins-tab-installed').click();
   await expect(card).toBeVisible();
   await expect(card.getByText('Shared with team', { exact: true })).toHaveCount(0);
   await card.getByTestId(`plugins-card-more-${LOCAL_PLUGIN.id}`).click();
-  await expect(card.getByRole('menuitem', { name: 'Share with team' })).toHaveCount(0);
+  // Active members may publish their own Personal resources; managing or
+  // removing somebody else's Team projection remains owner/admin-only.
+  await expect(card.getByRole('menuitem', { name: 'Share with team' })).toBeVisible();
   await expect(card.getByRole('menuitem', { name: 'Remove from team' })).toHaveCount(0);
 });
 
