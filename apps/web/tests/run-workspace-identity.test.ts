@@ -172,10 +172,10 @@ describe('runWorkspaceIdentity', () => {
     ).toBeNull();
   });
 
-  // `/workspace-scope` is fresher than the mutation gate's accepted-lag
-  // `lastKnown()` cache in this scenario: membership removal is already
-  // authoritative here while the old caller object still says active. Do not
-  // add that stale assertion to the request after the daemon has answered.
+  // A directory/backend outage is not an authorization decision. Keep sending
+  // the exact persisted Workspace + caller witness so the daemon can perform
+  // its own fresh mutation check instead of turning every project read and run
+  // headerless during a transient outage.
   it.each([
     ['an unavailable project scope', {
       loading: false,
@@ -188,6 +188,13 @@ describe('runWorkspaceIdentity', () => {
       },
     }],
     ['a failed scope read', { loading: false, scope: null, failure: 'unavailable' as const }],
+  ])('keeps the exact caller for %s', (_label, state) => {
+    expect(runWorkspaceIdentity(state, CALLER, TEAM_WORKSPACE)).toEqual(CALLER);
+  });
+
+  // Forbidden is an authoritative access decision. Unsupported means the
+  // daemon cannot verify this protocol at all. Neither may borrow the caller.
+  it.each([
     ['a refused scope read', { loading: false, scope: null, failure: 'forbidden' as const }],
     ['an unsupported scope read', { loading: false, scope: null, failure: 'unsupported' as const }],
   ])('does not borrow the stale caller for %s', (_label, state) => {

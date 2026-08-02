@@ -114,12 +114,12 @@ export function runWorkspacePersonalAdoptionWitness(
  * remount; unlike hook-local "first read" state it therefore cannot turn an
  * A-bound project into workspace B during a switch.
  *
- * Once the endpoint answers `unavailable`, or a scope read settles as failed,
- * the caller is no longer evidence for the project and the request stays
- * headerless. The daemon's mutation gate performs its own fresh authoritative
- * membership check: a removed member is rejected and a directory outage fails
- * closed before any side effect. Sending stale shell headers after this read
- * failed would only assert an authority the client can no longer prove.
+ * A transient `unavailable` answer is not an authorization decision. When the
+ * persisted project binding and exact caller still agree, keep asserting that
+ * pair and let the daemon's mutation gate perform the fresh authoritative
+ * membership check. Dropping the headers here would turn every project read
+ * and run into `WORKSPACE_CONTEXT_REQUIRED` during a directory outage. A
+ * `forbidden` answer remains authoritative and never borrows the caller.
  *
  * While the first scope read is pending, a caller whose workspace matches the
  * project's persisted workspace id may be used so the first request does not
@@ -140,6 +140,22 @@ export function runWorkspaceIdentity(
 ): WorkspaceCollabContext | null {
   const resolved = projectWorkspaceContext(state.scope);
   if (resolved) return resolved;
+  const callerAuthority = projectWorkspaceAuthority(caller);
+  const exactBoundCaller =
+    caller
+    && callerAuthority
+    && persistedProjectWorkspaceId === callerAuthority.workspaceId
+      ? caller
+      : null;
+  if (
+    exactBoundCaller
+    && (
+      state.failure === 'unavailable'
+      || state.scope?.kind === 'unavailable'
+    )
+  ) {
+    return exactBoundCaller;
+  }
   if (state.failure) return null;
   const personalAdoptionWitness = runWorkspacePersonalAdoptionWitness(
     state,
@@ -150,10 +166,9 @@ export function runWorkspaceIdentity(
   if (
     state.loading
     && state.scope === null
-    && caller
-    && persistedProjectWorkspaceId === caller.workspaceId
+    && exactBoundCaller
   ) {
-    return caller;
+    return exactBoundCaller;
   }
   return null;
 }

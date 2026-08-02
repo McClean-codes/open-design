@@ -621,7 +621,7 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     );
   });
 
-  it('does not price a Team-bound project against Personal when its scope read is unavailable', async () => {
+  it('keeps Team billing scope when its scope read is temporarily unavailable', async () => {
     workspaceScopeMocks.projectScope = {
       loading: false,
       failure: 'unavailable',
@@ -637,7 +637,14 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     renderProjectView();
 
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-    expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
+    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+      workspaceType: 'team',
+      workspaceId: TEAM_WORKSPACE,
+      workspaceMemberId: TEAM_MEMBER,
+    });
+    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
+      CALLER_CONTEXT,
+    );
   });
 
   it('consumes the Home handoff after an unavailable AMR gate durably queues it and starts it once after recovery', async () => {
