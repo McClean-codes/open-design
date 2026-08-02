@@ -1035,8 +1035,11 @@ describe('workspace project routes', () => {
       body: JSON.stringify({ name: 'Duplicate workspace-bind copy' }),
     });
     expect(duplicateResp.status).toBe(200);
-    const duplicateBody = await duplicateResp.json() as { project: { id: string } };
+    const duplicateBody = await duplicateResp.json() as {
+      project: { id: string; workspaceId?: string };
+    };
     const targetId = duplicateBody.project.id;
+    expect(duplicateBody.project.workspaceId).toBe(workspaceId);
 
     // Read a DIFFERENT workspace's project list first. Before the fix this
     // greedily adopted the still-unbound copy (any personal-workspace read
@@ -1053,6 +1056,83 @@ describe('workspace project routes', () => {
       id: targetId,
       createdByWorkspaceMemberId: 'member-dup-owner',
     });
+
+    const designSystemCopyResp = await fetch(
+      `${baseUrl}/api/projects/${projectId}/design-system-copy`,
+      {
+        method: 'POST',
+        headers: ownerHeaders,
+        body: JSON.stringify({ name: 'Design-system workspace-bind copy' }),
+      },
+    );
+    expect(designSystemCopyResp.status).toBe(200);
+    const designSystemCopyBody = await designSystemCopyResp.json() as {
+      project: { id: string; workspaceId?: string };
+      designSystemId: string;
+    };
+    expect(designSystemCopyBody.project.workspaceId).toBe(workspaceId);
+    expect(
+      (await list('member-dup-owner', '?view=all')).projects.find(
+        (item) => item.id === designSystemCopyBody.project.id,
+      ),
+    ).toMatchObject({
+      id: designSystemCopyBody.project.id,
+      createdByWorkspaceMemberId: 'member-dup-owner',
+    });
+
+    const ownDesignSystemsResp = await fetch(`${baseUrl}/api/design-systems`, {
+      headers: ownerHeaders,
+    });
+    expect(ownDesignSystemsResp.status).toBe(200);
+    const ownDesignSystemsBody = await ownDesignSystemsResp.json() as {
+      designSystems: Array<{ id: string; workspaceId?: string }>;
+    };
+    expect(
+      ownDesignSystemsBody.designSystems.find(
+        (item) => item.id === designSystemCopyBody.designSystemId,
+      ),
+    ).toMatchObject({
+      id: designSystemCopyBody.designSystemId,
+      workspaceId,
+    });
+
+    const otherHeaders = workspaceHeaders(otherWorkspaceId, 'member-other-reader', {
+      'x-od-workspace-type': 'team',
+    });
+    const otherDesignSystemsResp = await fetch(`${baseUrl}/api/design-systems`, {
+      headers: otherHeaders,
+    });
+    expect(otherDesignSystemsResp.status).toBe(200);
+    const otherDesignSystemsBody = await otherDesignSystemsResp.json() as {
+      designSystems: Array<{ id: string }>;
+    };
+    expect(
+      otherDesignSystemsBody.designSystems.some(
+        (item) => item.id === designSystemCopyBody.designSystemId,
+      ),
+    ).toBe(false);
+
+    const ownDirectRead = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(designSystemCopyBody.designSystemId)}`,
+      { headers: ownerHeaders },
+    );
+    expect(ownDirectRead.status).toBe(200);
+
+    const crossWorkspaceDirectRead = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(designSystemCopyBody.designSystemId)}`,
+      { headers: otherHeaders },
+    );
+    expect(crossWorkspaceDirectRead.status).toBe(403);
+
+    const crossWorkspaceMutation = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(designSystemCopyBody.designSystemId)}`,
+      {
+        method: 'PATCH',
+        headers: otherHeaders,
+        body: JSON.stringify({ title: 'Cross-workspace overwrite' }),
+      },
+    );
+    expect(crossWorkspaceMutation.status).toBe(403);
   });
 
   // recvqbhor3pai2 — duplicating an already-duplicated project (a "copy of a
@@ -1423,6 +1503,9 @@ describe('workspace project routes', () => {
         },
       });
       expect(body.projects[0].project.id).toBe(remoteProjectId);
+      expect(body.projects[0].project.metadata).toEqual({
+        sharedProjectPlaceholderAt: 20,
+      });
     } finally {
       await close(routeServer.server);
     }

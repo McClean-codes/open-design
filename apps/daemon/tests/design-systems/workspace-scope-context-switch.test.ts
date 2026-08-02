@@ -117,6 +117,35 @@ describe('GET/POST /api/design-systems — explicit request scope is isolated fr
     const createdInWs1 = (await createResp1.json()) as { id: string; workspaceId?: string };
     expect(createdInWs1.workspaceId).toBe('ws-switch-one');
 
+    const workspaceResp = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(createdInWs1.id)}/workspace`,
+      {
+        method: 'POST',
+        headers: workspaceHeaders(CONTEXT_WS1),
+      },
+    );
+    expect(workspaceResp.status).toBe(201);
+    const workspaceBody = await workspaceResp.json() as {
+      project: { id: string };
+    };
+    const projectsResp = await fetch(
+      `${baseUrl}/api/workspaces/${CONTEXT_WS1.workspaceId}/projects?view=all`,
+      { headers: workspaceHeaders(CONTEXT_WS1) },
+    );
+    expect(projectsResp.status).toBe(200);
+    const projectsBody = await projectsResp.json() as {
+      projects: Array<{
+        id: string;
+        createdByWorkspaceMemberId?: string | null;
+      }>;
+    };
+    expect(
+      projectsBody.projects.find((project) => project.id === workspaceBody.project.id),
+    ).toMatchObject({
+      id: workspaceBody.project.id,
+      createdByWorkspaceMemberId: CONTEXT_WS1.workspaceMemberId,
+    });
+
     // The compatibility write no longer creates daemon-global data-plane
     // authority. Each tab's following request must remain self-contained.
     const ctxResp = await fetch(`${baseUrl}/api/workspace/context`);

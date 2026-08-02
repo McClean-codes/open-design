@@ -16,6 +16,7 @@ import type {
   ImportLocalDesignSystemResponse,
   ReplaceProjectWorkingDirResponse,
   ProjectFileTextPreviewResponse,
+  ProjectFileResponse,
   ProjectFileVersion,
   ProjectFileVersionSource,
   ProjectFileVersionResponse,
@@ -81,6 +82,7 @@ import {
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
 import {
   evictSharedCancellableGet,
+  forceSharedCancellableGet,
   sharedCancellableGet,
 } from '../lib/shared-cancellable-get';
 import { workspaceProjectHeaders } from '../state/projects';
@@ -1747,6 +1749,8 @@ export async function fetchProjectFiles(
   options?: {
     signal?: AbortSignal;
     workspaceContext?: WorkspaceCollabContext | null;
+    fresh?: boolean;
+    requireAuthoritative?: boolean;
   },
 ): Promise<ProjectFile[]> {
   // Every reader of the same project's file list shares one request
@@ -1757,7 +1761,8 @@ export async function fetchProjectFiles(
   try {
     const cacheKey = projectFilesCacheKey(projectId, options?.workspaceContext);
     const cacheGeneration = projectFilesCacheGenerations.get(cacheKey) ?? 0;
-    return await sharedCancellableGet(
+    const get = options?.fresh ? forceSharedCancellableGet : sharedCancellableGet;
+    return await get(
       cacheKey,
       async (signal): Promise<ProjectFile[]> => {
         const url = `/api/projects/${encodeURIComponent(projectId)}/files`;
@@ -1767,16 +1772,32 @@ export async function fetchProjectFiles(
             ? { headers: workspaceProjectHeaders(options.workspaceContext) }
             : {}),
         });
-        if (!resp.ok) return [];
-        const json = (await resp.json()) as { files: ProjectFile[] };
+        if (!resp.ok) {
+          throw new Error(`Project files request failed (${resp.status})`);
+        }
+        const json = (await resp.json()) as { files?: unknown };
+        if (!Array.isArray(json.files)) {
+          throw new Error('Project files response was malformed');
+        }
         if ((projectFilesCacheGenerations.get(cacheKey) ?? 0) !== cacheGeneration) {
           return fetchProjectFiles(projectId, options);
         }
-        return json.files ?? [];
+        return json.files as ProjectFile[];
       },
       { signal: options?.signal },
     );
-  } catch {
+  } catch (error) {
+    // Preserve the historical empty fallback for broad list/card callers.
+    // State owners that must distinguish an authoritative empty directory
+    // from transport failure opt into rejection explicitly.
+    if (
+      options?.signal?.aborted
+      && error instanceof DOMException
+      && error.name === 'AbortError'
+    ) {
+      return [];
+    }
+    if (options?.requireAuthoritative) throw error;
     return [];
   }
 }
@@ -2512,6 +2533,7 @@ export async function writeProjectTextFile(
     versionSource?: ProjectFileVersionSource;
     versionLabel?: string;
     versionPrompt?: string | null;
+    parentVersionId?: string;
   },
   workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<ProjectFile | null> {
@@ -2520,7 +2542,7 @@ export async function writeProjectTextFile(
 }
 
 export type WriteProjectTextFileResult =
-  | { ok: true; file: ProjectFile }
+  | { ok: true; file: ProjectFile; version?: ProjectFileVersion | null }
   | { ok: false; status?: number; code?: string; message: string };
 
 export async function writeProjectTextFileDetailed(
@@ -2532,6 +2554,7 @@ export async function writeProjectTextFileDetailed(
     versionSource?: ProjectFileVersionSource;
     versionLabel?: string;
     versionPrompt?: string | null;
+    parentVersionId?: string;
   },
   workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<WriteProjectTextFileResult> {
@@ -2549,6 +2572,7 @@ export async function writeProjectTextFileDetailed(
         versionSource: options?.versionSource,
         versionLabel: options?.versionLabel,
         versionPrompt: options?.versionPrompt,
+        parentVersionId: options?.parentVersionId,
       }),
     });
     if (!resp.ok) {
@@ -2561,8 +2585,12 @@ export async function writeProjectTextFileDetailed(
       };
     }
     invalidateProjectFilesCache(projectId, workspaceContext);
-    const json = (await resp.json()) as { file: ProjectFile };
-    return { ok: true, file: json.file };
+    const json = (await resp.json()) as ProjectFileResponse;
+    return {
+      ok: true,
+      file: json.file,
+      ...(json.version !== undefined ? { version: json.version } : {}),
+    };
   } catch {
     return { ok: false, message: 'Network error while saving the file' };
   }

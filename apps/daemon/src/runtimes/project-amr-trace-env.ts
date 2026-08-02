@@ -88,6 +88,7 @@ export async function openDesignAmrTraceEnvForRun(
     runAttempt: number;
     projectId?: string | null;
     workspaceScope?: PinnedRunWorkspaceScope | null;
+    externalPluginAnalytics?: Record<string, unknown> | null;
   },
   deps: {
     onWorkspaceScopeOutcome?: (outcome: ProjectWorkspaceScopeOutcome) => void;
@@ -99,6 +100,9 @@ export async function openDesignAmrTraceEnvForRun(
     runAttempt: input.runAttempt,
     ...(input.conversationId !== undefined
       ? { conversationId: input.conversationId }
+      : {}),
+    ...(input.externalPluginAnalytics !== undefined
+      ? { externalPluginAnalytics: input.externalPluginAnalytics }
       : {}),
   };
   if (input.agentId !== 'amr') return openDesignAmrTraceEnv(traceInput);

@@ -32,8 +32,11 @@ import {
   uploadProjectFiles,
 } from '../../src/providers/registry';
 import {
+  createDesignSystemProjectFromProject,
   createProject,
+  createPluginShareProject,
   deleteProject,
+  duplicateProject,
   getProject,
   listProjects,
   listTemplates,
@@ -53,6 +56,7 @@ import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 vi.mock('../../src/components/EntryView', () => ({
   EntryView: ({
     onCreateProject,
+    onCreatePluginShareProject,
     onDeleteProject,
     onImportFolderResponse,
     onOpenProject,
@@ -63,6 +67,10 @@ vi.mock('../../src/components/EntryView', () => ({
     projects,
   }: {
     onCreateProject: (input: unknown) => boolean | Promise<boolean>;
+    onCreatePluginShareProject: (
+      pluginId: string,
+      action: 'publish-github' | 'contribute-open-design',
+    ) => Promise<unknown>;
     onDeleteProject: (id: string) => void;
     onImportFolderResponse?: (response: {
       conversationId: string;
@@ -101,6 +109,30 @@ vi.mock('../../src/components/EntryView', () => ({
         }}
       >
         Create project
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void Promise.resolve(onCreateProject({
+            name: 'Prompted project',
+            skillId: null,
+            designSystemId: null,
+            pendingPrompt: 'Build the retained artifact prompt',
+            autoSendFirstMessage: true,
+            metadata: { kind: 'prototype' },
+          })).catch(() => {});
+        }}
+      >
+        Create prompted project
+      </button>
+      <button
+        type="button"
+        onClick={() => void onCreatePluginShareProject(
+          'plugin-source',
+          'publish-github',
+        )}
+      >
+        Create plugin share project
       </button>
       <button
         type="button"
@@ -244,6 +276,8 @@ vi.mock('../../src/components/ProjectView', () => ({
   ProjectView: ({
     onBack,
     onCreateProjectFromDesignSystem,
+    onCreateDesignSystemFromProject,
+    onDuplicateProject,
     onProjectsRefresh,
     project,
     routeConversationId,
@@ -259,6 +293,14 @@ vi.mock('../../src/components/ProjectView', () => ({
   }: {
     onBack: () => void;
     onCreateProjectFromDesignSystem?: (designSystemId: string, title: string) => Promise<void> | void;
+    onCreateDesignSystemFromProject?: (
+      sourceProjectId: string,
+      input: { name?: string; pendingPrompt?: string },
+    ) => Promise<void> | void;
+    onDuplicateProject?: (
+      sourceProjectId: string,
+      input?: { name?: string },
+    ) => Promise<void> | void;
     onProjectsRefresh: () => Promise<void>;
     project: Project;
     routeConversationId?: string | null;
@@ -289,6 +331,23 @@ vi.mock('../../src/components/ProjectView', () => ({
       </span>
       <button type="button" onClick={onBack}>
         Back to projects
+      </button>
+      <button
+        type="button"
+        onClick={() => void onCreateDesignSystemFromProject?.(project.id, {
+          name: 'Derived design system',
+          pendingPrompt: 'Extract the retained design system prompt',
+        })}
+      >
+        Extract design system project
+      </button>
+      <button
+        type="button"
+        onClick={() => void onDuplicateProject?.(project.id, {
+          name: 'Scoped duplicate',
+        })}
+      >
+        Duplicate project
       </button>
       <button type="button" onClick={onOpenSettings}>
         Open settings from project
@@ -414,8 +473,11 @@ vi.mock('../../src/state/projects', async () => {
   );
   return {
     ...actual,
+    createDesignSystemProjectFromProject: vi.fn(),
     createProject: vi.fn(),
+    createPluginShareProject: vi.fn(),
     deleteProject: vi.fn(),
+    duplicateProject: vi.fn(),
     getProject: vi.fn(),
     listProjects: vi.fn(),
     listTemplates: vi.fn(),
@@ -448,8 +510,11 @@ const mockedFetchPromptTemplates = vi.mocked(fetchPromptTemplates);
 const mockedFetchSkills = vi.mocked(fetchSkills);
 const mockedUploadProjectFiles = vi.mocked(uploadProjectFiles);
 const mockedReplaceProjectWorkingDir = vi.mocked(replaceProjectWorkingDir);
+const mockedCreateDesignSystemProjectFromProject = vi.mocked(createDesignSystemProjectFromProject);
 const mockedCreateProject = vi.mocked(createProject);
+const mockedCreatePluginShareProject = vi.mocked(createPluginShareProject);
 const mockedDeleteProject = vi.mocked(deleteProject);
+const mockedDuplicateProject = vi.mocked(duplicateProject);
 const mockedGetProject = vi.mocked(getProject);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
@@ -589,7 +654,41 @@ describe('App project creation routing', () => {
       project: freshProject,
       conversationId: 'conv-new',
     });
+    mockedCreateDesignSystemProjectFromProject.mockResolvedValue({
+      project: {
+        ...freshProject,
+        id: 'project-design-system',
+        name: 'Derived design system',
+      },
+      conversationId: 'conv-design-system',
+      designSystemId: 'derived-design-system',
+      copiedFiles: [],
+    });
+    mockedCreatePluginShareProject.mockResolvedValue({
+      ok: true,
+      project: {
+        ...freshProject,
+        id: 'project-plugin-share',
+        name: 'Plugin share project',
+        pendingPrompt: 'Publish the retained plugin share prompt',
+      },
+      conversationId: 'conv-plugin-share',
+      actionPluginId: 'od-plugin-publish-github',
+      sourcePluginId: 'plugin-source',
+      stagedPath: 'plugin-source',
+      prompt: 'Publish the retained plugin share prompt',
+      message: 'Prepared',
+    });
     mockedDeleteProject.mockResolvedValue(true);
+    mockedDuplicateProject.mockResolvedValue({
+      project: {
+        ...freshProject,
+        id: 'project-duplicate',
+        name: 'Scoped duplicate',
+      },
+      conversationId: 'conv-duplicate',
+      copiedFiles: [],
+    });
     mockedGetProject.mockResolvedValue(null);
     mockedPatchProject.mockResolvedValue(freshProject);
     vi.stubGlobal(
@@ -843,6 +942,37 @@ describe('App project creation routing', () => {
     expect(window.location.pathname).toBe('/projects/project-new');
   });
 
+  it('stores the Home auto-send prompt outside the project projection before a refresh can drop it', async () => {
+    mockedListProjects.mockResolvedValue([]);
+    mockedCreateProject.mockResolvedValue({
+      project: { ...freshProject, name: 'Prompted project' },
+      conversationId: 'conv-new',
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create prompted project' }));
+
+    await screen.findByTestId('project-view');
+    expect(window.sessionStorage.getItem('od:auto-send-first:project-new')).toBe('1');
+    expect(window.sessionStorage.getItem('od:auto-send-prompt:project-new')).toBe(
+      'Build the retained artifact prompt',
+    );
+  });
+
+  it('stores the plugin-share prompt before its prepared project projection can refresh', async () => {
+    mockedListProjects.mockResolvedValue([]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create plugin share project' }));
+
+    await waitFor(() => expect(mockedCreatePluginShareProject).toHaveBeenCalled());
+    await screen.findByTestId('project-view');
+    expect(window.sessionStorage.getItem('od:auto-send-first:project-plugin-share')).toBe('1');
+    expect(window.sessionStorage.getItem('od:auto-send-prompt:project-plugin-share')).toBe(
+      'Publish the retained plugin share prompt',
+    );
+  });
+
   it.each([
     ['Local CLI', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
     ['BYOK', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],
@@ -1011,6 +1141,110 @@ describe('App project creation routing', () => {
       | undefined;
     expect(call?.pluginId).not.toBe('example-web-prototype');
     expect(call?.metadata?.kind).not.toBe('prototype');
+    expect(window.sessionStorage.getItem('od:auto-send-first:project-new')).toBe('1');
+    expect(window.sessionStorage.getItem('od:auto-send-prompt:project-new')).toContain('Slack');
+  });
+
+  it('stores the extraction prompt when converting an existing project into a design system', async () => {
+    mockedListProjects.mockResolvedValue([existingProject]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Extract design system project' }));
+
+    await waitFor(() => {
+      expect(mockedCreateDesignSystemProjectFromProject).toHaveBeenCalledWith(
+        'project-existing',
+        expect.objectContaining({
+          pendingPrompt: 'Extract the retained design system prompt',
+        }),
+        null,
+      );
+    });
+    expect(window.sessionStorage.getItem('od:auto-send-first:project-design-system')).toBe('1');
+    expect(window.sessionStorage.getItem('od:auto-send-prompt:project-design-system')).toBe(
+      'Extract the retained design system prompt',
+    );
+  });
+
+  it('duplicates from the source project persisted Workspace instead of the ambient shell Workspace', async () => {
+    const sourceProject = { ...existingProject, workspaceId: 'ws-source' };
+    window.history.replaceState(null, '', `/projects/${sourceProject.id}`);
+    mockedListProjects.mockResolvedValue([sourceProject]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([
+                  workspaceContext('ws-source', 'member-source'),
+                  workspaceContext('ws-ambient', 'member-ambient'),
+                ])
+              : pathname.endsWith('/workspace/context')
+                ? workspaceContextPayload('ws-ambient', 'member-ambient')
+                : {},
+        } as Response;
+      }),
+    );
+
+    render(<App />);
+    await screen.findByTestId('project-view');
+    fireEvent.click(screen.getByRole('button', { name: 'Duplicate project' }));
+
+    await waitFor(() => {
+      expect(mockedDuplicateProject).toHaveBeenCalledWith(
+        sourceProject.id,
+        { name: 'Scoped duplicate' },
+        expect.objectContaining({
+          workspaceId: 'ws-source',
+          workspaceMemberId: 'member-source',
+        }),
+      );
+    });
+  });
+
+  it('creates a design-system copy in the source project persisted Workspace', async () => {
+    const sourceProject = { ...existingProject, workspaceId: 'ws-source' };
+    window.history.replaceState(null, '', `/projects/${sourceProject.id}`);
+    mockedListProjects.mockResolvedValue([sourceProject]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([
+                  workspaceContext('ws-source', 'member-source'),
+                  workspaceContext('ws-ambient', 'member-ambient'),
+                ])
+              : pathname.endsWith('/workspace/context')
+                ? workspaceContextPayload('ws-ambient', 'member-ambient')
+                : {},
+        } as Response;
+      }),
+    );
+
+    render(<App />);
+    await screen.findByTestId('project-view');
+    fireEvent.click(screen.getByRole('button', { name: 'Extract design system project' }));
+
+    await waitFor(() => {
+      expect(mockedCreateDesignSystemProjectFromProject).toHaveBeenCalledWith(
+        sourceProject.id,
+        expect.objectContaining({
+          pendingPrompt: 'Extract the retained design system prompt',
+        }),
+        expect.objectContaining({
+          workspaceId: 'ws-source',
+          workspaceMemberId: 'member-source',
+        }),
+      );
+    });
   });
 
   it('keeps a newly created project open when a post-create refresh resolves stale', async () => {

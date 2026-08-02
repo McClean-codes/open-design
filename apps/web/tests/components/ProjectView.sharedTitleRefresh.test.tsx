@@ -391,6 +391,8 @@ describe('ProjectView shared-project title refresh on project-metadata-changed',
       evict: vi.fn(),
       evictProject: vi.fn(),
       evictMatching: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+      revision: vi.fn(() => 0),
     });
     mockedUseProjectCollab.mockReturnValue(sharedMemberCollab());
     mockedListConversations.mockResolvedValue([conversation]);

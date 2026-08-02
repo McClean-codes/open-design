@@ -260,6 +260,54 @@ describe('fetchProjectFiles', () => {
     await expect(foreground).resolves.toEqual(files);
   });
 
+  it('rejects an HTTP failure instead of publishing a non-authoritative empty list', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ error: { message: 'temporarily unavailable' } }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    )));
+
+    await expect(fetchProjectFiles('project-http-failure', {
+      fresh: true,
+      requireAuthoritative: true,
+    }))
+      .rejects.toThrow('Project files request failed (503)');
+  });
+
+  it('rejects a network failure instead of publishing a non-authoritative empty list', async () => {
+    const networkError = new TypeError('Failed to fetch');
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      throw networkError;
+    }));
+
+    await expect(fetchProjectFiles('project-network-failure', {
+      fresh: true,
+      requireAuthoritative: true,
+    }))
+      .rejects.toBe(networkError);
+  });
+
+  it('preserves the historical empty fallback when strict authority is not requested', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchProjectFiles('project-default-http-failure', { fresh: true }))
+      .resolves.toEqual([]);
+    await expect(fetchProjectFiles('project-default-network-failure', { fresh: true }))
+      .resolves.toEqual([]);
+  });
+
+  it('still accepts an authoritative successful empty file list', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(
+      JSON.stringify({ files: [] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )));
+
+    await expect(fetchProjectFiles('project-authoritative-empty', { fresh: true }))
+      .resolves.toEqual([]);
+  });
+
   it('re-reads after a successful mutation overtakes an in-flight file list', async () => {
     const workspaceContext = personalWorkspaceContext();
     const staleFiles = [{

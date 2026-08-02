@@ -207,6 +207,49 @@ afterEach(() => {
 });
 
 describe('EntryShell team project content readiness', () => {
+  it('renders another member\'s catalog name and timestamp on Home instead of the fresh pulled placeholder', async () => {
+    const catalogUpdatedAt = Date.now() - (2 * 24 * 60 * 60 * 1000);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
+      if (pathname.endsWith('/workspace/context')) {
+        return jsonResponse({ context: teamContext() });
+      }
+      if (pathname.endsWith('/workspace/projects/team')) {
+        return jsonResponse({
+          projects: [{
+            projectId: 'shared-pulled',
+            ownerMemberId: 'wm-owner',
+            sharedAt: '2026-07-25T00:00:00.000Z',
+            name: 'Owner catalog name',
+            updatedAt: catalogUpdatedAt,
+          }],
+        });
+      }
+      if (pathname.endsWith('/files')) return jsonResponse({ files: [] });
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    renderAt('/', {
+      projects: [{
+        id: 'shared-pulled',
+        name: '共享项目',
+        skillId: null,
+        designSystemId: null,
+        workspaceId: 'ws-1',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }],
+    });
+
+    const card = await screen.findByTitle('Owner catalog name');
+    expect(card.textContent).toContain('Owner catalog name');
+    expect(card.textContent).toContain('2d ago');
+    expect(card.textContent).not.toContain('just now');
+  });
+
   it('hands the authoritative catalog card to App before opening a local placeholder', async () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const pathname = new URL(String(input), 'http://d.local').pathname;
@@ -243,8 +286,10 @@ describe('EntryShell team project content readiness', () => {
       onOpenProject,
     });
 
-    expect(await screen.findByText('Ready shared project')).toBeTruthy();
-    fireEvent.click(screen.getByTitle('Ready shared project'));
+    const activeCard = await screen.findByRole('button', {
+      name: /Ready shared project/,
+    });
+    fireEvent.click(activeCard);
 
     await waitFor(() => {
       expect(onOpenProject).toHaveBeenCalledWith(

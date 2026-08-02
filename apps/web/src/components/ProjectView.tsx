@@ -55,7 +55,6 @@ import { requestAmrArtifactUpgrade } from '../runtime/amr-artifact-upgrade';
 import {
   type AmrWalletSnapshot,
   type ByokMediaDefaults,
-  type ByokChatProviderConfig,
   type ByokChatProtocol,
   type ResearchOptions,
 } from '@open-design/contracts';
@@ -270,8 +269,12 @@ import {
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
 import { isDesignSystemProject, resolveProjectDesignSystemId } from './design-system-project';
 import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
-import { KNOWN_PROVIDERS } from '../state/config';
-import { DESIGN_SYSTEM_TAB, FileWorkspace, type BrowserOpenRequest } from './FileWorkspace';
+import {
+  DESIGN_SYSTEM_TAB,
+  FileWorkspace,
+  type BrowserOpenRequest,
+  type FileRefreshResult,
+} from './FileWorkspace';
 import {
   type PluginFolderAgentAction,
 } from './design-files/pluginFolderActions';
@@ -303,7 +306,6 @@ import { effectiveMaxTokens } from '../state/maxTokens';
 import { effectiveAgentModelChoice } from './agentModelSelection';
 import { mediaExecutionPolicyForProjectMetadata } from '../media/execution-policy';
 import { mediaModelProviderId } from '../media/models';
-import { byokProviderRequiresApiKey } from '../utils/byokProvider';
 import {
   useByokImageModelOptions,
   useByokVideoModelOptions,
@@ -963,6 +965,10 @@ function autoSendFirstMessageKey(projectId: string): string {
   return `od:auto-send-first:${projectId}`;
 }
 
+function autoSendPromptKey(projectId: string): string {
+  return `od:auto-send-prompt:${projectId}`;
+}
+
 function autoSendAttachmentsKey(projectId: string): string {
   return `od:auto-send-attachments:${projectId}`;
 }
@@ -994,6 +1000,15 @@ function readAutoSendAttachments(projectId: string): ChatAttachment[] {
     return parsed.filter(isStoredChatAttachment);
   } catch {
     return [];
+  }
+}
+
+function readAutoSendPrompt(projectId: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage.getItem(autoSendPromptKey(projectId));
+  } catch {
+    return null;
   }
 }
 
@@ -1029,6 +1044,7 @@ function clearAutoSendSession(projectId: string): void {
   if (typeof window === 'undefined') return;
   try {
     window.sessionStorage.removeItem(autoSendFirstMessageKey(projectId));
+    window.sessionStorage.removeItem(autoSendPromptKey(projectId));
     window.sessionStorage.removeItem(autoSendAttachmentsKey(projectId));
     window.sessionStorage.removeItem(autoSendContextKey(projectId));
     window.sessionStorage.removeItem(autoSendAmrGateWitnessKey(projectId));
@@ -1443,41 +1459,13 @@ function byokMediaDefaultsForRun(input: {
   };
 }
 
-function byokOpenCodeProviderFromConfig(
+function byokOpenCodeProfileIdFromConfig(
   config: AppConfig,
-): ByokChatProviderConfig | undefined {
+): string | undefined {
   if (!isOpenCodeByokChatProtocol(config.apiProtocol)) return undefined;
-  const selectedProvider = selectedKnownProviderForConfig(config);
-  const model = config.model.trim();
-  if (
-    (byokProviderRequiresApiKey(config.apiProtocol, selectedProvider, config.baseUrl) && !config.apiKey.trim()) ||
-    !model ||
-    model.toLowerCase() === 'default' ||
-    (config.apiProtocol === 'azure' && !config.baseUrl.trim())
-  ) {
-    return undefined;
-  }
-  return {
-    protocol: config.apiProtocol,
-    apiKey: config.apiKey.trim(),
-    baseUrl: config.baseUrl,
-    model: config.model,
-    ...(selectedProvider?.requiresApiKey === false ? { requiresApiKey: false } : {}),
-    apiVersion:
-      config.apiProtocol === 'azure'
-        ? config.apiVersion ?? ''
-        : '',
-  };
-}
-
-function selectedKnownProviderForConfig(config: AppConfig) {
-  if (!config.apiProtocol) return undefined;
-  return KNOWN_PROVIDERS.find(
-    (provider) =>
-      provider.protocol === config.apiProtocol &&
-      provider.baseUrl === config.baseUrl &&
-      (config.apiProviderBaseUrl == null || provider.baseUrl === config.apiProviderBaseUrl),
-  );
+  if (byokPreflightBlockReason(config) !== null) return undefined;
+  if (!config.byokCredentialConfigured) return undefined;
+  return config.byokProfileId?.trim() || undefined;
 }
 
 function isOpenCodeByokChatProtocol(
@@ -1853,7 +1841,15 @@ export function ProjectView({
     detailedProject,
     authoritativeProjectName,
   );
-  const projectDesignSystemId = resolveProjectDesignSystemId(currentProject);
+  const resolvedProjectDesignSystemId = resolveProjectDesignSystemId(currentProject);
+  // A project can outlive a Design System being disabled in Settings. Keep the
+  // persisted project value intact for recovery, but do not inject a disabled
+  // system into a new runtime turn.
+  const projectDesignSystemId = resolvedProjectDesignSystemId;
+  const runtimeDesignSystemId =
+    projectDesignSystemId && (config.disabledDesignSystems ?? []).includes(projectDesignSystemId)
+      ? null
+      : projectDesignSystemId;
   const projectIsDesignSystemProject = isDesignSystemProject(currentProject);
   // Website-clone turns reproduce a whole multi-page site; auto-open should
   // land on the site entry (index.html), not the last-written subpage. See
@@ -2037,11 +2033,30 @@ export function ProjectView({
   const [error, setError] = useState<string | null>(null);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [filesRefresh, setFilesRefresh] = useState(0);
+  const filesRefreshRequestKeyRef = useRef(0);
+  const bumpFilesRefresh = useCallback(() => {
+    setFilesRefresh((current) => {
+      const next = current + 1;
+      filesRefreshRequestKeyRef.current = next;
+      return next;
+    });
+  }, []);
   // True while a working-dir replace is reindexing the new folder. Surfaced
   // to the Design Files panel so the file list shows a loading state instead
   // of silently sitting on the old tree for the few seconds the scan takes.
-  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
+  const [projectFilesSnapshot, setProjectFilesSnapshot] = useState<{
+    files: ProjectFile[];
+    refreshKey: number;
+    generation: number;
+  }>({ files: [], refreshKey: 0, generation: 0 });
+  const projectFiles = projectFilesSnapshot.files;
+  const committedFilesRefreshKey = projectFilesSnapshot.refreshKey;
+  const committedFilesGeneration = projectFilesSnapshot.generation;
+  const projectFilesGenerationRef = useRef(committedFilesGeneration);
+  const committedFilesRefreshKeyRef = useRef(committedFilesRefreshKey);
+  committedFilesRefreshKeyRef.current = committedFilesRefreshKey;
   const projectFilesRef = useRef<ProjectFile[]>([]);
+  const projectFilesRequestSeqRef = useRef(0);
   const [liveArtifacts, setLiveArtifacts] = useState<LiveArtifactSummary[]>([]);
   const [liveArtifactEvents, setLiveArtifactEvents] = useState<LiveArtifactEventItem[]>([]);
   const [workspaceFocused, setWorkspaceFocused] = useState(false);
@@ -3130,12 +3145,39 @@ export function ProjectView({
     });
   }, []);
 
-  const refreshProjectFiles = useCallback(async (): Promise<ProjectFile[]> => {
-    const next = await fetchProjectFiles(project.id, {
-      workspaceContext: projectRunWorkspaceContextRef.current,
-    });
-    projectFilesRef.current = next;
-    setProjectFiles(next);
+  const refreshProjectFiles = useCallback(async (
+    options?: { fresh?: boolean },
+    onAcceptedGeneration?: (generation: number) => void,
+  ): Promise<ProjectFile[]> => {
+    const requestSeq = ++projectFilesRequestSeqRef.current;
+    const requestedRefreshKey = filesRefreshRequestKeyRef.current;
+    let next: ProjectFile[];
+    try {
+      next = await fetchProjectFiles(project.id, {
+        workspaceContext: projectRunWorkspaceContextRef.current,
+        requireAuthoritative: true,
+        ...(options?.fresh ? { fresh: true } : {}),
+      });
+    } catch {
+      // A transport/HTTP failure is not an authoritative empty directory.
+      // Keep the last accepted snapshot and generation, while preserving the
+      // refresh helper's historical resolved-list contract for its callers.
+      return projectFilesRef.current;
+    }
+    if (requestSeq === projectFilesRequestSeqRef.current) {
+      const acceptedGeneration = projectFilesGenerationRef.current + 1;
+      projectFilesGenerationRef.current = acceptedGeneration;
+      projectFilesRef.current = next;
+      // Commit the list and both observation witnesses atomically. A refresh
+      // request must never publish a new key or generation alongside an older
+      // file snapshot.
+      setProjectFilesSnapshot({
+        files: next,
+        refreshKey: requestedRefreshKey,
+        generation: acceptedGeneration,
+      });
+      onAcceptedGeneration?.(acceptedGeneration);
+    }
     return next;
   }, [project.id, projectRunAuthorityKey]);
 
@@ -3183,10 +3225,27 @@ export function ProjectView({
     return next;
   }, [project.id, projectRunAuthorityKey]);
 
-  const refreshWorkspaceItems = useCallback(async (): Promise<ProjectFile[]> => {
-    const [nextFiles] = await Promise.all([refreshProjectFiles(), refreshLiveArtifacts()]);
+  const refreshWorkspaceItems = useCallback(async (
+    options?: { freshProjectFiles?: boolean },
+    onAcceptedFilesGeneration?: (generation: number) => void,
+  ): Promise<ProjectFile[]> => {
+    const [nextFiles] = await Promise.all([
+      refreshProjectFiles({ fresh: options?.freshProjectFiles }, onAcceptedFilesGeneration),
+      refreshLiveArtifacts(),
+    ]);
     return nextFiles;
   }, [refreshLiveArtifacts, refreshProjectFiles]);
+
+  const refreshFileWorkspace = useCallback(async (
+    options?: { fresh?: boolean },
+  ): Promise<FileRefreshResult> => {
+    let acceptedGeneration: number | null = null;
+    await refreshWorkspaceItems(
+      { freshProjectFiles: options?.fresh },
+      (generation) => { acceptedGeneration = generation; },
+    );
+    return { acceptedGeneration };
+  }, [refreshWorkspaceItems]);
 
   useEffect(() => {
     if (!currentBrandExtractionId) {
@@ -3201,7 +3260,7 @@ export function ProjectView({
     if (terminalBrandPreviewRefreshRef.current === refreshKey) return;
     terminalBrandPreviewRefreshRef.current = refreshKey;
     void refreshWorkspaceItems().catch(() => {});
-    setFilesRefresh((n) => n + 1);
+    bumpFilesRefresh();
   }, [
     currentBrandExtractionId,
     effectiveBrandExtractionStatus,
@@ -3354,7 +3413,7 @@ export function ProjectView({
       }, projectRunWorkspaceContext);
       if (file) {
         savedArtifactRef.current = file.name;
-        setFilesRefresh((n) => n + 1);
+        bumpFilesRefresh();
         // Surface the daemon's stub-guard warning when it fires in `warn`
         // mode (the default). Without this the warning would land in the
         // file metadata silently and the user would never see that the
@@ -3438,7 +3497,9 @@ export function ProjectView({
   // mount we also do an initial pull so attachments staged before the
   // agent has written anything still see the user's pasted images.
   useEffect(() => {
-    void refreshWorkspaceItems().catch(() => {
+    void refreshWorkspaceItems({
+      freshProjectFiles: filesRefresh > committedFilesRefreshKeyRef.current,
+    }).catch(() => {
       // The daemon probe can briefly lag behind a just-started local
       // runtime. Retry when daemonLive flips or the explicit refresh key
       // changes instead of leaving the project view in its empty shell.
@@ -3468,7 +3529,7 @@ export function ProjectView({
       project.id,
       projectRunWorkspaceContextRef.current,
     );
-    setFilesRefresh((n) => n + 1);
+    bumpFilesRefresh();
     // Round 7 (mrcfps): file mutations are the dominant staleness signal
     // post-finalize — bump the refresh key so DESIGN.md staleness
     // recomputes against the new mtimes.
@@ -3657,6 +3718,10 @@ export function ProjectView({
     && projectWorkspaceScopeReady(projectWorkspaceScopeState.scope);
   useProjectFileEvents(project.id, projectEventsEnabled, handleProjectEvent, {
     onConnectedChange: setProjectEventsSseConnected,
+    // A file can be created after the initial list snapshot but before SSE is
+    // listening. Reconcile once the exact-scoped stream is ready so that
+    // missed pre-handshake mutations cannot leave the workspace stale forever.
+    onReady: refreshFilesAndDesignMd,
   }, projectRunWorkspaceContext);
 
   const activePromptContextSignature = useMemo(() => {
@@ -6051,11 +6116,11 @@ export function ProjectView({
           chatAttachmentsFromPreviewCommentImages(attachment.imageAttachments),
         ),
       );
-      const byokOpenCodeProvider = byokOpenCodeProviderFromConfig(config);
+      const byokProfileId = byokOpenCodeProfileIdFromConfig(config);
       const requiresByokPreflight =
         (config.mode === 'api' && config.apiProtocol !== 'bedrock') ||
         (config.mode === 'daemon' && config.agentId === 'byok-opencode');
-      if (requiresByokPreflight && !byokOpenCodeProvider) {
+      if (requiresByokPreflight && !byokProfileId) {
         trackByokPreflightBlocked(analytics.track, {
           source: 'run',
           reason: byokPreflightBlockReason(config) ?? 'config_invalid',
@@ -6580,6 +6645,9 @@ export function ProjectView({
                 if (decision.shouldOpen && decision.fileName) {
                   requestOpenFile(decision.fileName);
                 }
+              }).catch(() => {
+                // A failed background read is non-authoritative. Keep the
+                // current file list and skip auto-open until a later event.
               });
             }
           }
@@ -6745,7 +6813,9 @@ export function ProjectView({
               cancelController,
             );
             if (ownsCurrentRun) updateConversationLatestRun('failed', endedAt);
-            void refreshProjectFiles();
+            void refreshProjectFiles().catch(() => {
+              // Retain the last accepted file list while the daemon recovers.
+            });
             onProjectsRefresh();
             clearTraceTouchedFilePaths();
             return;
@@ -7095,7 +7165,9 @@ export function ProjectView({
           if (refreshConversationAfterError) {
             scheduleConversationMessageRefresh(runConversationId);
           }
-          void refreshProjectFiles();
+          void refreshProjectFiles().catch(() => {
+            // Retain the last accepted file list while the daemon recovers.
+          });
           clearTraceTouchedFilePaths();
         },
       };
@@ -7187,7 +7259,7 @@ export function ProjectView({
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
-          designSystemId: projectDesignSystemId ?? null,
+          designSystemId: runtimeDesignSystemId ?? null,
           workspaceContext: projectRunWorkspaceContext,
           attachments: runAttachments.map((a) => a.path),
           commentAttachments: runCommentAttachments,
@@ -7199,8 +7271,8 @@ export function ProjectView({
           model: daemonByokOpenCode ? config.model : choice?.model ?? null,
           reasoning: daemonByokOpenCode ? null : choice?.reasoning ?? null,
           serviceTier: daemonByokOpenCode ? null : choice?.serviceTier ?? null,
-          ...(daemonByokOpenCode && byokOpenCodeProvider
-            ? { byokProvider: byokOpenCodeProvider }
+          ...(daemonByokOpenCode && byokProfileId
+            ? { byokProfileId }
             : {}),
           ...(daemonByokOpenCode
             ? {
@@ -7283,24 +7355,9 @@ export function ProjectView({
         // BYOK users even though the UI saves model + index + entries
         // for that mode.
         const userText = (userMsg.content ?? '').trim();
-        // Snapshot the live BYOK chat config so the daemon can run
-        // "Same as chat" memory extraction against the same vendor /
-        // key / baseUrl / apiVersion the user is chatting with. The
-        // daemon never persists BYOK creds itself, so this per-call
-        // signal is the only way `pickProvider()` can avoid falling
-        // through to env / media-config (which is wrong for BYOK)
-        // when no explicit memory model override is set. The picker
-        // re-syncs an *explicit* override when chat config drifts;
-        // this snapshot covers the implicit "Same as chat" default.
-        const byokChatProvider = byokOpenCodeProvider
-          ? {
-              provider: byokOpenCodeProvider.protocol,
-              apiKey: byokOpenCodeProvider.apiKey,
-              baseUrl: byokOpenCodeProvider.baseUrl,
-              apiVersion: byokOpenCodeProvider.apiVersion,
-              model: byokOpenCodeProvider.model,
-            }
-          : undefined;
+        // Pass only the non-secret profile reference so "Same as chat"
+        // memory extraction resolves the same daemon-owned credential as the
+        // run. Raw provider keys never cross this browser call boundary.
         if (userText.length > 0) {
           try {
             await fetch('/api/memory/extract', {
@@ -7310,7 +7367,7 @@ export function ProjectView({
                 userMessage: userText,
                 projectId: project.id,
                 conversationId: runConversationId,
-                chatProvider: byokChatProvider,
+                byokProfileId,
               }),
             });
           } catch {
@@ -7354,7 +7411,7 @@ export function ProjectView({
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
-          designSystemId: projectDesignSystemId ?? null,
+          designSystemId: runtimeDesignSystemId ?? null,
           workspaceContext: projectRunWorkspaceContext,
           attachments: runAttachments.map((a) => a.path),
           commentAttachments: runCommentAttachments,
@@ -7366,7 +7423,7 @@ export function ProjectView({
           model: config.model,
           reasoning: null,
           serviceTier: null,
-          ...(byokOpenCodeProvider ? { byokProvider: byokOpenCodeProvider } : {}),
+          ...(byokProfileId ? { byokProfileId } : {}),
           byokMediaDefaults: byokMediaDefaultsForRun({
             imageModelOverride: byokImageModelOverride,
             videoModelOverride: byokVideoModelOverride,
@@ -7442,6 +7499,7 @@ export function ProjectView({
       project.id,
       project.workspaceId,
       projectDesignSystemId,
+      runtimeDesignSystemId,
       project.name,
       projectFiles,
       refreshProjectFiles,
@@ -7524,7 +7582,7 @@ export function ProjectView({
               Promise.resolve(onDesignSystemsRefresh?.()),
               refreshWorkspaceItems(),
             ]);
-            setFilesRefresh((n) => n + 1);
+            bumpFilesRefresh();
             requestOpenFile(DESIGN_SYSTEM_TAB);
           })();
         });
@@ -7864,8 +7922,8 @@ export function ProjectView({
   const commentQueueOnSend = currentConversationBusy && !currentConversationQueueDisabled;
 
   const handleContinueRemainingTasks = useCallback(
-    (_assistantMessage: ChatMessage, todos: TodoItem[]) => {
-      if (currentConversationActionDisabled || todos.length === 0) return;
+    async (_assistantMessage: ChatMessage, todos: TodoItem[]) => {
+      if (currentConversationActionDisabled || todos.length === 0) return false;
       const remainingList = todos
         .map((todo, i) => {
           const label =
@@ -7879,7 +7937,7 @@ export function ProjectView({
         `${remainingList}\n\n` +
         'Before making changes, inspect the current project files as needed. ' +
         'Update TodoWrite as you complete each remaining task.';
-      void handleSend(prompt, [], []);
+      return handleSend(prompt, [], []);
     },
     [currentConversationActionDisabled, handleSend],
   );
@@ -9245,7 +9303,9 @@ export function ProjectView({
     autoSendAmrGateWitnessRef.current = isAutoSend
       ? amrGateWitness
       : undefined;
-    autoSendSeedRef.current = isAutoSend ? (project.pendingPrompt ?? '') : '';
+    autoSendSeedRef.current = isAutoSend
+      ? (readAutoSendPrompt(project.id) ?? project.pendingPrompt ?? '')
+      : '';
     autoSendAttachmentsRef.current = isAutoSend ? readAutoSendAttachments(project.id) : [];
     autoSendContextRef.current = isAutoSend ? readAutoSendContext(project.id) : null;
   }
@@ -9347,7 +9407,7 @@ export function ProjectView({
         Promise.resolve(onDesignSystemsRefresh?.()),
         refreshWorkspaceItems(),
       ]);
-      setFilesRefresh((n) => n + 1);
+      bumpFilesRefresh();
       requestOpenFile(brandPreviewFile);
       const returnedConversationId = conversationId?.trim() || null;
       if (returnedConversationId) {
@@ -10306,10 +10366,9 @@ export function ProjectView({
           resolvedDir={projectDetail.resolvedDir}
           files={projectFiles}
           liveArtifacts={liveArtifacts}
-          filesRefreshKey={filesRefresh}
-          onRefreshFiles={() => {
-            return refreshWorkspaceItems().then(() => undefined);
-          }}
+          filesRefreshKey={committedFilesRefreshKey}
+          filesGeneration={committedFilesGeneration}
+          onRefreshFiles={refreshFileWorkspace}
           isDeck={isDeck}
           streaming={currentConversationActionDisabled}
           commentQueueOnSend={commentQueueOnSend}

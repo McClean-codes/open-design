@@ -216,6 +216,8 @@ describe('ProjectView preview keep-alive invalidation', () => {
       evict: vi.fn(),
       evictProject: evictProjectMock,
       evictMatching: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+      revision: vi.fn(() => 0),
     });
     mockedListConversations.mockResolvedValue([conversation]);
     mockedCreateConversation.mockResolvedValue(conversation);

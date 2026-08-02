@@ -1166,6 +1166,7 @@ process.stdin.on("end", () => {
       files: ["ui/app.test.ts"],
     });
     expect(uiP0Groups["workspace-restoration"]).toEqual({
+      fullyParallel: true,
       grep: String.raw`\[P0\]`,
       files: ["ui/app-restoration.test.ts", "ui/critical-smoke.test.ts"],
     });

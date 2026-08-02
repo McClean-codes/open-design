@@ -23,7 +23,6 @@ import { createProjectArtifactFile } from '../../artifacts/create.js';
 import { ArtifactPublicationBlockedError } from '../../artifacts/publication-guard.js';
 import { ArtifactRegressionError } from '../../artifacts/stub-guard.js';
 import {
-  createProjectFileVersion,
   ensureCurrentProjectFileVersion,
   isProjectFileVersionPath,
   listProjectFileVersions,
@@ -38,6 +37,8 @@ import {
   linkUserDesignSystemProject,
   listDesignSystems,
   propagateWorkspaceProjectRename,
+  type DesignSystemSummary,
+  type UserDesignSystemInput,
 } from '../../design-systems/index.js';
 import { buildProjectDesignTokenSuggestions } from '../../project-design-token-suggestions.js';
 import {
@@ -128,6 +129,17 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * retain their existing behavior.
    */
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
+  /**
+   * Persist a design system and its Workspace ownership envelope from the
+   * exact directory-verified creation context. Production injects the shared
+   * design-system creation service; the optional shape preserves isolated
+   * route harnesses and headerless/local compatibility.
+   */
+  createWorkspaceOwnedDesignSystem?: (
+    root: string,
+    input: UserDesignSystemInput,
+    context: WorkspaceResourceContext | null,
+  ) => Promise<DesignSystemSummary>;
   /**
    * Collab-cloud comment seams, threaded to the nested preview-comment routes.
    * `resolveAuthorMemberId` stamps the server-authoritative author AND identifies
@@ -1854,11 +1866,18 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     const syncState: ProjectSyncState = velaProjectSyncStateToProject(remote.syncState);
     const resourceState = remote.access.frozen || isWorkspaceLocked(ctx) ? 'frozen' : 'active';
     const name = remote.displayName?.trim() || remote.projectId;
+    // A catalog-only summary has no local project directory yet. Reuse the
+    // existing placeholder metadata contract so clients do not issue local
+    // file/cover reads that can only 404 before the first explicit pull. The
+    // materialized local row replaces this projection (and clears the stamp)
+    // once real hub content lands.
+    const metadata = { sharedProjectPlaceholderAt: updatedAt };
     const project = {
       id: remote.projectId,
       name,
       skillId: null,
       designSystemId: null,
+      metadata,
       createdAt,
       updatedAt,
     };
@@ -1880,6 +1899,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       syncState,
       createdAt,
       updatedAt,
+      metadata,
       project,
     };
   }
@@ -3212,8 +3232,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         }
         externalProjectDir = await createLocationProjectDir(location, id);
       }
-      // Website Clone projects that already carry the target URL skip the
-      // turn-1 discovery brief: for this scenario the URL *is* the brief —
+      // Website Clone projects that already carry the target URL explicitly
+      // skip the project-opening discovery brief: the URL *is* the brief —
       // the user asked for a reproduction, not a requirements interview, and
       // an unanswered question form just stalls the run (the agent then
       // "answers" it with conservative defaults). An explicit client-provided
@@ -3522,7 +3542,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         }
         /** @type {import('@open-design/contracts').DuplicateProjectResponse} */
         const body = {
-          project,
+          project: createHome
+            ? { ...project, workspaceId: createHome.workspaceId }
+            : project,
           conversationId,
           copiedFiles,
         };
@@ -3584,7 +3606,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       let createdDesignSystemId: string | null = null;
       let insertedProject = false;
       try {
-        const designSystem = await createUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, {
+        const createDesignSystem = ctx.createWorkspaceOwnedDesignSystem
+          ?? ((root: string, input: UserDesignSystemInput, context: WorkspaceResourceContext | null) =>
+            createUserDesignSystem(root, {
+              ...input,
+              ...(context ? { workspaceId: context.workspaceId } : {}),
+            }));
+        const designSystem = await createDesignSystem(USER_DESIGN_SYSTEMS_DIR, {
           title: targetName,
           summary: sourceNotes,
           category: 'Project Design System',
@@ -3596,7 +3624,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             notes: sourceNotes,
             sourceNotes,
           },
-        });
+        }, createHome);
         createdDesignSystemId = designSystem.id;
 
         const metadata = {
@@ -3686,7 +3714,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         await linkUserDesignSystemProject(USER_DESIGN_SYSTEMS_DIR, designSystem.id, targetProjectId);
         /** @type {import('@open-design/contracts').CreateDesignSystemProjectFromProjectResponse} */
         const body = {
-          project,
+          project: createHome
+            ? { ...project, workspaceId: createHome.workspaceId }
+            : project,
           conversationId,
           designSystemId: designSystem.id,
           copiedFiles,
@@ -4497,6 +4527,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     promptSource?: ProjectFileVersionPromptSource;
     source?: ProjectFileVersionSource;
     label?: string | null;
+    parentVersionId?: string;
   };
 
   function htmlVersionOptions(
@@ -4507,6 +4538,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     promptSource?: ProjectFileVersionPromptSource;
     source?: ProjectFileVersionSource;
     label?: string;
+    parentVersionId?: string;
   } {
     const fallbackPromptInfo = latestProjectPrompt(project);
     const prompt = override?.prompt !== undefined
@@ -4523,6 +4555,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       promptSource?: ProjectFileVersionPromptSource;
       source?: ProjectFileVersionSource;
       label?: string;
+      parentVersionId?: string;
     } = {
       prompt,
     };
@@ -4530,6 +4563,9 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     if (override?.source) versionOptions.source = override.source;
     if (typeof override?.label === 'string' && override.label.trim()) {
       versionOptions.label = override.label.trim();
+    }
+    if (typeof override?.parentVersionId === 'string' && override.parentVersionId.trim()) {
+      versionOptions.parentVersionId = override.parentVersionId.trim();
     }
     return versionOptions;
   }
@@ -4539,7 +4575,49 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       content: string,
       options?: ReturnType<typeof htmlVersionOptions>,
     ) => Promise<ProjectFileVersion | null>;
+    createVersion: (
+      content: string,
+      options?: ReturnType<typeof htmlVersionOptions>,
+    ) => Promise<ProjectFileVersion>;
+    matchVersionContent: (
+      content: string,
+      versionId?: string,
+    ) => Promise<{
+      status: 'matched' | 'missing_version' | 'digest_mismatch' | 'unknown';
+      version: ProjectFileVersion | null;
+    }>;
   };
+
+  async function matchedHtmlParentVersionId(
+    project: any,
+    fileName: string,
+    requestedParentVersionId: unknown,
+    versionLock: HtmlVersionLock,
+  ): Promise<string | undefined> {
+    if (typeof requestedParentVersionId !== 'string' || !requestedParentVersionId.trim()) {
+      return undefined;
+    }
+    const parentVersionId = requestedParentVersionId.trim();
+    try {
+      const existing = await readProjectFile(
+        PROJECTS_DIR,
+        project.id,
+        fileName,
+        project.metadata,
+      );
+      const match = await versionLock.matchVersionContent(
+        existing.buffer.toString('utf8'),
+        parentVersionId,
+      );
+      return match.status === 'matched' && match.version?.id === parentVersionId
+        ? parentVersionId
+        : undefined;
+    } catch {
+      // Missing/unreadable pre-edit bytes cannot prove lineage. The write may
+      // still proceed, but the new checkpoint must not inherit an origin.
+      return undefined;
+    }
+  }
 
   function htmlVersionCaptureWarning(err: unknown): ProjectFileVersionWarning {
     const message = err instanceof Error ? err.message : String(err);
@@ -4807,6 +4885,83 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
 
   function encodeProjectPathForUrl(filePath: string): string {
     return filePath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
+  }
+
+  function rewriteWorkspaceScopedHtmlAssetUrls(
+    html: string,
+    projectId: string,
+    ownerFilePath: string,
+    workspaceId: string,
+    workspaceMemberId: string,
+  ): string {
+    const assetAttr = /(\s)(src|poster|data-src)(\s*=\s*)(["'])([^"']*)\4/gi;
+    const linkTag = /<link\b[^>]*>/gi;
+    const linkHref = /(\shref\s*=\s*)(["'])([^"']*)\2/i;
+    const srcsetAttr = /(\ssrcset\s*=\s*)(["'])([^"']*)\2/gi;
+    const cssUrl = /url\(\s*(['"]?)([^'")]+)\1\s*\)/gi;
+    const ownerDir = path.posix.dirname(ownerFilePath);
+    const scopeQuery = `workspaceId=${encodeURIComponent(workspaceId)}`
+      + `&workspaceMemberId=${encodeURIComponent(workspaceMemberId)}`;
+
+    const rewrite = (ref: string): string => {
+      const trimmed = ref.trim();
+      if (!trimmed || /^(?:[a-z][a-z0-9+.-]*:|\/|#)/i.test(trimmed)) return ref;
+      const match = trimmed.match(/^([^?#]*)([?#][\s\S]*)?$/);
+      const rawPath = match?.[1] ?? trimmed;
+      const suffix = match?.[2] ?? '';
+      let decodedPath = rawPath;
+      try {
+        decodedPath = decodeURIComponent(rawPath);
+      } catch {
+        return ref;
+      }
+      const resolved = path.posix.normalize(path.posix.join(ownerDir, decodedPath));
+      if (!resolved || resolved === '..' || resolved.startsWith('../') || path.posix.isAbsolute(resolved)) {
+        return ref;
+      }
+      const scoped = `/api/projects/${encodeURIComponent(projectId)}/raw/`
+        + `${encodeProjectPathForUrl(resolved)}?${scopeQuery}`;
+      if (!suffix) return scoped;
+      if (suffix.startsWith('#')) return `${scoped}${suffix}`;
+      return `${scoped}&${suffix.slice(1)}`;
+    };
+
+    let next = html.replace(
+      assetAttr,
+      (match, space: string, name: string, eq: string, quote: string, value: string) => {
+        const rewritten = rewrite(value);
+        return rewritten === value ? match : `${space}${name}${eq}${quote}${rewritten}${quote}`;
+      },
+    );
+    next = next.replace(linkTag, (tag) =>
+      tag.replace(linkHref, (match, prefix: string, quote: string, value: string) => {
+        const rewritten = rewrite(value);
+        return rewritten === value ? match : `${prefix}${quote}${rewritten}${quote}`;
+      }),
+    );
+    next = next.replace(srcsetAttr, (match, prefix: string, quote: string, value: string) => {
+      // A data URL contains an unescaped comma, so the lightweight candidate
+      // splitter below cannot safely rewrite a mixed data-URL srcset. Leave the
+      // whole attribute untouched rather than corrupting embedded bytes.
+      if (/(?:^|,\s*)data:/i.test(value)) return match;
+      const rewritten = value
+        .split(',')
+        .map((candidate) => {
+          const body = candidate.trim();
+          if (!body) return candidate;
+          const [url = '', ...descriptors] = body.split(/\s+/);
+          const rewrittenUrl = rewrite(url);
+          if (rewrittenUrl === url) return candidate;
+          const leading = candidate.match(/^\s*/)?.[0] ?? '';
+          return `${leading}${[rewrittenUrl, ...descriptors].join(' ')}`;
+        })
+        .join(',');
+      return rewritten === value ? match : `${prefix}${quote}${rewritten}${quote}`;
+    });
+    return next.replace(cssUrl, (match, quote: string, value: string) => {
+      const rewritten = rewrite(value);
+      return rewritten === value ? match : `url(${quote}${rewritten}${quote})`;
+    });
   }
 
   async function maybeResolveVitePreviewHtml({
@@ -5303,7 +5458,27 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
             projectsRoot: PROJECTS_DIR,
             readProjectFile,
           });
-          return applyUrlPreviewBridgesToHtml(transformed, file.mime, req.query.odPreviewBridge);
+          const bridged = applyUrlPreviewBridgesToHtml(
+            transformed,
+            file.mime,
+            req.query.odPreviewBridge,
+          );
+          const workspaceId = typeof req.query.workspaceId === 'string'
+            ? req.query.workspaceId
+            : null;
+          const workspaceMemberId = typeof req.query.workspaceMemberId === 'string'
+            ? req.query.workspaceMemberId
+            : null;
+          if (!workspaceId || !workspaceMemberId || !/^text\/html(?:;|$)/i.test(file.mime)) {
+            return bridged;
+          }
+          return rewriteWorkspaceScopedHtmlAssetUrls(
+            Buffer.isBuffer(bridged) ? bridged.toString('utf8') : String(bridged),
+            projectId,
+            relPath,
+            workspaceId,
+            workspaceMemberId,
+          );
         },
         true, // revalidate: emit ETag/Last-Modified so covers/preview/export reuse cached assets
       );
@@ -5553,8 +5728,8 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         project.id,
         'writeFiles',
       )) return;
-      const file = await readProjectFile(PROJECTS_DIR, project.id, fileName, project.metadata);
-      if (!/\.html?$/i.test(file.name)) {
+      const requestedFile = await readProjectFile(PROJECTS_DIR, project.id, fileName, project.metadata);
+      if (!/\.html?$/i.test(requestedFile.name)) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'versions are only available for HTML files');
       }
       const manualPrompt = typeof req.body?.prompt === 'string' && req.body.prompt.trim()
@@ -5567,6 +5742,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         promptSource?: ProjectFileVersionPromptSource;
         source: ProjectFileVersionSource;
         label?: string | null;
+        parentVersionId?: string;
       } = {
         prompt: manualPrompt ?? fallbackPromptInfo?.prompt ?? null,
         source: requestedSource,
@@ -5581,13 +5757,34 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       } else if (fallbackPromptInfo?.promptSource) {
         versionOptions.promptSource = fallbackPromptInfo.promptSource;
       }
-      const version = await createProjectFileVersion(
+      const version = await withProjectFileVersionLock(
         PROJECTS_DIR,
         project.id,
-        file.name,
-        file.buffer.toString('utf8'),
-        versionOptions,
+        requestedFile.name,
         project.metadata,
+        async (versionLock) => {
+          const currentFile = await readProjectFile(
+            PROJECTS_DIR,
+            project.id,
+            requestedFile.name,
+            project.metadata,
+          );
+          const parentVersionId = requestedSource === 'manual'
+            ? await matchedHtmlParentVersionId(
+              project,
+              currentFile.name,
+              req.body?.parentVersionId,
+              versionLock,
+            )
+            : undefined;
+          return versionLock.createVersion(
+            currentFile.buffer.toString('utf8'),
+            {
+              ...versionOptions,
+              ...(parentVersionId ? { parentVersionId } : {}),
+            },
+          );
+        },
       );
       if (!version) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'version could not be created');
@@ -5806,6 +6003,14 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
               ? requestProjectFileVersionUploadSource(req.body)
               : null;
             const writeAndCapture = async (versionLock?: HtmlVersionLock) => {
+              const parentVersionId = uploadProject && requestedSource === 'manual' && versionLock
+                ? await matchedHtmlParentVersionId(
+                  uploadProject,
+                  desiredName,
+                  req.body?.parentVersionId,
+                  versionLock,
+                )
+                : undefined;
               const meta = await writeProjectFile(
                 PROJECTS_DIR,
                 req.params.id,
@@ -5827,6 +6032,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
                       promptSource: 'manual',
                       source: requestedSource,
                       label: typeof req.body?.versionLabel === 'string' ? req.body.versionLabel : null,
+                      ...(parentVersionId ? { parentVersionId } : {}),
                     },
                   );
                 })()
@@ -5845,6 +6051,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
             /** @type {import('@open-design/contracts').ProjectFileResponse} */
             const body = {
               file: meta,
+              ...(versionCapture ? { version: versionCapture.version } : {}),
               ...(versionCapture?.versionWarning ? { versionWarning: versionCapture.versionWarning } : {}),
             };
             return res.json(body);
@@ -5861,6 +6068,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           overwrite,
           versionLabel,
           versionPrompt,
+          parentVersionId: requestedParentVersionId,
         } = req.body || {};
         if (typeof name !== 'string' || typeof content !== 'string') {
           return sendApiError(
@@ -5895,6 +6103,14 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
             ? Buffer.from(content, 'base64')
             : Buffer.from(content, 'utf8');
         const writeAndCapture = async (versionLock?: HtmlVersionLock) => {
+          const parentVersionId = uploadProject && requestedSource === 'manual' && versionLock
+            ? await matchedHtmlParentVersionId(
+              uploadProject,
+              desiredName,
+              requestedParentVersionId,
+              versionLock,
+            )
+            : undefined;
           const meta = artifact === true
             ? await createProjectArtifactFile({
               projectsRoot: PROJECTS_DIR,
@@ -5920,6 +6136,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
               const versionOverride: HtmlVersionOverride = {
                 source: requestedSource,
                 label: typeof versionLabel === 'string' ? versionLabel : null,
+                ...(parentVersionId ? { parentVersionId } : {}),
               };
               if (typeof versionPrompt === 'string') {
                 versionOverride.prompt = versionPrompt;
@@ -5952,6 +6169,7 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         /** @type {import('@open-design/contracts').ProjectFileResponse} */
         const body = {
           file: meta,
+          ...(versionCapture ? { version: versionCapture.version } : {}),
           ...(versionCapture?.versionWarning ? { versionWarning: versionCapture.versionWarning } : {}),
         };
         res.json(body);

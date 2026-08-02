@@ -310,6 +310,7 @@ const mockedLoadTabs = vi.mocked(loadTabs);
 const mockedPersistTabsToDaemonNow = vi.mocked(persistTabsToDaemonNow);
 const mockedDeletePreviewComment = vi.mocked(deletePreviewComment);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
+const mockedFetchProjectFiles = vi.mocked(fetchProjectFiles);
 const mockedFetchBrands = vi.mocked(fetchBrands);
 const mockedUseProjectFileEvents = vi.mocked(useProjectFileEvents);
 
@@ -620,7 +621,7 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     );
   });
 
-  it('does not price a Team-bound project against Personal when its scope read is unavailable', async () => {
+  it('keeps Team billing scope when its scope read is temporarily unavailable', async () => {
     workspaceScopeMocks.projectScope = {
       loading: false,
       failure: 'unavailable',
@@ -636,7 +637,14 @@ describe('a Home auto-send identifies its caller before the project scope resolv
     renderProjectView();
 
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
-    expect(mockedCheckAmrBalanceGate).not.toHaveBeenCalled();
+    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+      workspaceType: 'team',
+      workspaceId: TEAM_WORKSPACE,
+      workspaceMemberId: TEAM_MEMBER,
+    });
+    expect(mockedStreamViaDaemon.mock.calls[0]?.[0].workspaceContext).toEqual(
+      CALLER_CONTEXT,
+    );
   });
 
   it('consumes the Home handoff after an unavailable AMR gate durably queues it and starts it once after recovery', async () => {
@@ -885,6 +893,47 @@ describe('a Home auto-send observes a project billing scope that settles after m
       });
     });
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
+  });
+
+  it('reconciles files with the exact Team scope when the project event stream becomes ready', async () => {
+    window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
+    workspaceScopeMocks.projectScope = {
+      loading: false,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team',
+        context: CALLER_CONTEXT as WorkspaceCollabContext & { workspaceType: 'team' },
+      },
+    };
+
+    renderProjectView({
+      project: { ...project(), pendingPrompt: '' },
+    });
+    await waitFor(() => {
+      expect(mockedUseProjectFileEvents).toHaveBeenCalledWith(
+        PROJECT_ID,
+        true,
+        expect.any(Function),
+        expect.objectContaining({ onReady: expect.any(Function) }),
+        CALLER_CONTEXT,
+      );
+    });
+
+    const options = mockedUseProjectFileEvents.mock.calls.at(-1)?.[3];
+    mockedFetchProjectFiles.mockClear();
+    await act(async () => {
+      options?.onReady?.();
+    });
+
+    await waitFor(() => {
+      expect(mockedFetchProjectFiles).toHaveBeenCalledWith(PROJECT_ID, {
+        fresh: true,
+        requireAuthoritative: true,
+        workspaceContext: CALLER_CONTEXT,
+      });
+    });
   });
 
   it('keeps established project data while the same workspace authority object settles', async () => {
