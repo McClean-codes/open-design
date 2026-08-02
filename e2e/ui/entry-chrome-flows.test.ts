@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { expect, test } from '@/playwright/suite';
 import { ensureRailOpen, openNewProjectModal } from '@/playwright/rail';
 import { settingsSurface } from '@/playwright/amr';
+import { expectStableCount } from '@/playwright/assertions';
 import { openHomeTemplateMenu, pickHomeTemplate } from '@/playwright/home-hero';
 import type {
   WorkspaceCollabContext,
@@ -420,9 +421,13 @@ test('[P1] onboarding lands on the home composer without a recommended-start str
   await expect(page.getByTestId('home-recommendation')).toHaveCount(0);
   await expect(page.getByTestId('home-recommendation-start')).toHaveCount(0);
 
-  await page.waitForTimeout(500);
-  expect(createdBodies).toHaveLength(0);
-  expect(runBodies).toHaveLength(0);
+  await expectStableCount(() => createdBodies.length, 0, {
+    timeout: T.short,
+    message: 'finishing onboarding should not create a project automatically',
+  });
+  await runRequests.expectNone({
+    message: 'finishing onboarding should not start a run automatically',
+  });
 });
 
 test('[P1] entry top navigation matches the current home tab structure', async ({ page }) => {
