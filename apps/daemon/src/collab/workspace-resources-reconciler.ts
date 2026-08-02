@@ -41,14 +41,9 @@
 //     state change only — this module does not delete, move, or rewrite
 //     anything under `USER_SKILLS_DIR` / `USER_DESIGN_SYSTEMS_DIR`.
 //
-// Scope: this module is resource-type-agnostic (parameterized by
-// `resourceType`), but the daemon wiring in server.ts only drives it for
-// `'design_system'` and `'skill'` today. `'plugin'` is a deliberate,
-// documented follow-up — see server.ts's wiring comment for why (plugin's
-// personal/team split runs entirely through `installed_plugins.source`'s
-// `team:plugin:` prefix; it has never been bound into `workspace_resources`
-// at all, so driving this reconciler for it needs that integration built
-// first, not just another `resourceType` value passed in here).
+// Scope: this module is resource-type-agnostic. Daemon wiring drives it for
+// design systems, plugins, and skills; each materializer owns creating the
+// active Team binding that this reconciler later retires.
 
 /** This daemon's one local `workspace_resources` row for a resource, as far
  *  as reconciliation cares. Only rows the caller has already filtered to

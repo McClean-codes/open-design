@@ -255,6 +255,7 @@ export function rowToInstalledPlugin(row: DbRow): InstalledPluginRecord {
 function pluginVisibleFromWorkspace(db: SqliteDb, pluginId: string, scope: string | null | undefined): boolean {
   const binding = getWorkspaceResourceByResourceId(db, 'plugin', pluginId);
   const ownerId = typeof binding?.workspaceId === 'string' ? binding.workspaceId.trim() : '';
+  if (binding?.resourceState === 'deleted') return false;
   if (scope === undefined) return true;
   const scopeId = scope?.trim();
   if (!scopeId) return !ownerId;
@@ -263,10 +264,71 @@ function pluginVisibleFromWorkspace(db: SqliteDb, pluginId: string, scope: strin
 }
 
 /**
+ * A materialized Team plugin is readable only while its exact Workspace
+ * binding is live. An unbound marker is still accepted for one compatibility
+ * read so pre-binding installs can be adopted by the daemon without vanishing
+ * during an upgrade; callers must persist that binding immediately.
+ */
+export function workspaceTeamPluginBindingAllowsRead(
+  db: SqliteDb,
+  workspaceId: string,
+  pluginId: string,
+): boolean {
+  const binding = getWorkspaceResourceByResourceId(
+    db,
+    'plugin',
+    workspaceTeamPluginBindingResourceId(workspaceId, pluginId),
+  );
+  if (!binding) return true;
+  return binding.workspaceId === workspaceId
+    && binding.visibility === 'team'
+    && binding.resourceState !== 'deleted';
+}
+
+const WORKSPACE_TEAM_PLUGIN_BINDING_PREFIX = 'team-mirror:';
+
+/**
+ * Team materializations are separate from the Personal installed-plugin row.
+ * The generic binding table only allows one row per resource id, so a Team
+ * mirror must not claim the bare plugin id: Personal and Team plugins with the
+ * same manifest id are valid and coexist in `listWorkspacePlugins`.
+ */
+export function workspaceTeamPluginBindingResourceId(
+  workspaceId: string,
+  pluginId: string,
+): string {
+  return `${WORKSPACE_TEAM_PLUGIN_BINDING_PREFIX}${encodeURIComponent(workspaceId)}:${encodeURIComponent(pluginId)}`;
+}
+
+export function pluginIdFromWorkspaceTeamPluginBinding(
+  workspaceId: string,
+  bindingResourceId: string,
+): string | null {
+  const prefix = `${WORKSPACE_TEAM_PLUGIN_BINDING_PREFIX}${encodeURIComponent(workspaceId)}:`;
+  if (!bindingResourceId.startsWith(prefix)) return null;
+  try {
+    return decodeURIComponent(bindingResourceId.slice(prefix.length));
+  } catch {
+    return null;
+  }
+}
+
+export async function resolveWorkspaceTeamPluginWithBindingGate<T>(input: {
+  bindingAllowsRead: () => boolean;
+  resolve: () => Promise<T | null>;
+}): Promise<T | null> {
+  if (!input.bindingAllowsRead()) return null;
+  const resolved = await input.resolve();
+  if (resolved == null || !input.bindingAllowsRead()) return null;
+  return resolved;
+}
+
+/**
  * `workspaceId` is optional and defaults to the pre-workspace-isolation
- * behavior (every installed plugin, unfiltered) so every existing caller —
+ * behavior (every live installed plugin, otherwise unfiltered) so every existing caller —
  * `od plugin list`, inventory stats, the bundled-scenario scan in server.ts —
- * keeps working unchanged, AS LONG AS THEY OMIT THE ARGUMENT ENTIRELY.
+ * keeps working unchanged, AS LONG AS THEY OMIT THE ARGUMENT ENTIRELY. A
+ * reconciled tombstone is terminal even for these unscoped internal callers.
  * `GET /api/plugins` always passes a second argument (`headerValue(...)`,
  * which returns `string | null`, never `undefined`), so it always gets the
  * workspace-scoped view even when the caller has no header — see
@@ -276,7 +338,6 @@ function pluginVisibleFromWorkspace(db: SqliteDb, pluginId: string, scope: strin
 export function listInstalledPlugins(db: SqliteDb, workspaceId?: string | null): InstalledPluginRecord[] {
   const rows = db.prepare(`SELECT * FROM installed_plugins ORDER BY title ASC`).all() as DbRow[];
   const records = rows.map(rowToInstalledPlugin);
-  if (workspaceId === undefined) return records;
   return records.filter((record) => pluginVisibleFromWorkspace(db, record.id, workspaceId));
 }
 

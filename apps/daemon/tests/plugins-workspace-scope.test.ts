@@ -21,8 +21,19 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { closeDatabase, ensureWorkspaceResource, openDatabase } from '../src/db.js';
-import { listInstalledPlugins, upsertInstalledPlugin } from '../src/plugins/registry.js';
+import {
+  closeDatabase,
+  ensureWorkspaceResource,
+  openDatabase,
+  updateWorkspaceResource,
+} from '../src/db.js';
+import {
+  listInstalledPlugins,
+  resolveWorkspaceTeamPluginWithBindingGate,
+  upsertInstalledPlugin,
+  workspaceTeamPluginBindingAllowsRead,
+  workspaceTeamPluginBindingResourceId,
+} from '../src/plugins/registry.js';
 import type { InstalledPluginRecord } from '@open-design/contracts';
 
 let tempDir: string;
@@ -95,5 +106,108 @@ describe('listInstalledPlugins workspace scope', () => {
 
     expect(listInstalledPlugins(db, 'ws-1').map((p) => p.id)).toContain('plugin-claimed');
     expect(listInstalledPlugins(db, 'ws-2').map((p) => p.id)).not.toContain('plugin-claimed');
+  });
+
+  it('denies reads of a retired Team plugin without hiding a same-id Personal plugin', () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    upsertInstalledPlugin(db, fakePlugin('plugin-retracted'));
+    const teamBindingId = workspaceTeamPluginBindingResourceId(
+      'ws-1',
+      'plugin-retracted',
+    );
+    ensureWorkspaceResource(db, 'plugin', 'ws-1', teamBindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+    updateWorkspaceResource(db, 'plugin', 'ws-1', teamBindingId, {
+      resourceState: 'deleted',
+    });
+
+    expect(listInstalledPlugins(db, 'ws-1').map((p) => p.id)).toContain(
+      'plugin-retracted',
+    );
+    expect(listInstalledPlugins(db).map((p) => p.id)).toContain(
+      'plugin-retracted',
+    );
+    expect(
+      workspaceTeamPluginBindingAllowsRead(db, 'ws-1', 'plugin-retracted'),
+    ).toBe(false);
+  });
+
+  it('scopes Team mirror bindings independently for each Workspace', () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    ensureWorkspaceResource(db, 'plugin', 'ws-personal', 'legacy-team-plugin', {
+      visibility: 'personal',
+      resourceState: 'active',
+    });
+    expect(
+      workspaceTeamPluginBindingAllowsRead(db, 'ws-1', 'legacy-team-plugin'),
+    ).toBe(true);
+
+    const otherWorkspaceBindingId = workspaceTeamPluginBindingResourceId(
+      'ws-2',
+      'legacy-team-plugin',
+    );
+    ensureWorkspaceResource(db, 'plugin', 'ws-2', otherWorkspaceBindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+    expect(
+      workspaceTeamPluginBindingAllowsRead(db, 'ws-1', 'legacy-team-plugin'),
+    ).toBe(true);
+  });
+
+  it('keeps a Personal plugin visible after a same-id Team mirror is retired', () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    upsertInstalledPlugin(db, fakePlugin('plugin-collision'));
+    const teamBindingId = workspaceTeamPluginBindingResourceId(
+      'ws-team',
+      'plugin-collision',
+    );
+    ensureWorkspaceResource(db, 'plugin', 'ws-team', teamBindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+    updateWorkspaceResource(db, 'plugin', 'ws-team', teamBindingId, {
+      resourceState: 'deleted',
+    });
+
+    expect(listInstalledPlugins(db, 'ws-personal').map((plugin) => plugin.id))
+      .toContain('plugin-collision');
+  });
+
+  it('drops a Team plugin retracted while its folder is resolving', async () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    const pluginId = 'plugin-concurrent-retraction';
+    const workspaceId = 'ws-team';
+    const bindingId = workspaceTeamPluginBindingResourceId(workspaceId, pluginId);
+    ensureWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+
+    let finishResolve!: (value: { id: string }) => void;
+    const resolveGate = new Promise<{ id: string }>((resolve) => {
+      finishResolve = resolve;
+    });
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const pending = resolveWorkspaceTeamPluginWithBindingGate({
+      bindingAllowsRead: () =>
+        workspaceTeamPluginBindingAllowsRead(db, workspaceId, pluginId),
+      resolve: async () => {
+        resolveStarted();
+        return resolveGate;
+      },
+    });
+    await started;
+    updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+      resourceState: 'deleted',
+    });
+    finishResolve({ id: pluginId });
+
+    await expect(pending).resolves.toBeNull();
   });
 });
