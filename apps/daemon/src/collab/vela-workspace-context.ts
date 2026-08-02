@@ -562,6 +562,7 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
 } = {}): {
   read: () => Promise<WorkspaceDirectoryFetchResult>;
   fresh: () => Promise<WorkspaceDirectoryFetchResult>;
+  refreshAfterMutation: () => Promise<WorkspaceDirectoryFetchResult>;
 } {
   const fetchDirectory =
     options.fetchDirectory ?? (() => fetchVelaWorkspaceDirectory());
@@ -603,6 +604,16 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
       return start(identity);
     },
     fresh: () => start(identityKey()),
+    refreshAfterMutation: async () => {
+      // A read that started before the remote mutation can still be in flight
+      // after the mutation commits. Drain it, then deliberately start another
+      // fetch so the settled lease is based on post-mutation authority.
+      const identity = identityKey();
+      const pending = inFlight.get(identity);
+      if (pending) await pending.catch(() => undefined);
+      cached.delete(identity);
+      return start(identityKey());
+    },
   };
 }
 
