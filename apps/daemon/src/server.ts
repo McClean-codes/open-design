@@ -369,6 +369,7 @@ import {
 } from './plugins/index.js';
 import {
   pluginIdFromWorkspaceTeamPluginBinding,
+  resolveAndActivateWorkspaceTeamPlugin,
   resolvePluginFolder,
   resolveWorkspaceTeamPluginWithBindingGate,
   workspaceTeamPluginBindingAllowsRead,
@@ -5077,23 +5078,30 @@ export async function startServer({
         verifyStillShared: () => teamResourceStillShared('plugin', resource, scope),
       });
       if (materialized.status !== 'committed') return;
-      const resolved = await resolvePluginFolder({
-        folder: materialized.targetDir,
-        folderId: resource.id,
-        sourceKind: 'user',
-        source: teamResourceSourceKey({
-          kind: 'plugin',
-          workspaceId,
-          resourceId: resource.id,
-        }),
+      const activated = await resolveAndActivateWorkspaceTeamPlugin({
+        resolve: async () => {
+          const resolved = await resolvePluginFolder({
+            folder: materialized.targetDir,
+            folderId: resource.id,
+            sourceKind: 'user',
+            source: teamResourceSourceKey({
+              kind: 'plugin',
+              workspaceId,
+              resourceId: resource.id,
+            }),
+          });
+          if (!resolved.ok) {
+            console.warn(
+              `[team-resources] failed to register shared plugin ${resource.id}: ${resolved.errors.join('; ')}`,
+            );
+            return null;
+          }
+          return resolved.record;
+        },
+        stillShared: () => teamResourceStillShared('plugin', resource, scope),
+        activate: markTeamSynced,
       });
-      if (!resolved.ok) {
-        console.warn(
-          `[team-resources] failed to register shared plugin ${resource.id}: ${resolved.errors.join('; ')}`,
-        );
-        return;
-      }
-      markTeamSynced();
+      if (!activated) return;
       if (resource.versionId) {
         await teamResourceVersions.set(
           workspaceId,
@@ -7141,7 +7149,11 @@ export async function startServer({
     conversations: conversationDeps,
     fetchProjectCreationWorkspaceDirectory,
     verifyWorkspaceRequestAuthority,
-    workspaceResources: { getWorkspaceResource, getWorkspaceResourceByResourceId },
+    workspaceResources: {
+      getWorkspaceResource,
+      getWorkspaceResourceByResourceId,
+      workspaceTeamPluginBindingAllowsRead,
+    },
     plugins: {
       listInstalledPlugins: listWorkspacePlugins,
       getInstalledPlugin,

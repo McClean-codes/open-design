@@ -323,6 +323,18 @@ export async function resolveWorkspaceTeamPluginWithBindingGate<T>(input: {
   return resolved;
 }
 
+export async function resolveAndActivateWorkspaceTeamPlugin<T>(input: {
+  resolve: () => Promise<T | null>;
+  stillShared: () => Promise<boolean>;
+  activate: () => boolean;
+}): Promise<T | null> {
+  const resolved = await input.resolve();
+  if (resolved == null) return null;
+  if (!await input.stillShared()) return null;
+  if (!input.activate()) return null;
+  return resolved;
+}
+
 /**
  * `workspaceId` is optional and defaults to the pre-workspace-isolation
  * behavior (every live installed plugin, otherwise unfiltered) so every existing caller —

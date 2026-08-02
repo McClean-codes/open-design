@@ -29,6 +29,7 @@ import {
 } from '../src/db.js';
 import {
   listInstalledPlugins,
+  resolveAndActivateWorkspaceTeamPlugin,
   resolveWorkspaceTeamPluginWithBindingGate,
   upsertInstalledPlugin,
   workspaceTeamPluginBindingAllowsRead,
@@ -209,5 +210,48 @@ describe('listInstalledPlugins workspace scope', () => {
     finishResolve({ id: pluginId });
 
     await expect(pending).resolves.toBeNull();
+  });
+
+  it('does not reactivate a Team plugin retracted while materialization is resolving', async () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    const pluginId = 'plugin-sync-retraction';
+    const workspaceId = 'ws-team';
+    const bindingId = workspaceTeamPluginBindingResourceId(workspaceId, pluginId);
+    ensureWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+
+    let finishResolve!: (value: { id: string }) => void;
+    const resolveGate = new Promise<{ id: string }>((resolve) => {
+      finishResolve = resolve;
+    });
+    let resolveStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      resolveStarted = resolve;
+    });
+    const pending = resolveAndActivateWorkspaceTeamPlugin({
+      resolve: async () => {
+        resolveStarted();
+        return resolveGate;
+      },
+      stillShared: async () => false,
+      activate: () => {
+        updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+          resourceState: 'active',
+        });
+        return true;
+      },
+    });
+    await started;
+    updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+      resourceState: 'deleted',
+    });
+    finishResolve({ id: pluginId });
+    await pending;
+
+    expect(
+      workspaceTeamPluginBindingAllowsRead(db, workspaceId, pluginId),
+    ).toBe(false);
   });
 });
