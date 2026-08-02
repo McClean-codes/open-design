@@ -772,25 +772,12 @@
   transition: background-color 120ms var(--ease-out), color 120ms var(--ease-out), border-color 120ms var(--ease-out);
 }
 .entry-nav-rail__btn-icon {
-  /* Anchor for the unread dot (message-center rail item). */
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex: 0 0 18px;
   /* Tracks the unselected label tone above. */
   color: color-mix(in srgb, var(--text) 68%, transparent);
-}
-/* Unread marker on a rail item's icon — same 6px red dot as the account
-   menu's `__menu-item-dot`, pinned to the glyph's top-right corner. */
-.entry-nav-rail__btn-dot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--red);
 }
 .entry-nav-rail__btn-icon > svg {
   width: 18px;
@@ -5465,27 +5452,6 @@
 .entry-nav-rail__account-updater:empty {
   display: none;
 }
-/* Unread-messages red dot riding the account avatar's top-right corner. */
-.entry-nav-rail__account-avatar-dot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 8px;
-  height: 8px;
-  border-radius: 999px;
-  background: var(--red);
-  /* Panel-colored ring separates the dot from the avatar artwork. */
-  box-shadow: 0 0 0 2px var(--bg-panel);
-}
-/* Matching dot on the account menu's 消息中心 row, pushed to the far edge. */
-.entry-nav-rail__menu-item-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--red);
-  margin-left: auto;
-  flex: 0 0 auto;
-}
 .entry-nav-rail__account-trigger {
   appearance: none;
   border: 0;
@@ -5512,11 +5478,9 @@
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 .entry-nav-rail__account-avatar {
-  position: relative;
   width: 25px;
   height: 25px;
-  /* Rounded square (8px), replacing the squircle clip-path — a clip-path
-     would also swallow the unread dot that overflows the top-right corner. */
+  /* Rounded square (8px), replacing the old squircle clip-path. */
   border-radius: 8px;
   background: linear-gradient(135deg, #87ea5c, #0d5400);
   color: #fff;

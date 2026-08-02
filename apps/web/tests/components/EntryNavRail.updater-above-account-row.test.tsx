@@ -171,7 +171,7 @@ describe('updater rocket placement above the rail account row', () => {
     expect(trigger.contains(rocket)).toBe(false);
 
     fireEvent.click(trigger);
-    await waitFor(() => expect(screen.getByTestId('account-menu-message-center')).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole('menu')).toBeTruthy());
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
   });
 
