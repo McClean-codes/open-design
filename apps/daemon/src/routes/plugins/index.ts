@@ -178,6 +178,11 @@ export interface RegisterPluginRoutesDeps {
       resourceType: string,
       resourceId: string,
     ) => WorkspaceResourceBindingRow | null | undefined;
+    workspaceTeamPluginBindingAllowsRead?: (
+      db: SqliteDbLike,
+      workspaceId: string,
+      pluginId: string,
+    ) => boolean;
   };
   plugins: {
     listInstalledPlugins: (
@@ -338,7 +343,57 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
     )) return;
     return helpers.installOrUpgradePlugin(req, res, 'upgrade', authority);
   });
-  app.post('/api/plugins/:id/apply', async (req, res) => { try { const authority = await resolveWorkspaceAuthority(req, res); if (authority === undefined) return; const plugin = await resolveRequestPlugin(req.params.id, authority); if (!plugin) return res.status(404).json({ error: 'plugin not found' }); const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {}; const inputs = body.inputs && typeof body.inputs === 'object' ? body.inputs : {}; const grantCaps = Array.isArray(body.grantCaps) ? body.grantCaps.filter((c: unknown): c is string => typeof c === 'string') : []; const locale = typeof body.locale === 'string' ? body.locale : undefined; const registry = await helpers.loadPluginRegistryView(); const connectorProbe = helpers.buildConnectorProbe(helpers.connectorService); const computed = plugins.applyPlugin({ plugin, inputs, registry, locale, connectorProbe }); if (grantCaps.length > 0) { const merged = new Set([...computed.result.capabilitiesGranted, ...grantCaps]); computed.result.capabilitiesGranted = Array.from(merged); computed.result.appliedPlugin.capabilitiesGranted = Array.from(merged); } res.json({ ok: true, ...computed.result, warnings: computed.warnings, manifestSourceDigest: computed.manifestSourceDigest }); } catch (err: unknown) { if (err instanceof plugins.MissingInputError) return res.status(422).json({ error: 'missing_inputs', fields: err.fields }); res.status(500).json({ error: String(err) }); } });
+  app.post('/api/plugins/:id/apply', async (req, res) => {
+    try {
+      const authority = await resolveWorkspaceAuthority(req, res);
+      if (authority === undefined) return;
+      const plugin = await resolveRequestPlugin(req.params.id, authority);
+      if (!plugin) return res.status(404).json({ error: 'plugin not found' });
+      const body = req.body && typeof req.body === 'object'
+        ? req.body as Record<string, unknown>
+        : {};
+      const inputs = body.inputs && typeof body.inputs === 'object' ? body.inputs : {};
+      const grantCaps = Array.isArray(body.grantCaps)
+        ? body.grantCaps.filter((c: unknown): c is string => typeof c === 'string')
+        : [];
+      const locale = typeof body.locale === 'string' ? body.locale : undefined;
+      const registry = await helpers.loadPluginRegistryView();
+      const exactWorkspaceId = authority?.workspaceId?.trim();
+      if (
+        typeof plugin.source === 'string' &&
+        plugin.source.startsWith('team:plugin:') &&
+        (
+          !exactWorkspaceId ||
+          !workspaceResources?.workspaceTeamPluginBindingAllowsRead ||
+          !workspaceResources.workspaceTeamPluginBindingAllowsRead(
+            db,
+            exactWorkspaceId,
+            req.params.id,
+          )
+        )
+      ) {
+        return res.status(404).json({ error: 'plugin not found' });
+      }
+      const connectorProbe = helpers.buildConnectorProbe(helpers.connectorService);
+      const computed = plugins.applyPlugin({ plugin, inputs, registry, locale, connectorProbe });
+      if (grantCaps.length > 0) {
+        const merged = new Set([...computed.result.capabilitiesGranted, ...grantCaps]);
+        computed.result.capabilitiesGranted = Array.from(merged);
+        computed.result.appliedPlugin.capabilitiesGranted = Array.from(merged);
+      }
+      res.json({
+        ok: true,
+        ...computed.result,
+        warnings: computed.warnings,
+        manifestSourceDigest: computed.manifestSourceDigest,
+      });
+    } catch (err: unknown) {
+      if (err instanceof plugins.MissingInputError) {
+        return res.status(422).json({ error: 'missing_inputs', fields: err.fields });
+      }
+      res.status(500).json({ error: String(err) });
+    }
+  });
   app.post('/api/plugins/:id/duplicate-project', helpers.requireLocalDaemonRequest, async (req, res) => {
     let cleanupProjectId: string | null = null;
     let insertedProject = false;
