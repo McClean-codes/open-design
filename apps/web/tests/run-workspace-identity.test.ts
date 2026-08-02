@@ -192,6 +192,35 @@ describe('runWorkspaceIdentity', () => {
     expect(runWorkspaceIdentity(state, CALLER, TEAM_WORKSPACE)).toEqual(CALLER);
   });
 
+  it('does not borrow a different Workspace caller during an unavailable read', () => {
+    expect(
+      runWorkspaceIdentity(
+        {
+          loading: false,
+          scope: {
+            kind: 'unavailable',
+            projectId: PROJECT_ID,
+            workspaceId: TEAM_WORKSPACE,
+            visibility: 'team',
+            context: null,
+          },
+        },
+        teamContext('ws-b'),
+        TEAM_WORKSPACE,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps an unavailable bound project headerless without a caller', () => {
+    expect(
+      runWorkspaceIdentity(
+        { loading: false, scope: null, failure: 'unavailable' },
+        null,
+        TEAM_WORKSPACE,
+      ),
+    ).toBeNull();
+  });
+
   // Forbidden is an authoritative access decision. Unsupported means the
   // daemon cannot verify this protocol at all. Neither may borrow the caller.
   it.each([
