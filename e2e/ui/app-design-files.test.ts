@@ -2,7 +2,7 @@ import { expect, test } from '@/playwright/suite';
 import { openNewProjectModal as openNewProjectModalFromProjects } from '@/playwright/rail';
 import { routeAgents } from '@/playwright/mock-factory';
 import { expectAllProjectFilesActive, openAllProjectFiles } from '@/playwright/workspace';
-import type { Locator, Page, Request, Response } from '@playwright/test';
+import type { Locator, Page, Request } from '@playwright/test';
 import { automatedUiScenarios } from '@/playwright/resources';
 import type { UiScenario } from '@/playwright/resources';
 import { T } from '@/timeouts';
@@ -379,6 +379,64 @@ async function revealDesignFileRow(page: Page, fileName: string): Promise<Locato
 
 async function waitForLoadingToClear(page: Page) {
   await page.getByText('Loading Open Design…').waitFor({ state: 'hidden', timeout: T.long });
+}
+
+async function expectVisibleAcrossAnimationFrames(locator: Locator) {
+  await expect(locator).toBeVisible();
+  const stayedVisible = await locator.evaluate(async (element) => {
+    const isVisible = () => {
+      const style = window.getComputedStyle(element);
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity) > 0 &&
+        element.getClientRects().length > 0
+      );
+    };
+
+    for (let frame = 0; frame < 3; frame += 1) {
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+      if (!isVisible()) return false;
+    }
+    return true;
+  });
+  expect(stayedVisible).toBe(true);
+}
+
+async function waitForObservedActivityQuiescence(
+  page: Page,
+  currentEpoch: () => number,
+  recentActivity: () => readonly string[],
+  label: string,
+) {
+  const deadline = Date.now() + T.short;
+  let observedEpoch = currentEpoch();
+  while (Date.now() < deadline) {
+    const completed = await page.evaluate(
+      ({ frameCount, timeoutMs }) => new Promise<boolean>((resolve) => {
+        let frames = 0;
+        const watchdog = window.setTimeout(() => resolve(false), timeoutMs);
+        const next = () => {
+          frames += 1;
+          if (frames >= frameCount) {
+            window.clearTimeout(watchdog);
+            resolve(true);
+            return;
+          }
+          window.requestAnimationFrame(next);
+        };
+        window.requestAnimationFrame(next);
+      }),
+      { frameCount: 36, timeoutMs: Math.max(1, deadline - Date.now()) },
+    );
+    if (!completed) break;
+    const nextEpoch = currentEpoch();
+    if (nextEpoch === observedEpoch) return;
+    observedEpoch = nextEpoch;
+  }
+  throw new Error(
+    `${label} did not settle within ${T.short}ms; recent activity: ${recentActivity().slice(-12).join(', ')}`,
+  );
 }
 
 function escapeRegExp(value: string): string {
@@ -892,6 +950,225 @@ test('[P0] @critical file workspace restores HTML preview after switching throug
     name: 'Risk Dashboard',
   })).toBeVisible();
   await expect(page.getByTestId('file-workspace')).toBeVisible();
+});
+
+test('[P0] @critical HTML file list and previews stay stable across repeated switches', async ({ page }) => {
+  await routeMockAgents(page);
+
+  const projectId = await createProjectViaApi(page, 'Uploaded file switching stability');
+  const seededHtml = new Map([
+    ['stable-alpha.html', '<!doctype html><html><body><main><h1>Stable Alpha</h1></main></body></html>'],
+    ['stable-beta.html', '<!doctype html><html><body><main><h1>Stable Beta</h1></main></body></html>'],
+  ]);
+  const seededFiles = [...seededHtml.keys()].map((name, index) => ({
+    name,
+    size: Buffer.byteLength(seededHtml.get(name) ?? ''),
+    mtime: 1_785_570_000_000 + index,
+    kind: 'html',
+    mime: 'text/html',
+  }));
+  await page.route(`**/api/projects/${projectId}/files`, async (route) => {
+    await route.fulfill({ json: { files: seededFiles } });
+  });
+  await page.route(`**/api/projects/${projectId}/text-preview/*`, async (route) => {
+    const name = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1) ?? '');
+    const text = seededHtml.get(name) ?? '';
+    await route.fulfill({
+      json: {
+        text,
+        truncated: false,
+        size: Buffer.byteLength(text),
+        limit: 131_072,
+        mime: 'text/html',
+        kind: 'html',
+        poweredPreview: { required: false, scannedBytes: Buffer.byteLength(text), complete: true },
+      },
+    });
+  });
+  await page.route(`**/api/projects/${projectId}/raw/*`, async (route) => {
+    const name = decodeURIComponent(new URL(route.request().url()).pathname.split('/').at(-1) ?? '');
+    await route.fulfill({ contentType: 'text/html', body: seededHtml.get(name) ?? '' });
+  });
+  let warmReadEpoch = 0;
+  const warmReadUrls: string[] = [];
+  const recordWarmProjectRead = (request: Request) => {
+    if (request.method() !== 'GET') return;
+    const pathname = new URL(request.url()).pathname;
+    const projectPrefix = `/api/projects/${encodeURIComponent(projectId)}/`;
+    if (pathname === `${projectPrefix}files` || pathname.startsWith(`${projectPrefix}raw/`)) {
+      warmReadEpoch += 1;
+      warmReadUrls.push(request.url());
+    }
+  };
+  page.on('request', recordWarmProjectRead);
+  await page.goto(`/projects/${projectId}`, { waitUntil: 'domcontentloaded' });
+  await expectWorkspaceReady(page);
+
+  await openAllProjectFiles(page);
+  const alphaRow = await revealDesignFileRow(page, 'stable-alpha.html');
+  const betaRow = designFileRow(page, 'stable-beta.html');
+  await expectVisibleAcrossAnimationFrames(alphaRow);
+  await expectVisibleAcrossAnimationFrames(betaRow);
+  await alphaRow.getByRole('button').first().click();
+
+  const alphaTab = page.getByRole('tab', { name: /stable-alpha\.html/i });
+  const alphaHeading = page.frameLocator('[data-testid="artifact-preview-frame"]').getByRole('heading', {
+    name: 'Stable Alpha',
+  });
+  type WarmFrame = HTMLIFrameElement & { __odWarmLoadCount?: number };
+  const captureWarmFrame = async (fileName: string) => {
+    const activeFrame = page.locator(`iframe[title="${fileName}"][data-od-active="true"]`);
+    await expect(activeFrame).toHaveCount(1);
+    const handle = await activeFrame.elementHandle();
+    if (!handle) throw new Error(`Missing active preview frame for ${fileName}`);
+    await handle.evaluate((node) => {
+      const frame = node as WarmFrame;
+      frame.__odWarmLoadCount = 0;
+      frame.addEventListener('load', () => {
+        frame.__odWarmLoadCount = (frame.__odWarmLoadCount ?? 0) + 1;
+      });
+    });
+    return handle;
+  };
+  const expectWarmFrameUnchanged = async (
+    fileName: string,
+    handle: Awaited<ReturnType<typeof captureWarmFrame>>,
+    active: boolean,
+  ) => {
+    expect(await handle.evaluate((node) => node.isConnected), `${fileName} iframe was detached`).toBe(true);
+    if (active) {
+      const activeFrame = page.locator(`iframe[title="${fileName}"][data-od-active="true"]`);
+      expect(
+        await activeFrame.evaluate((node, original) => node === original, handle),
+        `${fileName} iframe was remounted`,
+      ).toBe(true);
+    }
+    expect(
+      await handle.evaluate((node) => (node as WarmFrame).__odWarmLoadCount ?? 0),
+      `${fileName} iframe navigated again`,
+    ).toBe(0);
+  };
+  await expect(alphaTab).toHaveAttribute('aria-selected', 'true');
+  await expect(alphaHeading).toBeVisible();
+  const alphaFrameHandle = await captureWarmFrame('stable-alpha.html');
+
+  await openAllProjectFiles(page);
+  await betaRow.getByRole('button').first().click();
+  const betaTab = page.getByRole('tab', { name: /stable-beta\.html/i });
+  const betaHeading = page.frameLocator('[data-testid="artifact-preview-frame"]').getByRole('heading', {
+    name: 'Stable Beta',
+  });
+  await expect(betaTab).toHaveAttribute('aria-selected', 'true');
+  await expect(betaHeading).toBeVisible();
+  const betaFrameHandle = await captureWarmFrame('stable-beta.html');
+  await expectWarmFrameUnchanged('stable-alpha.html', alphaFrameHandle, false);
+
+  // Warm both mounted previews before observing the repeated-switch path. A
+  // first render may legitimately load; once warm, switching must not put the
+  // workspace back into loading or an empty viewer.
+  await alphaTab.click();
+  await expect(alphaHeading).toBeVisible();
+  await expectWarmFrameUnchanged('stable-alpha.html', alphaFrameHandle, true);
+  await expectWarmFrameUnchanged('stable-beta.html', betaFrameHandle, false);
+  await betaTab.click();
+  await expect(betaHeading).toBeVisible();
+  await expectWarmFrameUnchanged('stable-alpha.html', alphaFrameHandle, false);
+  await expectWarmFrameUnchanged('stable-beta.html', betaFrameHandle, true);
+  await waitForObservedActivityQuiescence(
+    page,
+    () => warmReadEpoch,
+    () => warmReadUrls,
+    'Warm project file reads',
+  );
+  page.off('request', recordWarmProjectRead);
+
+  let rawFileReads = 0;
+  const rawFileReadUrls: string[] = [];
+  let fileListReads = 0;
+  const fileListReadUrls: string[] = [];
+  let measurementStep = 'idle';
+  page.on('request', (request) => {
+    if (request.method() !== 'GET') return;
+    const pathname = new URL(request.url()).pathname;
+    const projectPrefix = `/api/projects/${encodeURIComponent(projectId)}/`;
+    if (pathname.startsWith(`${projectPrefix}raw/`)) {
+      rawFileReads += 1;
+      rawFileReadUrls.push(`${measurementStep}: ${request.url()}`);
+    }
+    if (pathname === `${projectPrefix}files`) {
+      fileListReads += 1;
+      fileListReadUrls.push(`${measurementStep}: ${request.url()}`);
+    }
+  });
+
+  await page.evaluate(() => {
+    const state = { loadingSeen: false };
+    const isVisible = (element: Element) => {
+      const htmlElement = element as HTMLElement;
+      const style = window.getComputedStyle(htmlElement);
+      return (
+        style.display !== 'none' &&
+        style.visibility !== 'hidden' &&
+        Number(style.opacity) > 0 &&
+        htmlElement.getClientRects().length > 0
+      );
+    };
+    const observeLoading = () => {
+      state.loadingSeen ||= Array.from(
+        document.querySelectorAll('.viewer-loading, [data-testid="design-files-reloading"]'),
+      ).some(isVisible);
+    };
+    observeLoading();
+    const observer = new MutationObserver(observeLoading);
+    observer.observe(document.body, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+    (window as typeof window & { __odFileSwitchStability?: typeof state }).__odFileSwitchStability = state;
+  });
+
+  for (let round = 0; round < 3; round += 1) {
+    measurementStep = `round-${round}-design-files`;
+    await openAllProjectFiles(page);
+    const alphaRow = await revealDesignFileRow(page, 'stable-alpha.html');
+    const betaRow = designFileRow(page, 'stable-beta.html');
+    await expectVisibleAcrossAnimationFrames(alphaRow);
+    await expectVisibleAcrossAnimationFrames(betaRow);
+    await expectVisibleAcrossAnimationFrames(alphaTab);
+    await expectVisibleAcrossAnimationFrames(betaTab);
+
+    measurementStep = `round-${round}-alpha`;
+    await alphaRow.getByRole('button').first().click();
+    await expect(alphaTab).toHaveAttribute('aria-selected', 'true');
+    await expect(alphaHeading).toBeVisible();
+    await expectVisibleAcrossAnimationFrames(page.getByTestId('artifact-preview-frame'));
+    await expectVisibleAcrossAnimationFrames(betaTab);
+    await expectWarmFrameUnchanged('stable-alpha.html', alphaFrameHandle, true);
+    await expectWarmFrameUnchanged('stable-beta.html', betaFrameHandle, false);
+
+    measurementStep = `round-${round}-beta`;
+    await betaTab.click();
+    await expect(betaTab).toHaveAttribute('aria-selected', 'true');
+    await expect(betaHeading).toBeVisible();
+    await expectVisibleAcrossAnimationFrames(page.getByTestId('artifact-preview-frame'));
+    await expectVisibleAcrossAnimationFrames(alphaTab);
+    await expectWarmFrameUnchanged('stable-alpha.html', alphaFrameHandle, false);
+    await expectWarmFrameUnchanged('stable-beta.html', betaFrameHandle, true);
+  }
+
+  const loadingSeen = await page.evaluate(() => (
+    window as typeof window & { __odFileSwitchStability?: { loadingSeen: boolean } }
+  ).__odFileSwitchStability?.loadingSeen ?? false);
+  expect(loadingSeen, 'a warm file list or preview returned to a loading state').toBe(false);
+  // Both previews are warm before measurement. Switching among already-open
+  // tabs must keep their iframe documents connected and never reload raw HTML.
+  expect(rawFileReads, `warm preview switching reloaded raw HTML: ${rawFileReadUrls.join(', ')}`).toBe(0);
+  // The warmed Design Files snapshot also stays resident; reopening the tab
+  // must not refetch the file list on every switch.
+  expect(fileListReads, `warm switching refetched the project file list: ${fileListReadUrls.join(', ')}`).toBe(0);
+  await expectWarmFrameUnchanged('stable-alpha.html', alphaFrameHandle, false);
+  await expectWarmFrameUnchanged('stable-beta.html', betaFrameHandle, true);
 });
 
 async function runDesignFilesTabPersistenceFlow(page: Page) {

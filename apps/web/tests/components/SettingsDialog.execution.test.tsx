@@ -4,7 +4,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { OpenDesignHostUpdaterStatusSnapshot } from '@open-design/host';
 import { installMockOpenDesignHost } from '@open-design/host/testing';
-import type { WorkspaceCollabContext } from '@open-design/contracts';
+import type {
+  UpsertByokCredentialProfileRequest,
+  WorkspaceCollabContext,
+} from '@open-design/contracts';
 import { en } from '../../src/i18n/locales/en';
 
 function optionNames(container: HTMLElement): string[] {
@@ -112,7 +115,9 @@ import { reconcileAmrProfileEnv } from '../../src/components/SettingsDialog';
 import { providerModelsCacheKey } from '../../src/components/providerModelsCache';
 import { I18nProvider } from '../../src/i18n';
 import { LOCALES } from '../../src/i18n/types';
+import { ByokCredentialProfileHttpError } from '../../src/state/config';
 import { MAX_MAX_TOKENS, MIN_MAX_TOKENS } from '../../src/state/maxTokens';
+import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 import type {
   AgentInfo,
   AppConfig,
@@ -226,6 +231,20 @@ function workspaceContextResponse(context: WorkspaceCollabContext | null) {
     headers: { 'content-type': 'application/json' },
   });
 }
+
+function workspaceDirectoryResponse(
+  context: WorkspaceCollabContext | null,
+): Response {
+  return new Response(
+    JSON.stringify(workspaceDirectoryFixture(context ? [context] : [])),
+    {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    },
+  );
+}
+
+const inFlightAuthAttemptId = '936da01f-9abd-4d9d-80c7-02af85c822a8';
 
 type OnRefreshAgents = (
   options?: AgentRefreshOptions,
@@ -353,6 +372,19 @@ function renderSettingsDialog(
 ) {
   const onPersist = vi.fn();
   const onPersistComposioKey = vi.fn();
+  const onPersistByokCredential = vi.fn(async (input: UpsertByokCredentialProfileRequest) => ({
+    id: input.id ?? 'byok-test-profile',
+    label: input.label,
+    protocol: input.protocol,
+    baseUrl: input.baseUrl,
+    model: input.model,
+    apiVersion: input.apiVersion,
+    requiresApiKey: input.requiresApiKey ?? true,
+    configured: true,
+    keyTail: input.apiKey?.slice(-4),
+    createdAt: 1,
+    updatedAt: 1,
+  }));
   const onSilentUpdatePreferenceChange: (allowSilentUpdates: boolean) => Promise<void> =
     options.onSilentUpdatePreferenceChange
     ?? (async () => undefined);
@@ -371,6 +403,7 @@ function renderSettingsDialog(
       onPersist={onPersist}
       onSilentUpdatePreferenceChange={onSilentUpdatePreferenceChange}
       onPersistComposioKey={onPersistComposioKey}
+      onPersistByokCredential={onPersistByokCredential}
       onClose={onClose}
       onResetOnboarding={options.onResetOnboarding}
       onRefreshAgents={onRefreshAgents}
@@ -386,6 +419,7 @@ function renderSettingsDialog(
     onPersist,
     onSilentUpdatePreferenceChange,
     onPersistComposioKey,
+    onPersistByokCredential,
     onClose,
     onRefreshAgents,
     ...view,
@@ -1305,10 +1339,8 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     fireEvent.change(screen.getByLabelText('API key'), {
       target: { value: 'azure-key' },
     });
+    expect(screen.queryByLabelText('Custom deployment name')).toBeNull();
     fireEvent.change(screen.getByLabelText('Deployment name'), {
-      target: { value: '__custom__' },
-    });
-    fireEvent.change(screen.getByLabelText('Custom deployment name'), {
       target: { value: 'deployment-one' },
     });
     fireEvent.change(screen.getByLabelText('Base URL'), {
@@ -1331,10 +1363,26 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
         model: 'deployment-one',
         baseUrl: 'https://example.openai.azure.com',
         apiVersion: '2024-10-21',
-        apiProviderBaseUrl: null,
+        apiProviderBaseUrl: '',
       }),
       {},
     );
+
+    const persistedConfig = onPersist.mock.calls.at(-1)?.[0] as AppConfig;
+    cleanup();
+
+    renderSettingsDialog(persistedConfig);
+
+    expect((screen.getByLabelText('Deployment name') as HTMLInputElement).value).toBe(
+      'deployment-one',
+    );
+    expect((screen.getByLabelText('Base URL') as HTMLInputElement).value).toBe(
+      'https://example.openai.azure.com',
+    );
+    expect((screen.getByLabelText('API version') as HTMLInputElement).value).toBe(
+      '2024-10-21',
+    );
+    expect(screen.queryByLabelText('Custom deployment name')).toBeNull();
   });
 
   it('does not fetch provider models while the API key edit is still uncommitted', async () => {
@@ -1772,6 +1820,9 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
   it('auto-tests BYOK after required fields become locally valid', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(null);
+      }
       if (url === '/api/workspace/context') {
         return new Response(JSON.stringify({ context: null }), {
           status: 200,
@@ -2387,6 +2438,9 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
     let attempt = 0;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(null);
+      }
       if (url === '/api/workspace/context') {
         return new Response(JSON.stringify({ context: null }), {
           status: 200,
@@ -2505,6 +2559,60 @@ describe('SettingsDialog execution settings BYOK interactions', () => {
       }),
       undefined,
     );
+  });
+
+  it('reports secure profile persistence failures with stable BYOK telemetry', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url === '/api/memory') {
+        return new Response(
+          JSON.stringify({ enabled: true, memories: [], extraction: null }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      expect(url).toBe('/api/test/connection');
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          kind: 'ok',
+          latencyMs: 20,
+          model: 'claude-sonnet-4-5',
+          sample: 'pong',
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { onPersistByokCredential } = renderSettingsDialog({
+      apiKey: 'sk-ant-test-provider',
+    });
+    onPersistByokCredential.mockRejectedValueOnce(
+      new ByokCredentialProfileHttpError(
+        400,
+        'Invalid secure profile',
+        'VALIDATION_FAILED',
+      ),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Test' }));
+
+    await waitFor(() => {
+      expect(analyticsTrackMock).toHaveBeenCalledWith(
+        'settings_byok_test_result',
+        expect.objectContaining({
+          page_name: 'settings',
+          area: 'execution_model',
+          provider_id: 'anthropic',
+          result: 'failed',
+          error_code: 'VALIDATION_FAILED',
+          error_kind: 'unknown',
+          field_missing: 'none',
+          success_after_action: false,
+        }),
+        undefined,
+      );
+    });
   });
 
   it('renders invalid Base URL test failures on the Base URL field', async () => {
@@ -2910,6 +3018,42 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     expect(screen.queryByLabelText(en['settings.modelCustomLabel'])).toBeNull();
   });
 
+  it('closes the AMR model picker with Escape without closing Settings', () => {
+    const view = renderSettingsDialog(
+      {
+        mode: 'daemon',
+        agentId: 'amr',
+        agentModels: { amr: { model: 'glm-5' } },
+      },
+      {
+        agents: [
+          {
+            ...amrAgent,
+            modelsSource: 'live',
+            models: [
+              { id: 'glm-5', label: 'GLM 5' },
+              { id: 'glm-5.1', label: 'GLM 5.1' },
+            ],
+          },
+        ],
+      },
+    );
+
+    fireEvent.click(screen.getByRole('tab', { name: /Local CLI/i }));
+    fireEvent.click(screen.getByTestId('settings-agent-select-amr'));
+
+    const modelPicker = screen.getByRole('combobox', {
+      name: en['settings.modelPicker'],
+    });
+    fireEvent.click(modelPicker);
+    expect(screen.getByTestId('settings-agent-model-popover-amr')).toBeTruthy();
+
+    fireEvent.keyDown(modelPicker, { key: 'Escape' });
+
+    expect(screen.queryByTestId('settings-agent-model-popover-amr')).toBeNull();
+    expect(view.onClose).not.toHaveBeenCalled();
+  });
+
   it('shows an empty state when no local CLI agents are detected', () => {
     renderSettingsDialog(
       { mode: 'daemon', agentId: null },
@@ -3268,10 +3412,14 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
   // true (the user is their own owner), so the upgrade entry stays visible
   // for a signed-in, upgrade-eligible AMR account with no team involved.
   it('shows the AMR upgrade action for a personal identity with an upgradeable plan', async () => {
+    const context = personalWorkspaceContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(context);
+      }
       if (url === '/api/workspace/context') {
-        return workspaceContextResponse(personalWorkspaceContext());
+        return workspaceContextResponse(context);
       }
       if (url === '/api/memory') {
         return new Response(
@@ -3313,10 +3461,14 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
   // upgrade-eligible account, matching the fix for
   // "团队的成员没有升级权限，是不是可以在客户端隐藏升级入口".
   it('hides the AMR upgrade action for a team member without billing permission', async () => {
+    const context = teamMemberWorkspaceContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(context);
+      }
       if (url === '/api/workspace/context') {
-        return workspaceContextResponse(teamMemberWorkspaceContext());
+        return workspaceContextResponse(context);
       }
       if (url === '/api/memory') {
         return new Response(
@@ -3439,6 +3591,7 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
               ? {
                   loggedIn: false,
                   loginInFlight: true,
+                  authAttemptId: inFlightAuthAttemptId,
                   profile: 'local',
                   user: null,
                   configPath: '/Users/test/.amr/config.json',
@@ -3446,6 +3599,7 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
               : {
                   loggedIn: false,
                   loginInFlight: false,
+                  authAttemptId: inFlightAuthAttemptId,
                   profile: 'local',
                   user: null,
                   configPath: '/Users/test/.amr/config.json',
@@ -3455,6 +3609,9 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
         );
       }
       if (url === '/api/integrations/vela/login/cancel' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          authAttemptId: inFlightAuthAttemptId,
+        });
         statusStage = 'signed-out';
         return new Response(JSON.stringify({ canceled: true }), {
           status: 200,
@@ -3478,7 +3635,13 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }));
 
     expect(await screen.findByText('Canceled')).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledWith('/api/integrations/vela/login/cancel', { method: 'POST' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/integrations/vela/login/cancel',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ authAttemptId: inFlightAuthAttemptId }),
+      }),
+    );
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'Authorize' })).toBeTruthy();
@@ -3518,6 +3681,7 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
           JSON.stringify({
             loggedIn: false,
             loginInFlight: true,
+            authAttemptId: inFlightAuthAttemptId,
             profile: 'local',
             user: null,
             configPath: '/Users/test/.amr/config.json',
@@ -3526,6 +3690,9 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
         );
       }
       if (url === '/api/integrations/vela/login/cancel' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          authAttemptId: inFlightAuthAttemptId,
+        });
         cancelReceived = true;
         return new Response(JSON.stringify({ canceled: true }), {
           status: 200,
@@ -3588,31 +3755,37 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
             ? {
                 loggedIn: false,
                 loginInFlight: true,
+                authAttemptId: inFlightAuthAttemptId,
                 profile: 'local',
                 user: null,
                 configPath: '/Users/test/.amr/config.json',
               }
             : statusStage === 'signed-in'
               ? {
-                  loggedIn: true,
-                  loginInFlight: false,
-                  profile: 'local',
-                  user: { id: 'user-1', email: 'late@example.com' },
-                  configPath: '/Users/test/.amr/config.json',
-                }
+                loggedIn: true,
+                loginInFlight: false,
+                authAttemptId: inFlightAuthAttemptId,
+                profile: 'local',
+                user: { id: 'user-1', email: 'late@example.com' },
+                configPath: '/Users/test/.amr/config.json',
+              }
               : {
-                  loggedIn: false,
-                  loginInFlight: false,
-                  profile: 'local',
-                  user: null,
-                  configPath: '/Users/test/.amr/config.json',
-                };
+                loggedIn: false,
+                loginInFlight: false,
+                authAttemptId: inFlightAuthAttemptId,
+                profile: 'local',
+                user: null,
+                configPath: '/Users/test/.amr/config.json',
+              };
         return new Response(JSON.stringify(body), {
           status: 200,
           headers: { 'content-type': 'application/json' },
         });
       }
       if (url === '/api/integrations/vela/login/cancel' && init?.method === 'POST') {
+        expect(JSON.parse(String(init.body))).toEqual({
+          authAttemptId: inFlightAuthAttemptId,
+        });
         statusStage = 'signed-out';
         return new Response(JSON.stringify({ canceled: true }), {
           status: 200,
@@ -3829,21 +4002,17 @@ describe('SettingsDialog execution settings Local CLI interactions', () => {
   // on this exact card. The explicit workspace balance from
   // `useWorkspaceBillingResponse` must win once it has loaded.
   it('prefers the workspace billing balance over the account-scoped wallet snapshot', async () => {
+    const context = teamMemberWorkspaceContext({
+      workspaceId: 'ws-team',
+      workspaceMemberId: 'member-team',
+    });
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(context);
+      }
       if (url === '/api/workspace/context') {
-        return new Response(
-          JSON.stringify({
-            context: {
-              workspaceId: 'ws-team',
-              workspaceType: 'team',
-              workspaceMemberId: 'member-team',
-              role: 'member',
-              permissions: { canViewWorkspaceSettings: false },
-            },
-          }),
-          { status: 200, headers: { 'content-type': 'application/json' } },
-        );
+        return workspaceContextResponse(context);
       }
       if (url.startsWith('/api/workspace/billing?')) {
         return new Response(
@@ -5333,7 +5502,7 @@ describe('IntegrationsView skills tab', () => {
 
     fireEvent.click(screen.getByText('blog-post'));
     await waitFor(() => {
-      expect(fetchSkillMock).toHaveBeenCalledWith('blog-post');
+      expect(fetchSkillMock).toHaveBeenCalledWith('blog-post', null);
       expect(screen.getByText('skill body for blog-post')).toBeTruthy();
     });
 
@@ -5390,7 +5559,7 @@ describe('SettingsDialog design systems section', () => {
 
     fireEvent.click(screen.getByText('Signal Green'));
     await waitFor(() => {
-      expect(fetchDesignSystemMock).toHaveBeenCalledWith('signal-green');
+      expect(fetchDesignSystemMock).toHaveBeenCalledWith('signal-green', null);
       expect(screen.getByText('design system body for signal-green')).toBeTruthy();
     });
 

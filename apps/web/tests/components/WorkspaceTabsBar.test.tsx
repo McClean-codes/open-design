@@ -1076,6 +1076,141 @@ describe('WorkspaceTabsBar identity-scope tab reset', () => {
     expect(navigate).toHaveBeenLastCalledWith(homeRoute);
   });
 
+  it('keeps the active unbound local project open when anonymous auth resolves to a signed-in account', async () => {
+    const { rerender } = render(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[project]}
+        activeProjectWorkspaceId={null}
+        identityScopeKey="anon::ws-personal-1"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+      expect(screen.getByRole('tab', { name: /Project Alpha/ })).toBeTruthy();
+    });
+    vi.mocked(navigate).mockClear();
+
+    rerender(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[project]}
+        activeProjectWorkspaceId={null}
+        identityScopeKey="user-1::ws-personal-1"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+      expect(screen.getByRole('tab', { name: /Project Alpha/ }).getAttribute('aria-selected')).toBe('true');
+    });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Workspace-bound project when anonymous auth resolves with the same Workspace', async () => {
+    const { rerender } = render(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[{ ...project, workspaceId: 'ws-team-a' }]}
+        activeProjectWorkspaceId="ws-team-a"
+        identityScopeKey="anon::none"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+    });
+    vi.mocked(navigate).mockClear();
+
+    rerender(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[{ ...project, workspaceId: 'ws-team-a' }]}
+        activeProjectWorkspaceId="ws-team-a"
+        identityScopeKey="user-1::ws-team-a"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+      expect(screen.getByRole('tab', { name: /Project Alpha/ }).getAttribute('aria-selected')).toBe('true');
+    });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit AMR settings navigation when auth resolves as the project exits', async () => {
+    const { rerender } = render(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[project]}
+        activeProjectWorkspaceId={null}
+        identityScopeKey="anon::none"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+      expect(screen.getByRole('tab', { name: /Project Alpha/ })).toBeTruthy();
+    });
+    vi.mocked(navigate).mockClear();
+
+    // Leaving the project drops its exact Workspace scope before the AMR login
+    // resolves. Exercise both real transitions rather than collapsing them.
+    rerender(
+      <WorkspaceTabsBar
+        route={{ kind: 'home', view: 'settings' }}
+        projects={[project]}
+        activeProjectWorkspaceId={undefined}
+        identityScopeKey="anon::none"
+      />,
+    );
+    await waitFor(() => {
+      expect(storedEntryTabView()).toBe('settings');
+    });
+
+    rerender(
+      <WorkspaceTabsBar
+        route={{ kind: 'home', view: 'settings' }}
+        projects={[project]}
+        activeProjectWorkspaceId={undefined}
+        identityScopeKey="user-1::ws-personal-1"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(storedEntryTabView()).toBe('settings');
+    });
+    expect(navigate).not.toHaveBeenCalledWith(homeRoute);
+  });
+
+  it('still closes a Workspace-bound project when the signed-in witness names another Workspace', async () => {
+    const { rerender } = render(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[{ ...project, workspaceId: 'ws-team-a' }]}
+        activeProjectWorkspaceId="ws-team-a"
+        identityScopeKey="anon::none"
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+    });
+    vi.mocked(navigate).mockClear();
+
+    rerender(
+      <WorkspaceTabsBar
+        route={{ ...projectRoute }}
+        projects={[{ ...project, workspaceId: 'ws-team-a' }]}
+        activeProjectWorkspaceId="ws-team-a"
+        identityScopeKey="user-1::ws-team-b"
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(1);
+      expect(screen.getByTestId('workspace-home-rail-toggle')).toBeTruthy();
+    });
+    expect(navigate).toHaveBeenLastCalledWith(homeRoute);
+  });
+
   it('closes every open tab on a workspace switch, even for the same account', async () => {
     const { rerender } = render(
       <WorkspaceTabsBar

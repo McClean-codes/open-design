@@ -25,10 +25,12 @@ import {
   defaultScenarioPluginIdForProjectMetadata,
   PROFILE_MEMORY_ID,
   type AmrWalletSnapshot,
+  type ByokCredentialProfile,
   type ChatSessionMode,
   type ConnectorDetail,
   type InstalledPluginRecord,
   type RunContextSelection,
+  type UpsertByokCredentialProfileRequest,
   type UpsertMemoryRequest,
 } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
@@ -51,6 +53,9 @@ import {
 import { getResolvedDeviceId } from '../analytics/client';
 import {
   beginAmrAuthTracking,
+  confirmAmrAuthTracking,
+  observeAmrAuthTracking,
+  reconcileAmrAuthAttemptId,
   resolveAmrAuthTracking,
 } from '../analytics/amr-auth';
 import { setOnboardingAttributionPersonProperties } from '../analytics/source-attribution';
@@ -128,6 +133,7 @@ import { ONBOARDING_ARTIFACT_CHIP_IDS } from './home-hero/chips';
 import { homeHeroChipLabel } from './home-hero/chip-labels';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { Icon } from './Icon';
+import { Button } from '@open-design/components';
 import { defaultAgentModelId, effectiveAgentModelChoice } from './agentModelSelection';
 import { AgentIcon } from './AgentIcon';
 import { CommunityView } from './CommunityView';
@@ -144,9 +150,15 @@ import {
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import {
+  beginWorkspaceScopedRead,
+  workspaceIdentityCacheKey,
+  workspaceProjectHeaders,
+} from '../collab/workspace-identity';
+import {
   buildAllProjectsList,
   buildDraftsList,
   createSharedProjectPredicate,
+  reconcileSharedProjectCatalogFields,
 } from '../collab/all-projects-list';
 import {
   getModelCapabilityTag,
@@ -178,6 +190,7 @@ import {
   SUGGESTED_MODELS_BY_PROTOCOL,
 } from '../state/apiProtocols';
 import {
+  applySavedByokCredentialProfile,
   defaultKnownProviderModel,
   KNOWN_PROVIDERS,
 } from '../state/config';
@@ -431,6 +444,10 @@ interface Props {
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
   onConfigPersist: (cfg: AppConfig) => Promise<void> | void;
+  /** True only when GET /api/app-config returned a real config object. */
+  daemonAppConfigReady?: boolean;
+  /** Non-optimistic daemon write for the silent-update preference. */
+  onSilentUpdatePreferenceChange?: (allowSilentUpdates: boolean) => Promise<void>;
   onSkillsRefresh?: () => Promise<void> | void;
   onSkillsChanged?: (affectedSkillId?: string) => void;
   onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
@@ -471,6 +488,9 @@ interface Props {
   onOpenDesignSystem?: (id: string) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
+  onPersistByokCredential?: (
+    input: UpsertByokCredentialProfileRequest,
+  ) => Promise<ByokCredentialProfile>;
   onOpenSettings: (section?: EntrySettingsSection) => void;
   onCompleteOnboarding: () => void;
   artifactUpgradeSlot?: ReactNode;
@@ -553,6 +573,8 @@ export function EntryShell({
   onApiProtocolChange,
   onApiModelChange,
   onConfigPersist,
+  daemonAppConfigReady = false,
+  onSilentUpdatePreferenceChange,
   onSkillsRefresh,
   onSkillsChanged,
   onRefreshAgents,
@@ -573,6 +595,7 @@ export function EntryShell({
   onOpenDesignSystem,
   onDesignSystemsRefresh,
   onPersistComposioKey,
+  onPersistByokCredential,
   onOpenSettings,
   onCompleteOnboarding,
   artifactUpgradeSlot,
@@ -673,6 +696,14 @@ export function EntryShell({
     sharedFallbackName: t('recentProjects.sharedProjectFallbackName'),
     isShared: isSharedProject,
   });
+  const homeProjectsList = useMemo(
+    () => reconcileSharedProjectCatalogFields({
+      projects,
+      teamProjects: teamProjects.projects,
+      workspaceContext,
+    }),
+    [projects, teamProjects.projects, workspaceContext],
+  );
   // projectId → sharing member id, so a card in the 全部项目 / 草稿 grids can
   // resolve "{creator}创建" against the member directory. A project absent here
   // is the member's own local project → "我创建".
@@ -690,8 +721,8 @@ export function EntryShell({
   );
   const readyWorkspaceId = workspaceContext?.workspaceId ?? null;
   const readyWorkspaceMemberId = workspaceContext?.workspaceMemberId ?? null;
-  const readyScopeKey = readyWorkspaceId && readyWorkspaceMemberId
-    ? `${readyWorkspaceId}:${readyWorkspaceMemberId}`
+  const readyScopeKey = workspaceContext
+    ? workspaceIdentityCacheKey(workspaceContext)
     : null;
   const contentReadyScopeKeyRef = useRef<string | null>(null);
   if (contentReadyScopeKeyRef.current !== readyScopeKey) {
@@ -720,7 +751,8 @@ export function EntryShell({
     if (contentReadyProjectIdsRef.current.has(projectId)) {
       return Promise.resolve(true);
     }
-    const scopeKey = `${workspaceId}:${workspaceMemberId}`;
+    const scopeKey = readyScopeKey;
+    if (!scopeKey) return Promise.resolve(false);
     const key = `${scopeKey}:${projectId}`;
     const existing = contentReadyHydrationRef.current.get(key);
     if (existing) return existing;
@@ -750,6 +782,7 @@ export function EntryShell({
     return hydration;
   }, [
     onTeamProjectContentReady,
+    readyScopeKey,
     workspaceContext?.workspaceMemberId,
     workspaceContext?.workspaceId,
     workspaceContext?.workspaceType,
@@ -775,7 +808,7 @@ export function EntryShell({
         currentWorkspaceMemberId,
       );
     },
-  });
+  }, { workspaceContext });
   useEffect(() => {
     if (!readyScopeKey) return;
     for (const [projectId, eventScope] of pendingContentReadyProjectIdsRef.current) {
@@ -846,9 +879,15 @@ export function EntryShell({
     // on the card (spinner overlay) and swallow re-clicks meanwhile —
     // otherwise the first click reads as dead for the entire download.
     if (pullingProjectId) return false;
+    const pullRead = beginWorkspaceScopedRead(workspaceContextRef.current);
+    if (!pullRead.context) return false;
     setPullingProjectId(id);
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(id)}/collab/pull`, { method: 'POST' });
+      const response = await fetch(`/api/projects/${encodeURIComponent(id)}/collab/pull`, {
+        method: 'POST',
+        headers: workspaceProjectHeaders(pullRead.context),
+      });
+      if (!pullRead.isStillCurrent(workspaceContextRef.current)) return false;
       if (!response.ok) return false;
       await Promise.resolve(onProjectsRefresh?.());
     } catch {
@@ -1102,8 +1141,8 @@ export function EntryShell({
   // `projectKind` on the payload so the created project records the
   // chosen surface (image / video / audio, etc.). Free-form Home
   // submits now arrive with the hidden od-default router plugin and
-  // projectKind='other', so the agent asks for the exact task type
-  // before continuing.
+  // projectKind='other', so the agent infers the task type and asks only
+  // when the brief cannot be routed reliably.
   async function handlePluginLoopSubmit(payload: PluginLoopSubmit) {
     // Open Design Cloud pre-run balance gate: hard blocks (empty wallet or
     // signed out) and the soft low-balance reminder both fire BEFORE the
@@ -1283,8 +1322,10 @@ export function EntryShell({
   const updaterSlot = (
     <UpdaterPopup
       allowSilentUpdates={config.allowSilentUpdates}
-      onAllowSilentUpdatesChange={(allowSilentUpdates) =>
-        onConfigPersist({ ...config, allowSilentUpdates })
+      silentUpdatePreferenceReady={daemonAppConfigReady}
+      onAllowSilentUpdatesChange={
+        onSilentUpdatePreferenceChange
+          ?? ((allowSilentUpdates) => onConfigPersist({ ...config, allowSilentUpdates }))
       }
     />
   );
@@ -1356,6 +1397,7 @@ export function EntryShell({
             onApiProtocolChange={onApiProtocolChange}
             onApiModelChange={onApiModelChange}
             onConfigPersist={onConfigPersist}
+            {...(onPersistByokCredential ? { onPersistByokCredential } : {})}
             onRefreshAgents={onRefreshAgents}
             onFinish={finishOnboarding}
             onGoBuild={() => {
@@ -1433,6 +1475,7 @@ export function EntryShell({
             // shared cards), opened through the pull-first handler so a shared
             // project the member has not pulled yet still opens.
             projects={allProjectsList}
+            workspaceContext={workspaceContext}
             onOpenProject={handleOpenAllProjects}
             onClose={() => setProjectSearchOpen(false)}
           />
@@ -1474,7 +1517,7 @@ export function EntryShell({
             <div className="entry-main__view-home" data-testid="entry-view-home" data-active={view === 'home' ? 'true' : 'false'} {...inactiveViewProps(view === 'home')}>
               <HomeView
                 isActive={view === 'home'}
-                projects={projects}
+                projects={homeProjectsList}
                 projectsLoading={projectsLoading}
                 designSystems={designSystems}
                 defaultDesignSystemId={defaultDesignSystemId}
@@ -1800,6 +1843,7 @@ function OnboardingView({
   onApiProtocolChange,
   onApiModelChange,
   onConfigPersist,
+  onPersistByokCredential,
   onRefreshAgents,
   onFinish,
   onGoBuild,
@@ -1819,6 +1863,9 @@ function OnboardingView({
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
   onConfigPersist: (cfg: AppConfig) => Promise<void> | void;
+  onPersistByokCredential?: (
+    input: UpsertByokCredentialProfileRequest,
+  ) => Promise<ByokCredentialProfile>;
   onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
   // `survey` is passed on the About-you completion paths (not on skip) so the
   // shell can build a personalized Home recommendation.
@@ -1835,6 +1882,7 @@ function OnboardingView({
   // straight from the landing's primary button.
   const [connectExpanded, setConnectExpanded] = useState<'local' | 'byok' | null>(null);
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [byokPersistPending, setByokPersistPending] = useState(false);
   const [cliScanStatus, setCliScanStatus] = useState<'idle' | 'scanning' | 'done'>('idle');
   const [amrStatus, setAmrStatus] = useState<VelaLoginStatus | null>(null);
   // Initial login status fetch has settled, whether signed in or not. The
@@ -1845,6 +1893,14 @@ function OnboardingView({
   const [amrLoginCancelPending, setAmrLoginCancelPending] = useState(false);
   const [newsletterSubmitting, setNewsletterSubmitting] = useState(false);
   const [amrLoginError, setAmrLoginError] = useState<string | null>(null);
+  // Local dismissal for the cloud landing's activation-retry card only (its
+  // own × close, distinct from "取消登录" which cancels the whole vela login).
+  // Reset whenever a login attempt isn't in flight, so a canceled-then-retried
+  // attempt shows the hint again instead of staying hidden from a prior dismiss.
+  const [activationHintClosed, setActivationHintClosed] = useState(false);
+  useEffect(() => {
+    if (!amrLoginPending) setActivationHintClosed(false);
+  }, [amrLoginPending]);
   const [visibleAgentIds, setVisibleAgentIds] = useState<string[]>([]);
   const [providerTestState, setProviderTestState] = useState<
     | { status: 'idle' }
@@ -1915,6 +1971,9 @@ function OnboardingView({
   } | null>(null);
   const cliRefreshPendingTokenRef = useRef<number | null>(null);
   const amrLoginPollCancelledRef = useRef(false);
+  const amrLoginStartPendingRef = useRef(false);
+  const amrLoginCancelRequestedRef = useRef(false);
+  const amrAuthAttemptIdRef = useRef<string | null>(null);
   const amrAgentRefreshAttemptedRef = useRef(false);
   const providerModelsAutoFetchKeyRef = useRef<string | null>(null);
   const providerAutoTestKeyRef = useRef<string | null>(null);
@@ -1967,7 +2026,10 @@ function OnboardingView({
   const selectedProvider = KNOWN_PROVIDERS.find(
     (provider) =>
       provider.protocol === apiProtocol &&
-      provider.baseUrl === (config.apiProviderBaseUrl ?? config.baseUrl),
+      (
+        provider.baseUrl === (config.apiProviderBaseUrl ?? config.baseUrl) ||
+        (apiProtocol === 'azure' && provider.baseUrl === '' && Boolean(config.baseUrl?.trim()))
+      ),
   ) ?? null;
   const availableCliAgents = agents.filter((agent) => agent.available && agent.id !== 'amr');
   const visibleAgents = availableCliAgents.filter((agent) => visibleAgentIds.includes(agent.id));
@@ -2368,9 +2430,14 @@ function OnboardingView({
     }
   }
 
+  const protocolProviders = KNOWN_PROVIDERS.filter((provider) => provider.protocol === apiProtocol);
+  const hasProtocolOwnedEmptyProvider =
+    apiProtocol === 'azure' && protocolProviders.some((provider) => provider.baseUrl === '');
   const byokProviderOptions = [
-    { value: '', label: t('settings.customProvider') },
-    ...KNOWN_PROVIDERS.filter((provider) => provider.protocol === apiProtocol).map((provider) => ({
+    ...(hasProtocolOwnedEmptyProvider
+      ? []
+      : [{ value: '', label: t('settings.customProvider') }]),
+    ...protocolProviders.map((provider) => ({
       value: provider.baseUrl,
       label: provider.label,
     })),
@@ -2546,7 +2613,7 @@ function OnboardingView({
     setStep((current) => current - 1);
   }
   async function handlePrimaryAction() {
-    if (newsletterSubmitting) return;
+    if (newsletterSubmitting || byokPersistPending) return;
     // Connect gate: the button is `aria-disabled` (not natively disabled, so it
     // can still surface its tooltip on hover), so guard the click here — a
     // blocked Continue must not advance past the Connect step.
@@ -2562,6 +2629,72 @@ function OnboardingView({
         },
       );
       void handleAmrSignInToContinue(attribution);
+      return;
+    }
+    if (step === 0 && runtime === 'byok') {
+      if (!byokConnectionVerified) return;
+      if (apiProtocol === 'bedrock') {
+        setProviderTestState({
+          status: 'done',
+          inputKey: providerTestInputKey,
+          result: {
+            ok: false,
+            kind: 'unknown',
+            latencyMs: 0,
+            model: config.model,
+            detail: 'Secure BYOK profiles do not support the Bedrock protocol',
+          },
+        });
+        return;
+      }
+      if (!onPersistByokCredential) {
+        setProviderTestState({
+          status: 'done',
+          inputKey: providerTestInputKey,
+          result: {
+            ok: false,
+            kind: 'unknown',
+            latencyMs: 0,
+            model: config.model,
+            detail: 'Secure BYOK credential storage is unavailable',
+          },
+        });
+        return;
+      }
+      setByokPersistPending(true);
+      try {
+        const profile = await onPersistByokCredential({
+          ...(config.byokProfileId ? { id: config.byokProfileId } : {}),
+          label: selectedProvider?.label ?? apiProtocol,
+          protocol: apiProtocol,
+          baseUrl: config.baseUrl.trim(),
+          model: config.model.trim(),
+          ...(apiProtocol === 'azure' && config.apiVersion?.trim()
+            ? { apiVersion: config.apiVersion.trim() }
+            : {}),
+          requiresApiKey: true,
+          apiKey: config.apiKey.trim(),
+        });
+        await onConfigPersist(applySavedByokCredentialProfile(config, profile));
+        emitOnboardingClick('continue', 'continue');
+        setStep((current) => current + 1);
+      } catch (error) {
+        setProviderTestState({
+          status: 'done',
+          inputKey: providerTestInputKey,
+          result: {
+            ok: false,
+            kind: 'unknown',
+            latencyMs: 0,
+            model: config.model,
+            detail: error instanceof Error
+              ? error.message
+              : 'Secure BYOK credential storage is unavailable',
+          },
+        });
+      } finally {
+        setByokPersistPending(false);
+      }
       return;
     }
     if (isLastStep) {
@@ -2654,6 +2787,7 @@ function OnboardingView({
   ) {
     if (amrLoginPending || amrLoginCancelPending) return;
     amrLoginPollCancelledRef.current = false;
+    amrLoginCancelRequestedRef.current = false;
     setAmrLoginError(null);
     setAmrLoginPending(true);
     try {
@@ -2665,29 +2799,98 @@ function OnboardingView({
         return;
       }
       if (amrLoginPollCancelledRef.current) return;
-      beginAmrAuthTracking(attribution);
+      const provisionalAuthAttemptId = beginAmrAuthTracking(
+        attribution,
+        Date.now(),
+      );
+      amrAuthAttemptIdRef.current = provisionalAuthAttemptId;
       const odDeviceId = amrHandoffDeviceId({
         metricsConsent: config.telemetry?.metrics === true,
         resolvedDeviceId: getResolvedDeviceId(),
         installationId: config.installationId,
       });
-      const loginResult = await startVelaLogin(attribution, odDeviceId);
-      if (amrLoginPollCancelledRef.current) {
-        resolveAmrAuthTracking(analytics.track, 'cancelled');
+      amrLoginStartPendingRef.current = true;
+      const loginResult = await startVelaLogin(
+        attribution,
+        odDeviceId,
+        provisionalAuthAttemptId,
+      ).finally(() => {
+        amrLoginStartPendingRef.current = false;
+      });
+      const authAttemptId = reconcileAmrAuthAttemptId(
+        provisionalAuthAttemptId,
+        loginResult.authAttemptId,
+        { joinedExisting: loginResult.alreadyRunning === true },
+      );
+      amrAuthAttemptIdRef.current = authAttemptId;
+      if (loginResult.ok || loginResult.alreadyRunning) {
+        confirmAmrAuthTracking(analytics.track, authAttemptId, {
+          joinedExisting: loginResult.alreadyRunning === true,
+        });
+      }
+      observeAmrAuthTracking(analytics.track, loginResult, authAttemptId);
+      if (
+        amrLoginPollCancelledRef.current
+        || amrLoginCancelRequestedRef.current
+      ) {
         if (loginResult.ok || loginResult.alreadyRunning) {
-          const cancelResult = await cancelVelaLogin();
-          closeAmrActivationWindowBestEffort();
+          const cancelResult = await cancelVelaLogin(authAttemptId);
           if (!cancelResult.ok) {
             console.error('[amr-login] cancelVelaLogin failed', cancelResult);
+            amrLoginCancelRequestedRef.current = false;
+            setAmrLoginCancelPending(false);
             setAmrLoginError(t('settings.amrLoginErrorCompact'));
             return;
           }
-          notifyAmrLoginStatusChanged('login-canceled');
+          if (cancelResult.canceled !== true) {
+            const nextStatus = await fetchVelaLoginStatus();
+            if (nextStatus) {
+              setAmrStatus(nextStatus);
+              if (nextStatus.authAttemptId) {
+                amrAuthAttemptIdRef.current = nextStatus.authAttemptId;
+              }
+            }
+            amrLoginCancelRequestedRef.current = false;
+            amrLoginPollCancelledRef.current = false;
+            setAmrLoginCancelPending(false);
+            if (!nextStatus?.loginInFlight) return;
+          } else {
+            resolveAmrAuthTracking(analytics.track, 'cancelled', undefined, {
+              authAttemptId,
+            });
+            closeAmrActivationWindowBestEffort();
+            notifyAmrLoginStatusChanged('login-canceled');
+            amrLoginCancelRequestedRef.current = false;
+            amrLoginPollCancelledRef.current = true;
+            setAmrLoginCancelPending(false);
+            setAmrStatus((current) => (
+              current
+                ? { ...current, loggedIn: false, loginInFlight: false, user: null }
+                : current
+            ));
+            return;
+          }
+        } else {
+          resolveAmrAuthTracking(analytics.track, 'cancelled', undefined, {
+            authAttemptId,
+          });
+          if (amrLoginCancelRequestedRef.current) {
+            amrLoginCancelRequestedRef.current = false;
+            amrLoginPollCancelledRef.current = true;
+            setAmrLoginCancelPending(false);
+            setAmrStatus((current) => (
+              current
+                ? { ...current, loggedIn: false, loginInFlight: false, user: null }
+                : current
+            ));
+          }
+          return;
         }
-        return;
       }
       if (!loginResult.ok && !loginResult.alreadyRunning) {
-        resolveAmrAuthTracking(analytics.track, 'failed', 'spawn_failed');
+        resolveAmrAuthTracking(analytics.track, 'failed', 'spawn_failed', {
+          authAttemptId,
+        });
         console.error('[amr-login] startVelaLogin failed', loginResult);
         setAmrLoginError(loginResult.error || t('settings.amrLoginErrorCompact'));
         return;
@@ -2702,24 +2905,56 @@ function OnboardingView({
 
   async function handleCancelAmrLogin() {
     if (!amrLoginPending || amrLoginCancelPending) return;
-    amrLoginPollCancelledRef.current = true;
-    resolveAmrAuthTracking(analytics.track, 'cancelled');
+    const loginStartPending = amrLoginStartPendingRef.current;
+    const authAttemptId = amrAuthAttemptIdRef.current;
     setAmrLoginError(null);
     setAmrLoginCancelPending(true);
+    if (!authAttemptId) {
+      amrLoginPollCancelledRef.current = true;
+      amrLoginCancelRequestedRef.current = false;
+      setAmrLoginCancelPending(false);
+      setAmrLoginPending(false);
+      return;
+    }
+    const result = await cancelVelaLogin(authAttemptId);
+    if (!result.ok) {
+      setAmrLoginCancelPending(false);
+      setAmrLoginPending(false);
+      setAmrLoginError(t('settings.amrLoginErrorCompact'));
+      return;
+    }
+    if (result.canceled !== true) {
+      const nextStatus = await fetchVelaLoginStatus();
+      if (nextStatus) {
+        setAmrStatus(nextStatus);
+        if (nextStatus.authAttemptId) {
+          amrAuthAttemptIdRef.current = nextStatus.authAttemptId;
+        }
+      }
+      if (loginStartPending && nextStatus?.loginInFlight !== true) {
+        amrLoginCancelRequestedRef.current = true;
+        return;
+      }
+      setAmrLoginCancelPending(false);
+      if (!nextStatus?.loginInFlight) {
+        setAmrLoginPending(false);
+      }
+      return;
+    }
+    setAmrLoginCancelPending(false);
+    amrLoginPollCancelledRef.current = true;
+    if (authAttemptId) {
+      resolveAmrAuthTracking(analytics.track, 'cancelled', undefined, {
+        authAttemptId,
+      });
+    }
+    closeAmrActivationWindowBestEffort();
     setAmrStatus((current) => (
       current
         ? { ...current, loggedIn: false, loginInFlight: false, user: null }
         : current
     ));
     setAmrLoginPending(false);
-    const result = await cancelVelaLogin();
-    closeAmrActivationWindowBestEffort();
-    setAmrLoginCancelPending(false);
-    if (!result.ok) {
-      console.error('[amr-login] cancelVelaLogin failed', result);
-      setAmrLoginError(t('settings.amrLoginErrorCompact'));
-      return;
-    }
     notifyAmrLoginStatusChanged('login-canceled');
   }
 
@@ -2732,11 +2967,18 @@ function OnboardingView({
       if (amrLoginPollCancelledRef.current) return false;
       const nextStatus = await fetchVelaLoginStatus();
       if (nextStatus) setAmrStatus(nextStatus);
+      const authAttemptId = amrAuthAttemptIdRef.current;
+      if (nextStatus && authAttemptId) {
+        observeAmrAuthTracking(analytics.track, nextStatus, authAttemptId);
+      }
       const outcome = amrLoginPollOutcome(nextStatus, startedAt);
       if (outcome === 'signed-in') {
-        resolveAmrAuthTracking(analytics.track, 'success', undefined, {
-          signedInUserId: nextStatus?.user?.id ?? null,
-        });
+        if (authAttemptId) {
+          resolveAmrAuthTracking(analytics.track, 'success', undefined, {
+            authAttemptId,
+            signedInUserId: nextStatus?.user?.id ?? null,
+          });
+        }
         notifyAmrLoginStatusChanged();
         // Onboarding may sit on this step for a while before finishOnboarding
         // fires refreshWorkspaceSurfacesAfterOnboarding() — without firing
@@ -2751,11 +2993,19 @@ function OnboardingView({
       }
       if (outcome === 'stopped' || outcome === 'timed-out') {
         if (outcome === 'timed-out') {
-          resolveAmrAuthTracking(analytics.track, 'timeout', 'login_timeout');
+          if (authAttemptId) {
+            resolveAmrAuthTracking(analytics.track, 'timeout', 'login_timeout', {
+              authAttemptId,
+            });
+            void cancelVelaLogin(authAttemptId);
+          }
           console.error('[amr-login] poll timed out waiting for a signed-in status', { nextStatus });
-          void cancelVelaLogin();
         } else {
-          resolveAmrAuthTracking(analytics.track, 'failed', 'login_stopped');
+          if (authAttemptId) {
+            resolveAmrAuthTracking(analytics.track, 'failed', 'login_stopped', {
+              authAttemptId,
+            });
+          }
           console.error('[amr-login] poll loop stopped without a terminal status', { nextStatus });
         }
         setAmrLoginError(t('settings.amrLoginErrorCompact'));
@@ -3061,8 +3311,10 @@ function OnboardingView({
     step,
   ]);
 
-  const onboardingNavigationLocked = newsletterSubmitting;
-  const primaryActionLabel = isLastStep && newsletterSubmitting
+  const onboardingNavigationLocked = newsletterSubmitting || byokPersistPending;
+  const primaryActionLabel = byokPersistPending
+    ? t('common.loading')
+    : isLastStep && newsletterSubmitting
     ? t('common.loading')
     : step === 0 && amrLoginPending
     ? t('settings.amrSigningIn')
@@ -3074,7 +3326,7 @@ function OnboardingView({
 
   // Connect step, default face: a minimal, centered Open Design Cloud sign-in
   // landing. No stepper, no runtime cards — just the cloud CTA, a secondary
-  // link into the full runtime chooser, and a top-left language bar.
+  // link into the full runtime chooser, and a footer language switcher.
   if (step === 0 && connectExpanded === null) {
     const cloudBusy = amrLoginPending;
     const amrStatusResolving = !amrStatusResolved;
@@ -3083,133 +3335,142 @@ function OnboardingView({
         className="onboarding-view onboarding-view--cloud"
         aria-label={t('settings.welcomeTitle')}
       >
-        <div className="onboarding-cloud__topbar">
-          <LanguageMenu compact placement="down" align="end" />
-        </div>
-        <div className="onboarding-cloud__center">
-          <span
-            className="onboarding-cloud__logo od-brand-glyph"
-            role="img"
-            aria-label="Open Design"
-          />
-          <h1 className="onboarding-cloud__title">{t('settings.onboardingCloudTitle')}</h1>
-          <p className="onboarding-cloud__body">{t('settings.onboardingCloudBody')}</p>
-          <button
-            type="button"
-            className="onboarding-cloud__primary"
-            onClick={() => {
-              if (amrStatusResolving) return;
-              if (amrSignedIn) {
-                recordAmrEntry(analytics.track, 'onboarding_amr_card', new Date(), {
-                  metricsConsent: config.telemetry?.metrics === true,
-                });
-                setRuntime('amr');
-                onModeChange('daemon');
-                onAgentChange('amr');
-                recordAmrEntry(
-                  analytics.track,
-                  'onboarding_amr_sign_in_continue',
-                  new Date(),
-                  {
-                    metricsConsent: config.telemetry?.metrics === true,
-                    reuseExistingFrom: ['onboarding_amr_card'],
-                  },
-                );
-                setStep((current) => current + 1);
-                return;
-              }
-              void handleCloudSignIn();
-            }}
-            disabled={cloudBusy || amrLoginCancelPending || amrStatusResolving}
-            aria-busy={cloudBusy || amrStatusResolving ? true : undefined}
-          >
-            <Icon name="orbit" size={17} />
-            <span>
-              {cloudBusy
-                ? t('settings.amrSigningIn')
-                : amrStatusResolving
-                  ? t('common.loading')
-                  : amrSignedIn
-                    ? t('settings.onboardingCloudContinue')
-                    : t('settings.onboardingCloudSignIn')}
-            </span>
-          </button>
-          {amrLoginError ? (
-            <span className="onboarding-cloud__error" role="alert">
-              {amrLoginError}
-            </span>
-          ) : null}
-          {/* Manual device-auth fallback, mirroring Settings' AmrLoginPill:
-              vela auto-opens the browser, but when that fails silently (e.g.
-              corp-managed hosts) the pending login otherwise looks like a
-              dead button — surface the activation link the status poll
-              already carries. */}
-          {cloudBusy && amrStatus?.activationUrl ? (
-            <div className="amr-login-activation" role="group">
-              <span className="amr-login-activation__hint">
-                {amrStatus.browserOpenFailed
-                  ? t('settings.amrActivationBrowserFailed')
-                  : t('settings.amrActivationHint')}
-              </span>
-              <div className="amr-login-activation__actions">
-                <a
-                  className="amr-login-activation__open"
-                  href={amrStatus.activationUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  {t('settings.amrActivationOpen')}
-                </a>
-              </div>
-            </div>
-          ) : null}
-          {cloudBusy ? (
+        <div className="onboarding-cloud__pane">
+          <div className="onboarding-cloud__center">
+            <h1 className="onboarding-cloud__title">{t('settings.onboardingCloudTitle')}</h1>
+            <p className="onboarding-cloud__body">{t('settings.onboardingCloudBody')}</p>
             <button
               type="button"
-              className="onboarding-cloud__cancel"
-              onClick={handleCancelAmrLogin}
-              disabled={amrLoginCancelPending}
-            >
-              {t('settings.amrCancelSignIn')}
-            </button>
-          ) : (
-            <div className="onboarding-cloud__alts">
-              <button
-                type="button"
-                className="onboarding-cloud__secondary"
-                onClick={() => {
-                  emitOnboardingClick('local_coding_agent', 'select_runtime', {
-                    runtime_type: 'local_cli',
+              className="onboarding-cloud__primary"
+              onClick={() => {
+                if (amrStatusResolving) return;
+                if (amrSignedIn) {
+                  recordAmrEntry(analytics.track, 'onboarding_amr_card', new Date(), {
+                    metricsConsent: config.telemetry?.metrics === true,
                   });
-                  setRuntime('local');
+                  setRuntime('amr');
                   onModeChange('daemon');
-                  void scanCliAgents({ preferExisting: true });
-                  setConnectExpanded('local');
-                }}
-              >
-                {t('settings.onboardingLocalTitle')}
-              </button>
-              <span className="onboarding-cloud__alts-or">
-                {t('settings.onboardingCloudOr')}
+                  onAgentChange('amr');
+                  recordAmrEntry(
+                    analytics.track,
+                    'onboarding_amr_sign_in_continue',
+                    new Date(),
+                    {
+                      metricsConsent: config.telemetry?.metrics === true,
+                      reuseExistingFrom: ['onboarding_amr_card'],
+                    },
+                  );
+                  setStep((current) => current + 1);
+                  return;
+                }
+                void handleCloudSignIn();
+              }}
+              disabled={cloudBusy || amrLoginCancelPending || amrStatusResolving}
+              aria-busy={cloudBusy || amrStatusResolving ? true : undefined}
+            >
+              <Icon name="log-in" size={17} />
+              <span>
+                {cloudBusy
+                  ? t('settings.amrSigningIn')
+                  : amrStatusResolving
+                    ? t('common.loading')
+                    : amrSignedIn
+                      ? t('settings.onboardingCloudContinue')
+                      : t('settings.onboardingCloudSignIn')}
               </span>
+            </button>
+            {amrLoginError ? (
+              <span className="onboarding-cloud__error" role="alert">
+                {amrLoginError}
+              </span>
+            ) : null}
+            {/* Manual device-auth fallback, mirroring Settings' AmrLoginPill:
+                vela auto-opens the browser, but when that fails silently (e.g.
+                corp-managed hosts) the pending login otherwise looks like a
+                dead button — surface the activation link the status poll
+                already carries. */}
+            {cloudBusy && amrStatus?.activationUrl && !activationHintClosed ? (
+              <div className="amr-login-activation onboarding-cloud__activation" role="group">
+                <span className="amr-login-activation__hint">
+                  {amrStatus.browserOpenFailed
+                    ? t('settings.amrActivationBrowserFailed')
+                    : t('settings.amrActivationHint')}
+                </span>
+                <div className="amr-login-activation__actions">
+                  <a
+                    className="amr-login-activation__open"
+                    href={amrStatus.activationUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {t('settings.amrActivationOpen')}
+                  </a>
+                  <button
+                    type="button"
+                    className="onboarding-cloud__activation-dismiss"
+                    onClick={() => setActivationHintClosed(true)}
+                  >
+                    {t('common.cancel')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {cloudBusy ? (
               <button
                 type="button"
-                className="onboarding-cloud__secondary"
-                onClick={() => {
-                  emitOnboardingClick('byok', 'select_runtime', { runtime_type: 'byok' });
-                  setRuntime('byok');
-                  onModeChange('api');
-                  setConnectExpanded('byok');
-                }}
+                className="onboarding-cloud__cancel"
+                onClick={handleCancelAmrLogin}
+                disabled={amrLoginCancelPending}
               >
-                {t('settings.onboardingByokTitle')}
+                {t('settings.amrCancelSignIn')}
               </button>
-            </div>
-          )}
+            ) : (
+              <div className="onboarding-cloud__alts">
+                <Button
+                  variant="subtle"
+                  className="onboarding-cloud__alt-btn"
+                  onClick={() => {
+                    emitOnboardingClick('local_coding_agent', 'select_runtime', {
+                      runtime_type: 'local_cli',
+                    });
+                    setRuntime('local');
+                    onModeChange('daemon');
+                    void scanCliAgents({ preferExisting: true });
+                    setConnectExpanded('local');
+                  }}
+                >
+                  <Icon name="robot" size={16} />
+                  {t('settings.onboardingLocalTitle')}
+                </Button>
+                <span className="onboarding-cloud__alts-or">
+                  {t('settings.onboardingCloudOr')}
+                </span>
+                <Button
+                  variant="subtle"
+                  className="onboarding-cloud__alt-btn"
+                  onClick={() => {
+                    emitOnboardingClick('byok', 'select_runtime', { runtime_type: 'byok' });
+                    setRuntime('byok');
+                    onModeChange('api');
+                    setConnectExpanded('byok');
+                  }}
+                >
+                  <Icon name="key" size={16} />
+                  {t('settings.onboardingByokTitle')}
+                </Button>
+              </div>
+            )}
+          </div>
+          <footer className="onboarding-cloud__footer">
+            <LanguageMenu placement="up" align="start" />
+            <span>
+              © {new Date().getFullYear()} Open Design · {t('settings.onboardingCloudRights')}
+            </span>
+          </footer>
         </div>
-        <footer className="onboarding-cloud__footer">
-          © {new Date().getFullYear()} Open Design · {t('settings.onboardingCloudRights')}
-        </footer>
+        <div className="onboarding-cloud__art" aria-hidden="true">
+          <img src="/onboarding/onboarding-cloud-art.webp" alt="" />
+        </div>
       </section>
     );
   }
@@ -3304,7 +3565,10 @@ function OnboardingView({
                       updateApiConfig({ model });
                     }}
                     onBaseUrlChange={(baseUrl) =>
-                      updateApiConfig({ baseUrl, apiProviderBaseUrl: null })
+                      updateApiConfig({
+                        baseUrl,
+                        apiProviderBaseUrl: apiProtocol === 'azure' ? '' : null,
+                      })
                     }
                     modelOptions={byokModelOptions}
                     testState={visibleProviderTestState}
@@ -3588,7 +3852,7 @@ function OnboardingView({
                   connectGateTooltip ? ' od-tooltip' : ''
                 }`}
                 onClick={handlePrimaryAction}
-                disabled={amrLoginPending || amrLoginCancelPending || newsletterSubmitting}
+                disabled={amrLoginPending || amrLoginCancelPending || onboardingNavigationLocked}
                 aria-disabled={connectStepBlocked || undefined}
                 data-tooltip={connectGateTooltip ?? undefined}
                 data-tooltip-placement="top"
@@ -3886,6 +4150,7 @@ function OnboardingByokSetupPanel({
   const t = useT();
   const running = testState.status === 'running';
   const fetchingModels = modelsState.status === 'running';
+  const useDeploymentInput = apiProtocol === 'azure';
   return (
     <div className="onboarding-view__setup-panel">
       <div className="onboarding-view__setup-head">
@@ -3938,6 +4203,7 @@ function OnboardingByokSetupPanel({
         value={selectedProvider?.baseUrl ?? ''}
         options={providerOptions}
         onChange={onProviderChange}
+        allowEmptyValue={apiProtocol === 'azure'}
         searchable
         searchPlaceholder={t('settings.quickFillProvider')}
       />
@@ -3966,7 +4232,7 @@ function OnboardingByokSetupPanel({
             onChange={(event) => onBaseUrlChange(event.target.value)}
           />
         </label>
-        {modelOptions.length > 0 ? (
+        {modelOptions.length > 0 && !useDeploymentInput ? (
           <OnboardingDropdown
             label={t('settings.model')}
             placeholder={defaultKnownProviderModel(selectedProvider) || 'claude-sonnet-4-5'}
@@ -3979,11 +4245,19 @@ function OnboardingByokSetupPanel({
           />
         ) : (
           <label className="onboarding-view__inline-field">
-            <span>{t('settings.model')}</span>
+            <span>
+              {useDeploymentInput
+                ? t('settings.azureDeploymentModel')
+                : t('settings.model')}
+            </span>
             <input
               type="text"
               value={model}
-              placeholder={defaultKnownProviderModel(selectedProvider) || 'claude-sonnet-4-5'}
+              placeholder={
+                useDeploymentInput
+                  ? t('settings.azureDeploymentModel')
+                  : defaultKnownProviderModel(selectedProvider) || 'claude-sonnet-4-5'
+              }
               onChange={(event) => onModelChange(event.target.value.trim())}
             />
           </label>
@@ -4268,6 +4542,7 @@ type OnboardingDropdownBaseProps = {
   searchable?: boolean;
   searchPlaceholder?: string;
   sourceTone?: string;
+  allowEmptyValue?: boolean;
 };
 
 type OnboardingDropdownProps =
@@ -4294,6 +4569,7 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
     searchable = false,
     searchPlaceholder,
     sourceTone,
+    allowEmptyValue = false,
   } = props;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -4301,7 +4577,11 @@ export function OnboardingDropdown(props: OnboardingDropdownProps) {
   const [menuMaxHeight, setMenuMaxHeight] = useState(240);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const dropdownIdRef = useRef(`onboarding-dropdown-${Math.random().toString(36).slice(2)}`);
-  const selectedValues = Array.isArray(value) ? value : value ? [value] : [];
+  const selectedValues = Array.isArray(value)
+    ? value
+    : value || allowEmptyValue
+      ? [value]
+      : [];
   const selectedOptions = options.filter((option) => selectedValues.includes(option.value));
   const selectedOption = selectedOptions[0];
   const hasValue = selectedOptions.length > 0;

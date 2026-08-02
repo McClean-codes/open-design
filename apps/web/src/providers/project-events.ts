@@ -7,7 +7,12 @@ import {
   type LiveArtifactSsePayload,
   type ProjectConversationCreatedSsePayload,
   type ProjectContentTransferStateSsePayload,
+  type WorkspaceCollabContext,
 } from '@open-design/contracts';
+import {
+  workspaceIdentityCacheKey,
+  workspaceResourceUrl,
+} from '../collab/workspace-identity';
 export interface ProjectFileChangeEvent {
   type: 'file-changed';
   path: string;
@@ -52,13 +57,25 @@ export interface ProjectEventsConnectionOptions {
    * full-cadence polling when it drops.
    */
   onConnectedChange?: (connected: boolean) => void;
+  /**
+   * Fires after the daemon's `ready` handshake. Consumers can use this to
+   * reconcile state that may have changed after their initial snapshot but
+   * before the event stream was connected.
+   */
+  onReady?: () => void;
 }
 
 const DEFAULT_INITIAL_BACKOFF = 1000;
 const DEFAULT_MAX_BACKOFF = 30_000;
 
-export function projectEventsUrl(projectId: string): string {
-  return `/api/projects/${encodeURIComponent(projectId)}/events`;
+export function projectEventsUrl(
+  projectId: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
+  return workspaceResourceUrl(
+    `/api/projects/${encodeURIComponent(projectId)}/events`,
+    workspaceContext,
+  );
 }
 
 export interface ProjectEventsConnection {
@@ -78,6 +95,7 @@ export function createProjectEventsConnection(
   projectId: string,
   onChange: (evt: ProjectEvent) => void,
   options: ProjectEventsConnectionOptions = {},
+  workspaceContext?: WorkspaceCollabContext | null,
 ): ProjectEventsConnection {
   const Ctor = options.EventSourceCtor
     ?? (typeof EventSource === 'undefined' ? null : EventSource);
@@ -95,11 +113,12 @@ export function createProjectEventsConnection(
 
   const connect = (): void => {
     if (cancelled) return;
-    const es = new Ctor(projectEventsUrl(projectId));
+    const es = new Ctor(projectEventsUrl(projectId, workspaceContext));
     source = es;
     es.addEventListener('ready', () => {
       backoff = initialBackoff;
       options.onConnectedChange?.(true);
+      options.onReady?.();
     });
     es.addEventListener('file-changed', (evt) => {
       try {
@@ -230,6 +249,7 @@ export function useProjectFileEvents(
   enabled: boolean,
   onChange: (evt: ProjectEvent) => void,
   options: ProjectEventsConnectionOptions = {},
+  workspaceContext?: WorkspaceCollabContext | null,
 ): void {
   const onChangeRef = useRef(onChange);
   useEffect(() => {
@@ -243,6 +263,13 @@ export function useProjectFileEvents(
     onConnectedChangeRef.current = options.onConnectedChange;
   }, [options.onConnectedChange]);
 
+  // Like the status callback, keep reconciliation in a ref so an inline
+  // consumer callback cannot churn the EventSource connection.
+  const onReadyRef = useRef(options.onReady);
+  useEffect(() => {
+    onReadyRef.current = options.onReady;
+  }, [options.onReady]);
+
   useEffect(() => {
     if (!enabled || !projectId) return;
     if (typeof window === 'undefined') return;
@@ -252,7 +279,9 @@ export function useProjectFileEvents(
       {
         ...options,
         onConnectedChange: (connected) => onConnectedChangeRef.current?.(connected),
+        onReady: () => onReadyRef.current?.(),
       },
+      workspaceContext,
     );
     return () => {
       conn.close();
@@ -261,5 +290,12 @@ export function useProjectFileEvents(
       onConnectedChangeRef.current?.(false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, enabled, options.EventSourceCtor, options.initialBackoffMs, options.maxBackoffMs]);
+  }, [
+    projectId,
+    enabled,
+    workspaceIdentityCacheKey(workspaceContext),
+    options.EventSourceCtor,
+    options.initialBackoffMs,
+    options.maxBackoffMs,
+  ]);
 }

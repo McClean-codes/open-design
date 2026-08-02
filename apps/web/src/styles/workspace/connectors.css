@@ -442,6 +442,11 @@
   min-width: 180px;
   width: max-content;
   max-width: min(280px, calc(100vw - 48px));
+  /* Cap the visible list at 8 languages (30px row + container padding);
+     the rest scrolls instead of pushing the popover off-screen. */
+  max-height: 248px;
+  overflow-y: auto;
+  scrollbar-width: thin;
   display: flex;
   flex-direction: column;
   padding: 4px;
@@ -467,6 +472,7 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
+  min-height: 30px;
   padding: 7px 10px;
   background: transparent;
   border: 0;

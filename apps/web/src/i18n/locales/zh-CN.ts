@@ -312,7 +312,7 @@ export const zhCN: Dict = {
   "settings.onboardingCloudTitle": "登录 Open Design",
   "settings.onboardingCloudBody":
     "登录后可直接用云端 AI 开始设计，无需任何复杂配置。",
-  "settings.onboardingCloudSignIn": "登录 Open Design 云端",
+  "settings.onboardingCloudSignIn": "登录 Open Design",
   "settings.onboardingCloudContinue": "继续（已登录）",
   "settings.onboardingCloudAlternative": "使用本地 CLI 或自己的 API Key",
   "settings.onboardingCloudRights": "保留所有权利。",
@@ -853,7 +853,7 @@ export const zhCN: Dict = {
   "entry.navTeamSection": "团队",
   "entry.teamSlotNote": "该视图由团队服务提供，接入中。",
   "entry.cloudCalloutTitle": "Open Design Cloud 版",
-  "entry.cloudCalloutBody": "点击登录使用 Open Design Cloud，即可享受云端协作",
+  "entry.cloudCalloutBody": "登录即可享受云端协作",
   "entry.cloudCalloutDismissAria": "关闭 Open Design Cloud 版说明",
   "entry.workspaceLockedNote": "工作区已锁定，恢复账单后可继续编辑共享项目。",
   "entry.workspaceLockedRecover": "恢复访问",

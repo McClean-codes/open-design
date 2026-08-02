@@ -1,7 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createCachedWorkspaceDirectoryFetcher,
+  createFreshWorkspaceDirectoryFetcher,
+  createWorkspaceDirectoryAuthorityBroker,
   createVelaWorkspaceContextProvider,
+  fetchVelaWorkspaceDirectory,
   mapVelaWorkspaceContext,
   workspaceContextFromDirectoryItem,
 } from '../src/collab/vela-workspace-context.js';
@@ -133,6 +136,12 @@ describe('mapVelaWorkspaceContext', () => {
 });
 
 describe('createCachedWorkspaceDirectoryFetcher', () => {
+  it('treats a missing local session as authoritative signed-out, not an outage', async () => {
+    await expect(
+      fetchVelaWorkspaceDirectory({ readSession: () => null }),
+    ).resolves.toEqual({ ok: true, items: [] });
+  });
+
   it('coalesces concurrent readers and briefly reuses one authoritative success', async () => {
     let now = 1_000;
     let resolveRead:
@@ -213,6 +222,169 @@ describe('createCachedWorkspaceDirectoryFetcher', () => {
 
     reads[1]!.resolve({ ok: true, items: [] });
     await expect(accountB).resolves.toEqual({ ok: true, items: [] });
+  });
+});
+
+describe('createFreshWorkspaceDirectoryFetcher', () => {
+  it('isolates in-flight mutation authority reads by session and never caches a settled result', async () => {
+    let identity = 'account-a';
+    const reads: Array<{
+      identity: string;
+      resolve: (result: { ok: true; items: [] }) => void;
+    }> = [];
+    const fetchDirectory = vi.fn(
+      () =>
+        new Promise<{ ok: true; items: [] }>((resolve) => {
+          reads.push({ identity, resolve });
+        }),
+    );
+    const read = createFreshWorkspaceDirectoryFetcher({
+      fetchDirectory,
+      identityKey: () => identity,
+    });
+
+    const accountA = read();
+    const concurrentAccountA = read();
+    expect(concurrentAccountA).toBe(accountA);
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+
+    identity = 'account-b';
+    const accountB = read();
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+    expect(reads.map((entry) => entry.identity)).toEqual(['account-a', 'account-b']);
+
+    reads[0]!.resolve({ ok: true, items: [] });
+    await expect(accountA).resolves.toEqual({ ok: true, items: [] });
+    await expect(concurrentAccountA).resolves.toEqual({ ok: true, items: [] });
+    let accountBResolved = false;
+    void accountB.then(() => {
+      accountBResolved = true;
+    });
+    await Promise.resolve();
+    expect(accountBResolved).toBe(false);
+
+    reads[1]!.resolve({ ok: true, items: [] });
+    await expect(accountB).resolves.toEqual({ ok: true, items: [] });
+
+    const freshAccountB = read();
+    expect(fetchDirectory).toHaveBeenCalledTimes(3);
+    expect(reads[2]!.identity).toBe('account-b');
+    reads[2]!.resolve({ ok: true, items: [] });
+    await expect(freshAccountB).resolves.toEqual({ ok: true, items: [] });
+  });
+});
+
+describe('createWorkspaceDirectoryAuthorityBroker', () => {
+  it('single-flights shell and project bootstrap reads per account generation without caching failures', async () => {
+    let identity = 'account-a:config-a';
+    const fetchDirectory = vi.fn(async () => ({
+      ok: true as const,
+      items: [],
+    }));
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => identity,
+    });
+
+    const [shellDirectory, projectBootstrap] = await Promise.all([
+      authority.read(),
+      authority.read(),
+    ]);
+    expect(shellDirectory).toEqual(projectBootstrap);
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+    await authority.read();
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+
+    identity = 'account-b:config-b';
+    await authority.read();
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+
+    const failedFetch = vi.fn(async () => ({ ok: false as const, items: [] }));
+    const failedAuthority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory: failedFetch,
+      identityKey: () => 'account-failing',
+    });
+    await failedAuthority.read();
+    await failedAuthority.read();
+    expect(failedFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('bounds 30s of status polls while every heartbeat mutation stays fresh', async () => {
+    let now = 0;
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    const fetchDirectory = vi.fn(async () => {
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      await Promise.resolve();
+      activeReads -= 1;
+      return { ok: true as const, items: [] };
+    });
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'account-a:config-a',
+      now: () => now,
+    });
+
+    // Model the production order pessimistically: status first every 5s, then
+    // heartbeat at each 10s boundary. A fresh heartbeat seeds the next read
+    // lease, but never consumes a settled lease itself.
+    for (now = 0; now <= 30_000; now += 5_000) {
+      await authority.read();
+      if (now % 10_000 === 0) await authority.fresh();
+    }
+
+    expect(fetchDirectory).toHaveBeenCalledTimes(5);
+    expect(maxActiveReads).toBe(1);
+  });
+
+  it('coalesces unsettled read and mutation checks without reusing settled authority', async () => {
+    let resolveRead:
+      | ((result: { ok: true; items: [] }) => void)
+      | undefined;
+    const fetchDirectory = vi.fn(
+      () =>
+        new Promise<{ ok: true; items: [] }>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'account-a:config-a',
+    });
+
+    const read = authority.read();
+    const concurrentMutation = authority.fresh();
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+    resolveRead?.({ ok: true, items: [] });
+    await Promise.all([read, concurrentMutation]);
+
+    const nextMutation = authority.fresh();
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+    resolveRead?.({ ok: true, items: [] });
+    await nextMutation;
+  });
+
+  it('publishes a fresh revocation result into the subsequent read lease', async () => {
+    const active = {
+      ok: true as const,
+      items: [{ ...B_TEAM_CONTEXT }],
+    };
+    const revoked = { ok: true as const, items: [] };
+    const fetchDirectory = vi
+      .fn()
+      .mockResolvedValueOnce(active)
+      .mockResolvedValueOnce(revoked);
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'account-a:config-a',
+    });
+
+    await expect(authority.read()).resolves.toEqual(active);
+    await expect(authority.read()).resolves.toEqual(active);
+    await expect(authority.fresh()).resolves.toEqual(revoked);
+    await expect(authority.read()).resolves.toEqual(revoked);
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
   });
 });
 

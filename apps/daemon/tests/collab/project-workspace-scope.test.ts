@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   resolveProjectWorkspaceScope,
-  resolveProjectWorkspaceScopeForCaller,
+  resolveProjectWorkspaceScopeBootstrap,
 } from '../../src/collab/project-workspace-scope.js';
 
 const directoryItems = [
@@ -100,7 +100,7 @@ describe('resolveProjectWorkspaceScope', () => {
     });
   });
 
-  it('fails closed while the exact workspace lifecycle is not active', () => {
+  it('keeps locked/frozen workspaces readable while write permissions stay disabled', () => {
     const scope = resolveProjectWorkspaceScope({
       projectId: 'project-a',
       binding: {
@@ -116,12 +116,18 @@ describe('resolveProjectWorkspaceScope', () => {
       },
     });
 
-    expect(scope).toEqual({
-      kind: 'unavailable',
+    expect(scope).toMatchObject({
+      kind: 'team',
       projectId: 'project-a',
       workspaceId: 'workspace-a',
       visibility: 'personal',
-      context: null,
+      context: {
+        lifecycleState: 'locked',
+        permissions: {
+          canShareProjects: false,
+          canWriteSyncedFiles: false,
+        },
+      },
     });
   });
 
@@ -141,119 +147,115 @@ describe('resolveProjectWorkspaceScope', () => {
   });
 });
 
-describe('resolveProjectWorkspaceScopeForCaller', () => {
-  it('resolves an unbound project against the caller current workspace', () => {
-    const scope = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-unbound',
-      binding: null,
+describe('resolveProjectWorkspaceScopeBootstrap', () => {
+  it('returns project A from its exact membership even when ambient-order B is first', () => {
+    expect(resolveProjectWorkspaceScopeBootstrap({
+      projectId: 'project-a',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'active',
+      },
       directory: { ok: true, items: directoryItems },
-      callerWorkspaceId: 'workspace-b',
-    });
-
-    expect(scope).toMatchObject({
-      kind: 'team',
-      projectId: 'project-unbound',
-      workspaceId: 'workspace-b',
-      // An unbound project is a private local draft even inside a team.
-      visibility: 'personal',
-      context: {
-        workspaceId: 'workspace-b',
-        workspaceType: 'team',
-        workspaceMemberId: 'member-b',
+    })).toMatchObject({
+      ok: true,
+      scope: {
+        kind: 'team',
+        projectId: 'project-a',
+        workspaceId: 'workspace-a',
+        context: {
+          workspaceId: 'workspace-a',
+          workspaceMemberId: 'member-a',
+        },
       },
     });
   });
 
-  it('never lets the caller workspace override a project already pinned elsewhere', () => {
-    const scope = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-pinned',
-      binding: { workspaceId: 'workspace-gone', visibility: 'team' },
-      directory: { ok: true, items: directoryItems },
-      callerWorkspaceId: 'workspace-b',
-    });
-
-    // `workspaceMemberId` is the billing subject, so borrowing the caller's
-    // would bill their wallet for another workspace's project.
-    expect(scope).toEqual({
-      kind: 'unavailable',
-      projectId: 'project-pinned',
-      workspaceId: 'workspace-gone',
-      visibility: 'team',
-      context: null,
+  it('fails closed when the current account is not a member of the persisted workspace', () => {
+    expect(resolveProjectWorkspaceScopeBootstrap({
+      projectId: 'project-a',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'active',
+      },
+      directory: { ok: true, items: [directoryItems[0]!] },
+    })).toEqual({
+      ok: false,
+      status: 403,
+      code: 'WORKSPACE_PROJECT_PERMISSION_DENIED',
+      message: 'workspace project read is not allowed',
     });
   });
 
-  it('leaves a pinned project unavailable when the directory could not be read either', () => {
-    const scope = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-pinned',
-      binding: { workspaceId: 'workspace-b', visibility: 'personal' },
+  it('distinguishes a directory outage from revoked membership', () => {
+    expect(resolveProjectWorkspaceScopeBootstrap({
+      projectId: 'project-a',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'active',
+      },
       directory: { ok: false, items: [] },
-      callerWorkspaceId: 'workspace-b',
-    });
-
-    // The caller names the very workspace the project is pinned to, but nothing
-    // confirmed it. `unavailable` keeps its exact pre-existing behavior; the
-    // caller's claim is not a substitute for the membership directory.
-    expect(scope).toEqual({
-      kind: 'unavailable',
-      projectId: 'project-pinned',
-      workspaceId: 'workspace-b',
-      visibility: 'personal',
-      context: null,
+    })).toEqual({
+      ok: false,
+      status: 503,
+      code: 'WORKSPACE_DIRECTORY_UNAVAILABLE',
+      message: 'workspace membership directory is unavailable',
     });
   });
 
-  it('keeps an unbound project unbound when the caller has no workspace identity', () => {
-    const scope = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-anonymous',
-      binding: null,
-      directory: { ok: true, items: directoryItems },
-      callerWorkspaceId: null,
-    });
-
-    expect(scope).toEqual({
-      kind: 'unbound',
-      projectId: 'project-anonymous',
-      workspaceId: null,
-      context: null,
-    });
-  });
-
-  it('keeps an unbound project unbound when the claimed workspace is not an active membership', () => {
-    const unconfirmed = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-unconfirmed',
-      binding: null,
-      directory: { ok: true, items: directoryItems },
-      callerWorkspaceId: 'workspace-not-mine',
-    });
-    const outage = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-outage',
-      binding: null,
-      directory: { ok: false, items: [] },
-      callerWorkspaceId: 'workspace-b',
-    });
-
-    // The fallback resolves THROUGH the directory, so the member id it returns
-    // is always B's and never the request header's. An unconfirmable claim must
-    // degrade to "no workspace", never to `unavailable` on a workspace the
-    // project was never bound to.
-    expect(unconfirmed.kind).toBe('unbound');
-    expect(unconfirmed.workspaceId).toBeNull();
-    expect(outage.kind).toBe('unbound');
-    expect(outage.workspaceId).toBeNull();
-  });
-
-  it('keeps an unbound project unbound when the caller membership is revoked', () => {
-    const scope = resolveProjectWorkspaceScopeForCaller({
-      projectId: 'project-revoked',
-      binding: null,
+  it.each([
+    { memberStatus: 'removed' as const, lifecycleState: 'active' as const },
+    { memberStatus: 'active' as const, lifecycleState: 'deleted' as const },
+  ])('rejects a revoked or deleted membership: %o', (membership) => {
+    expect(resolveProjectWorkspaceScopeBootstrap({
+      projectId: 'project-a',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'active',
+      },
       directory: {
         ok: true,
-        items: [{ ...directoryItems[0]!, memberStatus: 'removed' as const }],
+        items: [{ ...directoryItems[1]!, ...membership }],
       },
-      callerWorkspaceId: 'workspace-b',
+    })).toMatchObject({
+      ok: false,
+      status: 403,
+      code: 'WORKSPACE_PROJECT_PERMISSION_DENIED',
     });
+  });
 
-    expect(scope.kind).toBe('unbound');
+  it('rejects a deleted persisted resource before returning its binding', () => {
+    expect(resolveProjectWorkspaceScopeBootstrap({
+      projectId: 'project-a',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'deleted',
+      },
+      directory: { ok: true, items: directoryItems },
+    })).toMatchObject({
+      ok: false,
+      status: 403,
+      code: 'WORKSPACE_PROJECT_PERMISSION_DENIED',
+    });
+  });
+
+  it('preserves a genuinely unbound local project without requiring login', () => {
+    expect(resolveProjectWorkspaceScopeBootstrap({
+      projectId: 'legacy-local',
+      binding: null,
+      directory: { ok: false, items: [] },
+    })).toEqual({
+      ok: true,
+      scope: {
+        kind: 'unbound',
+        projectId: 'legacy-local',
+        workspaceId: null,
+        context: null,
+      },
+    });
   });
 });

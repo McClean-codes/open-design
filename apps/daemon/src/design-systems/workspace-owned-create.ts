@@ -1,0 +1,73 @@
+import type { WorkspaceResourceContext } from '../collab/workspace-resource-mutation.js';
+import {
+  createUserDesignSystem,
+  deleteUserDesignSystem,
+  type DesignSystemSummary,
+  type UserDesignSystemInput,
+} from './index.js';
+
+type WorkspaceResourceEnvelopeInput = {
+  visibility: 'personal';
+  resourceState: 'active';
+  createdByWorkspaceMemberId: string;
+  updatedByWorkspaceMemberId: string;
+};
+
+export interface CreateWorkspaceOwnedDesignSystemDeps {
+  ensureWorkspaceResource: (
+    resourceType: 'design_system',
+    workspaceId: string,
+    resourceId: string,
+    input: WorkspaceResourceEnvelopeInput,
+  ) => unknown;
+  createUserDesignSystem?: (
+    root: string,
+    input: UserDesignSystemInput,
+  ) => Promise<DesignSystemSummary>;
+  deleteUserDesignSystem?: (root: string, id: string) => Promise<boolean>;
+}
+
+/**
+ * Persist one user design system and its Workspace ownership envelope.
+ *
+ * `context` is already directory-verified by the caller. A null context is
+ * the deliberate headerless/local compatibility lane: the design system is
+ * created without a Workspace claim or envelope. For a scoped create, the
+ * filesystem and SQLite writes form one logical unit. If the envelope write
+ * fails, remove only the directory allocated by this call before surfacing
+ * the original error, so a later catalog scan cannot expose a half-owned
+ * design system.
+ */
+export async function createWorkspaceOwnedDesignSystem(
+  root: string,
+  input: UserDesignSystemInput,
+  context: WorkspaceResourceContext | null,
+  deps: CreateWorkspaceOwnedDesignSystemDeps,
+): Promise<DesignSystemSummary> {
+  const create = deps.createUserDesignSystem ?? createUserDesignSystem;
+  const remove = deps.deleteUserDesignSystem ?? deleteUserDesignSystem;
+  const created = await create(root, {
+    ...input,
+    ...(context ? { workspaceId: context.workspaceId } : {}),
+  });
+
+  if (!context) return created;
+
+  try {
+    deps.ensureWorkspaceResource(
+      'design_system',
+      context.workspaceId,
+      created.id,
+      {
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: context.workspaceMemberId,
+        updatedByWorkspaceMemberId: context.workspaceMemberId,
+      },
+    );
+    return created;
+  } catch (error) {
+    await remove(root, created.id).catch(() => false);
+    throw error;
+  }
+}

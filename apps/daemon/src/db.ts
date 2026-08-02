@@ -1422,6 +1422,25 @@ export function listWorkspaceResources(db: SqliteDb, resourceType: string, works
     .all(resourceType, workspaceId) as DbRow[];
 }
 
+/** Workspace ids that still own a live Team resource binding.
+ *
+ * Background reconciliation uses this persisted witness after restarts. It
+ * deliberately returns ids only; callers must resolve each id against the
+ * current authoritative Workspace directory before touching the resource hub.
+ */
+export function listTeamWorkspaceResourceWorkspaceIds(db: SqliteDb): string[] {
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT workspace_id AS workspaceId
+         FROM workspace_resources
+        WHERE visibility = 'team'
+          AND resource_state != 'deleted'
+        ORDER BY workspace_id`,
+    )
+    .all() as Array<{ workspaceId: string }>;
+  return rows.map((row) => row.workspaceId);
+}
+
 /**
  * Bind a resource to a workspace, or return the binding it already has.
  *
@@ -1991,6 +2010,30 @@ export function listConversations(db: SqliteDb, projectId: string) {
          ORDER BY c.updatedAt DESC`,
     )
     .all(projectId)).map(normalizeConversation);
+}
+
+/**
+ * Return the conversation that was inserted first for a project.
+ *
+ * Project creation seeds this row before any side conversations exist.
+ * `created_at` normally identifies it, while `rowid` preserves insertion
+ * order when two conversations are created within the same millisecond.
+ * Keep this separate from `listConversations`, whose updated-at ordering is a
+ * user-facing recency contract.
+ */
+export function getFirstProjectConversation(db: SqliteDb, projectId: string) {
+  const result = db
+    .prepare(
+      `SELECT id
+         FROM conversations
+        WHERE project_id = ?
+        ORDER BY created_at ASC, rowid ASC
+        LIMIT 1`,
+    )
+    .get(projectId) as { id?: unknown } | undefined;
+  return typeof result?.id === 'string'
+    ? getConversation(db, result.id)
+    : null;
 }
 
 export function getConversation(db: SqliteDb, id: string) {
@@ -2989,6 +3032,39 @@ export function getLatestConversationIdForProject(
     )
     .get(projectId) as DbRow | undefined;
   return row && typeof row.id === 'string' ? row.id : null;
+}
+
+/**
+ * Ensure a pulled Team mirror has one LOCAL conversation row that preview
+ * comments can use as their foreign-key anchor.
+ *
+ * Conversation ids and chat transcripts are daemon-local; Team project
+ * materialization deliberately does not copy the owner's private conversations
+ * or messages. A member mirror can therefore have zero conversations even
+ * after every shared file is present. Preview comments still need a local
+ * conversation FK, so the materializer creates one empty thread exactly once.
+ * If this daemon already has any conversation for the project, that existing
+ * local thread remains the anchor.
+ */
+export function ensureProjectCommentAnchorConversation(
+  db: SqliteDb,
+  projectId: string,
+  now = Date.now(),
+): { conversationId: string; created: boolean } | null {
+  const existing = getLatestConversationIdForProject(db, projectId);
+  if (existing) return { conversationId: existing, created: false };
+  if (!getProject(db, projectId)) return null;
+
+  const conversationId = `comment-anchor-${randomUUID()}`;
+  insertConversation(db, {
+    id: conversationId,
+    projectId,
+    title: null,
+    sessionMode: 'design',
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { conversationId, created: true };
 }
 
 /**

@@ -13,6 +13,7 @@ import type {
   InstalledPluginRecord,
   McpServerConfig,
   SkillSummary,
+  WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { useI18n, useT } from '../i18n';
 import { LIBRARY_UI_VISIBLE } from '../features/libraryUi';
@@ -162,6 +163,7 @@ function getFlyoutPlacement(
 }
 
 export interface ComposerPlusMenuProps {
+  workspaceContext?: WorkspaceCollabContext | null;
   /** Connector context options shown under the "Connectors" submenu. */
   connectors: ConnectorDetail[];
   onPickConnector: (connector: ConnectorDetail) => void;
@@ -311,6 +313,7 @@ function mcpMatches(server: McpServerConfig, needle: string): boolean {
  * project-only design-toolbox row.
  */
 export function ComposerPlusMenu({
+  workspaceContext = null,
   connectors,
   onPickConnector,
   onAddConnector,
@@ -703,6 +706,94 @@ export function ComposerPlusMenu({
               </div>
             </PlusSubmenuRow>
           ) : null}
+          {hidePluginsRow ? null : (
+          <PlusSubmenuRow
+            label={t('entry.navPlugins')}
+            icon="sparkles"
+            open={submenu === 'plugins'}
+            testId="composer-plus-plugins"
+            onOpen={(row) => openSubmenu('plugins', row)}
+            onClose={scheduleCloseSubmenu}
+            flyoutClassName={
+              filteredPlugins.length > 0 ? 'plus-menu__flyout--plugins' : undefined
+            }
+          >
+            <div className="plus-menu__plugin-pane">
+              <div className="plus-menu__plugin-main">
+                <div className="plus-menu__search">
+                  <Icon name="search" size={14} />
+                  <input
+                    value={query}
+                    onChange={(event) => handleQueryChange(event.target.value)}
+                    placeholder={t('entry.navPlugins')}
+                    aria-label={t('entry.navPlugins')}
+                  />
+                </div>
+                <div className="plus-menu__list">
+                  {filteredPlugins.length === 0 ? (
+                    <div className="plus-menu__empty">{t('homeHero.noPlugins')}</div>
+                  ) : (
+                    filteredPlugins.map((plugin) => (
+                      <button
+                        key={plugin.id}
+                        type="button"
+                        role="menuitem"
+                        className={`plus-menu__item${
+                          plugin.id === hoveredPlugin?.id ? ' is-previewed' : ''
+                        }`}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onMouseEnter={() => setHoveredPluginId(plugin.id)}
+                        onFocus={() => setHoveredPluginId(plugin.id)}
+                        onClick={() => {
+                          close();
+                          onPickPlugin(plugin);
+                        }}
+                      >
+                        <Icon name="sparkles" size={15} className="plus-menu__item-icon" />
+                        <span>{localizePluginTitle(locale, plugin)}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+                {onAddPlugin ? (
+                  <>
+                    <div className="plus-menu__divider" />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="plus-menu__item"
+                      onClick={() => {
+                        close();
+                        onAddPlugin();
+                      }}
+                    >
+                      <Icon name="plus" size={15} className="plus-menu__item-icon" />
+                      <span>{t('homeHero.addPlugin')}</span>
+                    </button>
+                  </>
+                ) : null}
+              </div>
+              {hoveredPlugin ? (
+                <ComposerPluginPreview
+                  record={hoveredPlugin}
+                  locale={locale}
+                  workspaceContext={workspaceContext}
+                />
+              ) : null}
+            </div>
+          </PlusSubmenuRow>
+          )}
+          {renderToolbox ? (
+            <PlusSubmenuRow
+              label={toolboxLabel ?? t('chat.designToolbox.tooltip')}
+              icon="lightbulb"
+              open={submenu === 'toolbox'}
+              onOpen={(row) => openSubmenu('toolbox', row)}
+              onClose={scheduleCloseSubmenu}
+            >
+              {renderToolbox(close)}
+            </PlusSubmenuRow>
+          ) : null}
           {LIBRARY_UI_VISIBLE && onSelectFromLibrary ? (
             <button
               type="button"
@@ -783,79 +874,6 @@ export function ComposerPlusMenu({
               </>
             ) : null}
           </PlusSubmenuRow>
-          {hidePluginsRow ? null : (
-          <PlusSubmenuRow
-            label={t('entry.navPlugins')}
-            icon="sparkles"
-            open={submenu === 'plugins'}
-            testId="composer-plus-plugins"
-            onOpen={(row) => openSubmenu('plugins', row)}
-            onClose={scheduleCloseSubmenu}
-            flyoutClassName={
-              filteredPlugins.length > 0 ? 'plus-menu__flyout--plugins' : undefined
-            }
-          >
-            <div className="plus-menu__plugin-pane">
-              <div className="plus-menu__plugin-main">
-                <div className="plus-menu__search">
-                  <Icon name="search" size={14} />
-                  <input
-                    value={query}
-                    onChange={(event) => handleQueryChange(event.target.value)}
-                    placeholder={t('entry.navPlugins')}
-                    aria-label={t('entry.navPlugins')}
-                  />
-                </div>
-                <div className="plus-menu__list">
-                  {filteredPlugins.length === 0 ? (
-                    <div className="plus-menu__empty">{t('homeHero.noPlugins')}</div>
-                  ) : (
-                    filteredPlugins.map((plugin) => (
-                      <button
-                        key={plugin.id}
-                        type="button"
-                        role="menuitem"
-                        className={`plus-menu__item${
-                          plugin.id === hoveredPlugin?.id ? ' is-previewed' : ''
-                        }`}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onMouseEnter={() => setHoveredPluginId(plugin.id)}
-                        onFocus={() => setHoveredPluginId(plugin.id)}
-                        onClick={() => {
-                          close();
-                          onPickPlugin(plugin);
-                        }}
-                      >
-                        <Icon name="sparkles" size={15} className="plus-menu__item-icon" />
-                        <span>{localizePluginTitle(locale, plugin)}</span>
-                      </button>
-                    ))
-                  )}
-                </div>
-                {onAddPlugin ? (
-                  <>
-                    <div className="plus-menu__divider" />
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className="plus-menu__item"
-                      onClick={() => {
-                        close();
-                        onAddPlugin();
-                      }}
-                    >
-                      <Icon name="plus" size={15} className="plus-menu__item-icon" />
-                      <span>{t('homeHero.addPlugin')}</span>
-                    </button>
-                  </>
-                ) : null}
-              </div>
-              {hoveredPlugin ? (
-                <ComposerPluginPreview record={hoveredPlugin} locale={locale} />
-              ) : null}
-            </div>
-          </PlusSubmenuRow>
-          )}
           <PlusSubmenuRow
             label="MCP"
             icon="link"
@@ -913,17 +931,6 @@ export function ComposerPlusMenu({
               </>
             ) : null}
           </PlusSubmenuRow>
-          {renderToolbox ? (
-            <PlusSubmenuRow
-              label={toolboxLabel ?? t('chat.designToolbox.tooltip')}
-              icon="lightbulb"
-              open={submenu === 'toolbox'}
-              onOpen={(row) => openSubmenu('toolbox', row)}
-              onClose={scheduleCloseSubmenu}
-            >
-              {renderToolbox(close)}
-            </PlusSubmenuRow>
-          ) : null}
         </div>,
         document.body,
       ) : null}

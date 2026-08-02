@@ -6,6 +6,12 @@ import { LIBRARY_UI_VISIBLE } from '../features/libraryUi';
 import type { Dict } from '../i18n/types';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
 import { projectFileUrl, projectRawUrl } from '../providers/registry';
+import {
+  appendResourceQuery,
+  workspaceIdentityCacheKey,
+  workspaceProjectHeaders,
+} from '../collab/workspace-identity';
+import { useProjectCollabContext } from '../collab/collab-context';
 import { buildSrcdoc } from '../runtime/srcdoc';
 import type { LiveArtifactWorkspaceEntry, ProjectFile, ProjectFileKind, ProjectFolder } from '../types';
 import {
@@ -20,6 +26,14 @@ import { FileSyncBadge } from '../collab/FileSyncBadge';
 import { Icon } from './Icon';
 import { LiveArtifactBadges } from './LiveArtifactBadges';
 import { RemixIcon } from './RemixIcon';
+import {
+  getHtmlSourceSnapshot,
+  htmlSourceSnapshotRefreshKey,
+} from './html-source-snapshot-cache';
+import {
+  getHtmlThumbnailSource,
+  loadHtmlThumbnailSource,
+} from './html-thumbnail-source-cache';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
@@ -32,7 +46,8 @@ export interface DesignFilesNavState {
 
 interface Props {
   projectId: string;
-  /** Read-only viewer of a team-shared project: withholds create/upload actions. */
+  filesRefreshKey?: number;
+  /** Read-only viewer of a team-shared project: disables project mutations. */
   viewerOnly?: boolean;
   /**
    * True while a non-owner member's local mirror has not yet caught up to the
@@ -298,6 +313,7 @@ function RotatingTip({ auxiliary = false }: { auxiliary?: boolean }) {
  */
 export function DesignFilesPanel({
   projectId,
+  filesRefreshKey = 0,
   viewerOnly = false,
   downloadPending = false,
   rootDirName,
@@ -331,6 +347,7 @@ export function DesignFilesPanel({
   navState,
   onNavStateChange,
 }: Props) {
+  const { workspaceContext } = useProjectCollabContext();
   const t = useT();
   const analytics = useAnalytics();
   const [draggingFiles, setDraggingFiles] = useState(false);
@@ -849,7 +866,11 @@ export function DesignFilesPanel({
           title={openLabel}
           aria-label={openLabel}
         >
-          <HtmlCardThumbnail projectId={projectId} file={f} />
+          <HtmlCardThumbnail
+            projectId={projectId}
+            file={f}
+            filesRefreshKey={filesRefreshKey}
+          />
         </button>
         <div className="df-card-meta">
           <div className="df-card-meta-text">
@@ -977,7 +998,10 @@ export function DesignFilesPanel({
           aria-label={openLabel}
         >
           <img
-            src={`${projectRawUrl(projectId, f.name)}?v=${Math.round(f.mtime)}`}
+            src={appendResourceQuery(
+              projectRawUrl(projectId, f.name, workspaceContext),
+              `v=${Math.round(f.mtime)}`,
+            )}
             alt=""
             loading="lazy"
           />
@@ -1042,7 +1066,12 @@ export function DesignFilesPanel({
     try {
       const resp = await fetch(`/api/projects/${encodeURIComponent(projectId)}/archive/batch`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(workspaceContext
+            ? workspaceProjectHeaders(workspaceContext)
+            : {}),
+        },
         body: JSON.stringify({ files: fileList }),
       });
       if (!resp.ok) {
@@ -1131,25 +1160,6 @@ export function DesignFilesPanel({
           <span>{t('designFiles.library.label')}</span>
         </button>
       ) : null}
-      <button type="button" onClick={onNewSketch} title={t('designFiles.newSketch')}>
-        <Icon name="pencil" size={13} />
-        <span>{t('designFiles.newSketch')}</span>
-      </button>
-      {/* `onPaste` is a historical prop name — the action creates a new blank
-          Markdown document, so it is labelled for what it does. */}
-      <button type="button" onClick={onPaste} title={t('designFiles.newDocumentTitle')}>
-        <Icon name="file" size={13} />
-        <span>{t('designFiles.newDocument')}</span>
-      </button>
-      <button
-        type="button"
-        data-testid="design-files-upload-trigger"
-        onClick={onUpload}
-        title={t('designFiles.upload.title')}
-      >
-        <Icon name="upload" size={13} />
-        <span>{t('designFiles.upload.label')}</span>
-      </button>
       {onCreateDesignSystemFromProject || onDuplicateProject ? (
         <div className="df-project-menu-anchor" ref={projectMenuRef}>
           <button
@@ -1368,20 +1378,49 @@ export function DesignFilesPanel({
                   <span className="df-empty-title">
                     {t('designFiles.empty')}
                   </span>
-                  {/* Product call: the empty state shows this component with its
-                      CTAs for EVERY empty project, shared read-only ones
-                      included — the create actions themselves stay guarded by
-                      the read-only enforcement downstream. */}
+                  {/* Keep starter actions discoverable in shared read-only
+                      projects, but disable every project mutation in place. */}
                   <div className="df-empty-actions">
                     <button
                       type="button"
                       className="df-empty-cta df-empty-cta-primary"
                       data-testid="design-files-empty-new-sketch"
+                      disabled={viewerOnly}
                       onClick={onNewSketch}
-                      title={t('designFiles.newSketch')}
+                      title={viewerOnly
+                        ? t('fileViewer.readonlySharedNoExport')
+                        : t('designFiles.newSketch')}
                     >
                       <Icon name="pencil" size={13} />
                       <span>{t('designFiles.newSketch')}</span>
+                    </button>
+                    {/* `onPaste` is a historical prop name — the action creates
+                        a new blank Markdown document. */}
+                    <button
+                      type="button"
+                      className="df-empty-cta df-empty-cta-doc"
+                      data-testid="design-files-empty-new-document"
+                      disabled={viewerOnly}
+                      onClick={onPaste}
+                      title={viewerOnly
+                        ? t('fileViewer.readonlySharedNoExport')
+                        : t('designFiles.newDocumentTitle')}
+                    >
+                      <Icon name="file" size={13} />
+                      <span>{t('designFiles.newDocument')}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="df-empty-cta df-empty-cta-upload"
+                      data-testid="design-files-upload-trigger"
+                      disabled={viewerOnly}
+                      onClick={onUpload}
+                      title={viewerOnly
+                        ? t('fileViewer.readonlySharedNoExport')
+                        : t('designFiles.upload.title')}
+                    >
+                      <Icon name="upload" size={13} />
+                      <span>{t('designFiles.upload.label')}</span>
                     </button>
                     {onOpenBrowser ? (
                       <button
@@ -1401,8 +1440,11 @@ export function DesignFilesPanel({
                         type="button"
                         className="df-empty-cta df-empty-cta-tertiary"
                         data-testid="design-files-empty-create-design-system"
+                        disabled={viewerOnly}
                         onClick={onCreateDesignSystem}
-                        title={t('dsManager.createTitle')}
+                        title={viewerOnly
+                          ? t('fileViewer.readonlySharedNoExport')
+                          : t('dsManager.createTitle')}
                       >
                         <Icon name="blocks" size={14} />
                         <span>{t('dsManager.createTitle')}</span>
@@ -1622,7 +1664,7 @@ export function DesignFilesPanel({
               : t('designFiles.copyLocalPath')}
           </button>
           <a
-            href={projectFileUrl(projectId, menuPos.name)}
+            href={projectFileUrl(projectId, menuPos.name, workspaceContext)}
             download={menuPos.name}
             style={{ textDecoration: 'none' }}
           >
@@ -1670,37 +1712,95 @@ const PAGE_THUMB_LAYOUT_HEIGHT = Math.round(PAGE_THUMB_LAYOUT_WIDTH * (9 / 16));
 function HtmlCardThumbnail({
   projectId,
   file,
+  filesRefreshKey,
 }: {
   projectId: string;
   file: ProjectFile;
+  filesRefreshKey: number;
 }) {
+  const {
+    workspaceContext,
+    workspaceContextLoading,
+  } = useProjectCollabContext();
   const tooLargeForThumbnail = file.size > HTML_THUMBNAIL_INLINE_MAX_BYTES;
-  const url = projectFileUrl(projectId, file.name);
-  const [srcDoc, setSrcDoc] = useState<string | null>(null);
+  const url = projectFileUrl(projectId, file.name, workspaceContext);
+  const authorizationScopeKey = workspaceContextLoading
+    ? null
+    : workspaceContext
+      ? `workspace:${workspaceIdentityCacheKey(workspaceContext)}`
+      : 'local';
+  const refreshKey = htmlSourceSnapshotRefreshKey(file, filesRefreshKey);
+  const thumbnailIdentity = authorizationScopeKey
+    ? {
+        authorizationScopeKey,
+        projectId,
+        fileName: file.name,
+        refreshKey,
+      }
+    : null;
+  const baseHref = projectRawUrl(
+    projectId,
+    baseDirForFile(file.name),
+    workspaceContext,
+  );
+  const [srcDoc, setSrcDoc] = useState<string | null>(() => {
+    if (!thumbnailIdentity) return null;
+    const source =
+      getHtmlSourceSnapshot(
+        thumbnailIdentity.authorizationScopeKey,
+        thumbnailIdentity.projectId,
+        thumbnailIdentity.fileName,
+        thumbnailIdentity.refreshKey,
+      )?.source
+      ?? getHtmlThumbnailSource(thumbnailIdentity);
+    return source === null ? null : buildSrcdoc(source, { baseHref });
+  });
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [scale, setScale] = useState<number | null>(null);
 
   useEffect(() => {
     setSrcDoc(null);
-    if (tooLargeForThumbnail) return;
-    const controller = new AbortController();
+    if (tooLargeForThumbnail || !thumbnailIdentity) return;
+    const cachedSource =
+      getHtmlSourceSnapshot(
+        thumbnailIdentity.authorizationScopeKey,
+        thumbnailIdentity.projectId,
+        thumbnailIdentity.fileName,
+        thumbnailIdentity.refreshKey,
+      )?.source
+      ?? getHtmlThumbnailSource(thumbnailIdentity);
+    if (cachedSource !== null) {
+      setSrcDoc(buildSrcdoc(cachedSource, { baseHref }));
+      return;
+    }
     let cancelled = false;
-    void fetch(`${url}?v=${Math.round(file.mtime)}`, { signal: controller.signal })
-      .then((response) => (response.ok ? response.text() : null))
-      .then((html) => {
+    void loadHtmlThumbnailSource(
+      thumbnailIdentity,
+      async () => {
+        const response = await fetch(
+          appendResourceQuery(url, `v=${Math.round(file.mtime)}`),
+          {},
+        );
+        return response?.ok ? response.text() : null;
+      },
+    ).then((html) => {
         if (cancelled || html === null) return;
-        const nextSrcDoc = buildSrcdoc(html, { baseHref: projectRawUrl(projectId, baseDirForFile(file.name)) });
+        const nextSrcDoc = buildSrcdoc(html, { baseHref });
         if (!cancelled) setSrcDoc(nextSrcDoc);
       })
       .catch((err) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
         if (!cancelled) setSrcDoc(null);
       });
     return () => {
       cancelled = true;
-      controller.abort();
     };
-  }, [file.mtime, file.name, projectId, tooLargeForThumbnail, url]);
+  }, [
+    authorizationScopeKey,
+    baseHref,
+    refreshKey,
+    tooLargeForThumbnail,
+    url,
+  ]);
 
   // Track the host width so the fixed-layout iframe scales with the card.
   // Environments without ResizeObserver (jsdom) fall back to an unscaled

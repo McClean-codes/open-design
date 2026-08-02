@@ -238,15 +238,191 @@ interface HistoryState {
   odIndex: number;
 }
 
+export type NavigationGuard = () => boolean | Promise<boolean>;
+
+const navigationGuards = new Set<NavigationGuard>();
+let guardedNavigationSequence = 0;
+
+interface AcceptedHistoryLocation {
+  pathname: string;
+  index: number;
+}
+
+interface ApprovedHistoryTraversal {
+  expectedIndex: number;
+  sequence: number;
+}
+
+const routeSubscribers = new Set<() => void>();
+let popstateListenerInstalled = false;
+let dispatchingCommittedPopstate = false;
+let acceptedHistoryLocation: AcceptedHistoryLocation | null = null;
+let pendingHistoryRepair: AcceptedHistoryLocation | null = null;
+let approvedHistoryTraversal: ApprovedHistoryTraversal | null = null;
+
+export function registerNavigationGuard(guard: NavigationGuard): () => void {
+  navigationGuards.add(guard);
+  ensurePopstateCoordinator();
+  return () => {
+    navigationGuards.delete(guard);
+    maybeRemovePopstateCoordinator();
+  };
+}
+
+async function navigationGuardsAllow(): Promise<boolean> {
+  for (const guard of [...navigationGuards]) {
+    try {
+      if (!(await guard())) return false;
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function runGuardedNavigation(action: (sequence: number) => void): void {
+  // Every newer navigation intent invalidates an older async guard, including
+  // the no-guard fast path and a same-path no-op.
+  const sequence = ++guardedNavigationSequence;
+  approvedHistoryTraversal = null;
+  if (navigationGuards.size === 0) {
+    action(sequence);
+    return;
+  }
+  void navigationGuardsAllow().then((allowed) => {
+    if (allowed && sequence === guardedNavigationSequence) action(sequence);
+  });
+}
+
 function readHistoryIndex(): number {
   const state = window.history.state as Partial<HistoryState> | null;
   return typeof state?.odIndex === 'number' ? state.odIndex : 0;
 }
 
-export function navigate(route: Route, opts: { replace?: boolean } = {}): void {
+function readHistoryLocation(): AcceptedHistoryLocation {
+  return { pathname: window.location.pathname, index: readHistoryIndex() };
+}
+
+function isSameHistoryLocation(
+  left: AcceptedHistoryLocation | null,
+  right: AcceptedHistoryLocation,
+): boolean {
+  return left?.pathname === right.pathname && left.index === right.index;
+}
+
+function repairHistoryTraversal(
+  previous: AcceptedHistoryLocation,
+  target: AcceptedHistoryLocation,
+): void {
+  // A newer navigation may already have committed while an older native
+  // Back/Forward guard was pending. Only repair when the browser is still on
+  // that unapproved target and the UI authority is still the previous route.
+  if (
+    !isSameHistoryLocation(readHistoryLocation(), target)
+    || !isSameHistoryLocation(acceptedHistoryLocation, previous)
+  ) {
+    return;
+  }
+
+  const repairDelta = previous.index - target.index;
+  if (repairDelta !== 0) {
+    pendingHistoryRepair = previous;
+    window.history.go(repairDelta);
+    return;
+  }
+
+  // A foreign/deep-link entry may not carry a distinct odIndex. Preserve the
+  // accepted route without recursively dispatching another popstate.
+  window.history.pushState({ odIndex: previous.index }, '', previous.pathname);
+  acceptedHistoryLocation = previous;
+}
+
+function notifyRouteSubscribers(): void {
+  for (const subscriber of [...routeSubscribers]) subscriber();
+}
+
+function ensurePopstateCoordinator(): void {
+  if (popstateListenerInstalled) return;
+  acceptedHistoryLocation = readHistoryLocation();
+  window.addEventListener('popstate', handlePopstate);
+  popstateListenerInstalled = true;
+}
+
+function maybeRemovePopstateCoordinator(): void {
+  if (!popstateListenerInstalled || navigationGuards.size > 0 || routeSubscribers.size > 0) return;
+  window.removeEventListener('popstate', handlePopstate);
+  popstateListenerInstalled = false;
+  acceptedHistoryLocation = null;
+  pendingHistoryRepair = null;
+  approvedHistoryTraversal = null;
+  guardedNavigationSequence += 1;
+}
+
+function handlePopstate(): void {
+  const target = readHistoryLocation();
+  if (dispatchingCommittedPopstate) {
+    acceptedHistoryLocation = target;
+    notifyRouteSubscribers();
+    return;
+  }
+
+  if (
+    pendingHistoryRepair
+    && pendingHistoryRepair.pathname === target.pathname
+    && pendingHistoryRepair.index === target.index
+  ) {
+    acceptedHistoryLocation = pendingHistoryRepair;
+    pendingHistoryRepair = null;
+    return;
+  }
+  pendingHistoryRepair = null;
+
+  // goBack() already waited for the guard before asking the browser to move.
+  // Consume that exact traversal here instead of running the same async safe
+  // exit twice. A mismatched popstate is a different navigation and must still
+  // pass through the normal guard path.
+  const approvedTraversal = approvedHistoryTraversal;
+  approvedHistoryTraversal = null;
+  if (
+    approvedTraversal
+    && approvedTraversal.sequence === guardedNavigationSequence
+    && approvedTraversal.expectedIndex === target.index
+  ) {
+    acceptedHistoryLocation = target;
+    notifyRouteSubscribers();
+    return;
+  }
+
+  const previous = acceptedHistoryLocation ?? target;
+  const sequence = ++guardedNavigationSequence;
+  if (navigationGuards.size === 0) {
+    acceptedHistoryLocation = target;
+    notifyRouteSubscribers();
+    return;
+  }
+
+  void navigationGuardsAllow().then((allowed) => {
+    if (sequence !== guardedNavigationSequence) {
+      repairHistoryTraversal(previous, target);
+      return;
+    }
+    if (allowed) {
+      acceptedHistoryLocation = target;
+      notifyRouteSubscribers();
+      return;
+    }
+    repairHistoryTraversal(previous, target);
+  });
+}
+
+interface NavigationOptions {
+  replace?: boolean;
+  onCommit?: () => void;
+}
+
+function commitNavigation(route: Route, opts: NavigationOptions = {}): void {
   const target = buildPath(route);
-  const current = window.location.pathname;
-  if (target === current) return;
+  if (target === window.location.pathname) return;
   const index = readHistoryIndex();
   // `replace` keeps the current depth (it swaps the entry in place); a push
   // adds one level so the entry we are leaving becomes the "previous layer".
@@ -256,9 +432,20 @@ export function navigate(route: Route, opts: { replace?: boolean } = {}): void {
   } else {
     window.history.pushState(nextState, '', target);
   }
+  acceptedHistoryLocation = readHistoryLocation();
+  opts.onCommit?.();
   queueMicrotask(() => {
-    window.dispatchEvent(new PopStateEvent('popstate'));
+    dispatchingCommittedPopstate = true;
+    try {
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    } finally {
+      dispatchingCommittedPopstate = false;
+    }
   });
+}
+
+export function navigate(route: Route, opts: NavigationOptions = {}): void {
+  runGuardedNavigation(() => commitNavigation(route, opts));
 }
 
 // Step back to the route the user actually came from. We pop the browser
@@ -268,18 +455,25 @@ export function navigate(route: Route, opts: { replace?: boolean } = {}): void {
 // (`odIndex` 0: deep link or fresh load), there is nothing in-app to pop, so we
 // navigate to `fallback` instead of letting `history.back()` escape the app.
 export function goBack(fallback: Route): void {
-  if (readHistoryIndex() > 0) {
-    window.history.back();
-  } else {
-    navigate(fallback, { replace: true });
-  }
+  runGuardedNavigation((sequence) => {
+    const index = readHistoryIndex();
+    if (index > 0) {
+      approvedHistoryTraversal = { expectedIndex: index - 1, sequence };
+      window.history.back();
+    } else {
+      commitNavigation(fallback, { replace: true });
+    }
+  });
 }
 
 let cachedPathname: string | null = null;
 let cachedRoute: Route | null = null;
 
 function getRouteSnapshot(): Route {
-  const pathname = window.location.pathname;
+  // Native Back/Forward mutates window.location before its asynchronous guard
+  // resolves. Keep render-time reads on the last accepted route until the
+  // coordinator explicitly publishes the traversal.
+  const pathname = acceptedHistoryLocation?.pathname ?? window.location.pathname;
   if (cachedPathname !== pathname || cachedRoute === null) {
     cachedPathname = pathname;
     cachedRoute = parseRoute(pathname);
@@ -288,8 +482,12 @@ function getRouteSnapshot(): Route {
 }
 
 function subscribeToRouteChanges(onStoreChange: () => void): () => void {
-  window.addEventListener('popstate', onStoreChange);
-  return () => window.removeEventListener('popstate', onStoreChange);
+  routeSubscribers.add(onStoreChange);
+  ensurePopstateCoordinator();
+  return () => {
+    routeSubscribers.delete(onStoreChange);
+    maybeRemovePopstateCoordinator();
+  };
 }
 
 export function useRoute(): Route {

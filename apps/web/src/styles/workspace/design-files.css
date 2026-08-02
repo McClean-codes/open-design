@@ -793,28 +793,28 @@
    right ↔ New sketch (red) / New Browser (green) / Create design system
    (blue) — and its icon takes the CTA's accent. No border or wash: the pop +
    icon color alone carry the pairing. */
-.df-empty-pill:has(.df-empty-cta-primary:hover) .df-empty-stack-card--left {
+.df-empty-pill:has(.df-empty-cta-primary:hover:not(:disabled)) .df-empty-stack-card--left {
   transform: translateX(-30px) rotate(-13deg) scale(1.12);
   z-index: 3;
   box-shadow: 0 16px 30px -12px rgba(15, 15, 15, 0.34);
 }
-.df-empty-pill:has(.df-empty-cta-secondary:hover) .df-empty-stack-card--front {
+.df-empty-pill:has(.df-empty-cta-secondary:hover:not(:disabled)) .df-empty-stack-card--front {
   transform: rotate(0deg) scale(1.12);
   z-index: 3;
   box-shadow: 0 16px 30px -12px rgba(15, 15, 15, 0.34);
 }
-.df-empty-pill:has(.df-empty-cta-tertiary:hover) .df-empty-stack-card--right {
+.df-empty-pill:has(.df-empty-cta-tertiary:hover:not(:disabled)) .df-empty-stack-card--right {
   transform: translateX(30px) rotate(13deg) scale(1.12);
   z-index: 3;
   box-shadow: 0 16px 30px -12px rgba(15, 15, 15, 0.34);
 }
-.df-empty-pill:has(.df-empty-cta-primary:hover) .df-empty-stack-card--left .od-icon {
+.df-empty-pill:has(.df-empty-cta-primary:hover:not(:disabled)) .df-empty-stack-card--left .od-icon {
   color: var(--red);
 }
-.df-empty-pill:has(.df-empty-cta-secondary:hover) .df-empty-stack-card--front .od-icon {
+.df-empty-pill:has(.df-empty-cta-secondary:hover:not(:disabled)) .df-empty-stack-card--front .od-icon {
   color: var(--green);
 }
-.df-empty-pill:has(.df-empty-cta-tertiary:hover) .df-empty-stack-card--right .od-icon {
+.df-empty-pill:has(.df-empty-cta-tertiary:hover:not(:disabled)) .df-empty-stack-card--right .od-icon {
   color: var(--blue);
 }
 @media (prefers-reduced-motion: reduce) {
@@ -868,6 +868,10 @@
   flex-shrink: 0;
   transition: background 120ms var(--ease-out), border-color 120ms var(--ease-out);
 }
+.df-empty-cta:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
 .df-empty-cta-primary {
   background: var(--bg);
   border-color: var(--border-soft);
@@ -896,20 +900,35 @@
 .df-empty-cta-tertiary .od-icon {
   color: var(--blue);
 }
+/* Moved-in doc / upload pills (from the top toolbar). No purple design token
+   exists (--purple resolves to ink gray), so the violet is a literal — the
+   same #8b5cf6 the community accents already use. */
+.df-empty-cta-doc .od-icon {
+  color: var(--green);
+}
+.df-empty-cta-upload .od-icon {
+  color: #8b5cf6;
+}
 /* Hover: only the pill's stroke takes the icon's color — the surface stays
    white and the label stays neutral. */
-.df-empty-cta:hover {
+.df-empty-cta:hover:not(:disabled) {
   background: var(--bg);
   color: var(--text);
 }
-.df-empty-cta-primary:hover {
+.df-empty-cta-primary:hover:not(:disabled) {
   border-color: var(--red);
 }
-.df-empty-cta-secondary:hover {
+.df-empty-cta-secondary:hover:not(:disabled) {
   border-color: var(--green);
 }
-.df-empty-cta-tertiary:hover {
+.df-empty-cta-tertiary:hover:not(:disabled) {
   border-color: var(--blue);
+}
+.df-empty-cta-doc:hover:not(:disabled) {
+  border-color: var(--green);
+}
+.df-empty-cta-upload:hover:not(:disabled) {
+  border-color: #8b5cf6;
 }
 .df-empty-cta:focus-visible {
   outline: 2px solid var(--accent);

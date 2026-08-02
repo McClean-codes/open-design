@@ -50,7 +50,7 @@ import {
 import type { Dict } from '../i18n/types';
 import { STAGE_ATTACHMENT_EVENT, type StageAttachmentEventDetail } from './ChatComposer';
 import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
-import { navigate } from '../router';
+import { navigate, registerNavigationGuard } from '../router';
 import { downloadDesignSystemArchive, downloadProjectArchive } from '../runtime/exports';
 import { finalizeBrandProject } from '../runtime/brands';
 import { deriveFileOps, type FileOpEntry } from '../runtime/file-ops';
@@ -68,6 +68,10 @@ import { buildSrcdoc } from '../runtime/srcdoc';
 import { removeSpeakerNotesFromHtml } from '../runtime/speaker-notes';
 import { useDesignKit, hostnameOf, type KitColor } from '../runtime/design-kit';
 import { useKitModuleUpload } from '../runtime/kit-upload';
+import {
+  appendResourceQuery,
+  workspaceIdentityCacheKey,
+} from '../collab/workspace-identity';
 import {
   DesignKitView,
   type DesignKitActionFeedbackTone,
@@ -103,13 +107,14 @@ import {
   type ChatSessionMode,
   type InstalledPluginRecord,
   type LocalizedText,
+  type WorkspaceCollabContext,
   type WorkspaceContextItem,
 } from '@open-design/contracts';
 import {
   notifyTeamProjectsChanged,
   TEAM_PROJECTS_CHANGED_EVENT,
-  useWorkspaceContext,
 } from '../collab/useWorkspaceContext';
+import { useProjectCollabContext } from '../collab/collab-context';
 import { createTerminal, killTerminal, listPlugins, moveWorkspaceProject } from '../state/projects';
 import { MoveToTeamConfirmDialog, moveConfirmSkipped } from './MoveToTeamConfirmDialog';
 import { DesignFilesPanel, type DesignFilesNavState } from './DesignFilesPanel';
@@ -124,6 +129,7 @@ import type { PluginFolderAgentAction } from './design-files/pluginFolderActions
 import { designSystemGithubEvidenceState, repoConnectCopy } from './design-system-github-evidence';
 import { APP_CHROME_FILE_ACTIONS_ID } from './AppChromeHeader';
 import { FileViewer, LiveArtifactViewer } from './FileViewer';
+import { useIframeKeepAlivePool } from './IframeKeepAlivePool';
 import { Icon, type IconName } from './Icon';
 import { projectIsSharedWithWorkspace } from '../collab/project-shared-status';
 import { FileSyncBadge, type FileSyncBadgeState } from '../collab/FileSyncBadge';
@@ -165,6 +171,28 @@ import type { CommentSendResult } from './comment-send-result';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
+export interface FileRefreshResult {
+  acceptedGeneration: number | null;
+}
+
+export async function settleManualEditExit(
+  exit: () => Promise<boolean>,
+): Promise<boolean> {
+  try {
+    return await exit();
+  } catch {
+    return false;
+  }
+}
+
+export async function settleManualEditFiles(
+  fileNames: Iterable<string>,
+  settle: (fileName: string) => Promise<boolean>,
+): Promise<boolean> {
+  const results = await Promise.all([...new Set(fileNames)].map((fileName) => settle(fileName)));
+  return results.every(Boolean);
+}
+
 interface Props {
   projectId: string;
   projectKind: TrackingProjectKind;
@@ -181,7 +209,10 @@ interface Props {
   files: ProjectFile[];
   liveArtifacts: LiveArtifactSummary[];
   filesRefreshKey?: number;
-  onRefreshFiles: () => Promise<void> | void;
+  filesGeneration?: number;
+  onRefreshFiles: (
+    options?: { fresh?: boolean },
+  ) => Promise<FileRefreshResult | void> | FileRefreshResult | void;
   isDeck: boolean;
   streaming?: boolean;
   commentQueueOnSend?: boolean;
@@ -404,6 +435,11 @@ const BROWSER_TAB_PREFIX = '__browser__:';
 // We keep an LRU of the most-recently-activated browser tabs live and unmount
 // the rest; switching back to an evicted tab remounts (reloads) it.
 const BROWSER_KEEPALIVE_CAP = 3;
+// Keep a small LRU of already-opened HTML viewers mounted. Moving an iframe
+// between a visible host and the global parking pool makes Chromium navigate
+// it again even when `src` is byte-identical, so tab A -> tab B -> tab A used
+// to refetch both artifacts and briefly return to a blank/loading preview.
+const HTML_VIEWER_KEEPALIVE_CAP = 3;
 const QUICK_SWITCHER_DOCUMENT_CLASS = 'od-quick-switcher-open';
 const SKETCH_AUTOSAVE_DELAY_MS = 800;
 
@@ -1235,6 +1271,7 @@ export function FileWorkspace({
   files,
   liveArtifacts,
   filesRefreshKey = 0,
+  filesGeneration,
   onRefreshFiles,
   isDeck,
   streaming,
@@ -1309,8 +1346,12 @@ export function FileWorkspace({
   readonlyNotice,
   fileSyncBadge = null,
 }: Props) {
+  const refreshFilesWithoutResult = useCallback(async () => {
+    await onRefreshFiles();
+  }, [onRefreshFiles]);
   const { locale, t } = useI18n();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const { workspaceContext } = useProjectCollabContext();
+  const iframeKeepAlivePool = useIframeKeepAlivePool();
   const analytics = useAnalytics();
   // P1 page_view page_name=file_manager — once per project the user lands
   // inside the workspace. Re-fire when the projectId changes so a
@@ -1339,6 +1380,8 @@ export function FileWorkspace({
   const [activeTab, setActiveTab] = useState<string>(
     tabsState.active ?? defaultRootTab,
   );
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
   const fileSyncBadgeLabel = fileSyncBadge
     ? fileSyncBadge === 'downloading'
       ? t('workspace.fileSyncDownloading')
@@ -1452,6 +1495,92 @@ export function FileWorkspace({
   // first). A browser tab is mounted only after it has been activated; we cap
   // the live set at BROWSER_KEEPALIVE_CAP and unmount the rest.
   const [liveBrowserTabIds, setLiveBrowserTabIds] = useState<string[]>([]);
+  const [liveHtmlViewerFileNames, setLiveHtmlViewerFileNames] = useState<string[]>([]);
+  const [protectedHtmlViewerFileNames, setProtectedHtmlViewerFileNames] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const protectedHtmlViewerFileNamesRef = useRef(protectedHtmlViewerFileNames);
+  protectedHtmlViewerFileNamesRef.current = protectedHtmlViewerFileNames;
+  const manualEditExitHandlersRef = useRef<Map<string, () => Promise<boolean>>>(new Map());
+  const manualEditExitInFlightRef = useRef<Map<string, Promise<boolean>>>(new Map());
+  const requestedActivationSequenceRef = useRef(0);
+  const handleHtmlViewerRetainActivityChange = useCallback((fileName: string, retain: boolean) => {
+    setProtectedHtmlViewerFileNames((current) => {
+      if (current.has(fileName) === retain) return current;
+      const next = new Set(current);
+      if (retain) next.add(fileName);
+      else next.delete(fileName);
+      return next;
+    });
+  }, []);
+  const handleManualEditExitHandlerChange = useCallback((
+    fileName: string,
+    handler: (() => Promise<boolean>) | null,
+  ) => {
+    if (handler) manualEditExitHandlersRef.current.set(fileName, handler);
+    else manualEditExitHandlersRef.current.delete(fileName);
+  }, []);
+  const settleManualEdit = useCallback((fileName: string): Promise<boolean> => {
+    const exit = manualEditExitHandlersRef.current.get(fileName);
+    if (!exit) return Promise.resolve(true);
+    const existing = manualEditExitInFlightRef.current.get(fileName);
+    if (existing) return existing;
+
+    const result = settleManualEditExit(exit);
+    const pending = result.finally(() => {
+      if (manualEditExitInFlightRef.current.get(fileName) === pending) {
+        manualEditExitInFlightRef.current.delete(fileName);
+      }
+    });
+    manualEditExitInFlightRef.current.set(fileName, pending);
+    return pending;
+  }, []);
+  const settleProtectedManualEdits = useCallback((): Promise<boolean> => {
+    // A viewer can remain mounted offscreen while its async safe-exit is still
+    // pending. The active tab is therefore not an authority witness for which
+    // edit must settle before project teardown/navigation.
+    const fileNames = new Set([
+      ...protectedHtmlViewerFileNamesRef.current,
+      ...manualEditExitHandlersRef.current.keys(),
+      ...manualEditExitInFlightRef.current.keys(),
+    ]);
+    return settleManualEditFiles(fileNames, settleManualEdit);
+  }, [settleManualEdit]);
+  useEffect(() => () => {
+    void settleProtectedManualEdits();
+  }, [settleProtectedManualEdits]);
+  useEffect(() => {
+    if (protectedHtmlViewerFileNames.size === 0) return;
+
+    const unregisterNavigationGuard = registerNavigationGuard(settleProtectedManualEdits);
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => {
+      unregisterNavigationGuard();
+      window.removeEventListener('beforeunload', warnBeforeUnload);
+    };
+  }, [protectedHtmlViewerFileNames.size, settleProtectedManualEdits]);
+
+  function afterActiveManualEditSettles(action: () => void) {
+    const sourceTab = activeTabRef.current;
+    const exit = manualEditExitHandlersRef.current.get(sourceTab);
+    if (!exit) {
+      action();
+      return;
+    }
+    const sequence = ++requestedActivationSequenceRef.current;
+    const pending = settleManualEdit(sourceTab);
+    void pending.then((ok) => {
+      if (
+        ok
+        && sequence === requestedActivationSequenceRef.current
+        && activeTabRef.current === sourceTab
+      ) action();
+    });
+  }
 
   // The set actually rendered. The activation LRU governs ad-hoc browser tabs,
   // but a pinned brand-extraction tab must stay mounted even when it was never
@@ -1496,9 +1625,9 @@ export function FileWorkspace({
   useEffect(() => {
     let cancelled = false;
     const load = () => {
-      void listPlugins().then((records) => {
+      void listPlugins({ workspaceContext }).then((records) => {
         if (cancelled) return;
-        setCommunityPluginPresets(communityPluginPagePresets(records));
+        setCommunityPluginPresets(communityPluginPagePresets(records, workspaceContext));
       });
     };
     load();
@@ -1507,7 +1636,7 @@ export function FileWorkspace({
       cancelled = true;
       window.removeEventListener('open-design:plugins-changed', load);
     };
-  }, []);
+  }, [workspaceContext]);
 
   const loadSketchFile = useCallback((file: ProjectFile): Promise<boolean> => {
     const sourceKey = sketchFileSourceKey(projectId, file);
@@ -1522,7 +1651,9 @@ export function FileWorkspace({
     const inFlight = { promise: null as Promise<boolean> | null };
     const promise = (async () => {
       try {
-        const text = await fetchProjectFileText(projectId, file.name);
+        const text = workspaceContext
+          ? await fetchProjectFileText(projectId, file.name, { workspaceContext })
+          : await fetchProjectFileText(projectId, file.name);
         const doc = parseSketchWorkspaceDocument(text);
         if (activeProjectIdRef.current !== projectId) return false;
         setSketches((curr) => {
@@ -1551,7 +1682,7 @@ export function FileWorkspace({
     inFlight.promise = promise;
     sketchPreloadInFlightRef.current.set(sourceKey, promise);
     return promise;
-  }, [projectId]);
+  }, [projectId, workspaceContext]);
 
   const liveArtifactEntries = useMemo(
     () => liveArtifacts.map(liveArtifactSummaryToWorkspaceEntry),
@@ -1559,22 +1690,22 @@ export function FileWorkspace({
   );
 
   const refreshProjectFolders = useCallback(async (): Promise<ProjectFolder[]> => {
-    const next = await fetchProjectFolders(projectId);
+    const next = await fetchProjectFolders(projectId, workspaceContext);
     setProjectFolders(next);
     return next;
-  }, [projectId]);
+  }, [projectId, workspaceContext]);
 
   useEffect(() => {
     let cancelled = false;
     // The synchronous clear happens during render (see projectFoldersProjectIdRef
     // above); here we only fetch the new project's folders.
-    void fetchProjectFolders(projectId).then((next) => {
+    void fetchProjectFolders(projectId, workspaceContext).then((next) => {
       if (!cancelled) setProjectFolders(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId]);
+  }, [projectId, workspaceContext]);
 
   // True when the Design Files tab has nothing to attach: no files, no live
   // artifacts, no folders. Mirrors DesignFilesPanel's own empty-state gate so
@@ -1590,7 +1721,12 @@ export function FileWorkspace({
   // (or on project switch). Fall back to the Design Files browser so a
   // fresh project lands in a useful place.
   useEffect(() => {
-    setActiveTab(tabsState.active ?? defaultRootTab);
+    const nextActive = tabsState.active ?? defaultRootTab;
+    if (nextActive === activeTabRef.current) return;
+    afterActiveManualEditSettles(() => setActiveTab(nextActive));
+    // afterActiveManualEditSettles reads post-commit refs and intentionally
+    // remains stable across this externally-driven hydration transition.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tabsState.active, defaultRootTab]);
 
   useEffect(() => {
@@ -1656,11 +1792,18 @@ export function FileWorkspace({
 
   function setPersistedActive(name: string | null) {
     const nextActive = name ?? defaultRootTab;
-    setActiveTab(nextActive);
-    commitTabsState(workspaceTabsState(persistedTabs, name));
+    if (nextActive === activeTab) return;
+    afterActiveManualEditSettles(() => {
+      setActiveTab(nextActive);
+      commitTabsState(workspaceTabsState(persistedTabs, name));
+    });
   }
 
   function openRequestedBrowserTab(request: BrowserOpenRequest) {
+    afterActiveManualEditSettles(() => commitRequestedBrowserTab(request));
+  }
+
+  function commitRequestedBrowserTab(request: BrowserOpenRequest) {
     const requestedTabId = request.tabId?.trim();
     const normalizedUrl = normalizeBrowserAddress(request.url);
     const tabId =
@@ -1727,19 +1870,21 @@ export function FileWorkspace({
   }
 
   function openBrowserTab() {
-    setUploadError(null);
-    const nextIndex = browserTabSequenceRef.current + 1;
-    browserTabSequenceRef.current = nextIndex;
-    const anchor = lastWorkspaceTabId(orderedWorkspaceTabs) ?? activeTab;
-    const nextTab: BrowserWorkspaceTab = {
-      id: `${BROWSER_TAB_PREFIX}${nextIndex}`,
-      insertAfter: anchor,
-      label: nextIndex === 1 ? 'Browser' : `Browser ${nextIndex}`,
-    };
-    const nextTabs = [...browserTabs, nextTab];
-    setBrowserTabs(nextTabs);
-    setActiveTab(nextTab.id);
-    commitTabsState(workspaceTabsState(persistedTabs, nextTab.id, nextTabs));
+    afterActiveManualEditSettles(() => {
+      setUploadError(null);
+      const nextIndex = browserTabSequenceRef.current + 1;
+      browserTabSequenceRef.current = nextIndex;
+      const anchor = lastWorkspaceTabId(orderedWorkspaceTabs) ?? activeTabRef.current;
+      const nextTab: BrowserWorkspaceTab = {
+        id: `${BROWSER_TAB_PREFIX}${nextIndex}`,
+        insertAfter: anchor,
+        label: nextIndex === 1 ? 'Browser' : `Browser ${nextIndex}`,
+      };
+      const nextTabs = [...browserTabs, nextTab];
+      setBrowserTabs(nextTabs);
+      setActiveTab(nextTab.id);
+      commitTabsState(workspaceTabsState(persistedTabs, nextTab.id, nextTabs));
+    });
   }
 
   function closeBrowserTab(tabId: string) {
@@ -1796,7 +1941,7 @@ export function FileWorkspace({
   function activatePending(name: string) {
     // Pending sketches are not in tabsState.tabs — flip the local
     // activeTab without round-tripping through the parent.
-    setActiveTab(name);
+    afterActiveManualEditSettles(() => setActiveTab(name));
   }
 
   // Promote the active browser tab to the front of the keep-alive LRU (and cap
@@ -1859,26 +2004,14 @@ export function FileWorkspace({
         name === DESIGN_SYSTEM_TAB && !designSystemProject
           ? DESIGN_FILES_TAB
           : name;
-      onTabsStateChange(workspaceTabsState(persistedTabs, nextActive));
-      setActiveTab(nextActive);
+      setPersistedActive(nextActive);
       return;
     }
     if (isBrowserTabId(name) && browserTabs.some((tab) => tab.id === name)) {
-      onTabsStateChange(workspaceTabsState(persistedTabs, name));
-      setActiveTab(name);
+      setPersistedActive(name);
       return;
     }
-    const isNewTab = !persistedTabs.includes(name);
-    const nextBrowserTabs = isNewTab
-      ? reanchorBrowserTabsToCurrentOrder(orderedWorkspaceTabs, browserTabs)
-      : browserTabs;
-    if (nextBrowserTabs !== browserTabs) setBrowserTabs(nextBrowserTabs);
-    onTabsStateChange(workspaceTabsState(
-      isNewTab ? [...persistedTabs, name] : persistedTabs,
-      name,
-      nextBrowserTabs,
-    ));
-    setActiveTab(name);
+    openFile(name, { forcePersist: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openRequest]);
 
@@ -1894,11 +2027,14 @@ export function FileWorkspace({
     if (!shareRequest) return;
     const name = shareRequest.name;
     if (!name) return;
-    commitTabsState(workspaceTabsState(
-      persistedTabs.includes(name) ? persistedTabs : [...persistedTabs, name],
-      name,
-    ));
-    setActiveTab(name);
+    afterActiveManualEditSettles(() => {
+      const currentTabs = tabsStateRef.current.tabs;
+      commitTabsState(workspaceTabsState(
+        currentTabs.includes(name) ? currentTabs : [...currentTabs, name],
+        name,
+      ));
+      setActiveTab(name);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shareRequest]);
 
@@ -1909,11 +2045,14 @@ export function FileWorkspace({
     if (!downloadRequest) return;
     const name = downloadRequest.name;
     if (!name) return;
-    commitTabsState(workspaceTabsState(
-      persistedTabs.includes(name) ? persistedTabs : [...persistedTabs, name],
-      name,
-    ));
-    setActiveTab(name);
+    afterActiveManualEditSettles(() => {
+      const currentTabs = tabsStateRef.current.tabs;
+      commitTabsState(workspaceTabsState(
+        currentTabs.includes(name) ? currentTabs : [...currentTabs, name],
+        name,
+      ));
+      setActiveTab(name);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [downloadRequest]);
 
@@ -1928,30 +2067,33 @@ export function FileWorkspace({
   const [slideNavDeliverableNonce, setSlideNavDeliverableNonce] = useState<number | null>(null);
   useEffect(() => {
     if (!isSlideNavDeliverableNow(slideNavRequest, persistedTabs)) return;
-    setSlideNavDeliverableNonce(slideNavRequest!.nonce);
-    setActiveTab(slideNavRequest!.name);
+    afterActiveManualEditSettles(() => {
+      setSlideNavDeliverableNonce(slideNavRequest!.nonce);
+      setActiveTab(slideNavRequest!.name);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [slideNavRequest]);
 
   function openFile(name: string, options?: { forcePersist?: boolean }) {
-    setUploadError(null);
-    // Read from the ref, not the `persistedTabs` prop closure: this path is
-    // reached asynchronously from launcher "create" actions (after the daemon
-    // resolves a new terminal/side-chat id), so the closure could be stale and
-    // clobber tabs added in the meantime.
-    const currentTabs = tabsStateRef.current.tabs;
-    const shouldPersistTab =
-      options?.forcePersist === true || isPrimaryWorkspaceTab(name, visibleFiles, liveArtifactEntries, sketches);
-    const isNewTab = shouldPersistTab && !currentTabs.includes(name);
-    const nextBrowserTabs = isNewTab
-      ? reanchorBrowserTabsToCurrentOrder(orderedWorkspaceTabs, browserTabs)
-      : browserTabs;
-    const nextTabs = shouldPersistTab && !currentTabs.includes(name)
-      ? [...currentTabs, name]
-      : currentTabs;
-    if (nextBrowserTabs !== browserTabs) setBrowserTabs(nextBrowserTabs);
-    commitTabsState(workspaceTabsState(nextTabs, name, nextBrowserTabs));
-    setActiveTab(name);
+    if (name === activeTab) return;
+    afterActiveManualEditSettles(() => {
+      setUploadError(null);
+      // Read from the ref after the async edit flush so a concurrent tab update
+      // cannot be overwritten by the activation that was waiting on it.
+      const currentTabs = tabsStateRef.current.tabs;
+      const shouldPersistTab =
+        options?.forcePersist === true || isPrimaryWorkspaceTab(name, visibleFiles, liveArtifactEntries, sketches);
+      const isNewTab = shouldPersistTab && !currentTabs.includes(name);
+      const nextBrowserTabs = isNewTab
+        ? reanchorBrowserTabsToCurrentOrder(orderedWorkspaceTabs, browserTabs)
+        : browserTabs;
+      const nextTabs = shouldPersistTab && !currentTabs.includes(name)
+        ? [...currentTabs, name]
+        : currentTabs;
+      if (nextBrowserTabs !== browserTabs) setBrowserTabs(nextBrowserTabs);
+      commitTabsState(workspaceTabsState(nextTabs, name, nextBrowserTabs));
+      setActiveTab(name);
+    });
   }
   openFileRef.current = openFile;
 
@@ -2007,8 +2149,7 @@ export function FileWorkspace({
     }
     if (isBrowserTabId(tabId)) {
       if (!browserTabs.some((tab) => tab.id === tabId)) return;
-      commitTabsState(workspaceTabsState(persistedTabs, tabId, browserTabs));
-      setActiveTab(tabId);
+      setPersistedActive(tabId);
       return;
     }
     openFile(tabId);
@@ -2060,16 +2201,27 @@ export function FileWorkspace({
   // each read the same stale `persistedTabs` prop and the second would clobber
   // the first.
   function openFileReplacing(openName: string, closeName: string) {
-    setUploadError(null);
-    const withoutClosed = persistedTabs.filter((tabName) => tabName !== closeName);
-    const nextTabs = withoutClosed.includes(openName)
-      ? withoutClosed
-      : [...withoutClosed, openName];
-    onTabsStateChange(workspaceTabsState(nextTabs, openName));
-    setActiveTab(openName);
+    afterActiveManualEditSettles(() => {
+      setUploadError(null);
+      const currentTabs = tabsStateRef.current.tabs;
+      const withoutClosed = currentTabs.filter((tabName) => tabName !== closeName);
+      const nextTabs = withoutClosed.includes(openName)
+        ? withoutClosed
+        : [...withoutClosed, openName];
+      commitTabsState(workspaceTabsState(nextTabs, openName));
+      setActiveTab(openName);
+    });
   }
 
   function closeTab(name: string) {
+    if (activeTabRef.current === name && manualEditExitHandlersRef.current.has(name)) {
+      afterActiveManualEditSettles(() => performCloseTab(name));
+      return;
+    }
+    performCloseTab(name);
+  }
+
+  function performCloseTab(name: string) {
     // Terminal tabs own a daemon PTY that now outlives unmount (so tab switches
     // reattach cheaply). An explicit Close is the one place we terminate it —
     // kill the LIVE session (which may differ from the tab's original id after
@@ -2077,7 +2229,10 @@ export function FileWorkspace({
     if (isTerminalTabId(name)) {
       const originalId = terminalIdFromTabId(name);
       const liveId = terminalLiveSessionsRef.current.get(originalId) ?? originalId;
-      void killTerminal(projectId, liveId, { keepalive: true });
+      void killTerminal(projectId, liveId, {
+        keepalive: true,
+        workspaceContext,
+      });
       terminalLiveSessionsRef.current.delete(originalId);
     }
     const sketchEntry = sketches[name];
@@ -2508,7 +2663,13 @@ export function FileWorkspace({
     const target = nextHtmlPagePath(visibleFiles, pagePresetFileBaseName(preset, t, locale));
     setPageCreating(true);
     try {
-      const content = await contentForPagePreset(target, preset, t, locale);
+      const content = await contentForPagePreset(
+        target,
+        preset,
+        t,
+        locale,
+        workspaceContext,
+      );
       const file = await writeProjectTextFile(projectId, target, content, {
         versionSource: 'manual',
         versionPrompt: pagePresetVersionPrompt(preset, t, locale),
@@ -2832,6 +2993,258 @@ export function FileWorkspace({
     }
     return null;
   }, [activeTab, visibleFiles, sketches]);
+  const activeViewerFile =
+    activeFile && !(activeFile.kind === 'sketch' && isSketchName(activeFile.name))
+      ? activeFile
+      : null;
+  const activeHtmlViewerFile = activeViewerFile?.kind === 'html' ? activeViewerFile : null;
+  const htmlViewerFileSnapshotsRef = useRef<{
+    projectId: string;
+    files: Map<string, ProjectFile>;
+  }>({ projectId, files: new Map() });
+  if (htmlViewerFileSnapshotsRef.current.projectId !== projectId) {
+    htmlViewerFileSnapshotsRef.current = { projectId, files: new Map() };
+  }
+  const htmlViewerFileSnapshots = htmlViewerFileSnapshotsRef.current.files;
+  for (const candidate of visibleFiles) {
+    if (candidate.kind !== 'html') continue;
+    // Hidden viewers keep the last file revision they actually rendered.
+    // Updating mtime under an inactive iframe changes its src and defeats the
+    // keep-alive. Adopt the newest revision exactly when that tab activates.
+    if (
+      candidate.name === activeHtmlViewerFile?.name
+      || !htmlViewerFileSnapshots.has(candidate.name)
+    ) {
+      htmlViewerFileSnapshots.set(candidate.name, candidate);
+    }
+  }
+  useEffect(() => {
+    setLiveHtmlViewerFileNames([]);
+    setProtectedHtmlViewerFileNames(new Set());
+  }, [projectId]);
+  useEffect(() => {
+    if (!activeHtmlViewerFile) return;
+    setLiveHtmlViewerFileNames((current) => [
+      activeHtmlViewerFile.name,
+      ...current.filter((name) => name !== activeHtmlViewerFile.name),
+    ].slice(0, HTML_VIEWER_KEEPALIVE_CAP));
+  }, [activeHtmlViewerFile?.name, projectId]);
+  useEffect(() => {
+    setLiveHtmlViewerFileNames((current) => {
+      const openHtmlNames = new Set(persistedTabs);
+      const next = current.filter((name) => openHtmlNames.has(name));
+      return next.length === current.length ? current : next;
+    });
+    setProtectedHtmlViewerFileNames((current) => {
+      const openNames = new Set(persistedTabs);
+      const next = new Set([...current].filter((name) => openNames.has(name)));
+      return next.size === current.size ? current : next;
+    });
+    for (const name of htmlViewerFileSnapshots.keys()) {
+      if (!persistedTabs.includes(name)) htmlViewerFileSnapshots.delete(name);
+    }
+  }, [persistedTabs]);
+  const committedHtmlFileNames = useMemo(
+    () => new Set(visibleFiles.filter((file) => file.kind === 'html').map((file) => file.name)),
+    [visibleFiles],
+  );
+  const effectiveFilesGeneration = filesGeneration ?? 0;
+  const pendingDeletedManualEditRef = useRef<Map<string, {
+    projectId: string;
+    witnessGeneration: number;
+    status: 'settling' | 'revalidating' | 'accepted' | 'failed';
+    acceptedGeneration?: number;
+    failedWitnessGeneration?: number;
+  }>>(new Map());
+  const effectiveFilesGenerationRef = useRef(effectiveFilesGeneration);
+  effectiveFilesGenerationRef.current = effectiveFilesGeneration;
+  const [pendingDeletedManualEditRevision, setPendingDeletedManualEditRevision] = useState(0);
+  useEffect(() => {
+    for (const name of committedHtmlFileNames) {
+      const pendingDecision = pendingDeletedManualEditRef.current.get(name);
+      // A successful manual save can trigger its ordinary (cached) file-list
+      // refresh before safeExit resolves. Do not let that intermediate response
+      // cancel the mandatory fresh R2 revalidation while R1 is still settling.
+      if (
+        !pendingDecision
+        || pendingDecision.projectId !== projectId
+        || (
+          pendingDecision.status === 'failed'
+          && pendingDecision.failedWitnessGeneration != null
+          && effectiveFilesGeneration > pendingDecision.failedWitnessGeneration
+        )
+        || (
+          pendingDecision.status === 'accepted'
+          && pendingDecision.acceptedGeneration != null
+          && effectiveFilesGeneration >= pendingDecision.acceptedGeneration
+        )
+      ) {
+        pendingDeletedManualEditRef.current.delete(name);
+      }
+    }
+
+    const missingNames = [...htmlViewerFileSnapshots.keys()].filter(
+      (name) => !committedHtmlFileNames.has(name),
+    );
+    const purgeNames = (names: string[]) => {
+      if (names.length === 0) return;
+      const removed = new Set(names);
+      setLiveHtmlViewerFileNames((current) => current.filter((name) => !removed.has(name)));
+      setProtectedHtmlViewerFileNames((current) => new Set(
+        [...current].filter((name) => !removed.has(name)),
+      ));
+      for (const name of names) {
+        htmlViewerFileSnapshots.delete(name);
+        pendingDeletedManualEditRef.current.delete(name);
+      }
+      iframeKeepAlivePool.evictMatching(
+        (entry) => entry.projectId === projectId && names.some(
+          (name) => entry.fileName === name || entry.fileName.startsWith(`${name}:`),
+        ),
+      );
+    };
+
+    for (const name of missingNames) {
+      // Some parent transitions can temporarily render an empty list without
+      // committing a new file-list observation. In that state an open tab is
+      // still the stronger witness: only a supplied, advanced generation may
+      // prove that the file is actually gone. Explicit tab removal is handled
+      // by the persisted-tabs cleanup effect above.
+      if (filesGeneration == null && persistedTabs.includes(name)) continue;
+      const pendingDecision = pendingDeletedManualEditRef.current.get(name);
+      if (pendingDecision) {
+        if (
+          pendingDecision.projectId === projectId
+          && pendingDecision.status === 'accepted'
+          && pendingDecision.acceptedGeneration != null
+          && effectiveFilesGeneration >= pendingDecision.acceptedGeneration
+        ) {
+          purgeNames([name]);
+        } else if (
+          pendingDecision.projectId === projectId
+          && pendingDecision.status === 'failed'
+          && pendingDecision.failedWitnessGeneration != null
+          && effectiveFilesGeneration > pendingDecision.failedWitnessGeneration
+        ) {
+          purgeNames([name]);
+        }
+        continue;
+      }
+      if (!protectedHtmlViewerFileNames.has(name)) {
+        purgeNames([name]);
+        continue;
+      }
+      if (!manualEditExitHandlersRef.current.has(name)) {
+        purgeNames([name]);
+        continue;
+      }
+      const decision = {
+        projectId,
+        witnessGeneration: effectiveFilesGeneration,
+        status: 'settling' as const,
+      };
+      pendingDeletedManualEditRef.current.set(name, decision);
+      void settleManualEdit(name).then((ok) => {
+        if (pendingDeletedManualEditRef.current.get(name) !== decision) return;
+        if (!ok) {
+          pendingDeletedManualEditRef.current.delete(name);
+          return;
+        }
+        const revalidatingDecision = { ...decision, status: 'revalidating' as const };
+        pendingDeletedManualEditRef.current.set(name, revalidatingDecision);
+        // The fallback witness starts when R2 starts, after safeExit has awaited
+        // any ordinary save-triggered refresh. That already-accepted response
+        // must not immediately count as the later authority after R2 fails.
+        const failedWitnessGeneration = effectiveFilesGenerationRef.current;
+        // The save may recreate a file that the R1 list observed as missing.
+        // Force an uncached R2 observation and bind the deletion decision to
+        // that exact accepted generation. An ordinary save-triggered refresh
+        // may finish first (or a later refresh may overtake R2); neither is
+        // evidence that R2 still observed the file as missing.
+        void (async () => {
+          const markRevalidationFailed = () => {
+            if (pendingDeletedManualEditRef.current.get(name) !== revalidatingDecision) return;
+            pendingDeletedManualEditRef.current.set(name, {
+              ...revalidatingDecision,
+              status: 'failed',
+              failedWitnessGeneration,
+            });
+            setPendingDeletedManualEditRevision((current) => current + 1);
+          };
+          try {
+            const result = await onRefreshFiles({ fresh: true });
+            if (pendingDeletedManualEditRef.current.get(name) !== revalidatingDecision) return;
+            const acceptedGeneration = result?.acceptedGeneration;
+            if (acceptedGeneration == null) {
+              markRevalidationFailed();
+              return;
+            }
+            pendingDeletedManualEditRef.current.set(name, {
+              ...revalidatingDecision,
+              status: 'accepted',
+              acceptedGeneration,
+            });
+            setPendingDeletedManualEditRevision((current) => current + 1);
+          } catch {
+            // A failed revalidation is not proof of deletion. Keep the viewer
+            // until a later accepted generation can decide.
+            markRevalidationFailed();
+          }
+        })();
+      });
+    }
+  }, [committedHtmlFileNames, effectiveFilesGeneration, filesGeneration, iframeKeepAlivePool, onRefreshFiles, pendingDeletedManualEditRevision, persistedTabs, projectId, protectedHtmlViewerFileNames, settleManualEdit]);
+  const mountedHtmlViewerFiles = useMemo(() => {
+    const candidates = activeHtmlViewerFile
+        ? [
+            activeHtmlViewerFile.name,
+            ...protectedHtmlViewerFileNames,
+            ...liveHtmlViewerFileNames.filter((name) => name !== activeHtmlViewerFile.name),
+          ]
+        : [...protectedHtmlViewerFileNames, ...liveHtmlViewerFileNames];
+    // Manual Edit is exited (and pending edits flushed) before activation can
+    // leave a tab. Protected viewers are prioritized but never bypass the hard
+    // cap, so a regression cannot create an unbounded iframe population.
+    const retainedNames = new Set([...new Set(candidates)].slice(0, HTML_VIEWER_KEEPALIVE_CAP));
+    // LRU order is eviction metadata, not DOM order. Reordering an iframe's
+    // connected ancestor makes Chromium navigate the frame again, so render
+    // retained viewers in the stable persisted-tab order while switching.
+    return persistedTabs
+      .filter((name) => retainedNames.has(name))
+      .map((name) => htmlViewerFileSnapshots.get(name))
+      .filter((file): file is ProjectFile => file != null);
+  }, [activeHtmlViewerFile, liveHtmlViewerFileNames, persistedTabs, protectedHtmlViewerFileNames, visibleFiles]);
+  const mountedHtmlViewerNames = mountedHtmlViewerFiles.map((file) => file.name);
+  const previousMountedHtmlViewersRef = useRef({ projectId, names: new Set<string>() });
+  useEffect(() => {
+    const next = new Set(mountedHtmlViewerNames);
+    const previous = previousMountedHtmlViewersRef.current;
+    if (previous.projectId !== projectId) {
+      iframeKeepAlivePool.evictProject(previous.projectId);
+    } else {
+      for (const name of previous.names) {
+        if (next.has(name)) continue;
+        iframeKeepAlivePool.evictMatching(
+          (entry) => entry.projectId === projectId && (
+            entry.fileName === name || entry.fileName.startsWith(`${name}:`)
+          ),
+        );
+      }
+    }
+    previousMountedHtmlViewersRef.current = { projectId, names: next };
+  }, [iframeKeepAlivePool, mountedHtmlViewerNames.join('\0'), projectId]);
+  const retainedNonHtmlViewerFileRef = useRef<{ projectId: string; fileName: string } | null>(null);
+  if (activeViewerFile && activeViewerFile.kind !== 'html') {
+    retainedNonHtmlViewerFileRef.current = { projectId, fileName: activeViewerFile.name };
+  }
+  const retainedNonHtmlViewerFile =
+    activeTab === DESIGN_FILES_TAB && retainedNonHtmlViewerFileRef.current?.projectId === projectId
+      ? visibleFiles.find((file) => file.name === retainedNonHtmlViewerFileRef.current?.fileName) ?? null
+      : null;
+  const viewerFile = activeViewerFile?.kind === 'html'
+    ? null
+    : activeViewerFile ?? retainedNonHtmlViewerFile;
+  const viewerFileActive = activeViewerFile !== null;
 
   const activeLiveArtifact = useMemo<LiveArtifactWorkspaceEntry | null>(() => {
     if (
@@ -2846,31 +3259,88 @@ export function FileWorkspace({
   // FileWorkspace state change (closing an adjacent tab, drag hover, launcher
   // toggles) would hand FileViewer fresh object/function identities and drag
   // the whole viewer subtree — live iframes included — through a re-render.
-  const activeFilePreviewComments = useMemo(
-    () => previewComments.filter((comment) => comment.filePath === activeFile?.name),
-    [previewComments, activeFile?.name],
-  );
+  const previewCommentsByFile = useMemo(() => {
+    const byFile = new Map<string, PreviewComment[]>();
+    for (const comment of previewComments) {
+      const comments = byFile.get(comment.filePath) ?? [];
+      comments.push(comment);
+      byFile.set(comment.filePath, comments);
+    }
+    return byFile;
+  }, [previewComments]);
   const activeFileShareRequest = useMemo(
-    () => (shareRequest && shareRequest.name === activeFile?.name
-      ? { nonce: shareRequest.nonce }
-      : null),
-    [shareRequest, activeFile?.name],
+    () => (shareRequest ? { name: shareRequest.name, request: { nonce: shareRequest.nonce } } : null),
+    [shareRequest],
   );
   const activeFileDownloadRequest = useMemo(
-    () => (downloadRequest && downloadRequest.name === activeFile?.name
-      ? { nonce: downloadRequest.nonce }
-      : null),
-    [downloadRequest, activeFile?.name],
+    () => (downloadRequest ? { name: downloadRequest.name, request: { nonce: downloadRequest.nonce } } : null),
+    [downloadRequest],
   );
   const activeFileSlideNavRequest = useMemo(
-    () => deliverableSlideNavForActiveFile(
-      slideNavRequest,
-      activeFile?.name,
-      slideNavDeliverableNonce,
-    ),
-    [slideNavRequest, activeFile?.name, slideNavDeliverableNonce],
+    () => ({
+      name: activeViewerFile?.name ?? null,
+      request: deliverableSlideNavForActiveFile(
+        slideNavRequest,
+        activeViewerFile?.name,
+        slideNavDeliverableNonce,
+      ),
+    }),
+    [slideNavRequest, activeViewerFile?.name, slideNavDeliverableNonce],
   );
   const stableOpenFileReplacing = useStableHandler(openFileReplacing);
+  const renderFileViewer = (file: ProjectFile, workspaceActive: boolean) => (
+    <FileViewer
+      projectId={projectId}
+      projectKind={projectKind}
+      file={file}
+      filesRefreshKey={filesRefreshKey}
+      isDeck={isDeck}
+      streaming={streaming}
+      commentQueueOnSend={commentQueueOnSend}
+      commentSendDisabled={commentSendDisabled}
+      previewComments={previewCommentsByFile.get(file.name) ?? NO_PREVIEW_COMMENTS}
+      onSavePreviewComment={onSavePreviewComment}
+      onRemovePreviewComment={onRemovePreviewComment}
+      onReorderPreviewComment={onReorderPreviewComment}
+      onSendBoardCommentAttachments={onSendBoardCommentAttachments}
+      onBrandExtractionStopRequest={
+        file.name === 'brand.html' ? onBrandExtractionStopRequest : undefined
+      }
+      onFileSaved={refreshFilesWithoutResult}
+      onOpenFileReplacing={stableOpenFileReplacing}
+      commentPortalId={workspaceActive ? commentPortalId : undefined}
+      onCommentModeChange={workspaceActive ? onCommentModeChange : undefined}
+      shareRequest={
+        viewerOnly || activeFileShareRequest?.name !== file.name
+          ? null
+          : activeFileShareRequest.request
+      }
+      downloadRequest={
+        viewerOnly || activeFileDownloadRequest?.name !== file.name
+          ? null
+          : activeFileDownloadRequest.request
+      }
+      viewerOnly={viewerOnly}
+      slideNavRequest={
+        activeFileSlideNavRequest.name === file.name
+          ? activeFileSlideNavRequest.request
+          : null
+      }
+      projectName={projectName}
+      projectDir={resolvedDir}
+      agents={handoffAgents}
+      artifactId={handoffArtifactId}
+      artifactKind={handoffArtifactKind}
+      metricsConsent={metricsConsent}
+      installationId={installationId}
+      workspaceActive={workspaceActive}
+      onRetainActivityChange={handleHtmlViewerRetainActivityChange}
+      onManualEditExitHandlerChange={handleManualEditExitHandlerChange}
+      manualEditEntryAllowed={
+        protectedHtmlViewerFileNames.size === 0 || protectedHtmlViewerFileNames.has(file.name)
+      }
+    />
+  );
 
   const activeWorkspaceContext = useMemo<WorkspaceContextItem | null>(() => {
     if (activeTab === DESIGN_SYSTEM_TAB && designSystemProject) {
@@ -3255,7 +3725,7 @@ export function FileWorkspace({
 
   useEffect(() => {
     let cancelled = false;
-    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId).then((shared) => {
+    const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
       if (!cancelled) setProjectShareAccess(shared ? 'workspace' : 'private');
     });
     refreshShareAccess();
@@ -3264,7 +3734,7 @@ export function FileWorkspace({
       cancelled = true;
       window.removeEventListener(TEAM_PROJECTS_CHANGED_EVENT, refreshShareAccess);
     };
-  }, [projectId, projectShareMenuOpen]);
+  }, [projectId, projectShareMenuOpen, workspaceContext]);
 
   useEffect(() => {
     if (!projectShareMenuOpen) setProjectShareAccessMenuOpen(false);
@@ -3299,7 +3769,7 @@ export function FileWorkspace({
     // Surface a toast when the daemon can't start one (e.g. node-pty not
     // compiled) instead of silently no-opping the launcher action.
     createTerminal: async () => {
-      const term = await createTerminal(projectId);
+      const term = await createTerminal(projectId, undefined, workspaceContext);
       if (!term) {
         setLauncherToast({ message: t('workspace.terminalStartFailed'), tone: 'error' });
         return null;
@@ -3572,6 +4042,7 @@ export function FileWorkspace({
             id={APP_CHROME_FILE_ACTIONS_ID}
             className="ws-tabs-file-actions"
             data-app-chrome-file-actions="true"
+            hidden={!viewerFileActive}
           />
           {headerActions ? (
             <div className="ws-tabs-project-actions">{headerActions}</div>
@@ -3676,7 +4147,7 @@ export function FileWorkspace({
               onSendBoardCommentAttachments={onSendBoardCommentAttachments}
               onRequestBrowserUsePrompt={onRequestBrowserUsePrompt}
               onPageSnapshotToast={handleBrowserPageSnapshotToast}
-              onRefreshFiles={onRefreshFiles}
+              onRefreshFiles={refreshFilesWithoutResult}
               onOpenDesignFiles={() => setPersistedActive(DESIGN_FILES_TAB)}
               onOpenFile={openFile}
               onPageInfoChange={(info) => updateBrowserTabInfo(browserTab.id, info)}
@@ -3704,7 +4175,7 @@ export function FileWorkspace({
             activityEvents={designSystemActivityEvents}
             onOpenFile={openFile}
             onUploadAssets={() => fileInputRef.current?.click()}
-            onRefreshFiles={onRefreshFiles}
+            onRefreshFiles={refreshFilesWithoutResult}
             defaultDesignSystemId={defaultDesignSystemId}
             onSetDefaultDesignSystem={onSetDefaultDesignSystem}
             onDesignSystemsRefresh={onDesignSystemsRefresh}
@@ -3721,6 +4192,7 @@ export function FileWorkspace({
           <DesignFilesPanel
             key={projectId}
             projectId={projectId}
+            filesRefreshKey={filesRefreshKey}
             viewerOnly={viewerOnly}
             downloadPending={fileSyncBadge === 'downloading'}
             rootDirName={rootDirName}
@@ -3729,7 +4201,7 @@ export function FileWorkspace({
             files={visibleFiles}
             folders={projectFolders}
             liveArtifacts={liveArtifactEntries}
-            onRefreshFiles={onRefreshFiles}
+            onRefreshFiles={refreshFilesWithoutResult}
             onCurrentDirChange={setUploadDir}
             navState={designFilesNavRef.current}
             onNavStateChange={onDesignFilesNavStateChange}
@@ -3892,6 +4364,7 @@ export function FileWorkspace({
             key={activeTab}
             projectId={projectId}
             terminalId={terminalIdFromTabId(activeTab)}
+            workspaceContext={workspaceContext}
             onClose={() => closeTab(activeTab)}
             onSessionIdChange={handleTerminalSessionChange}
           />
@@ -3900,42 +4373,10 @@ export function FileWorkspace({
             projectId={projectId}
             liveArtifact={activeLiveArtifact}
             liveArtifactEvents={liveArtifactEvents}
-            onRefreshArtifacts={onRefreshFiles}
+            onRefreshArtifacts={refreshFilesWithoutResult}
           />
         ) : activeFile ? (
-          <FileViewer
-            projectId={projectId}
-            projectKind={projectKind}
-            file={activeFile}
-            filesRefreshKey={filesRefreshKey}
-            isDeck={isDeck}
-            streaming={streaming}
-            commentQueueOnSend={commentQueueOnSend}
-            commentSendDisabled={commentSendDisabled}
-            previewComments={activeFilePreviewComments}
-            onSavePreviewComment={onSavePreviewComment}
-            onRemovePreviewComment={onRemovePreviewComment}
-            onReorderPreviewComment={onReorderPreviewComment}
-            onSendBoardCommentAttachments={onSendBoardCommentAttachments}
-            onBrandExtractionStopRequest={
-              activeFile.name === 'brand.html' ? onBrandExtractionStopRequest : undefined
-            }
-            onFileSaved={onRefreshFiles}
-            onOpenFileReplacing={stableOpenFileReplacing}
-            commentPortalId={commentPortalId}
-            onCommentModeChange={onCommentModeChange}
-            shareRequest={viewerOnly ? null : activeFileShareRequest}
-            downloadRequest={viewerOnly ? null : activeFileDownloadRequest}
-            viewerOnly={viewerOnly}
-            slideNavRequest={activeFileSlideNavRequest}
-            projectName={projectName}
-            projectDir={resolvedDir}
-            agents={handoffAgents}
-            artifactId={handoffArtifactId}
-            artifactKind={handoffArtifactKind}
-            metricsConsent={metricsConsent}
-            installationId={installationId}
-          />
+          null
         ) : (
           <div className="viewer-empty">
             {t('workspace.openFromDesignFiles')}{' '}
@@ -3952,6 +4393,65 @@ export function FileWorkspace({
             .
           </div>
         )}
+        {mountedHtmlViewerFiles.map((file) => {
+          const workspaceActive = activeHtmlViewerFile?.name === file.name;
+          return (
+            <div
+              key={`${projectId}:${file.name}`}
+              data-testid="retained-file-viewer"
+              data-file-name={file.name}
+              aria-hidden={workspaceActive ? undefined : true}
+              inert={(workspaceActive ? undefined : '') as unknown as boolean}
+              style={{
+                display: 'flex',
+                flex: workspaceActive ? '1 1 auto' : undefined,
+                flexDirection: 'column',
+                minHeight: 0,
+                ...(workspaceActive
+                  ? {}
+                  : {
+                      position: 'absolute',
+                      left: '-100000px',
+                      top: 0,
+                      width: 1,
+                      height: 1,
+                      overflow: 'hidden',
+                      visibility: 'hidden',
+                      pointerEvents: 'none',
+                    }),
+              }}
+            >
+              {renderFileViewer(file, workspaceActive)}
+            </div>
+          );
+        })}
+        {viewerFile ? (
+          <div
+            data-testid="retained-file-viewer"
+            aria-hidden={viewerFileActive ? undefined : true}
+            inert={(viewerFileActive ? undefined : '') as unknown as boolean}
+            style={{
+              display: 'flex',
+              flex: viewerFileActive ? '1 1 auto' : undefined,
+              flexDirection: 'column',
+              minHeight: 0,
+              ...(viewerFileActive
+                ? {}
+                : {
+                    position: 'absolute',
+                    left: '-100000px',
+                    top: 0,
+                    width: 1,
+                    height: 1,
+                    overflow: 'hidden',
+                    visibility: 'hidden',
+                    pointerEvents: 'none',
+                  }),
+            }}
+          >
+            {renderFileViewer(viewerFile, viewerFileActive)}
+          </div>
+        ) : null}
       </div>
       <PageCreatorDialog
         open={pageCreatorOpen}
@@ -3992,7 +4492,13 @@ export function FileWorkspace({
               const dir = uploadDir || undefined;
               let lastRelPath: string | null = null;
               for (const asset of assets) {
-                const res = await applyLibraryAsset(asset.id, projectId, dir, { includeElement: true });
+                const res = await applyLibraryAsset(
+                  asset.id,
+                  projectId,
+                  dir,
+                  { includeElement: true },
+                  workspaceContext,
+                );
                 if (res?.relPath) lastRelPath = res.relPath;
                 if (res?.elementRelPath) lastRelPath = res.elementRelPath;
               }
@@ -4081,7 +4587,11 @@ function DesignSystemProjectPanel({
 }) {
   const t = useT();
   const analytics = useAnalytics();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const { workspaceContext } = useProjectCollabContext();
+  // Match the exact fields sent by workspaceProjectHeaders. Billing-only
+  // refreshes must not blank and reload the kit, while a role, membership, or
+  // permission change must discard every prior identity's source snapshot.
+  const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
   const [reviewDecisions, setReviewDecisions] = useState<Record<string, DesignSystemReviewDecision>>({});
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({});
   const [feedbackSection, setFeedbackSection] = useState<string | null>(null);
@@ -4122,6 +4632,12 @@ function DesignSystemProjectPanel({
   const initialDesignMdRef = useRef<string | null>(null);
   const initialBrandJsonRef = useRef<string | null>(null);
   const initialBrandJsonLoadedRef = useRef(false);
+  useEffect(() => {
+    setDesignMdBody('');
+    initialDesignMdRef.current = null;
+    initialBrandJsonRef.current = null;
+    initialBrandJsonLoadedRef.current = false;
+  }, [projectId, workspaceIdentity]);
   function emitDesignSystemProjectEditClick(
     element: DesignSystemEditClickProps['element'],
     module: DesignSystemEditClickProps['module'],
@@ -4140,7 +4656,7 @@ function DesignSystemProjectPanel({
 
   const refreshKitDependencies = useCallback(async (options?: { finalizeBrand?: boolean }) => {
     if (options?.finalizeBrand && brandId) {
-      const outcome = await finalizeBrandProject(brandId, projectId);
+      const outcome = await finalizeBrandProject(brandId, projectId, workspaceContext);
       if (!outcome.ok) throw new Error(outcome.error);
     }
     setKitReloadKey((k) => k + 1);
@@ -4148,13 +4664,16 @@ function DesignSystemProjectPanel({
       Promise.resolve(onRefreshFiles()),
       Promise.resolve(onDesignSystemsRefresh?.()),
     ]);
-  }, [brandId, onDesignSystemsRefresh, onRefreshFiles, projectId]);
+  }, [brandId, onDesignSystemsRefresh, onRefreshFiles, projectId, workspaceContext]);
 
   useEffect(() => {
     let cancelled = false;
     void Promise.all([
-      readDesignMd(projectId),
-      fetchProjectFileText(projectId, 'brand.json', { cache: 'no-store' }),
+      readDesignMd(projectId, workspaceContext),
+      fetchProjectFileText(projectId, 'brand.json', {
+        cache: 'no-store',
+        workspaceContext,
+      }),
     ]).then(([designMd, brandJson]) => {
       if (cancelled) return;
       setDesignMdBody(designMd);
@@ -4167,7 +4686,7 @@ function DesignSystemProjectPanel({
     return () => {
       cancelled = true;
     };
-  }, [projectId, kitReloadKey]);
+  }, [projectId, kitReloadKey, workspaceIdentity]);
   const kitHost = system.provenance?.sourceUrls?.[0]
     ? hostnameOf(system.provenance.sourceUrls[0])
     : undefined;
@@ -4197,9 +4716,14 @@ function DesignSystemProjectPanel({
     editable,
     host: kitHost,
     reloadKey: kitReloadKey,
+    workspaceContext,
   });
   async function persistDesignMd(nextBody: string) {
-    const updated = await updateDesignSystemDraft(system.id, { body: nextBody });
+    const updated = await updateDesignSystemDraft(
+      system.id,
+      { body: nextBody },
+      workspaceContext,
+    );
     if (!updated) throw new Error(t('ds.actionFailed'));
     const file = await writeProjectTextFile(projectId, 'DESIGN.md', nextBody, undefined, workspaceContext);
     if (!file) throw new Error(t('ds.actionFailed'));
@@ -4232,7 +4756,11 @@ function DesignSystemProjectPanel({
       if (brandId) {
         await refreshKitDependencies({ finalizeBrand: true });
       } else {
-        const job = await startDesignSystemTokenContractRebuildJob(system.id, { force: true });
+        const job = await startDesignSystemTokenContractRebuildJob(
+          system.id,
+          { force: true },
+          workspaceContext,
+        );
         if (!job) throw new Error(t('ds.actionFailed'));
         await refreshKitDependencies();
       }
@@ -4251,8 +4779,16 @@ function DesignSystemProjectPanel({
     try {
       await refreshKitDependencies({ finalizeBrand: true });
       const ok =
-        await downloadProjectArchive({ projectId, fallbackTitle: system.title }) ||
-        await downloadDesignSystemArchive({ designSystemId: system.id, fallbackTitle: system.title });
+        await downloadProjectArchive({
+          projectId,
+          fallbackTitle: system.title,
+          workspaceContext,
+        }) ||
+        await downloadDesignSystemArchive({
+          designSystemId: system.id,
+          fallbackTitle: system.title,
+          workspaceContext,
+        });
       if (!ok) throw new Error(t('ds.actionFailed'));
       notifyKit('success', t('ds.actionDone'));
     } catch {
@@ -4289,7 +4825,7 @@ function DesignSystemProjectPanel({
         setKitActionBusy(null);
         return;
       }
-      await deleteDesignSystemDraft(system.id);
+      await deleteDesignSystemDraft(system.id, workspaceContext);
       await onDesignSystemsRefresh?.();
     } catch {
       notifyKit('error', t('ds.actionFailed'));
@@ -4378,6 +4914,7 @@ function DesignSystemProjectPanel({
     let cancelled = false;
     void fetchProjectFileText(projectId, manifestFileName, {
       cache: 'no-store',
+      workspaceContext,
       cacheBustKey: manifestCacheBustKey,
     }).then((text) => {
       if (cancelled) return;
@@ -4467,7 +5004,11 @@ function DesignSystemProjectPanel({
     notifyKitLoading(publishActionLabel);
     try {
       const nextStatus = nextPublished ? 'published' : 'draft';
-      const updated = await updateDesignSystemDraft(system.id, { status: nextStatus });
+      const updated = await updateDesignSystemDraft(
+        system.id,
+        { status: nextStatus },
+        workspaceContext,
+      );
       if (!updated) throw new Error(t('ds.actionFailed'));
       setStatus(updated.status ?? nextStatus);
       await onDesignSystemsRefresh?.();
@@ -4949,6 +5490,7 @@ function DesignSystemProjectPanel({
       {kit ? (
         <DesignKitView
           kit={kit}
+          workspaceContext={workspaceContext}
           actionsSlot={actionsSlot}
           headerMenuActions={headerMenuActions}
           topSlot={topSlot}
@@ -6134,7 +6676,10 @@ function slugifyPageFileBaseName(value: string, fallback = 'community-page'): st
     || fallback;
 }
 
-function communityPluginPagePresets(records: InstalledPluginRecord[]): ProjectPagePreset[] {
+function communityPluginPagePresets(
+  records: InstalledPluginRecord[],
+  workspaceContext?: WorkspaceCollabContext | null,
+): ProjectPagePreset[] {
   return records
     .map((record): ProjectPagePreset | null => {
       const category = projectPageKindForCommunityPlugin(record);
@@ -6146,8 +6691,8 @@ function communityPluginPagePresets(records: InstalledPluginRecord[]): ProjectPa
         fileBaseName: slugifyPageFileBaseName(record.title || record.manifest?.title || record.id),
         source: 'community',
         plugin: record,
-        pluginPreview: inferPluginPreview(record, { preferBaked: true }),
-        pluginHtmlPreview: inferPluginPreview(record),
+        pluginPreview: inferPluginPreview(record, { preferBaked: true, workspaceContext }),
+        pluginHtmlPreview: inferPluginPreview(record, { workspaceContext }),
         featured: curatedPluginPriority(record) !== null,
       };
     })
@@ -6202,13 +6747,18 @@ async function contentForPagePreset(
   preset: ProjectPagePreset,
   t: TranslateFn,
   locale?: string,
+  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string> {
   let html: string | null = null;
   if (preset.plugin && preset.pluginHtmlPreview?.kind === 'html') {
     const preview = preset.pluginHtmlPreview;
     const result = preview.source === 'preview'
-      ? await fetchPluginPreviewHtml(preset.plugin.id)
-      : await fetchPluginExampleHtml(preset.plugin.id, preview.exampleStem ?? '');
+      ? await fetchPluginPreviewHtml(preset.plugin.id, workspaceContext)
+      : await fetchPluginExampleHtml(
+          preset.plugin.id,
+          preview.exampleStem ?? '',
+          workspaceContext,
+        );
     if ('html' in result && typeof result.html === 'string' && result.html.trim().length > 0) {
       html = result.html;
     }
@@ -6823,7 +7373,8 @@ function DesignSystemInlinePreview({
   projectId: string;
   file: ProjectFile;
 }) {
-  const url = projectFileUrl(projectId, file.name);
+  const { workspaceContext } = useProjectCollabContext();
+  const url = projectFileUrl(projectId, file.name, workspaceContext);
   const [srcDoc, setSrcDoc] = useState<string | null>(null);
   const [srcDocReady, setSrcDocReady] = useState(false);
 
@@ -6835,23 +7386,33 @@ function DesignSystemInlinePreview({
     void fetchProjectFileText(projectId, file.name, {
       cache: 'no-store',
       cacheBustKey: Math.round(file.mtime),
+      workspaceContext,
     }).then(async (html) => {
       if (cancelled) return;
       if (!html) {
         setSrcDocReady(true);
         return;
       }
-      const inlinedHtml = await inlineDesignSystemPreviewRelativeAssets(html, projectId, file.name);
+      const inlinedHtml = await inlineDesignSystemPreviewRelativeAssets(
+        html,
+        projectId,
+        file.name,
+        workspaceContext,
+      );
       if (cancelled) return;
       setSrcDoc(buildSrcdoc(inlinedHtml, {
-        baseHref: projectRawUrl(projectId, baseDirForDesignSystemPreviewFile(file.name)),
+        baseHref: projectRawUrl(
+          projectId,
+          baseDirForDesignSystemPreviewFile(file.name),
+          workspaceContext,
+        ),
       }));
       setSrcDocReady(true);
     });
     return () => {
       cancelled = true;
     };
-  }, [file.kind, file.mtime, file.name, projectId]);
+  }, [file.kind, file.mtime, file.name, projectId, workspaceContext]);
 
   if (file.kind === 'html') {
     return (
@@ -6863,13 +7424,14 @@ function DesignSystemInlinePreview({
       />
     );
   }
-  return <img src={`${url}?v=${Math.round(file.mtime)}`} alt={file.name} />;
+  return <img src={appendResourceQuery(url, `v=${Math.round(file.mtime)}`)} alt={file.name} />;
 }
 
 async function inlineDesignSystemPreviewRelativeAssets(
   html: string,
   projectId: string,
   ownerFileName: string,
+  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string> {
   const replacements: Array<Promise<{ from: string; to: string } | null>> = [];
   const links = html.match(/<link\b[^>]*>/gi) ?? [];
@@ -6879,9 +7441,17 @@ async function inlineDesignSystemPreviewRelativeAssets(
     if (!rel || !/\bstylesheet\b/i.test(rel) || !href) continue;
     const stylesheetPath = resolveDesignSystemPreviewRelativePath(ownerFileName, href);
     if (!stylesheetPath) continue;
-    replacements.push(fetchProjectFileText(projectId, stylesheetPath, { cache: 'no-store' }).then((css) => {
+    replacements.push(fetchProjectFileText(projectId, stylesheetPath, {
+      cache: 'no-store',
+      workspaceContext,
+    }).then((css) => {
       if (css == null) return null;
-      const safeCss = rewriteDesignSystemPreviewCssUrls(css, projectId, stylesheetPath)
+      const safeCss = rewriteDesignSystemPreviewCssUrls(
+        css,
+        projectId,
+        stylesheetPath,
+        workspaceContext,
+      )
         .replace(/<\/style/gi, '<\\/style');
       return {
         from: tag,
@@ -6898,7 +7468,12 @@ async function inlineDesignSystemPreviewRelativeAssets(
   for (const tag of scripts) {
     const src = readDesignSystemPreviewHtmlAttr(tag, 'src');
     if (!src) continue;
-    replacements.push(fetchDesignSystemPreviewRelativeText(projectId, ownerFileName, src).then((js) => {
+    replacements.push(fetchDesignSystemPreviewRelativeText(
+      projectId,
+      ownerFileName,
+      src,
+      workspaceContext,
+    ).then((js) => {
       if (js == null) return null;
       const open = tag.match(/^<script\b[^>]*>/i)?.[0] ?? '<script>';
       const attrs = open
@@ -6923,18 +7498,29 @@ async function inlineDesignSystemPreviewRelativeAssets(
     (next, replacement) => next.replace(replacement.from, () => replacement.to),
     html,
   );
-  const withInlineCssAssets = rewriteDesignSystemPreviewInlineCssAssetUrls(withInlineAssets, projectId, ownerFileName);
-  return rewriteDesignSystemPreviewHtmlAssetUrls(withInlineCssAssets, projectId, ownerFileName);
+  const withInlineCssAssets = rewriteDesignSystemPreviewInlineCssAssetUrls(
+    withInlineAssets,
+    projectId,
+    ownerFileName,
+    workspaceContext,
+  );
+  return rewriteDesignSystemPreviewHtmlAssetUrls(
+    withInlineCssAssets,
+    projectId,
+    ownerFileName,
+    workspaceContext,
+  );
 }
 
 async function fetchDesignSystemPreviewRelativeText(
   projectId: string,
   ownerFileName: string,
   assetRef: string,
+  workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<string | null> {
   const filePath = resolveDesignSystemPreviewRelativePath(ownerFileName, assetRef);
   if (!filePath) return null;
-  return fetchProjectFileText(projectId, filePath, { cache: 'no-store' });
+  return fetchProjectFileText(projectId, filePath, { cache: 'no-store', workspaceContext });
 }
 
 type DesignSystemPreviewAssetPath = {
@@ -6973,23 +7559,53 @@ function isDesignSystemPreviewAppRootRef(ref: string): boolean {
     || pathOnly.startsWith('/frames/');
 }
 
-function rewriteDesignSystemPreviewCssUrls(css: string, projectId: string, stylesheetFileName: string): string {
+function designSystemPreviewAssetUrl(
+  projectId: string,
+  assetPath: DesignSystemPreviewAssetPath,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
+  const baseUrl = projectRawUrl(projectId, assetPath.filePath, workspaceContext);
+  const hashIndex = assetPath.suffix.indexOf('#');
+  const query = (hashIndex >= 0 ? assetPath.suffix.slice(0, hashIndex) : assetPath.suffix)
+    .replace(/^\?/, '');
+  const hash = hashIndex >= 0 ? assetPath.suffix.slice(hashIndex) : '';
+  return `${query ? appendResourceQuery(baseUrl, query) : baseUrl}${hash}`;
+}
+
+function rewriteDesignSystemPreviewCssUrls(
+  css: string,
+  projectId: string,
+  stylesheetFileName: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
   return css.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (match, _quote: string, rawRef: string) => {
     const ref = rawRef.trim();
     const assetPath = resolveDesignSystemPreviewAssetPath(stylesheetFileName, ref);
     if (!assetPath) return match;
-    return `url("${escapeDesignSystemPreviewCssUrl(projectRawUrl(projectId, assetPath.filePath) + assetPath.suffix)}")`;
+    return `url("${escapeDesignSystemPreviewCssUrl(
+      designSystemPreviewAssetUrl(projectId, assetPath, workspaceContext),
+    )}")`;
   });
 }
 
-function rewriteDesignSystemPreviewHtmlAssetUrls(html: string, projectId: string, ownerFileName: string): string {
+function rewriteDesignSystemPreviewHtmlAssetUrls(
+  html: string,
+  projectId: string,
+  ownerFileName: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
   const directAssetTags = new RegExp(
     '(<(?:img|source|video|audio|track|embed|object|image|use)\\b[^>]*?\\s' +
       '(?:src|poster|data|href|xlink:href)\\s*=\\s*)([\'"])([\\s\\S]*?)\\2',
     'gi',
   );
   const withDirectAssets = html.replace(directAssetTags, (match, prefix: string, quote: string, rawRef: string) => {
-    const rewritten = rewriteDesignSystemPreviewHtmlAssetRef(rawRef, projectId, ownerFileName);
+    const rewritten = rewriteDesignSystemPreviewHtmlAssetRef(
+      rawRef,
+      projectId,
+      ownerFileName,
+      workspaceContext,
+    );
     if (rewritten === rawRef) return match;
     return `${prefix}${quote}${escapeDesignSystemPreviewAttr(rewritten)}${quote}`;
   });
@@ -6998,19 +7614,29 @@ function rewriteDesignSystemPreviewHtmlAssetUrls(html: string, projectId: string
     'gi',
   );
   return withDirectAssets.replace(srcsetAssetTags, (match, prefix: string, quote: string, rawSrcset: string) => {
-    const rewritten = rewriteDesignSystemPreviewSrcset(rawSrcset, projectId, ownerFileName);
+    const rewritten = rewriteDesignSystemPreviewSrcset(
+      rawSrcset,
+      projectId,
+      ownerFileName,
+      workspaceContext,
+    );
     if (rewritten === rawSrcset) return match;
     return `${prefix}${quote}${escapeDesignSystemPreviewAttr(rewritten)}${quote}`;
   });
 }
 
-function rewriteDesignSystemPreviewInlineCssAssetUrls(html: string, projectId: string, ownerFileName: string): string {
+function rewriteDesignSystemPreviewInlineCssAssetUrls(
+  html: string,
+  projectId: string,
+  ownerFileName: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
   const withStyleBlocks = html.replace(/<style\b([^>]*)>([\s\S]*?)<\/style>/gi, (
     match,
     attrs: string,
     css: string,
   ) => {
-    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName);
+    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName, workspaceContext);
     if (rewritten === css) return match;
     return `<style${attrs}>${rewritten}</style>`;
   });
@@ -7020,25 +7646,40 @@ function rewriteDesignSystemPreviewInlineCssAssetUrls(html: string, projectId: s
     quote: string,
     css: string,
   ) => {
-    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName);
+    const rewritten = rewriteDesignSystemPreviewCssUrls(css, projectId, ownerFileName, workspaceContext);
     if (rewritten === css) return match;
     return `${prefix}${quote}${escapeDesignSystemPreviewAttr(rewritten)}${quote}`;
   });
 }
 
-function rewriteDesignSystemPreviewHtmlAssetRef(ref: string, projectId: string, ownerFileName: string): string {
+function rewriteDesignSystemPreviewHtmlAssetRef(
+  ref: string,
+  projectId: string,
+  ownerFileName: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
   const assetPath = resolveDesignSystemPreviewAssetPath(ownerFileName, ref.trim());
-  return assetPath ? projectRawUrl(projectId, assetPath.filePath) + assetPath.suffix : ref;
+  return assetPath ? designSystemPreviewAssetUrl(projectId, assetPath, workspaceContext) : ref;
 }
 
-function rewriteDesignSystemPreviewSrcset(srcset: string, projectId: string, ownerFileName: string): string {
+function rewriteDesignSystemPreviewSrcset(
+  srcset: string,
+  projectId: string,
+  ownerFileName: string,
+  workspaceContext?: WorkspaceCollabContext | null,
+): string {
   if (/\bdata:/i.test(srcset)) return srcset;
   return srcset
     .split(',')
     .map((candidate) => {
       const match = candidate.trim().match(/^(\S+)(\s+.+)?$/);
       if (!match) return candidate;
-      const rewritten = rewriteDesignSystemPreviewHtmlAssetRef(match[1] ?? '', projectId, ownerFileName);
+      const rewritten = rewriteDesignSystemPreviewHtmlAssetRef(
+        match[1] ?? '',
+        projectId,
+        ownerFileName,
+        workspaceContext,
+      );
       return `${rewritten}${match[2] ?? ''}`;
     })
     .join(', ');

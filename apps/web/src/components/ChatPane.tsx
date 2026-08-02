@@ -33,6 +33,8 @@ import type { Dict } from '../i18n/types';
 import { copyToClipboard } from '../lib/copy-to-clipboard';
 import { useLiquidGlass } from '../hooks/useLiquidGlass';
 import { projectRawUrl } from '../providers/registry';
+import { appendResourceQuery } from '../collab/workspace-identity';
+import { useProjectCollabContext } from '../collab/collab-context';
 import { takeComposerSeedFor } from '../state/libraryHandoff';
 import { splitOnQuestionForms } from '../artifacts/question-form';
 import { stripArtifact } from '../artifacts/strip';
@@ -64,9 +66,6 @@ import {
   DESIGN_SYSTEM_NEXT_STEP_ACTIONS,
   type NextStepActionsVariant,
 } from './NextStepActions';
-// Shared pill look for the 扩展 / 设计百宝箱 quick pills, which render above
-// the composer input (moved out of the next-step card).
-import nextStepStyles from './NextStepActions.module.css';
 import { AmrGuidance } from './AmrGuidance';
 import { AmrLoginPill } from './AmrLoginPill';
 import {
@@ -84,11 +83,15 @@ import {
 } from '../providers/daemon';
 import { RESUME_CONTINUE_PROMPT } from '../runtime/resume';
 import {
+  canConsumeAmrAuthRetryContinuation,
+  type AmrAuthRetryContinuation,
+  type AmrAuthRetryPersonalAdoptionWitness,
+} from '../runtime/amr-auth-retry-continuation';
+import {
   ChatComposer,
   type ChatComposerHandle,
   type ChatSendOutcome,
   type ChatSendMeta,
-  type ComposerStandalonePanel,
 } from './ChatComposer';
 import type { PlaceholderScenario } from './home-hero/placeholderScenarios';
 import { listDesignArtifactCandidates } from './design-files/designArtifacts';
@@ -421,13 +424,23 @@ function ChatArtifactPreview({
   projectId: string | null;
   file: ProjectFile;
 }) {
+  const { workspaceContext } = useProjectCollabContext();
   if (!projectId) {
     return <ChatArtifactFallback kind={file.kind} />;
   }
 
-  const url = `${projectRawUrl(projectId, file.name)}?v=${Math.round(file.mtime)}`;
+  const url = appendResourceQuery(
+    projectRawUrl(projectId, file.name, workspaceContext),
+    `v=${Math.round(file.mtime)}`,
+  );
   if (isRenderableSketchJson(file)) {
-    return <SketchPreview projectId={projectId} file={file} />;
+    return (
+      <SketchPreview
+        projectId={projectId}
+        file={file}
+        workspaceContext={workspaceContext}
+      />
+    );
   }
   if (file.kind === 'image' || file.kind === 'sketch') {
     return <img src={url} alt="" loading="lazy" />;
@@ -536,6 +549,19 @@ interface Props {
     meta?: ChatSendMeta,
   ) => ChatSendOutcome | Promise<ChatSendOutcome>;
   onRetry?: (assistantMessage: ChatMessage) => void;
+  amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
+  amrAuthRetryMountId?: string;
+  amrAuthRetryWorkspaceIdentityKey?: string;
+  amrAuthRetryPersonalAdoptionWitness?: AmrAuthRetryPersonalAdoptionWitness | null;
+  onArmAmrAuthRetryContinuation?: (
+    continuation: Omit<AmrAuthRetryContinuation, 'accountIdAtArm' | 'createdAtMs'>,
+  ) => void;
+  onConsumeAmrAuthRetryContinuation?: (
+    continuation: AmrAuthRetryContinuation,
+  ) => boolean;
+  onDiscardAmrAuthRetryContinuation?: (
+    continuation: AmrAuthRetryContinuation,
+  ) => void;
   onResumeRun?: (assistantMessage: ChatMessage) => void;
   onStop: () => void;
   // Skills available for @-mention assembly. ProjectView filters out the
@@ -571,7 +597,10 @@ interface Props {
   composerPlaceholder?: string;
   onSubmitQuestionForm?: QuestionFormSubmitHandler;
   questionFormSubmitDisabled?: boolean;
-  onContinueRemainingTasks?: (assistantMessage: ChatMessage, todos: TodoItem[]) => void;
+  onContinueRemainingTasks?: (
+    assistantMessage: ChatMessage,
+    todos: TodoItem[],
+  ) => boolean | void | Promise<boolean | void>;
   onAssistantFeedback?: (assistantMessage: ChatMessage, change: ChatMessageFeedbackChange) => void;
   // Client-side action for a brand-browser-assist od-card: open/focus the
   // Browser tab. Routed through the stable callbacks ref.
@@ -848,6 +877,13 @@ export function ChatPane({
   onDeleteComment,
   onSend,
   onRetry,
+  amrAuthRetryContinuation = null,
+  amrAuthRetryMountId,
+  amrAuthRetryWorkspaceIdentityKey,
+  amrAuthRetryPersonalAdoptionWitness = null,
+  onArmAmrAuthRetryContinuation,
+  onConsumeAmrAuthRetryContinuation,
+  onDiscardAmrAuthRetryContinuation,
   onResumeRun,
   onStop,
   onRemoveQueuedSend,
@@ -944,6 +980,7 @@ export function ChatPane({
   designSystemPicker,
   config,
 }: Props) {
+  const { workspaceContext } = useProjectCollabContext();
   const t = useT();
   const analytics = useAnalytics();
   const displayMessages = useMemo(
@@ -953,28 +990,12 @@ export function ChatPane({
   const amrProfile = config?.agentCliEnv?.amr?.[AMR_PROFILE_ENV_KEY] ?? null;
   const [inlineAmrLoginStatus, setInlineAmrLoginStatus] =
     useState<VelaLoginStatus | null>(null);
+  const amrAuthRetrySignedOutWitnessRef =
+    useRef<AmrAuthRetryContinuation | null>(null);
   const logRef = useRef<HTMLDivElement | null>(null);
-  // Guards the inline AMR sign-in card so a successful login auto-retries the
-  // failed run exactly once (the pill's onStatusChange fires loggedIn on every
-  // poll). Keyed by the failed assistant's id.
-  const amrAuthRetriedRef = useRef<string | null>(null);
-  // Tracks the last observed AMR login state so we retry only on a real
-  // signed-out -> signed-in transition. Without this, a run that keeps failing
-  // AMR_AUTH_REQUIRED while /status already reports signed-in would auto-retry
-  // forever (each retry is a new assistant id, so the id guard alone never
-  // converges).
-  const amrAuthPrevLoggedInRef = useRef<boolean | undefined>(undefined);
   const chatLogScrollIdleTimerRef = useRef<number | null>(null);
   const historyWrapRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<ChatComposerHandle | null>(null);
-  // The 插件 / 设计百宝箱 quick pills. The popovers they open live inside
-  // ChatComposer, so the pills need both a way to report their expanded state
-  // and a stable identity for the popover to return focus to.
-  const quickPillRefs = {
-    plugins: useRef<HTMLButtonElement | null>(null),
-    toolbox: useRef<HTMLButtonElement | null>(null),
-  };
-  const [openComposerPanel, setOpenComposerPanel] = useState<ComposerStandalonePanel>(null);
   const composerSlotRef = useRef<HTMLDivElement | null>(null);
   const composerLayerRef = useRef<HTMLDivElement | null>(null);
   const pinnedTodoRef = useRef<HTMLDivElement | null>(null);
@@ -1076,40 +1097,6 @@ export function ChatPane({
   // Both stay stable (composer ref + no deps) so AssistantMessage stays memoized.
   const handleToolboxAction = useCallback((id: DesignToolboxActionId) => {
     composerRef.current?.applyDesignToolboxAction(id);
-  }, []);
-  // Quick pills above the composer input: 插件 and 设计百宝箱 open their own
-  // standalone popovers — the "+" menu no longer carries either row. They
-  // open on hover (with a short intent delay so a pointer merely passing
-  // through to the input doesn't pop a panel) as well as on click; leaving
-  // the pill schedules a close that hovering the popup cancels.
-  const pillHoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const handleNextStepOpenComposerPanel = useCallback((which: 'plugins' | 'toolbox') => {
-    if (pillHoverTimerRef.current) {
-      clearTimeout(pillHoverTimerRef.current);
-      pillHoverTimerRef.current = null;
-    }
-    // Hand the pill down as the popover's return-focus target: it opens a
-    // surface that takes focus, and it is the control the user came from.
-    const opener = quickPillRefs[which].current;
-    if (which === 'toolbox') composerRef.current?.openDesignToolbox(opener);
-    else composerRef.current?.openPluginsPanel(opener);
-  }, []);
-  const handleQuickPillHoverEnter = useCallback((which: 'plugins' | 'toolbox') => {
-    if (pillHoverTimerRef.current) clearTimeout(pillHoverTimerRef.current);
-    pillHoverTimerRef.current = setTimeout(() => {
-      pillHoverTimerRef.current = null;
-      handleNextStepOpenComposerPanel(which);
-    }, 140);
-  }, [handleNextStepOpenComposerPanel]);
-  const handleQuickPillHoverLeave = useCallback(() => {
-    if (pillHoverTimerRef.current) {
-      clearTimeout(pillHoverTimerRef.current);
-      pillHoverTimerRef.current = null;
-    }
-    composerRef.current?.scheduleComposerPanelClose();
-  }, []);
-  useEffect(() => () => {
-    if (pillHoverTimerRef.current) clearTimeout(pillHoverTimerRef.current);
   }, []);
   const handleNextStepPromptAction = useCallback((
     prompt: string,
@@ -1298,26 +1285,132 @@ export function ChatPane({
     retryAssistant && onRetry && runFailureUi?.primaryAction === 'authorize',
   );
   useEffect(() => {
+    if (
+      !amrAuthRetryContinuation
+      || !onDiscardAmrAuthRetryContinuation
+      || loading
+      || !projectId
+      || !activeConversationId
+      || messagesConversationId !== activeConversationId
+    ) {
+      return;
+    }
+    const personalAdoptionAuthorityTransition =
+      amrAuthRetryContinuation.workspaceIdentityKey === 'none'
+      && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
+      && amrAuthRetryPersonalAdoptionWitness?.workspaceIdentityKey
+        === amrAuthRetryWorkspaceIdentityKey;
+    const mismatched =
+      amrAuthRetryContinuation.projectId !== projectId
+      || amrAuthRetryContinuation.conversationId !== activeConversationId
+      || amrAuthRetryContinuation.assistantId !== retryAssistant?.id
+      || (
+        amrAuthRetryWorkspaceIdentityKey !== undefined
+        && amrAuthRetryContinuation.workspaceIdentityKey
+          !== amrAuthRetryWorkspaceIdentityKey
+        && !personalAdoptionAuthorityTransition
+      );
+    if (mismatched) {
+      onDiscardAmrAuthRetryContinuation(amrAuthRetryContinuation);
+    }
+  }, [
+    activeConversationId,
+    amrAuthRetryContinuation,
+    amrAuthRetryMountId,
+    amrAuthRetryPersonalAdoptionWitness,
+    amrAuthRetryWorkspaceIdentityKey,
+    loading,
+    messagesConversationId,
+    onDiscardAmrAuthRetryContinuation,
+    projectId,
+    retryAssistant?.id,
+  ]);
+  const consumeAmrAuthRetryIfAuthorized = useCallback((status: VelaLoginStatus | null) => {
+    if (status?.loggedIn === false) {
+      if (
+        amrAuthRetryContinuation
+        && amrAuthRetryContinuation.workspaceIdentityKey === 'none'
+        && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
+      ) {
+        amrAuthRetrySignedOutWitnessRef.current = amrAuthRetryContinuation;
+      }
+      return;
+    }
+    if (
+      status?.loggedIn !== true
+      || !amrAuthRetryContinuation
+      || !amrAuthRetryMountId
+      || !amrAuthRetryWorkspaceIdentityKey
+      || !projectId
+      || !activeConversationId
+      || !retryAssistant
+      || !onRetry
+      || !onConsumeAmrAuthRetryContinuation
+    ) {
+      return;
+    }
+    const originMountObservedSignedOut =
+      amrAuthRetrySignedOutWitnessRef.current === amrAuthRetryContinuation;
+    // Every continuation is consumed against the account identity returned by
+    // this exact status observation. An ambient shell snapshot can belong to a
+    // prior account during sign-out/sign-in transitions.
+    const loggedInAccountId = status.user?.id ?? null;
+    if (!canConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation, {
+      projectId,
+      conversationId: activeConversationId,
+      assistantId: retryAssistant.id,
+      workspaceIdentityKey: amrAuthRetryWorkspaceIdentityKey,
+      mountId: amrAuthRetryMountId,
+      loggedInAccountId,
+      nowMs: Date.now(),
+      originMountObservedSignedOut,
+      personalAdoptionWitness: amrAuthRetryPersonalAdoptionWitness,
+    })) {
+      return;
+    }
+    if (onConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation)) {
+      amrAuthRetrySignedOutWitnessRef.current = null;
+      onRetry(retryAssistant);
+    }
+  }, [
+    activeConversationId,
+    amrAuthRetryContinuation,
+    amrAuthRetryMountId,
+    amrAuthRetryPersonalAdoptionWitness,
+    amrAuthRetryWorkspaceIdentityKey,
+    onConsumeAmrAuthRetryContinuation,
+    onRetry,
+    projectId,
+    retryAssistant,
+  ]);
+  useEffect(() => {
+    if (!amrAuthRetryContinuation || inlineAmrLoginStatus?.loggedIn !== true) return;
+    // A Settings handoff remounts the whole project surface, so there is no
+    // inline AmrLoginPill callback to drive consumption. The fresh pane's own
+    // status read may request the one-shot retry; the common guard above still
+    // requires the exact project, conversation, failed assistant, account,
+    // fresh mount and Workspace authority.
+    consumeAmrAuthRetryIfAuthorized(inlineAmrLoginStatus);
+  }, [
+    amrAuthRetryContinuation,
+    consumeAmrAuthRetryIfAuthorized,
+    inlineAmrLoginStatus,
+  ]);
+  useEffect(() => {
+    if (
+      amrAuthRetrySignedOutWitnessRef.current
+      && amrAuthRetrySignedOutWitnessRef.current !== amrAuthRetryContinuation
+    ) {
+      amrAuthRetrySignedOutWitnessRef.current = null;
+    }
+  }, [amrAuthRetryContinuation]);
+  useEffect(() => {
     if (!hasInlineAmrAuthorizeFailure || !retryAssistant || !onRetry) return;
     let stopped = false;
     const retryIfSignedIn = async () => {
       const next = await refreshInlineAmrLoginStatus();
       if (stopped) return;
-      // Retry only on a real signed-out -> signed-in transition. A null/unknown
-      // status is NOT treated as signed-out, so it can't fabricate a transition;
-      // and once signed-in we never retry again until an explicit signed-out is
-      // seen. Otherwise a run that keeps failing auth while /status reports
-      // signed-in would retry forever (each retry is a new assistant id).
-      if (next?.loggedIn === true) {
-        const wasSignedOut = amrAuthPrevLoggedInRef.current === false;
-        amrAuthPrevLoggedInRef.current = true;
-        if (wasSignedOut && amrAuthRetriedRef.current !== retryAssistant.id) {
-          amrAuthRetriedRef.current = retryAssistant.id;
-          onRetry(retryAssistant);
-        }
-      } else if (next && next.loggedIn === false) {
-        amrAuthPrevLoggedInRef.current = false;
-      }
+      consumeAmrAuthRetryIfAuthorized(next);
     };
     void retryIfSignedIn();
     const interval = window.setInterval(() => {
@@ -1328,6 +1421,7 @@ export function ChatPane({
       window.clearInterval(interval);
     };
   }, [
+    consumeAmrAuthRetryIfAuthorized,
     hasInlineAmrAuthorizeFailure,
     onRetry,
     refreshInlineAmrLoginStatus,
@@ -2154,45 +2248,8 @@ export function ChatPane({
 
   const composerNode = (
     <>
-      {/* 扩展 / 设计百宝箱 quick pills: moved out of the next-step card so
-          they sit directly above the composer input, and travel with the
-          composer into its portaled fixed layer. Hidden for viewer-only
-          panes where the "+" menu they open is off-limits anyway. */}
-      {viewerOnly ? null : (
-        <div
-          className={`${nextStepStyles.quickPills} ${nextStepStyles.composerQuickPills}`}
-          data-testid="composer-quick-pills"
-        >
-          <button
-            ref={quickPillRefs.plugins}
-            type="button"
-            className={nextStepStyles.quickPill}
-            data-testid="next-step-quick-pill-plugins"
-            aria-haspopup="menu"
-            aria-expanded={openComposerPanel === 'plugins'}
-            onClick={() => handleNextStepOpenComposerPanel('plugins')}
-            onMouseEnter={() => handleQuickPillHoverEnter('plugins')}
-            onMouseLeave={handleQuickPillHoverLeave}
-          >
-            <Icon name="sparkles" size={16} />
-            <span>{t('entry.navPlugins')}</span>
-          </button>
-          <button
-            ref={quickPillRefs.toolbox}
-            type="button"
-            className={nextStepStyles.quickPill}
-            data-testid="next-step-quick-pill-toolbox"
-            aria-haspopup="menu"
-            aria-expanded={openComposerPanel === 'toolbox'}
-            onClick={() => handleNextStepOpenComposerPanel('toolbox')}
-            onMouseEnter={() => handleQuickPillHoverEnter('toolbox')}
-            onMouseLeave={handleQuickPillHoverLeave}
-          >
-            <Icon name="lightbulb" size={16} />
-            <span>{t('chat.designToolbox.tooltip')}</span>
-          </button>
-        </div>
-      )}
+      {/* 插件 / 设计百宝箱 live inside the composer's "+" menu (below 工作目录,
+          hover to expand); they no longer sit as quick pills above the input. */}
     <ChatComposer
       ref={composerRef}
       designSystemPicker={designSystemPicker}
@@ -2249,7 +2306,6 @@ export function ChatPane({
       onOpenSettings={onOpenSettings}
       onOpenMcpSettings={onOpenMcpSettings}
       onBrowsePlugins={onBrowsePlugins}
-      onStandalonePanelChange={setOpenComposerPanel}
       onOpenConnectors={onOpenConnectors}
       petConfig={petConfig}
       onAdoptPet={onAdoptPet}
@@ -2564,7 +2620,6 @@ export function ChatPane({
                 nextStepSkills={skills}
                 toolboxSkillNames={featuredToolboxSkillNames}
                 nextStepVariant={nextStepVariant}
-                onNextStepOpenComposerPanel={handleNextStepOpenComposerPanel}
                 onForkFromMessage={onForkFromMessage}
                 onAssistantFeedback={onAssistantFeedback}
                 forkingMessageId={forkingMessageId}
@@ -2639,28 +2694,24 @@ export function ChatPane({
                               hideSignedOutStatus
                               revealPendingCancelAction
                               onSignInStarted={() => {
-                                amrAuthPrevLoggedInRef.current = false;
+                                if (
+                                  projectId
+                                  && activeConversationId
+                                  && amrAuthRetryMountId
+                                  && amrAuthRetryWorkspaceIdentityKey
+                                  && onArmAmrAuthRetryContinuation
+                                ) {
+                                  onArmAmrAuthRetryContinuation({
+                                    projectId,
+                                    conversationId: activeConversationId,
+                                    assistantId: retryAssistant.id,
+                                    workspaceIdentityKey: amrAuthRetryWorkspaceIdentityKey,
+                                    originMountId: amrAuthRetryMountId,
+                                  });
+                                }
                               }}
                               onStatusChange={(loginStatus) => {
-                                // Retry only on a real signed-out -> signed-in
-                                // transition (see amrAuthPrevLoggedInRef).
-                                if (loginStatus?.loggedIn === true) {
-                                  const wasSignedOut =
-                                    amrAuthPrevLoggedInRef.current === false;
-                                  amrAuthPrevLoggedInRef.current = true;
-                                  if (
-                                    wasSignedOut &&
-                                    amrAuthRetriedRef.current !== retryAssistant.id
-                                  ) {
-                                    amrAuthRetriedRef.current = retryAssistant.id;
-                                    onRetry(retryAssistant);
-                                  }
-                                } else if (
-                                  loginStatus &&
-                                  loginStatus.loggedIn === false
-                                ) {
-                                  amrAuthPrevLoggedInRef.current = false;
-                                }
+                                consumeAmrAuthRetryIfAuthorized(loginStatus);
                               }}
                             />
                           ) : runFailureUi.primaryAction === 'launch-terminal-auth' ? (
@@ -2835,6 +2886,7 @@ export function ChatPane({
           <PinnedTodoSlot
             messages={displayMessages}
             streaming={streaming}
+            conversationId={activeConversationId}
             onContinueRemainingTasks={onContinueRemainingTasks}
             containerRef={pinnedTodoRef}
           />
@@ -3253,7 +3305,6 @@ function ChatRows({
   nextStepSkills,
   toolboxSkillNames,
   nextStepVariant,
-  onNextStepOpenComposerPanel,
   onForkFromMessage,
   onAssistantFeedback,
   forkingMessageId,
@@ -3314,7 +3365,6 @@ function ChatRows({
   nextStepSkills?: SkillSummary[];
   toolboxSkillNames?: Partial<Record<DesignToolboxActionId, string | null>>;
   nextStepVariant?: NextStepActionsVariant;
-  onNextStepOpenComposerPanel?: (which: 'plugins' | 'toolbox') => void;
   onForkFromMessage?: (message: ChatMessage) => void;
   onAssistantFeedback?: (message: ChatMessage, change: ChatMessageFeedbackChange) => void;
   forkingMessageId?: string | null;
@@ -3528,7 +3578,6 @@ function ChatRows({
         nextStepSkills={nextStepSkills}
         toolboxSkillNames={toolboxSkillNames}
         nextStepVariant={nextStepVariant}
-        onNextStepOpenComposerPanel={onNextStepOpenComposerPanel}
       />
     );
   };
@@ -3801,14 +3850,32 @@ function includeVirtualRowByKey<T extends { key: string }>(
 function PinnedTodoSlot({
   messages,
   streaming,
+  conversationId,
   onContinueRemainingTasks,
   containerRef,
 }: {
   messages: ChatMessage[];
   streaming: boolean;
-  onContinueRemainingTasks?: (assistantMessage: ChatMessage, todos: TodoItem[]) => void;
+  conversationId: string | null;
+  onContinueRemainingTasks?: (
+    assistantMessage: ChatMessage,
+    todos: TodoItem[],
+  ) => boolean | void | Promise<boolean | void>;
   containerRef?: MutableRefObject<HTMLDivElement | null>;
 }) {
+  const storageKey = `od:chat:continued-todo:${conversationId ?? 'none'}`;
+  const [dismissal, setDismissal] = useState(() => ({
+    storageKey,
+    snapshotKey: readContinuedTodoSnapshotKey(storageKey),
+  }));
+  useEffect(() => {
+    setDismissal({
+      storageKey,
+      snapshotKey: readContinuedTodoSnapshotKey(storageKey),
+    });
+  }, [storageKey]);
+  const dismissedSnapshotKey =
+    dismissal.storageKey === storageKey ? dismissal.snapshotKey : null;
   const input = latestTodoWriteInputForPinnedCard(messages);
   if (input == null) return null;
 
@@ -3819,6 +3886,19 @@ function PinnedTodoSlot({
         (event) => event.kind === 'tool_use' && isTodoWriteToolName(event.name),
       ),
   );
+  const ownerTodoEvent = owner?.events
+    ? [...owner.events].reverse().find(
+        (event) => event.kind === 'tool_use' && isTodoWriteToolName(event.name),
+      )
+    : undefined;
+  const snapshotKey =
+    owner &&
+    ownerTodoEvent &&
+    'id' in ownerTodoEvent &&
+    typeof ownerTodoEvent.id === 'string'
+      ? `${owner.id}:${ownerTodoEvent.id}`
+      : null;
+  if (snapshotKey != null && snapshotKey === dismissedSnapshotKey) return null;
   const unfinishedTodos = owner ? unfinishedTodosFromEvents(owner.events) : [];
 
   return (
@@ -3831,13 +3911,39 @@ function PinnedTodoSlot({
         runStreaming={streaming}
         runSucceeded={!streaming}
         onContinue={
-          owner && unfinishedTodos.length > 0 && onContinueRemainingTasks
-            ? () => onContinueRemainingTasks(owner, unfinishedTodos)
+          owner && snapshotKey && unfinishedTodos.length > 0 && onContinueRemainingTasks
+            ? () => {
+                void Promise.resolve(onContinueRemainingTasks(owner, unfinishedTodos))
+                  .then((accepted) => {
+                    if (accepted === false) return;
+                    setDismissal({ storageKey, snapshotKey });
+                    writeContinuedTodoSnapshotKey(storageKey, snapshotKey);
+                  })
+                  .catch(() => {});
+              }
             : undefined
         }
       />
     </div>
   );
+}
+
+function readContinuedTodoSnapshotKey(storageKey: string): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage.getItem(storageKey);
+  } catch {
+    return null;
+  }
+}
+
+function writeContinuedTodoSnapshotKey(storageKey: string, snapshotKey: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(storageKey, snapshotKey);
+  } catch {
+    // sessionStorage may be unavailable in sandboxed or privacy-restricted contexts.
+  }
 }
 
 function QueuedSendStrip({
@@ -4400,6 +4506,7 @@ function UserMessageImpl({
   appliedContextItems: AppliedContextItem[];
   highlighted?: boolean;
 }) {
+  const { workspaceContext } = useProjectCollabContext();
   const attachments = sortChatAttachmentsForDisplay(message.attachments ?? []);
   const commentAttachments = message.commentAttachments ?? [];
   const workspaceItems = message.runContext?.workspaceItems ?? [];
@@ -4483,7 +4590,10 @@ function UserMessageImpl({
                   {index + 1}
                 </span>
                 {a.kind === 'image' && projectId ? (
-                  <img src={projectRawUrl(projectId, a.path)} alt={a.name} />
+                  <img
+                    src={projectRawUrl(projectId, a.path, workspaceContext)}
+                    alt={a.name}
+                  />
                 ) : (
                   <Icon name="file" size={14} />
                 )}

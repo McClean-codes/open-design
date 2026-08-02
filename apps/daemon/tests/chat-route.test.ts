@@ -34,8 +34,12 @@ import { skillCwdAliasSegment } from '../src/cwd-aliases.js';
 import { getAgentDef } from '../src/agents.js';
 import { readAppConfig, writeAppConfig } from '../src/app-config.js';
 import { readMemoryConfig, writeMemoryConfig } from '../src/memory.js';
-import { upsertMessage } from '../src/db.js';
+import { ensureWorkspaceProject, upsertMessage } from '../src/db.js';
 import { renderCodexImagegenOverride } from '../src/prompts/system.js';
+import {
+  ByokCredentialService,
+  type ByokSecretBackend,
+} from '../src/byok/credential-service.js';
 
 const FAKE_VELA_FIXTURE = resolve(process.cwd(), 'tests', 'fixtures', 'fake-vela.mjs');
 
@@ -99,6 +103,43 @@ describe('/api/chat', () => {
   const originalAgentHome = process.env.OD_AGENT_HOME;
   const tempDirs: string[] = [];
 
+  async function createPersonalWorkspaceBoundProjectFixture(label: string) {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for AMR Workspace scope tests');
+    }
+    const projectId = `proj-${randomUUID()}`;
+    const workspaceId = `personal-ws-${randomUUID()}`;
+    const workspaceMemberId = `personal-member-${randomUUID()}`;
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: label }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+
+    const sqlite = new Database(resolve(process.env.OD_DATA_DIR, 'app.sqlite'));
+    try {
+      ensureWorkspaceProject(sqlite as never, {
+        projectId,
+        workspaceId,
+        visibility: 'personal',
+        createdByWorkspaceMemberId: workspaceMemberId,
+      });
+    } finally {
+      sqlite.close();
+    }
+
+    return {
+      projectId,
+      headers: {
+        'x-od-workspace-id': workspaceId,
+        'x-od-workspace-member-id': workspaceMemberId,
+        'x-od-workspace-type': 'personal',
+        'x-od-workspace-role': 'owner',
+      },
+    };
+  }
+
   async function createPluginFixture(args: {
     pluginId: string;
     dirName: string;
@@ -140,7 +181,42 @@ describe('/api/chat', () => {
         extraction: null,
       });
     }
-    const started = await startServer({ port: 0, returnServer: true }) as {
+    const byokDataDir = mkdtempSync(join(tmpdir(), 'od-chat-route-byok-'));
+    tempDirs.push(byokDataDir);
+    const byokSecrets = new Map<string, string>();
+    const byokBackend: ByokSecretBackend = {
+      kind: 'test-memory',
+      async available() { return true; },
+      async set(profileId, secret) { byokSecrets.set(profileId, secret); },
+      async get(profileId) { return byokSecrets.get(profileId) ?? null; },
+      async delete(profileId) { return byokSecrets.delete(profileId); },
+    };
+    const byokCredentialService = new ByokCredentialService({
+      dataDir: byokDataDir,
+      backend: byokBackend,
+    });
+    await byokCredentialService.upsert({
+      id: 'byok-chat-route-keyful',
+      label: 'Chat route keyful fixture',
+      protocol: 'senseaudio',
+      apiKey: 'sk-test-byok',
+      baseUrl: 'https://api.senseaudio.cn',
+      model: 'deepseek-v4-flash',
+      requiresApiKey: true,
+    });
+    await byokCredentialService.upsert({
+      id: 'byok-chat-route-keyless',
+      label: 'Chat route keyless fixture',
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:8000/v1',
+      model: 'model',
+      requiresApiKey: false,
+    });
+    const started = await startServer({
+      port: 0,
+      returnServer: true,
+      byokCredentialService,
+    }) as {
       url: string;
       server: http.Server;
     };
@@ -223,7 +299,6 @@ process.exit(0);
           }),
         });
         const body = await response.text();
-
         expect(response.ok).toBe(true);
         expect(body).toContain('<question-form');
         expect(body).toContain('"status":"succeeded"');
@@ -455,15 +530,10 @@ process.stdin.on('end', () => {
             projectId,
             message: 'hello',
             model: 'deepseek-v4-flash',
-            byokProvider: {
-              protocol: 'senseaudio',
-              apiKey: 'sk-test-byok',
-              baseUrl: 'https://api.senseaudio.cn',
-            },
+            byokProfileId: 'byok-chat-route-keyful',
           }),
         });
         const body = await response.text();
-
         expect(response.ok).toBe(true);
         expect(body).toContain('byok-opencode-ok');
 
@@ -472,6 +542,8 @@ process.stdin.on('end', () => {
           'run',
           '--format',
           'json',
+          '--dir',
+          expect.stringContaining(projectId),
           '-m',
           'open-design-byok/deepseek-v4-flash',
         ]);
@@ -545,12 +617,7 @@ process.stdin.on('end', () => {
             projectId,
             message: 'hello',
             model: 'model',
-            byokProvider: {
-              protocol: 'openai',
-              apiKey: '',
-              baseUrl: 'http://127.0.0.1:8000/v1',
-              requiresApiKey: false,
-            },
+            byokProfileId: 'byok-chat-route-keyless',
           }),
         });
         const body = await response.text();
@@ -563,6 +630,8 @@ process.stdin.on('end', () => {
           'run',
           '--format',
           'json',
+          '--dir',
+          expect.stringContaining(projectId),
           '-m',
           'open-design-byok/model',
         ]);
@@ -587,7 +656,7 @@ process.stdin.on('end', () => {
     );
   });
 
-  it('does not pass forged BYOK provider config to other local runtimes', async () => {
+  it('rejects forged BYOK provider config for other local runtimes', async () => {
     if (!process.env.OD_DATA_DIR) {
       throw new Error('OD_DATA_DIR is required for BYOK OpenCode config tests');
     }
@@ -637,11 +706,10 @@ process.stdin.on('end', () => {
         });
         const body = await response.text();
 
-        expect(response.ok).toBe(true);
-        expect(body).toContain('opencode-ok');
-        expect(await fsp.readFile(keyFile, 'utf8')).toBe('');
-        expect(await fsp.readFile(envFile, 'utf8')).not.toContain('open-design-byok');
-        expect(await fsp.readFile(envFile, 'utf8')).not.toContain('sk-test-byok');
+        expect(response.status).toBe(400);
+        expect(body).toContain('Raw BYOK credentials are not accepted');
+        expect(existsSync(keyFile)).toBe(false);
+        expect(existsSync(envFile)).toBe(false);
       },
     );
   });
@@ -874,6 +942,8 @@ process.exit(1);
       // Unique key so the shared model cache key is unique per test run.
       process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
       process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
+      const workspaceFixture =
+        await createPersonalWorkspaceBoundProjectFixture('Transient AMR catalog fixture');
 
       await withFakeAgent(
         'vela',
@@ -906,9 +976,13 @@ child.on('exit', (code, signal) => {
         async () => {
           const response = await fetch(`${baseUrl}/api/chat`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...workspaceFixture.headers,
+            },
             body: JSON.stringify({
               agentId: 'amr',
+              projectId: workspaceFixture.projectId,
               message: 'hello',
               model: 'deepseek-v3.2',
             }),
@@ -920,6 +994,7 @@ child.on('exit', (code, signal) => {
           expect(body).toContain('"type":"text_delta","delta":"vela."');
           expect(body).not.toContain('model_catalog_unavailable');
           expect(body).not.toContain('AMR_MODEL_UNAVAILABLE');
+          expect(body).not.toContain('AMR_WORKSPACE_SCOPE_REQUIRED');
           // The catalog probe runs at least once (remote attempted, then the
           // run proceeds from the preset seed). We no longer assert an exact
           // synchronous retry count: the remote retry/backoff now happens in
@@ -957,6 +1032,8 @@ child.on('exit', (code, signal) => {
       // cached remote catalog.
       process.env.VELA_RUNTIME_KEY = `fake-runtime-key-${randomUUID()}`;
       process.env.VELA_LINK_URL = 'https://amr-link.open-design.ai/v1';
+      const workspaceFixture =
+        await createPersonalWorkspaceBoundProjectFixture('Cached AMR catalog fixture');
 
       await withFakeAgent(
         'vela',
@@ -984,9 +1061,13 @@ child.on('exit', (code, signal) => {
         async () => {
           const response = await fetch(`${baseUrl}/api/chat`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...workspaceFixture.headers,
+            },
             body: JSON.stringify({
               agentId: 'amr',
+              projectId: workspaceFixture.projectId,
               message: 'hello',
               // Present in the preset seed (DEFAULT_MODEL_PRESET_JSON) but the
               // live `model list` is unavailable, so only the preset path can
@@ -1001,6 +1082,7 @@ child.on('exit', (code, signal) => {
           expect(body).not.toContain('AMR_MODEL_UNAVAILABLE');
           expect(body).not.toContain('model_catalog_unavailable');
           expect(body).not.toContain('is not available from Vela');
+          expect(body).not.toContain('AMR_WORKSPACE_SCOPE_REQUIRED');
           // It must actually proceed into the ACP run and stream assistant text.
           expect(body).toContain('"type":"text_delta","delta":"Hello from fake "');
           expect(body).toContain('"type":"text_delta","delta":"vela."');
@@ -3120,8 +3202,15 @@ process.stdin.on('end', () => {
           const transcriptIdx = prompt.indexOf('## Full conversation transcript');
           expect(transitionIdx).toBeGreaterThan(-1);
           expect(transcriptIdx).toBeGreaterThan(transitionIdx);
-          expect(prompt).toContain('The user has answered the discovery form. Do not emit another discovery form.');
-          expect(prompt).toContain('Continue with RULE 2 / RULE 3 now.');
+          expect(prompt).toContain(
+            'The user has answered the discovery form. Do not re-emit the answered form or repeat fields it already answered.',
+          );
+          expect(prompt).toContain(
+            'Apply the submitted answers and continue with RULE 2 / RULE 3 or the matching active workflow.',
+          );
+          expect(prompt).toContain(
+            'Only if a new, materially blocking requirement remains unresolved',
+          );
           expect(prompt).toContain(formAnswers);
         },
       );
@@ -3658,6 +3747,13 @@ describe('chat prompt helpers', () => {
       projectDesignSystemId: 'project-ds',
       appDefaultDesignSystemId: 'default-ds',
     })).toEqual({ id: 'project-ds', source: 'project' });
+
+    expect(resolveEffectiveDesignSystemSelection({
+      requestDesignSystemId: null,
+      projectDesignSystemId: 'project-ds',
+      disabledDesignSystemIds: ['project-ds'],
+      allowAppDefault: false,
+    })).toEqual({ id: null, source: 'none' });
 
     expect(resolveEffectiveDesignSystemSelection({
       appDefaultDesignSystemId: 'default-ds',

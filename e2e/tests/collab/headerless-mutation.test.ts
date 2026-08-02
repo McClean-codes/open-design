@@ -1,38 +1,10 @@
 // @vitest-environment node
 
-// A headerless caller must be able to mutate a project the daemon itself owns.
-//
-// `enforceWorkspaceResourceMutation`'s headerless branch answers
-// 401 WORKSPACE_CONTEXT_REQUIRED as soon as ANY `workspace_projects` row exists
-// for the resource. That branch was written when an unbound project was the
-// common case, and it protects a real thing: a signed-out or different-workspace
-// caller has no standing over a teammate's shared project, nor over another
-// identity's personal draft (recvqbeDjAsejl / recvqbklNGDqYY, spec 04 §10).
-//
-// Then #6201 made headerless CREATES bind — every created project gets a
-// workspace home, which is the product ruling 「所有 project 都应该能找到
-// workspace, 不知道就放当前 workspace」. Projects that used to be unbound are now
-// bound, and the two rules together produce a project its own creator cannot
-// touch:
-//
-//     od project create     -> 200, and now writes a binding
-//     od project duplicate  -> 401
-//
-// The `od` CLI never sends `x-od-workspace-*` (apps/daemon/src/cli.ts: only
-// `od workspace …` builds those headers, and `project create` never reaches it),
-// so this is not an edge case for it — it is every CLI mutation of every project
-// the CLI created. `AGENTS.md` makes the CLI the embeddability contract, so
-// external agents driving Open Design through `od` are broken outright.
-//
-// The fix is NOT to stop binding: that would reopen #6201. It is to notice that
-// a binding written on the DAEMON'S OWN authority names the same signed-in user a
-// local headerless caller is, and to judge such a caller as that identity instead
-// of as an anonymous stranger.
-//
-// The boundaries that must NOT move are pinned below: a project bound to a
-// workspace the daemon is not currently in stays 401, and a caller that DOES
-// assert an identity is still judged on that assertion — it must not be able to
-// reach 200 by dropping its headers.
+// Headerless legacy/CLI callers own only unbound local projects. They must stay
+// able to create and mutate that local set whether or not the daemon most
+// recently observed a signed-in Workspace. Once a project is explicitly bound,
+// every mutation requires the matching explicit Workspace identity; mutable
+// current/default state is never an authorization fallback.
 
 import { createServer, type Server } from 'node:http';
 import { randomUUID } from 'node:crypto';
@@ -204,7 +176,7 @@ async function od(
   }
 }
 
-describe('a headerless caller can mutate a project the daemon itself owns', () => {
+describe('a headerless caller can mutate only unbound local projects', () => {
   test(
     'create then duplicate with no workspace headers — the od CLI shape',
     { timeout: 300_000 },
@@ -216,14 +188,12 @@ describe('a headerless caller can mutate a project the daemon itself owns', () =
           // --- THE BUG. Both calls are headerless, exactly like `od`.
           const own = await createHeaderless(webUrl, 'Headerless own project');
 
-          // Precondition: #6201 bound it to the daemon's own workspace. Without
-          // this the test would pass for the wrong reason (an unbound project was
-          // always allowed).
           const scope = await readScope(webUrl, own);
           expect(
-            scope.workspaceId,
-            'precondition: #6201 binds a headerless create to the daemon workspace',
-          ).toBe(OWN.workspaceId);
+            scope.kind,
+            'a headerless create must not inherit the daemon current/default Workspace',
+          ).toBe('unbound');
+          expect(scope.workspaceId).toBeNull();
 
           const duplicate = await post(webUrl, `/api/projects/${own}/duplicate`, undefined, {
             name: 'Headerless duplicate',
@@ -268,7 +238,8 @@ describe('a headerless caller can mutate a project the daemon itself owns', () =
           expect(
             foreignBound.status,
             'a headerless caller has no standing over a project bound elsewhere',
-          ).toBe(401);
+          ).toBe(400);
+          expect(foreignBound.text).toContain('WORKSPACE_CONTEXT_REQUIRED');
 
           // --- BOUNDARY 2: dropping headers must not be an escalation path. A
           // caller that DOES assert an identity is judged on that assertion, so
@@ -323,11 +294,6 @@ describe('a headerless caller can mutate a project the daemon itself owns', () =
       // `.current()` answers null and the daemon has NO signed-in identity.
       await suite.with.toolsDev(
         async ({ webUrl, runtime }) => {
-          expect(
-            (await requestJson<{ context: unknown }>(webUrl, '/api/workspace/context')).context,
-            'precondition: this daemon must have no signed-in identity',
-          ).toBeNull();
-
           // Created in that same signed-out state — the real user sequence.
           const draft = await createHeaderless(webUrl, 'Signed-out local draft');
           expect(

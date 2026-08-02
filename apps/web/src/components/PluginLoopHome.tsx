@@ -50,7 +50,8 @@ export interface PluginLoopSubmit {
   // video / audio → od-media-generation, others → od-new-generation).
   // Null means the caller did not stamp an explicit kind. HomeView's
   // free-form fallback uses `other` and binds the hidden od-default
-  // router plugin so the agent asks for the exact task type in-chat.
+  // router plugin so the agent infers the task type and asks only when
+  // the brief cannot be routed reliably.
   projectKind?: ProjectKind | null;
   projectMetadata?: ProjectMetadata | null;
   workingDir?: string | null;
@@ -131,7 +132,10 @@ export function PluginLoopHome({ onSubmit }: Props) {
   ) {
     setPendingApplyId(record.id);
     setError(null);
-    const result = await applyPlugin(record.id, { locale });
+    const result = await applyPlugin(record.id, {
+      locale,
+      workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
+    });
     setPendingApplyId(null);
     if (!result) {
       setError(`Failed to apply ${record.title}. Make sure the daemon is reachable.`);
@@ -387,6 +391,7 @@ export function PluginLoopHome({ onSubmit }: Props) {
       {detailsRecord ? (
         <PluginDetailsModal
           record={detailsRecord}
+          workspaceContext={workspaceContextState.context}
           onClose={closeDetails}
           onUse={(record, action) => void usePlugin(record, action)}
           onDuplicate={(record) => void duplicatePlugin(record)}

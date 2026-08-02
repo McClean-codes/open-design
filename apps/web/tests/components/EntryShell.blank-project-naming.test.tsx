@@ -26,6 +26,7 @@ import {
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
 } from '../../src/collab/useWorkspaceContext';
+import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
 const originalFetch = globalThis.fetch;
 const originalResizeObserver = globalThis.ResizeObserver;
@@ -103,6 +104,9 @@ function teamContext(
 function installFetchMock() {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const pathname = new URL(String(input), 'http://d.local').pathname;
+    if (pathname.endsWith('/workspace/directory')) {
+      return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+    }
     if (pathname.endsWith('/workspace/context')) {
       return jsonResponse({ context: teamContext() });
     }
@@ -203,9 +207,55 @@ afterEach(() => {
 });
 
 describe('EntryShell team project content readiness', () => {
+  it('renders another member\'s catalog name and timestamp on Home instead of the fresh pulled placeholder', async () => {
+    const catalogUpdatedAt = Date.now() - (2 * 24 * 60 * 60 * 1000);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
+      if (pathname.endsWith('/workspace/context')) {
+        return jsonResponse({ context: teamContext() });
+      }
+      if (pathname.endsWith('/workspace/projects/team')) {
+        return jsonResponse({
+          projects: [{
+            projectId: 'shared-pulled',
+            ownerMemberId: 'wm-owner',
+            sharedAt: '2026-07-25T00:00:00.000Z',
+            name: 'Owner catalog name',
+            updatedAt: catalogUpdatedAt,
+          }],
+        });
+      }
+      if (pathname.endsWith('/files')) return jsonResponse({ files: [] });
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    renderAt('/', {
+      projects: [{
+        id: 'shared-pulled',
+        name: '共享项目',
+        skillId: null,
+        designSystemId: null,
+        workspaceId: 'ws-1',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }],
+    });
+
+    const card = await screen.findByTitle('Owner catalog name');
+    expect(card.textContent).toContain('Owner catalog name');
+    expect(card.textContent).toContain('2d ago');
+    expect(card.textContent).not.toContain('just now');
+  });
+
   it('hands the authoritative catalog card to App before opening a local placeholder', async () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
       if (pathname.endsWith('/workspace/context')) {
         return jsonResponse({ context: teamContext() });
       }
@@ -236,8 +286,10 @@ describe('EntryShell team project content readiness', () => {
       onOpenProject,
     });
 
-    expect(await screen.findByText('Ready shared project')).toBeTruthy();
-    fireEvent.click(screen.getByTitle('Ready shared project'));
+    const activeCard = await screen.findByRole('button', {
+      name: /Ready shared project/,
+    });
+    fireEvent.click(activeCard);
 
     await waitFor(() => {
       expect(onOpenProject).toHaveBeenCalledWith(
@@ -255,11 +307,25 @@ describe('EntryShell team project content readiness', () => {
 
   it('hydrates only a catalog-confirmed ready project and opens it without a second pull', async () => {
     vi.stubGlobal('EventSource', MockWorkspaceEventSource as unknown as typeof EventSource);
-    const requests: Array<{ url: string; method: string }> = [];
+    const requests: Array<{
+      url: string;
+      method: string;
+      workspaceId: string | null;
+      workspaceMemberId: string | null;
+    }> = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const pathname = new URL(url, 'http://d.local').pathname;
-      requests.push({ url, method: init?.method ?? 'GET' });
+      const headers = new Headers(init?.headers);
+      requests.push({
+        url,
+        method: init?.method ?? 'GET',
+        workspaceId: headers.get('x-od-workspace-id'),
+        workspaceMemberId: headers.get('x-od-workspace-member-id'),
+      });
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
       if (pathname.endsWith('/workspace/context')) {
         return jsonResponse({ context: teamContext() });
       }
@@ -337,11 +403,25 @@ describe('EntryShell team project content readiness', () => {
 
   it('falls back to POST pull when ready hydration does not succeed', async () => {
     vi.stubGlobal('EventSource', MockWorkspaceEventSource as unknown as typeof EventSource);
-    const requests: Array<{ url: string; method: string }> = [];
+    const requests: Array<{
+      url: string;
+      method: string;
+      workspaceId: string | null;
+      workspaceMemberId: string | null;
+    }> = [];
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       const pathname = new URL(url, 'http://d.local').pathname;
-      requests.push({ url, method: init?.method ?? 'GET' });
+      const headers = new Headers(init?.headers);
+      requests.push({
+        url,
+        method: init?.method ?? 'GET',
+        workspaceId: headers.get('x-od-workspace-id'),
+        workspaceMemberId: headers.get('x-od-workspace-member-id'),
+      });
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
       if (pathname.endsWith('/workspace/context')) {
         return jsonResponse({ context: teamContext() });
       }
@@ -405,6 +485,15 @@ describe('EntryShell team project content readiness', () => {
       requests.some(({ url, method }) =>
         method === 'POST' && url.includes('/api/projects/shared-ready/collab/pull')),
     ).toBe(true);
+    const pullRequest = requests.find(
+      ({ url, method }) =>
+        method === 'POST'
+        && url.includes('/api/projects/shared-ready/collab/pull'),
+    );
+    expect(pullRequest).toMatchObject({
+      workspaceId: 'ws-1',
+      workspaceMemberId: 'wm-1',
+    });
   });
 
   it('clears content-ready latches when the member changes inside the same workspace', async () => {
@@ -415,6 +504,9 @@ describe('EntryShell team project content readiness', () => {
       const url = String(input);
       const pathname = new URL(url, 'http://d.local').pathname;
       requests.push({ url, method: init?.method ?? 'GET' });
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
       if (pathname.endsWith('/workspace/context')) {
         return jsonResponse({
           context: teamContext({
@@ -463,7 +555,12 @@ describe('EntryShell team project content readiness', () => {
 
     workspaceMemberId = 'wm-2';
     act(() => {
-      notifyWorkspaceContextRefresh();
+      notifyWorkspaceContextRefresh({
+        context: teamContext({
+          workspaceMemberId,
+          displayName: 'Member B',
+        }),
+      });
     });
     expect(await screen.findByText('Member B')).toBeTruthy();
 
@@ -494,6 +591,9 @@ describe('EntryShell team project content readiness', () => {
     });
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([teamContext()]));
+      }
       if (pathname.endsWith('/workspace/context')) {
         return jsonResponse({ context: teamContext() });
       }

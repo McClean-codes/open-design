@@ -7,10 +7,11 @@ import type { Page } from '@playwright/test';
 
 import { writeFakeVelaBin, seedVelaLoginConfig } from '@/amr';
 import { runErrorCard } from '@/playwright/chat';
-import { routeAgents } from '@/playwright/mock-factory';
+import { routeAgents, suppressWhatsNew, trackRunRequests } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 import { createFakeAgentRuntimes } from '@/playwright/fake-agents';
 import {
+  AMR_PERSONAL_WORKSPACE_HEADERS,
   createProjectViaApi,
   gotoEntryHome,
   gotoProject,
@@ -68,6 +69,10 @@ async function openExecutionSettingsDialog(page: Page) {
 // stability rules (a serial group cannot be split across the sharded full pool
 // and floors its wall time).
 test.describe.configure({ timeout: T.xlong });
+
+test.beforeEach(async ({ page }) => {
+  await suppressWhatsNew(page);
+});
 
 async function stubCatalogsEmpty(page: Page) {
   await page.route('**/api/skills', async (route) => {
@@ -162,7 +167,7 @@ test('[P0] @critical AMR insufficient-balance failures surface Top up AMR and re
         return opened.find((href) => {
           const url = new URL(href, window.location.href);
           return (
-            url.pathname.endsWith('/wallet') &&
+            url.pathname.endsWith('/dashboard') &&
             url.searchParams.get('source') === 'open_design' &&
             url.searchParams.get('od_origin') === 'open_design' &&
             url.searchParams.get('od_entry_source') === 'chat_error_recharge'
@@ -281,6 +286,7 @@ test('[P0] @critical AMR model catalog invalid-key failures authorize and auto-r
   const userMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${userMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'user',
         content: 'please build with AMR',
@@ -294,6 +300,7 @@ test('[P0] @critical AMR model catalog invalid-key failures authorize and auto-r
   const assistantMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${assistantMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'assistant',
         content: '',
@@ -374,21 +381,13 @@ test('[P0] @critical non-AMR model failures promote Open Design AMR and auto-ret
     selectedAgentId: 'codex',
   });
   const { conversationId, projectId } = amr;
-  const runRequestBodies: Array<Record<string, unknown>> = [];
-  await page.route('**/api/runs', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.fallback();
-      return;
-    }
-    const raw = route.request().postData();
-    if (raw) runRequestBodies.push(JSON.parse(raw) as Record<string, unknown>);
-    await route.fallback();
-  });
+  const runRequests = trackRunRequests(page);
 
   const userMsgId = `u-switch-${projectId}`;
   const userMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${userMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'user',
         content: 'please recover this failed non-AMR model run',
@@ -402,6 +401,7 @@ test('[P0] @critical non-AMR model failures promote Open Design AMR and auto-ret
   const assistantMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${assistantMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'assistant',
         content: '',
@@ -430,6 +430,9 @@ test('[P0] @critical non-AMR model failures promote Open Design AMR and auto-ret
   await expect(switchAndRetry).toBeVisible({ timeout: T.long });
   await switchAndRetry.click();
 
+  await expect
+    .poll(() => new URL(page.url()).pathname, { timeout: T.medium })
+    .toBe('/settings');
   const settings = settingsSurface(page);
   await expect(settings).toBeVisible({ timeout: T.long });
   await expect
@@ -443,7 +446,12 @@ test('[P0] @critical non-AMR model failures promote Open Design AMR and auto-ret
   await settings.getByRole('button', { name: /^(Authorize|Sign in)$/ }).first().click();
 
   await expect.poll(() => loginRequested, { timeout: T.medium }).toBe(true);
-  await expect.poll(() => runRequestBodies.some((body) => body.agentId === 'amr'), { timeout: T.long }).toBe(true);
+  await expect.poll(() => runRequests.bodies.filter((body) => body.agentId === 'amr').length, { timeout: T.long }).toBe(1);
+  expect(runRequests.bodies.filter((body) => body.agentId === 'amr')[0]).toMatchObject({
+    agentId: 'amr',
+    currentPrompt: 'please recover this failed non-AMR model run',
+  });
+  runRequests.dispose?.();
   await expect(page.getByText('AMR promotion retry recovered.').first()).toBeVisible({ timeout: T.long });
 });
 
@@ -494,8 +502,8 @@ test('[P0] @critical Settings reopens AMR with the configured profile, account b
   const modelPopover = page.getByTestId('settings-agent-model-popover-amr');
   await expect(modelPopover).toBeVisible();
   await expect(modelPopover.getByRole('option', { name: /glm-5/i })).toBeVisible();
-  await settings.getByRole('heading', { name: /Execution/i }).click();
-  await settings.getByRole('button', { name: 'Close', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await settings.getByRole('button', { name: /Back to home/i }).click();
   await expect(settingsSurface(page)).toHaveCount(0);
 
   const reopened = await openExecutionSettingsDialog(page);
@@ -545,6 +553,7 @@ test('[P1] Settings AMR wallet fallback balance renders from the daemon wallet e
     profile,
     selectedAgentId: 'amr',
     assistantText: 'AMR wallet refresh smoke',
+    accountSummaryAvailable: false,
   });
 
   await gotoEntryHome(page);
@@ -600,7 +609,8 @@ test('[P1] Settings AMR upgrade opens the attributed plans URL for the active pr
 
   await expect.poll(() => openedUrl).toBeTruthy();
   const url = new URL(openedUrl);
-  expect(url.searchParams.get('view')).toBe('plans');
+  expect(url.pathname).toBe('/dashboard');
+  expect(url.searchParams.get('billing')).toBe('plan');
   expect(url.searchParams.get('od_origin')).toBe('open_design');
   expect(url.searchParams.get('od_entry_source')).toBe('settings_amr_upgrade');
   expect(url.searchParams.get('od_entry_id')).toBeTruthy();
@@ -651,7 +661,7 @@ test('[P0] @critical Settings preserves AMR account, recharge shortcut, and mode
   let modelPopover = page.getByTestId('settings-agent-model-popover-amr');
   await expect(modelPopover).toBeVisible();
   await expect(modelPopover.getByRole('option', { name: /glm-5/i })).toBeVisible();
-  await settings.getByRole('heading', { name: /Execution/i }).click();
+  await page.keyboard.press('Escape');
   await expect(modelPopover).toHaveCount(0);
 
   await settings.getByTestId('settings-agent-select-codex').click();
@@ -768,6 +778,7 @@ test('[P0] upstream outages keep Retry available without promoting AMR', async (
   const userMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${userMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'user',
         content: 'please build something',
@@ -781,6 +792,7 @@ test('[P0] upstream outages keep Retry available without promoting AMR', async (
   const assistantMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${assistantMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'assistant',
         content: '',
@@ -846,6 +858,7 @@ test('[P1] zh-CN run failure guidance shows actionable copy and expandable raw s
   const userMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/u-${projectId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'user',
         content: 'please build with a very large attachment set',
@@ -859,6 +872,7 @@ test('[P1] zh-CN run failure guidance shows actionable copy and expandable raw s
   const assistantMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/a-${projectId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'assistant',
         content: '',
@@ -936,6 +950,7 @@ test('[P0] antigravity rate limits offer terminal model switching without promot
   const userMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${userMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'user',
         content: 'please build something',
@@ -949,6 +964,7 @@ test('[P0] antigravity rate limits offer terminal model switching without promot
   const assistantMsgRes = await page.request.put(
     `/api/projects/${projectId}/conversations/${conversationId}/messages/${assistantMsgId}`,
     {
+      headers: { ...AMR_PERSONAL_WORKSPACE_HEADERS },
       data: {
         role: 'assistant',
         content: '',
@@ -996,6 +1012,7 @@ async function setupAmrWorkspace(
     selectedAgentId: 'amr' | 'codex';
     seedLoginConfig?: boolean;
     assistantText?: string;
+    accountSummaryAvailable?: boolean;
   },
 ) {
   await stubCatalogsEmpty(page);
@@ -1056,6 +1073,18 @@ async function setupAmrWorkspace(
   await putAppConfig(page, config);
 
   const projectId = `amr-ui-${Date.now()}`.replace(/[^A-Za-z0-9._-]/g, '-');
-  const { conversationId } = await createProjectViaApi(page, projectId, 'AMR UI failure smoke');
+  const { conversationId } = await createProjectViaApi(
+    page,
+    projectId,
+    'AMR UI failure smoke',
+    {
+      accountBalanceUsd: '20.00',
+      accountCredits: 2_000,
+      accountPlan: 'free',
+      ...(options.accountSummaryAvailable !== undefined
+        ? { accountSummaryAvailable: options.accountSummaryAvailable }
+        : {}),
+    },
+  );
   return { projectId, conversationId, homeDir, root, velaBin };
 }

@@ -4,10 +4,34 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { InlineModelSwitcher } from '../../src/components/InlineModelSwitcher';
-import { AMR_LOGIN_TIMEOUT_MS } from '../../src/components/amrLoginPolling';
+import {
+  AMR_LOGIN_POLL_INTERVAL_MS,
+  AMR_LOGIN_TIMEOUT_MS,
+} from '../../src/components/amrLoginPolling';
 import { fetchProviderModels } from '../../src/providers/provider-models';
 import { providerModelsCacheKey } from '../../src/components/providerModelsCache';
+import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
 import type { AgentInfo, AppConfig, ProviderModelOption } from '../../src/types';
+import { workspaceDirectoryFixture } from '../helpers/workspace-context';
+
+const analyticsMocks = vi.hoisted(() => ({ track: vi.fn() }));
+
+vi.mock('../../src/analytics/provider', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
+  return {
+    ...actual,
+    useAnalytics: () => ({
+      track: analyticsMocks.track,
+      setConsent: vi.fn(),
+      setIdentity: vi.fn(),
+      setConfigureGlobals: vi.fn(),
+      setUserId: vi.fn(),
+      anonymousId: 'test-anonymous-id',
+      sessionId: 'test-session-id',
+      newRequestId: () => 'test-request-id',
+    }),
+  };
+});
 
 function optionNames(container: HTMLElement): string[] {
   return within(container).getAllByRole('option').map((option) => {
@@ -157,6 +181,13 @@ function workspaceContextResponse(context: WorkspaceCollabContext | null) {
   });
 }
 
+function workspaceDirectoryResponse(context: WorkspaceCollabContext) {
+  return new Response(JSON.stringify(workspaceDirectoryFixture([context])), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
 function expectVelaLoginWithAttribution(
   fetchMock: ReturnType<typeof vi.fn>,
   sourceDetail: string,
@@ -192,6 +223,7 @@ describe('InlineModelSwitcher AMR row', () => {
   afterEach(() => {
     cleanup();
     vi.mocked(fetchProviderModels).mockReset();
+    analyticsMocks.track.mockReset();
     vi.unstubAllGlobals();
     vi.useRealTimers();
     try {
@@ -199,6 +231,7 @@ describe('InlineModelSwitcher AMR row', () => {
     } catch {
       // jsdom normally exposes localStorage; keep cleanup tolerant.
     }
+    resetWorkspaceContextCache();
   });
 
   it('shows the AMR reminder dot once when another CLI is selected', async () => {
@@ -470,6 +503,7 @@ describe('InlineModelSwitcher AMR row', () => {
   });
 
   it('uses only the explicit team workspace balance, never the account fallback', async () => {
+    const workspaceContext = teamMemberWorkspaceContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url === '/api/integrations/vela/status') {
@@ -487,8 +521,11 @@ describe('InlineModelSwitcher AMR row', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(workspaceContext);
+      }
       if (url === '/api/workspace/context') {
-        return workspaceContextResponse(teamMemberWorkspaceContext());
+        return workspaceContextResponse(workspaceContext);
       }
       if (url === '/api/workspace/billing?scope=workspace&workspaceId=ws-team') {
         return new Response(
@@ -584,6 +621,7 @@ describe('InlineModelSwitcher AMR row', () => {
 
   it('routes inline upgrades through the signed-in AMR profile', async () => {
     const openSpy = vi.spyOn(window, 'open').mockImplementation(() => null);
+    const workspaceContext = personalWorkspaceContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url === '/api/integrations/vela/status') {
@@ -601,8 +639,11 @@ describe('InlineModelSwitcher AMR row', () => {
       // Personal workspace: `canManageBilling` is always true there, so this
       // is the control case proving the permission gate below does not
       // suppress the upgrade entry for non-team identities.
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(workspaceContext);
+      }
       if (url === '/api/workspace/context') {
-        return workspaceContextResponse(personalWorkspaceContext());
+        return workspaceContextResponse(workspaceContext);
       }
       throw new Error(`Unexpected fetch: ${url}`);
     });
@@ -636,6 +677,7 @@ describe('InlineModelSwitcher AMR row', () => {
   // stay hidden for them even with a fully signed-in, upgrade-eligible AMR
   // account.
   it('hides the inline upgrade action for a team member without billing permission', async () => {
+    const workspaceContext = teamMemberWorkspaceContext();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = input.toString();
       if (url === '/api/integrations/vela/status') {
@@ -650,8 +692,11 @@ describe('InlineModelSwitcher AMR row', () => {
           { status: 200, headers: { 'content-type': 'application/json' } },
         );
       }
+      if (url === '/api/workspace/directory') {
+        return workspaceDirectoryResponse(workspaceContext);
+      }
       if (url === '/api/workspace/context') {
-        return workspaceContextResponse(teamMemberWorkspaceContext());
+        return workspaceContextResponse(workspaceContext);
       }
       if (url === '/api/workspace/billing?scope=workspace&workspaceId=ws-team') {
         return new Response(
@@ -1128,6 +1173,7 @@ describe('InlineModelSwitcher AMR row', () => {
   });
 
   it('cancels a timed-out AMR sign-in from the inline switcher', async () => {
+    const authAttemptId = '11111111-1111-4111-8111-111111111111';
     let loginStarted = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input.toString();
@@ -1136,6 +1182,7 @@ describe('InlineModelSwitcher AMR row', () => {
           JSON.stringify({
             loggedIn: false,
             loginInFlight: loginStarted,
+            authAttemptId,
             profile: 'default',
             user: null,
             configPath: '/Users/test/.amr/config.json',
@@ -1145,7 +1192,7 @@ describe('InlineModelSwitcher AMR row', () => {
       }
       if (url === '/api/integrations/vela/login' && init?.method === 'POST') {
         loginStarted = true;
-        return new Response(JSON.stringify({ pid: 123 }), {
+        return new Response(JSON.stringify({ pid: 123, authAttemptId }), {
           status: 202,
           headers: { 'content-type': 'application/json' },
         });
@@ -1182,9 +1229,17 @@ describe('InlineModelSwitcher AMR row', () => {
     ).toBeTruthy();
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(AMR_LOGIN_TIMEOUT_MS);
+      await vi.advanceTimersByTimeAsync(
+        AMR_LOGIN_TIMEOUT_MS + AMR_LOGIN_POLL_INTERVAL_MS,
+      );
     });
-    expect(fetchMock).toHaveBeenCalledWith('/api/integrations/vela/login/cancel', { method: 'POST' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/integrations/vela/login/cancel',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ authAttemptId }),
+      }),
+    );
     expect(
       within(popover).getByRole('radio', { name: /^Open Design\s+Sign-in failed\./i }),
     ).toBeTruthy();
@@ -1195,6 +1250,7 @@ describe('InlineModelSwitcher AMR row', () => {
   });
 
   it('turns the pending AMR row into a cancel action', async () => {
+    const authAttemptId = '11111111-1111-4111-8111-111111111111';
     let loginStarted = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = input.toString();
@@ -1203,6 +1259,7 @@ describe('InlineModelSwitcher AMR row', () => {
           JSON.stringify({
             loggedIn: false,
             loginInFlight: loginStarted,
+            authAttemptId,
             profile: 'default',
             user: null,
             configPath: '/Users/test/.amr/config.json',
@@ -1212,7 +1269,7 @@ describe('InlineModelSwitcher AMR row', () => {
       }
       if (url === '/api/integrations/vela/login' && init?.method === 'POST') {
         loginStarted = true;
-        return new Response(JSON.stringify({ pid: 123 }), {
+        return new Response(JSON.stringify({ pid: 123, authAttemptId }), {
           status: 202,
           headers: { 'content-type': 'application/json' },
         });
@@ -1259,10 +1316,122 @@ describe('InlineModelSwitcher AMR row', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(fetchMock).toHaveBeenCalledWith('/api/integrations/vela/login/cancel', { method: 'POST' });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/integrations/vela/login/cancel',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ authAttemptId }),
+      }),
+    );
     expect(
       within(popover).getByRole('radio', { name: /^Open Design\s+Sign in$/i }),
     ).toBeTruthy();
+  });
+
+  it('cancels the canonical attempt when the pre-start status refresh rejects', async () => {
+    const canonicalAuthAttemptId = '22222222-2222-4222-8222-222222222222';
+    let releaseLogin!: (response: Response) => void;
+    const heldLoginResponse = new Promise<Response>((resolve) => {
+      releaseLogin = resolve;
+    });
+    const cancelAttemptIds: string[] = [];
+    let statusCalls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url === '/api/integrations/vela/status') {
+        statusCalls += 1;
+        if (statusCalls > 1) {
+          throw new Error('status unavailable');
+        }
+        return new Response(
+          JSON.stringify({
+            loggedIn: false,
+            loginInFlight: false,
+            profile: 'default',
+            user: null,
+            configPath: '/Users/test/.amr/config.json',
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (url === '/api/integrations/vela/login' && init?.method === 'POST') {
+        return heldLoginResponse;
+      }
+      if (url === '/api/integrations/vela/login/cancel' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { authAttemptId: string };
+        cancelAttemptIds.push(body.authAttemptId);
+        return new Response(
+          JSON.stringify({
+            canceled: body.authAttemptId === canonicalAuthAttemptId,
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderSwitcher();
+    fireEvent.click(screen.getByTestId('inline-model-switcher-chip'));
+
+    const popover = screen.getByTestId('inline-model-switcher-popover');
+    await within(popover).findByRole('radio', {
+      name: /^Open Design\s+Sign in$/i,
+    });
+    vi.useFakeTimers();
+    fireEvent.click(
+      within(popover).getByTestId('inline-model-switcher-account-action'),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/integrations/vela/login',
+      expect.objectContaining({ method: 'POST' }),
+    );
+
+    fireEvent.click(
+      within(popover).getByTestId('inline-model-switcher-account-action'),
+    );
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(cancelAttemptIds).toHaveLength(1);
+
+    releaseLogin(new Response(
+      JSON.stringify({ pid: 123, authAttemptId: canonicalAuthAttemptId }),
+      { status: 202, headers: { 'content-type': 'application/json' } },
+    ));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(cancelAttemptIds).toEqual([
+      expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      ),
+      canonicalAuthAttemptId,
+    ]);
+    expect(
+      within(popover).getByRole('radio', { name: /^Open Design\s+Sign in$/i }),
+    ).toBeTruthy();
+    const statusCallsAfterCanonicalCancel = statusCalls;
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(AMR_LOGIN_POLL_INTERVAL_MS);
+    });
+    expect(statusCalls).toBe(statusCallsAfterCanonicalCancel);
+    expect(
+      within(popover).queryByRole('radio', {
+        name: /^Open Design\s+Signing in/i,
+      }),
+    ).toBeNull();
   });
 
   it('re-reads AMR status on reopen and converges from signed-in back to Sign in when later status is loggedOut', async () => {

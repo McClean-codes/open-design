@@ -153,8 +153,13 @@ describe('collab presence with the vela-cli collab transport on', () => {
     await setupVelaStub();
     const api = await startIsolatedServer();
 
-    // The cloud answer wins over anything the in-process tracker holds, which is
-    // how a second daemon's viewer becomes visible here.
+    // Exercise the read relay before the heartbeat primes its short-lived
+    // roster cache. The cloud answer wins over anything the in-process tracker
+    // holds, which is how a second daemon's viewer becomes visible here.
+    const list = await api.get(`/api/projects/${SHARED_PROJECT}/presence`);
+    expect(list.status).toBe(200);
+    expect(presentIds(list.body)).toEqual(['cloud-member']);
+
     const beat = await api.post(`/api/projects/${SHARED_PROJECT}/presence/heartbeat`, {
       memberId: 'local-member',
       name: 'Ada',
@@ -162,10 +167,6 @@ describe('collab presence with the vela-cli collab transport on', () => {
     });
     expect(beat.status).toBe(200);
     expect(presentIds(beat.body)).toEqual(['cloud-member']);
-
-    const list = await api.get(`/api/projects/${SHARED_PROJECT}/presence`);
-    expect(list.status).toBe(200);
-    expect(presentIds(list.body)).toEqual(['cloud-member']);
 
     const left = await api.post(`/api/projects/${SHARED_PROJECT}/presence/leave`, {
       memberId: 'local-member',
@@ -218,6 +219,24 @@ function devWorkspaceContext(): WorkspaceCollabContext {
       role: 'owner',
       lifecycleState: 'active',
     }),
+  };
+}
+
+function devWorkspaceHeaders(): Record<string, string> {
+  const context = devWorkspaceContext();
+  return {
+    'x-od-workspace-id': context.workspaceId,
+    'x-od-workspace-type': context.workspaceType,
+    'x-od-workspace-member-id': context.workspaceMemberId,
+    'x-od-workspace-role': context.role,
+    'x-od-workspace-member-status': context.memberStatus,
+    'x-od-workspace-lifecycle-state': context.lifecycleState,
+    'x-od-workspace-can-share-projects': String(
+      context.permissions.canShareProjects,
+    ),
+    'x-od-workspace-can-write-synced-files': String(
+      context.permissions.canWriteSyncedFiles,
+    ),
   };
 }
 
@@ -324,13 +343,20 @@ async function startIsolatedServer(): Promise<{
   });
   return {
     async get(route: string) {
-      return read(await fetch(`${base}${route}`));
+      return read(
+        await fetch(`${base}${route}`, {
+          headers: devWorkspaceHeaders(),
+        }),
+      );
     },
     async post(route: string, body: unknown) {
       return read(
         await fetch(`${base}${route}`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json' },
+          headers: {
+            'content-type': 'application/json',
+            ...devWorkspaceHeaders(),
+          },
           body: JSON.stringify(body),
         }),
       );

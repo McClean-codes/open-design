@@ -134,22 +134,20 @@ describe('CloudSignInTip', () => {
     expect(spawnCount).toBe(2);
   });
 
-  // Regression for 飞书 recvqbkcLqIFH7: dismissing this card once, closing
-  // its "×", used to persist forever — including through a later real
+  // Regression for 飞书 recvqbkcLqIFH7: this card used to have a close "×"
+  // whose dismissal persisted forever — including through a later real
   // sign-in and sign-out — so a stale dismissal from a completely unrelated
   // earlier session silently deleted the rail's only sign-in entry point.
-  it('renders again after a dismissal once resetCloudSignInTipDismissal() runs', async () => {
-    const { unmount } = renderTip();
-    fireEvent.click(await screen.findByLabelText('Dismiss Open Design Cloud note'));
-    expect(window.localStorage.getItem(DISMISSED_KEY)).toBe('1');
-    expect(screen.queryByTestId('entry-cloud-signin-tip')).toBeNull();
-    unmount();
+  // The close button is gone now (the card can no longer be dismissed at
+  // all), which closes that whole bug class — this locks in that a leftover
+  // dismissal flag from before that change shipped can't resurrect it.
+  it('always renders, ignoring a stale dismissal flag from before the close button was removed', async () => {
+    window.localStorage.setItem(DISMISSED_KEY, '1');
+    renderTip();
+    expect(await screen.findByTestId('entry-cloud-signin-tip')).toBeTruthy();
 
     resetCloudSignInTipDismissal();
     expect(window.localStorage.getItem(DISMISSED_KEY)).toBeNull();
-
-    renderTip();
-    expect(await screen.findByTestId('entry-cloud-signin-tip')).toBeTruthy();
   });
 });
 

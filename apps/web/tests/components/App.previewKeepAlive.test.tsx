@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/App';
-import type { Route } from '../../src/router';
+import { navigate, type Route } from '../../src/router';
 import type { AppConfig, Project } from '../../src/types';
 import {
   fetchComposioConfigFromDaemon,
@@ -63,12 +63,17 @@ vi.mock('../../src/components/ProjectView', () => ({
     project,
     onProjectChange,
     onOpenSettings,
+    onBack,
   }: {
     project: Project;
     onProjectChange: (project: Project) => void;
     onOpenSettings: (section?: string) => void;
+    onBack: () => void;
   }) => (
     <div>
+      <button type="button" onClick={onBack}>
+        Back to projects
+      </button>
       <button
         type="button"
         onClick={() =>
@@ -219,6 +224,7 @@ const mockedFetchMediaProvidersFromDaemon = vi.mocked(fetchMediaProvidersFromDae
 const mockedLoadConfig = vi.mocked(loadConfig);
 const mockedMergeDaemonConfig = vi.mocked(mergeDaemonConfig);
 const mockedUseIframeKeepAlivePool = vi.mocked(useIframeKeepAlivePool);
+const mockedNavigate = vi.mocked(navigate);
 
 const baseConfig: AppConfig = {
   mode: 'api',
@@ -258,6 +264,8 @@ describe('App preview keep-alive invalidation', () => {
       evict: vi.fn(),
       evictProject: evictProjectMock,
       evictMatching: evictMatchingMock,
+      subscribe: vi.fn(() => () => {}),
+      revision: vi.fn(() => 0),
     });
     mockedDaemonIsLive.mockResolvedValue(true);
     mockedFetchAgents.mockResolvedValue([]);
@@ -301,6 +309,34 @@ describe('App preview keep-alive invalidation', () => {
     await waitFor(() => {
       expect(evictProjectMock).toHaveBeenCalledWith('project-1', { includeActive: true });
     });
+  });
+
+  it('does not evict the active preview while guarded Back is pending or after it is denied', async () => {
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to projects' }));
+
+    expect(mockedNavigate).toHaveBeenCalledWith(
+      { kind: 'home', view: 'home' },
+      { onCommit: expect.any(Function) },
+    );
+    // Cross the browser task boundary used by the old unconditional eviction.
+    // A denied guard has no commit signal, so the active iframe must survive.
+    await act(async () => {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
+    });
+    expect(evictProjectMock).not.toHaveBeenCalled();
+  });
+
+  it('evicts the active preview after guarded Back commits', async () => {
+    mockedNavigate.mockImplementationOnce((_route, options) => {
+      options?.onCommit?.();
+    });
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Back to projects' }));
+
+    expect(evictProjectMock).toHaveBeenCalledWith('project-1', { includeActive: true });
   });
 
   // Regression for the mrcfps follow-up on PR #2190: ProjectView's

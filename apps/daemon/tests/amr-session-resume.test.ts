@@ -540,19 +540,48 @@ function clearTelemetryEnv(): void {
 }
 
 async function putConfig(url: string, patch: Record<string, unknown>): Promise<void> {
+  const agentCliEnv =
+    patch.agentCliEnv && typeof patch.agentCliEnv === 'object'
+      ? patch.agentCliEnv as Record<string, unknown>
+      : {};
+  const amr =
+    agentCliEnv.amr && typeof agentCliEnv.amr === 'object'
+      ? agentCliEnv.amr as Record<string, unknown>
+      : {};
   const response = await fetch(`${url}/api/app-config`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(patch),
+    body: JSON.stringify({
+      ...patch,
+      agentCliEnv: {
+        ...agentCliEnv,
+        amr: {
+          ...amr,
+          VELA_RUNTIME_KEY: 'rt-amr-session-resume-test',
+          VELA_LINK_URL: 'https://amr-link.example.test/v1',
+        },
+      },
+    }),
   });
   expect(response.status).toBe(200);
 }
 
 async function createConversation(url: string): Promise<string> {
   const projectId = `amr_resume_${randomUUID()}`;
+  const workspaceId = `amr_resume_personal_${projectId}`;
+  const workspaceMemberId = `amr_resume_owner_${projectId}`;
+  const workspaceHeaders = {
+    'x-od-workspace-id': workspaceId,
+    'x-od-workspace-type': 'personal',
+    'x-od-workspace-member-id': workspaceMemberId,
+    'x-od-workspace-role': 'owner',
+  };
   const projectResponse = await fetch(`${url}/api/projects`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: {
+      'content-type': 'application/json',
+      ...workspaceHeaders,
+    },
     body: JSON.stringify({
       id: projectId,
       name: 'AMR resume smoke',
@@ -562,7 +591,12 @@ async function createConversation(url: string): Promise<string> {
   });
   expect(projectResponse.status).toBe(200);
   const projectBody = (await projectResponse.json()) as { conversationId: string; id: string };
-  return `${projectId}::${projectBody.conversationId}`;
+  return [
+    projectId,
+    projectBody.conversationId,
+    workspaceId,
+    workspaceMemberId,
+  ].join('::');
 }
 
 async function sendRunAndWait(
@@ -571,7 +605,11 @@ async function sendRunAndWait(
   message: string,
   model?: string,
 ): Promise<RunStatus> {
-  const [projectId, conversationId] = encoded.split('::');
+  const [projectId, conversationId, workspaceId, workspaceMemberId] =
+    encoded.split('::');
+  if (!projectId || !conversationId || !workspaceId || !workspaceMemberId) {
+    throw new Error(`invalid AMR resume fixture identity: ${encoded}`);
+  }
   const assistantMessageId = `assistant_amr_${randomUUID()}`;
   const runResponse = await fetch(`${url}/api/runs`, {
     method: 'POST',
@@ -580,6 +618,10 @@ async function sendRunAndWait(
       'x-od-analytics-device-id': 'amr-resume-test',
       'x-od-analytics-session-id': 'amr-resume-session',
       'x-od-analytics-client-type': 'web',
+      'x-od-workspace-id': workspaceId,
+      'x-od-workspace-type': 'personal',
+      'x-od-workspace-member-id': workspaceMemberId,
+      'x-od-workspace-role': 'owner',
     },
     body: JSON.stringify({
       projectId,
@@ -592,15 +634,31 @@ async function sendRunAndWait(
       ...(model ? { model } : {}),
     }),
   });
-  expect(runResponse.status).toBe(202);
-  const body = (await runResponse.json()) as { runId: string };
-  return await waitForRun(url, body.runId);
+  const body = (await runResponse.json()) as {
+    runId?: string;
+    error?: { code?: string; message?: string };
+  };
+  expect(runResponse.status, JSON.stringify(body)).toBe(202);
+  expect(body.runId).toBeTypeOf('string');
+  return await waitForRun(url, body.runId!, {
+    'x-od-workspace-id': workspaceId,
+    'x-od-workspace-type': 'personal',
+    'x-od-workspace-member-id': workspaceMemberId,
+    'x-od-workspace-role': 'owner',
+  });
 }
 
-async function waitForRun(url: string, runId: string): Promise<RunStatus> {
+async function waitForRun(
+  url: string,
+  runId: string,
+  headers: Record<string, string>,
+): Promise<RunStatus> {
   const startedAt = Date.now();
   while (Date.now() - startedAt < 15_000) {
-    const response = await fetch(`${url}/api/runs/${encodeURIComponent(runId)}`);
+    const response = await fetch(
+      `${url}/api/runs/${encodeURIComponent(runId)}`,
+      { headers },
+    );
     expect(response.status).toBe(200);
     const run = (await response.json()) as RunStatus;
     if (run.status === 'failed' || run.status === 'succeeded' || run.status === 'canceled') {

@@ -71,6 +71,7 @@ import type {
   QuestionsFormClickProps,
   RunFailedToastClickProps,
   AmrAuthResultProps,
+  AmrAuthStageProps,
   AmrEntryClickProps,
   RunFailedToastSurfaceViewProps,
   HomeRecommendationClickProps,
@@ -315,8 +316,17 @@ export function trackAmrEntryClick(
 export function trackAmrAuthResult(
   track: Track,
   props: AmrAuthResultProps,
+  options?: TrackOptions,
 ): void {
-  send(track, 'amr_auth_result', props);
+  send(track, 'amr_auth_result', props, options);
+}
+
+export function trackAmrAuthStage(
+  track: Track,
+  props: AmrAuthStageProps,
+  options?: TrackOptions,
+): void {
+  send(track, 'amr_auth_stage', props, options);
 }
 
 // ---- ui_click (home) -----------------------------------------------------

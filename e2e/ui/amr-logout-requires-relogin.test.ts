@@ -7,10 +7,11 @@ import type { Locator } from '@playwright/test';
 import { expect, test } from '@/playwright/suite';
 
 import { writeFakeVelaBin } from '@/amr';
-import { routeAgents } from '@/playwright/mock-factory';
+import { routeAgents, suppressWhatsNew } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 import {
   createProjectViaApi,
+  gotoEntryHome,
   gotoProject,
   mockAmrWalletSnapshot,
   openSettingsDialog,
@@ -20,6 +21,10 @@ import {
 } from '@/playwright/amr';
 
 test.describe.configure({ timeout: T.xlong });
+
+test.beforeEach(async ({ page }) => {
+  await suppressWhatsNew(page);
+});
 
 async function stubCatalogsEmpty(page: import('@playwright/test').Page) {
   await page.route('**/api/skills', async (route) => {
@@ -127,6 +132,11 @@ test('[P0] after local Sign out, AMR runs require re-login and Settings keeps AM
     const response = await fetch('/api/integrations/vela/logout', { method: 'POST' });
     if (!response.ok) throw new Error(`logout failed: ${response.status}`);
   });
+  // Logout tears down the authenticated project shell asynchronously. Reboot
+  // on the signed-out entry before opening Settings so this assertion does not
+  // race the project-to-entry transition and accidentally target a trigger
+  // that disappeared between discovery and click.
+  await gotoEntryHome(page);
   const reopenedSettings = await openSettingsDialog(page);
   await expect(amrAgentToggle(reopenedSettings)).toHaveAttribute('aria-pressed', 'true');
   await expect(reopenedSettings.getByRole('button', { name: /^Authorize$|^Sign in$/i })).toBeVisible();

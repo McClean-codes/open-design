@@ -6,17 +6,10 @@
 // all, and the daemon's mutation gate answered a headerless mutation of a
 // workspace-bound project with 401 WORKSPACE_CONTEXT_REQUIRED.
 //
-// There is deliberately no "may I name myself yet" condition here. Three review
-// rounds went into trying to name the safe window — "only while loading", "only
-// on the first read", "only when the project's binding agrees" — and each one
-// leaked, because all three were really modelling ONE daemon asymmetry: a
-// resource no workspace had claimed was mutable by a headerless caller and
-// refused to a caller that identified itself. That asymmetry is fixed in
-// `enforceWorkspaceResourceMutation`, so the client no longer models it and the
-// refusals live where they can be judged against daemon-owned state.
-//
-// The states that must still be refused are pinned server-side, in
-// `apps/daemon/tests/collab/workspace-resource-mutation.test.ts`.
+// An unbound historical project has one narrow exception: an exact, active
+// Personal caller may witness the daemon's one-time transactional adoption.
+// Team callers and inconclusive/failed scope reads stay headerless. The daemon
+// freshly verifies the Personal identity and owns the actual adoption decision.
 
 import { describe, expect, it } from 'vitest';
 import {
@@ -47,7 +40,20 @@ function teamContext(workspaceId = TEAM_WORKSPACE): WorkspaceCollabContext {
   } as WorkspaceCollabContext;
 }
 
+function personalContext(
+  overrides: Partial<WorkspaceCollabContext> = {},
+): WorkspaceCollabContext {
+  return {
+    ...teamContext('personal-workspace'),
+    workspaceType: 'personal',
+    workspaceMemberId: 'personal-member',
+    planId: 'plus',
+    ...overrides,
+  } as WorkspaceCollabContext;
+}
+
 const CALLER = teamContext();
+const PERSONAL_CALLER = personalContext();
 /** The scope endpoint has not answered yet — where the reported 401 came from. */
 const UNREAD = { loading: true, scope: null } as const;
 
@@ -85,6 +91,30 @@ describe('runWorkspaceIdentity', () => {
     ).toBeNull();
   });
 
+  it('uses an active Personal caller while an explicitly unbound read model is still loading', () => {
+    expect(runWorkspaceIdentity(UNREAD, PERSONAL_CALLER, null)).toEqual(
+      PERSONAL_CALLER,
+    );
+  });
+
+  it.each([
+    ['a Team caller', CALLER],
+    ['no caller', null],
+    [
+      'a removed Personal caller',
+      personalContext({ memberStatus: 'removed' }),
+    ],
+    [
+      'a Personal caller without a member id',
+      personalContext({ workspaceMemberId: '' }),
+    ],
+  ])(
+    'does not borrow %s while an explicitly unbound read model is loading',
+    (_label, caller) => {
+      expect(runWorkspaceIdentity(UNREAD, caller, null)).toBeNull();
+    },
+  );
+
   // Signed out / no workspace plane: nothing to name, so the request stays
   // headerless and keeps its legal pre-workspace behavior. This is the branch
   // that preserves 「未登录也可以用自己 cli 修改未登录态下的那些 project」.
@@ -99,7 +129,7 @@ describe('runWorkspaceIdentity', () => {
     ).toBeNull();
   });
 
-  it('names the caller after the daemon confirms that the project is unbound', () => {
+  it('uses an active Personal caller to witness confirmed unbound adoption', () => {
     expect(
       runWorkspaceIdentity(
         {
@@ -111,16 +141,95 @@ describe('runWorkspaceIdentity', () => {
             context: null,
           },
         },
-        CALLER,
+        PERSONAL_CALLER,
         null,
       ),
-    ).toEqual(CALLER);
+    ).toEqual(PERSONAL_CALLER);
   });
 
-  // `/workspace-scope` is fresher than the mutation gate's accepted-lag
-  // `lastKnown()` cache in this scenario: membership removal is already
-  // authoritative here while the old caller object still says active. Do not
-  // add that stale assertion to the request after the daemon has answered.
+  it.each([
+    ['a Team caller', CALLER],
+    ['no caller', null],
+    [
+      'a removed Personal caller',
+      personalContext({ memberStatus: 'removed' }),
+    ],
+  ])('keeps confirmed unbound adoption headerless for %s', (_label, caller) => {
+    expect(
+      runWorkspaceIdentity(
+        {
+          loading: false,
+          scope: {
+            kind: 'unbound',
+            projectId: PROJECT_ID,
+            workspaceId: null,
+            context: null,
+          },
+        },
+        caller,
+        null,
+      ),
+    ).toBeNull();
+  });
+
+  // A directory/backend outage is not an authorization decision. Keep sending
+  // the exact persisted Workspace + caller witness so the daemon can perform
+  // its own fresh mutation check instead of turning every project read and run
+  // headerless during a transient outage.
+  it.each([
+    ['an unavailable project scope', {
+      loading: false,
+      scope: {
+        kind: 'unavailable' as const,
+        projectId: PROJECT_ID,
+        workspaceId: TEAM_WORKSPACE,
+        visibility: 'team' as const,
+        context: null,
+      },
+    }],
+    ['a failed scope read', { loading: false, scope: null, failure: 'unavailable' as const }],
+  ])('keeps the exact caller for %s', (_label, state) => {
+    expect(runWorkspaceIdentity(state, CALLER, TEAM_WORKSPACE)).toEqual(CALLER);
+  });
+
+  it('does not borrow a different Workspace caller during an unavailable read', () => {
+    expect(
+      runWorkspaceIdentity(
+        {
+          loading: false,
+          scope: {
+            kind: 'unavailable',
+            projectId: PROJECT_ID,
+            workspaceId: TEAM_WORKSPACE,
+            visibility: 'team',
+            context: null,
+          },
+        },
+        teamContext('ws-b'),
+        TEAM_WORKSPACE,
+      ),
+    ).toBeNull();
+  });
+
+  it('keeps an unavailable bound project headerless without a caller', () => {
+    expect(
+      runWorkspaceIdentity(
+        { loading: false, scope: null, failure: 'unavailable' },
+        null,
+        TEAM_WORKSPACE,
+      ),
+    ).toBeNull();
+  });
+
+  // Forbidden is an authoritative access decision. Unsupported means the
+  // daemon cannot verify this protocol at all. Neither may borrow the caller.
+  it.each([
+    ['a refused scope read', { loading: false, scope: null, failure: 'forbidden' as const }],
+    ['an unsupported scope read', { loading: false, scope: null, failure: 'unsupported' as const }],
+  ])('does not borrow the stale caller for %s', (_label, state) => {
+    expect(runWorkspaceIdentity(state, CALLER, TEAM_WORKSPACE)).toBeNull();
+  });
+
   it.each([
     ['an unavailable project scope', {
       loading: false,
@@ -135,7 +244,7 @@ describe('runWorkspaceIdentity', () => {
     ['a failed scope read', { loading: false, scope: null, failure: 'unavailable' as const }],
     ['a refused scope read', { loading: false, scope: null, failure: 'forbidden' as const }],
     ['an unsupported scope read', { loading: false, scope: null, failure: 'unsupported' as const }],
-  ])('does not borrow the stale caller for %s', (_label, state) => {
-    expect(runWorkspaceIdentity(state, CALLER, TEAM_WORKSPACE)).toBeNull();
+  ])('does not borrow a Personal adoption witness for %s', (_label, state) => {
+    expect(runWorkspaceIdentity(state, PERSONAL_CALLER, null)).toBeNull();
   });
 });

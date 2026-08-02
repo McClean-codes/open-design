@@ -1,11 +1,8 @@
 // @vitest-environment jsdom
 //
-// Acceptance #54 / #59: opening a private project showed it as a read-only
-// shell first — the personal avatar instead of the collab roster, 历史版本 and
-// 分享 disabled — then filled in. `viewerOnly` fails closed while the workspace
-// context is in flight, and this hook used to start that (vela-backed,
-// seconds-long) read cold on every project open, even though the nav shell had
-// already resolved the very same context.
+// Project collaboration accepts only a project-bound Workspace context. The
+// navigation shell's cached selection may warm related catalogs, but must never
+// become authority for a project whose persisted scope was not supplied.
 
 import { cleanup, renderHook, waitFor } from '@testing-library/react';
 import {
@@ -42,6 +39,8 @@ function teamContext(): WorkspaceCollabContext {
   };
 }
 
+const TEAM_CONTEXT = teamContext();
+
 /**
  * Context AND collab status both hang. `viewerOnly` can only come out false if
  * something other than those two answered — i.e. the seeded context plus the
@@ -55,6 +54,13 @@ function installFullyHangingFetch() {
 function installResolvingFetch(teamProjects: unknown[]) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const pathname = new URL(String(input), 'http://d.local').pathname;
+    if (pathname.endsWith('/workspace/directory')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [teamContext()] }),
+      } as unknown as Response;
+    }
     if (pathname.endsWith('/workspace/context')) {
       return { ok: true, status: 200, json: async () => ({ context: teamContext() }) } as unknown as Response;
     }
@@ -104,10 +110,17 @@ afterEach(() => {
 });
 
 describe('useProjectCollab workspace-context seeding', () => {
-  it('starts from the context the nav shell already resolved instead of a cold read', async () => {
+  it('does not borrow a context the navigation shell already resolved', async () => {
     // The shell resolves the context once…
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [teamContext()] }),
+        } as unknown as Response;
+      }
       if (pathname.endsWith('/workspace/context')) {
         return { ok: true, status: 200, json: async () => ({ context: teamContext() }) } as unknown as Response;
       }
@@ -120,14 +133,12 @@ describe('useProjectCollab workspace-context seeding', () => {
     });
     shell.unmount();
 
-    // …and opening a project must not pay for that read again. With the context
-    // request hanging forever, the hook is writable only if it used the seed.
+    // Opening a project without persisted scope stays fail-closed even though
+    // the shell cache is warm.
     installNeverResolvingContextFetch();
     const project = renderHook(() => useProjectCollab('p-private'));
 
-    await waitFor(() => {
-      expect(project.result.current.viewerOnly).toBe(false);
-    });
+    expect(project.result.current.viewerOnly).toBe(true);
   });
 
   // Acceptance #27: a member's OWN fresh private draft flashed the "这是共享项目"
@@ -138,9 +149,14 @@ describe('useProjectCollab workspace-context seeding', () => {
     await warmCaches([]);
 
     installFullyHangingFetch();
-    const project = renderHook(() => useProjectCollab('p-private'));
+    const project = renderHook(() => useProjectCollab('p-private', {
+      workspaceContext: TEAM_CONTEXT,
+    }));
     await waitFor(() => {
       expect(project.result.current.viewerOnly).toBe(false);
+      // Absence from a possibly stale catalog is enough to avoid a read-only
+      // flash, but not positive writer proof for server mutations.
+      expect(project.result.current.writerAuthority).toBe('pending');
     });
   });
 
@@ -152,8 +168,11 @@ describe('useProjectCollab workspace-context seeding', () => {
     ]);
 
     installFullyHangingFetch();
-    const project = renderHook(() => useProjectCollab('p-shared'));
+    const project = renderHook(() => useProjectCollab('p-shared', {
+      workspaceContext: TEAM_CONTEXT,
+    }));
     expect(project.result.current.viewerOnly).toBe(true);
+    expect(project.result.current.writerAuthority).toBe('pending');
   });
 
   // Issue #99 (rec:recvpZwaJNpVai): opening a project the viewer THEMSELVES
@@ -168,8 +187,11 @@ describe('useProjectCollab workspace-context seeding', () => {
     ]);
 
     installFullyHangingFetch();
-    const project = renderHook(() => useProjectCollab('p-mine'));
+    const project = renderHook(() => useProjectCollab('p-mine', {
+      workspaceContext: TEAM_CONTEXT,
+    }));
     expect(project.result.current.viewerOnly).toBe(false);
+    expect(project.result.current.writerAuthority).toBe('allowed');
   });
 
   // Sticky UX (default-collapsed chat) must use effective ownership, not raw
@@ -203,12 +225,42 @@ describe('useProjectCollab workspace-context seeding', () => {
       return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
     }) as typeof fetch;
 
-    const project = renderHook(() => useProjectCollab('p-mine'));
+    const project = renderHook(() => useProjectCollab('p-mine', {
+      workspaceContext: TEAM_CONTEXT,
+    }));
     await waitFor(() => {
       expect(project.result.current.syncState).toBe('synced');
     });
     expect(project.result.current.isOwner).toBe(false);
     expect(project.result.current.isEffectiveOwner).toBe(true);
+    expect(project.result.current.isSharedNonOwner).toBe(false);
+  });
+
+  it('does not infer shared non-owner from a cold catalog and status without ownerMemberId', async () => {
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/collab/status')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ publishedVersion: 2, syncState: 'synced' }),
+        } as unknown as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as unknown as Response;
+    }) as typeof fetch;
+
+    const project = renderHook(() => useProjectCollab('p-owner-unknown', {
+      workspaceContext: TEAM_CONTEXT,
+    }));
+    await waitFor(() => {
+      expect(project.result.current.syncState).toBe('synced');
+    });
+
+    // Missing owner identity must remain fail-closed for mutations, but it is
+    // not positive evidence that this viewer is someone else's project member.
+    expect(project.result.current.viewerOnly).toBe(true);
+    expect(project.result.current.writerAuthority).toBe('denied');
+    expect(project.result.current.isEffectiveOwner).toBe(false);
     expect(project.result.current.isSharedNonOwner).toBe(false);
   });
 
@@ -222,7 +274,9 @@ describe('useProjectCollab workspace-context seeding', () => {
     ]);
 
     installFullyHangingFetch();
-    const project = renderHook(() => useProjectCollab('p-theirs'));
+    const project = renderHook(() => useProjectCollab('p-theirs', {
+      workspaceContext: TEAM_CONTEXT,
+    }));
     expect(project.result.current.isEffectiveOwner).toBe(false);
     expect(project.result.current.isSharedNonOwner).toBe(true);
   });
@@ -237,6 +291,13 @@ describe('useProjectCollab workspace-context seeding', () => {
   it('does not inherit the shell cache when a test injects its own daemon', async () => {
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [teamContext()] }),
+        } as unknown as Response;
+      }
       if (pathname.endsWith('/workspace/context')) {
         return { ok: true, status: 200, json: async () => ({ context: teamContext() }) } as unknown as Response;
       }

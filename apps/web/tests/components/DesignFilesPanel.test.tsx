@@ -10,16 +10,19 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 
+import { CollabProvider } from "../../src/collab/collab-context";
 import {
   DesignFilesPanel,
   type DesignFilesNavState,
 } from "../../src/components/DesignFilesPanel";
+import { setHtmlSourceSnapshot } from "../../src/components/html-source-snapshot-cache";
 import type {
   ProjectFile,
   ProjectFileKind,
   ProjectFolder,
 } from "../../src/types";
 import { VISUAL_STABILITY_STORAGE_KEY } from "../../src/utils/visualStability";
+import { workspaceContextFixture } from "../helpers/workspace-context";
 
 function folder(path: string): ProjectFolder {
   return {
@@ -154,7 +157,7 @@ describe("DesignFilesPanel sections", () => {
     expect(document.querySelector(".df-page-btn")).toBeNull();
   });
 
-  it("renders a single-line toolbar with file actions and no up/refresh buttons", () => {
+  it("renders a single-line toolbar with no up/refresh buttons, and no new-document/upload actions once files exist", () => {
     renderPanel([file({ name: "page.html", kind: "html" })]);
 
     expect(document.querySelector(".df-topbar")).toBeTruthy();
@@ -162,34 +165,79 @@ describe("DesignFilesPanel sections", () => {
     expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     expect(document.querySelector(".df-up-btn")).toBeNull();
     expect(document.querySelector(".df-refresh-control")).toBeNull();
-    expect(screen.getByTestId("design-files-upload-trigger")).toBeTruthy();
+    // New-document / upload moved into the empty state only; see below.
+    expect(screen.queryByTestId("design-files-upload-trigger")).toBeNull();
+    expect(screen.queryByTestId("design-files-empty-new-document")).toBeNull();
   });
 
   it("shows prioritized project starter actions in the empty state", () => {
     const onNewSketch = vi.fn();
     const onOpenBrowser = vi.fn();
     const onCreateDesignSystem = vi.fn();
+    const onPaste = vi.fn();
+    const onUpload = vi.fn();
 
     renderPanel([], {
       onNewSketch,
       onOpenBrowser,
       onCreateDesignSystem,
+      onPaste,
+      onUpload,
     });
 
     fireEvent.click(screen.getByTestId("design-files-empty-new-sketch"));
     fireEvent.click(screen.getByTestId("design-files-empty-open-browser"));
     fireEvent.click(screen.getByTestId("design-files-empty-create-design-system"));
+    fireEvent.click(screen.getByTestId("design-files-empty-new-document"));
+    fireEvent.click(screen.getByTestId("design-files-upload-trigger"));
 
     expect(onNewSketch).toHaveBeenCalledTimes(1);
     expect(onOpenBrowser).toHaveBeenCalledTimes(1);
     expect(onCreateDesignSystem).toHaveBeenCalledTimes(1);
+    expect(onPaste).toHaveBeenCalledTimes(1);
+    expect(onUpload).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the empty-state starter actions for read-only shared viewers", () => {
-    renderPanel([], { viewerOnly: true, onCreateDesignSystem: vi.fn() });
+  it("keeps empty-state actions visible but disables mutations for read-only shared viewers", () => {
+    const onNewSketch = vi.fn();
+    const onOpenBrowser = vi.fn();
+    const onCreateDesignSystem = vi.fn();
+    const onPaste = vi.fn();
+    const onUpload = vi.fn();
 
-    expect(screen.getByTestId("design-files-empty-new-sketch")).toBeTruthy();
-    expect(screen.getByTestId("design-files-empty-create-design-system")).toBeTruthy();
+    renderPanel([], {
+      viewerOnly: true,
+      onNewSketch,
+      onOpenBrowser,
+      onCreateDesignSystem,
+      onPaste,
+      onUpload,
+    });
+
+    const mutationButtons = [
+      screen.getByTestId("design-files-empty-new-sketch"),
+      screen.getByTestId("design-files-empty-new-document"),
+      screen.getByTestId("design-files-upload-trigger"),
+      screen.getByTestId("design-files-empty-create-design-system"),
+    ];
+    for (const button of mutationButtons) {
+      expect(button).toBeDisabled();
+      expect(button).toHaveAttribute(
+        "title",
+        "Shared project is read-only: you can comment, but cannot edit or export.",
+      );
+      fireEvent.click(button);
+    }
+
+    expect(onNewSketch).not.toHaveBeenCalled();
+    expect(onCreateDesignSystem).not.toHaveBeenCalled();
+    expect(onPaste).not.toHaveBeenCalled();
+    expect(onUpload).not.toHaveBeenCalled();
+
+    const openBrowser = screen.getByTestId("design-files-empty-open-browser");
+    expect(openBrowser).not.toBeDisabled();
+    fireEvent.click(openBrowser);
+    expect(onOpenBrowser).toHaveBeenCalledTimes(1);
   });
 
   it("groups files into category tabs and shows one group at a time", () => {
@@ -302,6 +350,98 @@ describe("DesignFilesPanel selection", () => {
     );
     expect(onDeleteFiles).toHaveBeenCalledTimes(1);
     expect(onDeleteFiles).toHaveBeenCalledWith(["file-1.html", "file-2.png"]);
+  });
+
+  it("sends the project-pinned Workspace identity on batch archive download", async () => {
+    const workspaceContext = workspaceContextFixture({
+      workspaceId: "workspace-a",
+      workspaceMemberId: "member-a",
+    });
+    const fetchMock = vi.fn<typeof fetch>(async () =>
+      new Response("zip", {
+        status: 200,
+        headers: {
+          "content-type": "application/zip",
+          "content-disposition": 'attachment; filename="project.zip"',
+        },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:test"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const files = [file({ name: "page.html", kind: "html" })];
+    const { container } = render(
+      <CollabProvider
+        value={{
+          workspaceContext,
+          workspaceContextLoading: false,
+          enabled: true,
+          member: null,
+          present: [],
+          publishedVersion: null,
+          syncState: null,
+          viewerOnly: false,
+          writerAuthority: 'allowed',
+          isOwner: true,
+          isEffectiveOwner: true,
+          isSharedNonOwner: false,
+          ownerDisplayName: null,
+          ownerRole: null,
+          downloadPending: false,
+          reportChange: vi.fn(),
+          requestPublish: vi.fn(),
+          refreshPresence: vi.fn(),
+          checkStatusNow: vi.fn(),
+        }}
+      >
+        <DesignFilesPanel
+          projectId="test-project"
+          files={files}
+          liveArtifacts={[]}
+          onRefreshFiles={vi.fn()}
+          onOpenFile={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onRenameFile={vi.fn()}
+          onDeleteFile={vi.fn()}
+          onDeleteFiles={vi.fn()}
+          onUpload={vi.fn()}
+          onUploadFiles={vi.fn()}
+          onPaste={vi.fn()}
+          onNewSketch={vi.fn()}
+        />
+      </CollabProvider>,
+    );
+
+    fireEvent.click(
+      screen
+        .getByTestId("design-file-row-page.html")
+        .querySelector(".df-card-check")!,
+    );
+    fireEvent.click(
+      container.querySelector('[data-testid="design-files-batch-bar"] button')!,
+    );
+
+    await waitFor(() => {
+      expect(
+        fetchMock.mock.calls.some(([input]) =>
+          String(input).endsWith("/archive/batch"),
+        ),
+      ).toBe(true);
+    });
+    const archiveCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).endsWith("/archive/batch"),
+    );
+    expect(archiveCall).toBeTruthy();
+    const [, init] = archiveCall!;
+    const headers = new Headers(init?.headers);
+    expect(headers.get("x-od-workspace-id")).toBe("workspace-a");
+    expect(headers.get("x-od-workspace-member-id")).toBe("member-a");
   });
 
   it("does not open files from card controls", () => {
@@ -461,6 +601,72 @@ describe("DesignFilesPanel page thumbnails", () => {
       "/api/projects/test-project/raw/small.html?v=1700000000000",
       expect.any(Object),
     );
+  });
+
+  it("reuses an exact-version HTML thumbnail source across panel remounts", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response("<!doctype html><html><body><main>Cached</main></body></html>", {
+          status: 200,
+          headers: { "Content-Type": "text/html; charset=utf-8" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const cachedFile = file({
+      name: "cached.html",
+      kind: "html",
+      mime: "text/html",
+      size: 16 * 1024,
+      mtime: 1700000000000,
+    });
+
+    const first = renderPanel([cachedFile]);
+    await waitFor(() => {
+      expect(first.container.querySelector(".df-card-thumb iframe")).toBeTruthy();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    const second = renderPanel([cachedFile]);
+    await waitFor(() => {
+      expect(second.container.querySelector(".df-card-thumb iframe")).toBeTruthy();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    second.unmount();
+
+    const changed = renderPanel([{ ...cachedFile, mtime: cachedFile.mtime + 1 }]);
+    await waitFor(() => {
+      expect(changed.container.querySelector(".df-card-thumb iframe")).toBeTruthy();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("builds the current file thumbnail from the exact viewer source snapshot", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const currentFile = file({
+      name: "current.html",
+      kind: "html",
+      mime: "text/html",
+      size: 16 * 1024,
+      mtime: 1700000000000,
+    });
+    setHtmlSourceSnapshot({
+      authorizationScopeKey: "local",
+      projectId: "test-project",
+      fileName: currentFile.name,
+      refreshKey: `${currentFile.mtime}:${currentFile.size}:7`,
+      source: "<!doctype html><html><body><main>Already loaded</main></body></html>",
+    });
+
+    const { container } = renderPanel([currentFile], { filesRefreshKey: 7 });
+
+    await waitFor(() => {
+      const iframe = container.querySelector<HTMLIFrameElement>(".df-card-thumb iframe");
+      expect(iframe?.getAttribute("srcdoc") ?? iframe?.srcdoc ?? "")
+        .toContain("Already loaded");
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 
