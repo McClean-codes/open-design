@@ -792,7 +792,11 @@ test('[P0] @critical edited HTML file restores selected tab and preview after re
 
   const frame = artifactPreviewFrame(page);
   await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-  await page.getByTestId('manual-edit-mode-toggle').click();
+  const activeEditToggle = page.locator(
+    '[data-testid="file-workspace"] [data-testid="manual-edit-mode-toggle"]:visible',
+  );
+  await expect(activeEditToggle).toHaveCount(1);
+  await activeEditToggle.click();
   await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'Parameters');
   const parameters = inspectorSection(page, 'Parameters');
   const fontSizeInput = parameters.locator('.cc-row').filter({ hasText: 'Font size' }).locator('input');
@@ -802,7 +806,7 @@ test('[P0] @critical edited HTML file restores selected tab and preview after re
   await inspectSaveButton(page).click({ force: true });
   await expectFileSource(page, projectId, 'restore-edit.html', ['font-size: 52px', 'color:']);
 
-  await page.getByTestId('manual-edit-mode-toggle').click();
+  await activeEditToggle.click();
   const viewMode = page.getByRole('tablist', { name: 'View mode' });
   await expect(viewMode).toBeVisible();
   await expect(viewMode.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');

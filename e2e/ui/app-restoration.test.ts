@@ -1225,6 +1225,11 @@ test('[P0] @critical daemon error details persist between failed sends', async (
     eventBodies: [failedRunEventBody('connection refused')],
   });
 
+  // This scenario exercises a local agent, not AMR. Keep the signed-out
+  // authority witness hermetic instead of depending on a host Vela install.
+  await page.route('**/api/integrations/vela/status*', async (route) => {
+    await route.fulfill({ json: { loggedIn: false } });
+  });
   await gotoEntryHome(page);
   await createProject(page, entry);
   await expectWorkspaceReady(page);
@@ -1246,10 +1251,20 @@ test('[P0] @critical daemon error details persist between failed sends', async (
   const crossFileRow = page.locator('[data-testid^="design-file-row-"]', {
     hasText: 'error-cross-tab.html',
   });
-  await expect(crossFileRow).toBeVisible();
-  // #5517: one click on the row opens the file — no preview card in between.
-  await crossFileRow.getByRole('button').first().click();
-  await expect(page.getByRole('tab', { name: /error-cross-tab\.html/i })).toHaveAttribute('aria-selected', 'true');
+  const crossFileTab = page.getByRole('tab', { name: /error-cross-tab\.html/i });
+  await expect(async () => {
+    if (await crossFileTab.getAttribute('aria-selected') === 'true') return;
+
+    const openButton = crossFileRow.getByRole('button').first();
+    if (!await openButton.isVisible()) {
+      throw new Error('seeded artifact is neither listed nor already open');
+    }
+    // #5517: one click on the row opens the file — no preview card in between.
+    // The project-file refresh may also select the new artifact before this
+    // click settles, so retry against the selected tab instead of a stale row.
+    await openButton.click({ timeout: T.short });
+    await expect(crossFileTab).toHaveAttribute('aria-selected', 'true', { timeout: T.short });
+  }).toPass({ timeout: T.medium });
   await expect(artifactPreviewFrame(page).getByRole('heading', { name: 'Error cross tab' })).toBeVisible();
 
   await page.goto(`/projects/${projectId}`);
