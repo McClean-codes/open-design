@@ -10,6 +10,7 @@ import { startFakeCollabHub } from '@/playwright/fake-collab-hub';
 import { applyStandardMocks } from '@/playwright/mock-factory';
 import { ensureRailOpen } from '@/playwright/rail';
 import { expect, test } from '@/playwright/suite';
+import { T } from '@/timeouts';
 
 const WORKSPACE_ID = 'ws-multi-client';
 const PROJECT_NAME = 'Realtime shared workspace';
@@ -31,7 +32,7 @@ const MEMBER = {
   role: 'member' as const,
 };
 
-test.describe.configure({ timeout: 300_000 });
+test.describe.configure({ timeout: T.xlong * 5 });
 
 test('[P0] two isolated clients converge live content, presence, and owner unshare', async ({
   browser,
@@ -82,9 +83,9 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
       element.click();
     });
     const memberCredits = memberPage.getByTestId('entry-nav-credits-row');
-    await expect(memberCredits).toContainText('$0.00', { timeout: 30_000 });
+    await expect(memberCredits).toContainText('$0.00', { timeout: T.long });
     hub.setWorkspaceBalance(MEMBER.memberId, '18.50');
-    await expect(memberCredits).toContainText('$18.50', { timeout: 30_000 });
+    await expect(memberCredits).toContainText('$18.50', { timeout: T.long });
     await memberPage.keyboard.press('Escape');
 
     const projectId = await createProject(ownerPage);
@@ -95,7 +96,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
       {
         data: { visibility: 'team' },
         headers: workspaceHeaders(OWNER),
-        timeout: 30_000,
+        timeout: T.long,
       },
     );
     expect(share.ok(), await share.text()).toBeTruthy();
@@ -105,6 +106,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.args[0] === 'team-projects' &&
         entry.args[1] === 'upsert' &&
         entry.args[2] === projectId,
+      T.long,
     );
 
     await expect.poll(
@@ -119,7 +121,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         const body = JSON.parse(raw) as { projects?: Array<{ projectId?: string }> };
         return body.projects?.map((project) => project.projectId) ?? [];
       },
-      { timeout: 20_000 },
+      { timeout: T.long },
     ).toContain(projectId);
 
     await ensureRailOpen(memberPage);
@@ -130,21 +132,21 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     await expect(memberCard).toContainText(PROJECT_NAME);
     await memberCard.locator('.recent-projects__card-main').click();
     await expect(memberPage).toHaveURL(new RegExp(`/projects/${projectId}`), {
-      timeout: 30_000,
+      timeout: T.long,
     });
     const memberPreview = memberPage.frameLocator(PREVIEW_SELECTOR);
     const initialMemberPull = await hub.waitForCommand(
       (entry) =>
         entry.memberId === MEMBER.memberId &&
         isProjectPull(entry.args),
-      30_000,
+      T.long,
     );
     const initialMemberVersion = projectPullVersion(initialMemberPull.args);
     await expect(
       memberPreview.getByRole('heading', { name: 'Owner version 1' }),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: T.long });
     await expect(memberPage.getByTestId('workspace-focus-toggle')).toBeVisible({
-      timeout: 20_000,
+      timeout: T.long,
     });
     await expect(memberPage.getByTestId('chat-collapse-toggle')).toBeHidden();
     await memberPage.getByTestId('workspace-focus-toggle').click();
@@ -157,7 +159,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
 
     await ownerPage.goto(`/projects/${projectId}`, { waitUntil: 'domcontentloaded' });
     await expect(ownerPage.getByTestId('file-workspace')).toBeVisible({
-      timeout: 30_000,
+      timeout: T.long,
     });
     await expect(ownerPage.getByTestId('workspace-focus-toggle')).toHaveCount(0);
     await expect(ownerPage.getByTestId('chat-collapse-toggle')).toBeVisible();
@@ -168,10 +170,10 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.args[1] === 'presence' &&
         entry.args[2] === 'heartbeat' &&
         entry.args[3] === projectId,
-      30_000,
+      T.long,
     );
     await expect(twoPersonPresence).toBeVisible({
-      timeout: 20_000,
+      timeout: T.long,
     });
     await expect(twoPersonPresence.locator('[data-self="true"]')).toHaveCount(1);
     await expect(twoPersonPresence.locator('[title]')).toHaveCount(2);
@@ -212,7 +214,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
             entry.args[0] === 'resource' &&
             entry.args[1] === 'push',
         ).length,
-      { timeout: 20_000 },
+      { timeout: T.long },
     ).toBeGreaterThan(previousPushCount);
     const contentEvent = await hub.waitForEvent(
       (entry) =>
@@ -220,27 +222,29 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.projectId === projectId &&
         typeof entry.version === 'number' &&
         entry.version > previousPublishedVersion,
+      T.long,
     );
     await hub.waitForCommand(
       (entry) =>
         entry.memberId === MEMBER.memberId &&
         isProjectPull(entry.args) &&
         projectPullVersion(entry.args) > initialMemberVersion,
-      30_000,
+      T.long,
     );
 
     await expect(
       memberPreview.getByRole('heading', { name: 'Owner version 2' }),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: T.long });
     await expect(
       memberPreview.getByRole('heading', { name: 'Owner version 1' }),
     ).toHaveCount(0);
-    await expect.poll(() =>
-      memberPage.evaluate(() =>
+    await expect.poll(
+      () => memberPage.evaluate(() =>
         (window as Window & typeof globalThis & {
           __multiClientDocumentMarker?: string;
         }).__multiClientDocumentMarker ?? null,
-      )
+      ),
+      { timeout: T.long },
     ).toBe(memberDocumentMarker);
     // Expanding is sticky for this project visit: content/status events after
     // the initial confirmed non-owner default must never collapse chat again.
@@ -260,7 +264,10 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     // versions while it is offline. Reconnect catch-up must read the current
     // authoritative head (v4), not depend on replaying either missed event.
     hub.setEventsAvailable(MEMBER.memberId, false);
-    await expect.poll(() => hub.eventSubscriberCount(MEMBER.memberId)).toBe(0);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.long },
+    ).toBe(0);
     const pushCountBeforeOfflineWrites = hub.commandLog.filter(
       (entry) =>
         entry.memberId === OWNER.memberId &&
@@ -275,7 +282,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
           entry.args[0] === 'resource' &&
           entry.args[1] === 'push',
       ).length,
-      { timeout: 20_000 },
+      { timeout: T.long },
     ).toBeGreaterThan(pushCountBeforeOfflineWrites);
     const version3Event = await hub.waitForEvent(
       (entry) =>
@@ -283,6 +290,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.projectId === projectId &&
         typeof entry.version === 'number' &&
         entry.version > (contentEvent.version ?? 0),
+      T.long,
     );
     const pushCountAfterVersion3 = hub.commandLog.filter(
       (entry) =>
@@ -298,7 +306,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
           entry.args[0] === 'resource' &&
           entry.args[1] === 'push',
       ).length,
-      { timeout: 20_000 },
+      { timeout: T.long },
     ).toBeGreaterThan(pushCountAfterVersion3);
     const version4Event = await hub.waitForEvent(
       (entry) =>
@@ -306,6 +314,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.projectId === projectId &&
         typeof entry.version === 'number' &&
         entry.version > (version3Event.version ?? 0),
+      T.long,
     );
     await expect(
       memberPreview.getByRole('heading', { name: 'Owner version 2' }),
@@ -314,27 +323,28 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     hub.setEventsAvailable(MEMBER.memberId, true);
     await expect.poll(
       () => hub.eventSubscriberCount(MEMBER.memberId),
-      { timeout: 30_000 },
+      { timeout: T.long },
     ).toBeGreaterThan(0);
     await hub.waitForCommand(
       (entry) =>
         entry.memberId === MEMBER.memberId &&
         isProjectPull(entry.args) &&
         projectPullVersion(entry.args) >= (version4Event.version ?? Number.MAX_SAFE_INTEGER),
-      30_000,
+      T.long,
     );
     await expect(
       memberPreview.getByRole('heading', { name: 'Owner version 4 while member offline' }),
-    ).toBeVisible({ timeout: 30_000 });
+    ).toBeVisible({ timeout: T.long });
     await expect(
       memberPreview.getByRole('heading', { name: 'Owner version 3 while member offline' }),
     ).toHaveCount(0);
-    await expect.poll(() =>
-      memberPage.evaluate(() =>
+    await expect.poll(
+      () => memberPage.evaluate(() =>
         (window as Window & typeof globalThis & {
           __multiClientDocumentMarker?: string;
         }).__multiClientDocumentMarker ?? null,
-      )
+      ),
+      { timeout: T.long },
     ).toBe(memberDocumentMarker);
 
     // A title edit is catalog metadata, not project content. Drive the real
@@ -363,11 +373,11 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
           entry.args[displayNameIndex + 1] === renamedProject
         );
       },
-      30_000,
+      T.long,
     );
     await expect(memberPage.getByTestId('project-title')).toContainText(
       renamedProject,
-      { timeout: 30_000 },
+      { timeout: T.long },
     );
     expect(hub.commandLog.filter(
       (entry) =>
@@ -375,12 +385,13 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.args[0] === 'resource' &&
         entry.args[1] === 'push',
     )).toHaveLength(pushCountBeforeRename);
-    await expect.poll(() =>
-      memberPage.evaluate(() =>
+    await expect.poll(
+      () => memberPage.evaluate(() =>
         (window as Window & typeof globalThis & {
           __multiClientDocumentMarker?: string;
         }).__multiClientDocumentMarker ?? null,
-      )
+      ),
+      { timeout: T.long },
     ).toBe(memberDocumentMarker);
 
     await memberPage.getByTestId('board-mode-toggle').click();
@@ -400,7 +411,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.args[1] === 'comment' &&
         entry.args[2] === 'push' &&
         entry.args[3] === projectId,
-      20_000,
+      T.long,
     );
 
     // The owner receives the member-authored comment through the shared relay,
@@ -408,7 +419,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     await ownerPage.getByTestId('comment-panel-toggle').click();
     await expect(
       ownerPage.getByTestId('comment-side-item').filter({ hasText: 'Member review note' }),
-    ).toBeVisible({ timeout: 20_000 });
+    ).toBeVisible({ timeout: T.long });
     await expect(
       ownerPage.getByTestId('comment-side-item').filter({ hasText: MEMBER.name }),
     ).toBeVisible();
@@ -427,7 +438,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
       {
         data: { visibility: 'personal' },
         headers: workspaceHeaders(OWNER),
-        timeout: 30_000,
+        timeout: T.long,
       },
     );
     expect(unshare.ok(), await unshare.text()).toBeTruthy();
@@ -437,7 +448,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         entry.args[0] === 'team-projects' &&
         entry.args[1] === 'remove' &&
         entry.args[2] === projectId,
-      30_000,
+      T.long,
     );
 
     // A non-creator's local copy is a Team mirror, not their own draft. Once
@@ -455,7 +466,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         const body = JSON.parse(raw) as { projects?: Array<{ projectId?: string }> };
         return body.projects?.map((project) => project.projectId) ?? [];
       },
-      { timeout: 30_000 },
+      { timeout: T.long },
     ).not.toContain(projectId);
     await expect.poll(
       async () => {
@@ -469,7 +480,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         };
         return body.projects?.find((project) => project.id === projectId) ?? null;
       },
-      { timeout: 30_000 },
+      { timeout: T.long },
     ).toBeNull();
 
     await memberPage.goto('/', { waitUntil: 'domcontentloaded' });
@@ -491,7 +502,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
             entry.args[0] === 'resource' &&
             entry.args[1] === 'push',
         ).length,
-      { timeout: 5_000 },
+      { timeout: T.short * 2 },
     ).toBe(pushCountBeforeUnshare);
     const retainedMemberFile = await memberPage.request.get(
       `/api/projects/${projectId}/files/index.html`,
@@ -531,7 +542,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         };
         return body.context ?? null;
       },
-      { timeout: 30_000 },
+      { timeout: T.long },
     ).toMatchObject({
       workspaceId: `personal-${MEMBER.memberId}`,
       workspaceType: 'personal',
@@ -539,7 +550,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     await memberPage.evaluate(() => window.dispatchEvent(new Event('focus')));
     await expect(memberPage.getByTestId('workspace-switcher')).toContainText(
       `${MEMBER.name} workspace`,
-      { timeout: 30_000 },
+      { timeout: T.long },
     );
     await expect(memberPage.getByTestId('entry-nav-all-projects')).toHaveCount(0);
     const staleTeamReselect = await memberPage.request.put('/api/workspace/active', {
@@ -565,7 +576,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
 async function openHomeAndPinWorkspace(page: Page, workspaceMemberId: string): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Loading Open Design…')).toHaveCount(0, {
-    timeout: 60_000,
+    timeout: T.xlong,
   });
   const privacyDialog = page
     .getByRole('dialog')
@@ -577,12 +588,12 @@ async function openHomeAndPinWorkspace(page: Page, workspaceMemberId: string): P
   }
   const response = await page.request.put('/api/workspace/active', {
     data: { workspaceId: WORKSPACE_ID, workspaceMemberId },
-    timeout: 15_000,
+    timeout: T.long,
   });
   expect(response.ok(), await response.text()).toBeTruthy();
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Loading Open Design…')).toHaveCount(0, {
-    timeout: 60_000,
+    timeout: T.xlong,
   });
 }
 
@@ -597,7 +608,7 @@ async function createProject(page: Page): Promise<string> {
       metadata: { kind: 'prototype' },
     },
     headers: workspaceHeaders(OWNER),
-    timeout: 20_000,
+    timeout: T.long,
   });
   expect(response.ok(), await response.text()).toBeTruthy();
   const body = await response.json() as { project?: { id?: string } };
@@ -622,7 +633,7 @@ async function writeHtml(page: Page, projectId: string, content: string): Promis
       },
     },
     headers: workspaceHeaders(OWNER),
-    timeout: 20_000,
+    timeout: T.long,
   });
   expect(response.ok(), await response.text()).toBeTruthy();
 }

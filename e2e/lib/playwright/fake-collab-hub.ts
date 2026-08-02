@@ -370,7 +370,7 @@ async function handleTeamProjectsCommand(input: {
       manifestDigest: `sha256:${'a'.repeat(64)}`,
       lifecycleState: 'active',
       authorizedAt: new Date(authorizedAt).toISOString(),
-      expiresAt: new Date(authorizedAt + 1_500).toISOString(),
+      expiresAt: new Date(authorizedAt + 2_000).toISOString(),
     });
   }
   if (command === 'upsert' && projectId) {
