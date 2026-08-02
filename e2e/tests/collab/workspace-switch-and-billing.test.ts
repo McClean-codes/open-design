@@ -150,7 +150,10 @@ describe('workspace switching and scoped billing', () => {
             context: { workspaceId: string; workspaceName?: string; workspaceType: string };
           }>(webUrl, '/api/workspace/active', {
             method: 'PUT',
-            body: { workspaceId: TEAM.workspaceId },
+            body: {
+              workspaceId: TEAM.workspaceId,
+              workspaceMemberId: TEAM.workspaceMemberId,
+            },
           });
           expect(switched).toMatchObject({
             activeWorkspaceId: TEAM.workspaceId,
@@ -165,7 +168,16 @@ describe('workspace switching and scoped billing', () => {
             webUrl,
             '/api/workspace/directory',
           );
-          expect(directory.activeWorkspaceId).toBe(TEAM.workspaceId);
+          expect(directory.activeWorkspaceId).toBeNull();
+          const selected = await requestJson<{
+            context: { workspaceId: string; workspaceMemberId: string } | null;
+          }>(webUrl, '/api/workspace/context', {
+            headers: workspaceHeaders(TEAM),
+          });
+          expect(selected.context).toMatchObject({
+            workspaceId: TEAM.workspaceId,
+            workspaceMemberId: TEAM.workspaceMemberId,
+          });
 
           const billing = await requestJson<{
             summary: { workspaceId: null; membershipTier: string } | null;
@@ -227,7 +239,7 @@ describe('workspace switching and scoped billing', () => {
   );
 
   test(
-    'clears a stale team pin and recovers to the personal workspace after membership removal',
+    'rejects a removed Team request identity while Personal remains selectable',
     { timeout: 240_000 },
     async () => {
       const suite = await createSmokeSuite('collab-workspace-stale-pin-recovery');
@@ -241,12 +253,15 @@ describe('workspace switching and scoped billing', () => {
           });
           await requestJson(webUrl, '/api/workspace/active', {
             method: 'PUT',
-            body: { workspaceId: TEAM.workspaceId },
+            body: {
+              workspaceId: TEAM.workspaceId,
+              workspaceMemberId: TEAM.workspaceMemberId,
+            },
           });
 
-          // Simulate B confirming that the team membership disappeared. The
-          // current endpoint can no longer resolve the pinned principal, while
-          // the directory still contains the user's personal workspace.
+          // Simulate B confirming that the Team membership disappeared. The
+          // removed request-local identity can no longer resolve, while the
+          // directory still contains the user's Personal workspace.
           directoryItems = [PERSONAL];
           teamCurrentUnavailable = true;
 
@@ -254,7 +269,7 @@ describe('workspace switching and scoped billing', () => {
             webUrl,
             '/api/workspace/directory',
           );
-          expect(directory.activeWorkspaceId).toBe(PERSONAL.workspaceId);
+          expect(directory.activeWorkspaceId).toBeNull();
 
           const recovered = await requestJson<{
             context: {

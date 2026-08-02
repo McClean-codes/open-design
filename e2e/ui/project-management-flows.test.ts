@@ -1275,9 +1275,11 @@ async function wireTeamRunBalanceFixtures(
   personalWalletRequests: () => number;
   resetBalanceRequests: () => void;
   teamBillingRequests: () => number;
+  teamBillingQueries: () => Array<Record<string, string | null>>;
 }> {
   let personalWalletRequestCount = 0;
   let teamBillingRequestCount = 0;
+  const teamBillingQueries: Array<Record<string, string | null>> = [];
   await page.route('**/api/app-config', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.fallback();
@@ -1353,7 +1355,8 @@ async function wireTeamRunBalanceFixtures(
   });
   await page.route('**/api/workspace/**', async (route) => {
     const request = route.request();
-    const { pathname } = new URL(request.url());
+    const url = new URL(request.url());
+    const { pathname } = url;
     if (request.method() !== 'GET') {
       await route.fallback();
       return;
@@ -1381,6 +1384,20 @@ async function wireTeamRunBalanceFixtures(
     }
     if (pathname === '/api/workspace/billing') {
       teamBillingRequestCount += 1;
+      const query = {
+        scope: url.searchParams.get('scope'),
+        workspaceId: url.searchParams.get('workspaceId'),
+        freshness: url.searchParams.get('freshness'),
+      };
+      teamBillingQueries.push(query);
+      if (
+        query.scope !== 'workspace' ||
+        query.workspaceId !== TEAM_RUN_CONTEXT.workspaceId ||
+        query.freshness !== 'authoritative'
+      ) {
+        await route.fulfill({ status: 400, json: { error: 'unexpected_billing_scope' } });
+        return;
+      }
       await route.fulfill({
         json: {
           summary: null,
@@ -1425,8 +1442,10 @@ async function wireTeamRunBalanceFixtures(
     resetBalanceRequests: () => {
       personalWalletRequestCount = 0;
       teamBillingRequestCount = 0;
+      teamBillingQueries.length = 0;
     },
     teamBillingRequests: () => teamBillingRequestCount,
+    teamBillingQueries: () => [...teamBillingQueries],
   };
 }
 
@@ -1517,13 +1536,17 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
     releaseScope = resolve;
   });
   let scopeRequests = 0;
+  let heldScopeHeaders: Record<string, string> | null = null;
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
     // The shell first resolves the bound project route before it is allowed to
     // mount ProjectView. Hold only ProjectView's own first scope read: this is
     // the window in which the exact project binding + caller witness must keep
     // the send Team-scoped instead of falling back to the Personal wallet.
-    if (scopeRequests > 1) await scopeGate;
+    if (scopeRequests > 1) {
+      heldScopeHeaders = await route.request().allHeaders();
+      await scopeGate;
+    }
     await route.fulfill({
       json: {
         scope: {
@@ -1550,29 +1573,42 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
     await route.fallback();
   });
 
-  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
-  await expectWorkspaceReady(page);
-  await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
-  await expect(page.getByTestId('chat-composer-input')).toBeEditable();
-  balanceRequests.resetBalanceRequests();
-  await page.getByTestId('chat-composer-input').fill(prompt);
-  await page.getByTestId('chat-send').click();
+  try {
+    await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+    await expectWorkspaceReady(page);
+    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+    expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
+      TEAM_RUN_CONTEXT.workspaceMemberId,
+    );
+    await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+    balanceRequests.resetBalanceRequests();
+    await page.getByTestId('chat-composer-input').fill(prompt);
+    await page.getByTestId('chat-send').click();
 
-  await expect.poll(() => runHeaders.length).toBe(1);
-  releaseScope();
-  expect(runHeaders[0]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
-  expect(runHeaders[0]?.['x-od-workspace-member-id']).toBe(
-    TEAM_RUN_CONTEXT.workspaceMemberId,
-  );
-  // Run scope is an HTTP authority header contract. The daemon intentionally
-  // does not duplicate this mutable principal into ChatRequest JSON.
-  expect(runBodies[0]?.currentPrompt).toBe(prompt);
-  expect(balanceRequests.teamBillingRequests()).toBe(1);
-  // Team preflight reads the account snapshot once for signed-in identity
-  // metadata only; Personal $0 is not the balance oracle and cannot veto the
-  // Team-funded run proved above.
-  expect(balanceRequests.personalWalletRequests()).toBe(1);
-  await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
+    await expect.poll(() => runHeaders.length).toBe(1);
+    releaseScope();
+    expect(runHeaders[0]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect(runHeaders[0]?.['x-od-workspace-member-id']).toBe(
+      TEAM_RUN_CONTEXT.workspaceMemberId,
+    );
+    // Run scope is an HTTP authority header contract. The daemon intentionally
+    // does not duplicate this mutable principal into ChatRequest JSON.
+    expect(runBodies[0]?.currentPrompt).toBe(prompt);
+    expect(balanceRequests.teamBillingRequests()).toBe(1);
+    expect(balanceRequests.teamBillingQueries()).toEqual([{
+      scope: 'workspace',
+      workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+      freshness: 'authoritative',
+    }]);
+    // Team preflight reads the account snapshot once for signed-in identity
+    // metadata only; Personal $0 is not the balance oracle and cannot veto the
+    // Team-funded run proved above.
+    expect(balanceRequests.personalWalletRequests()).toBe(1);
+    await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
+  } finally {
+    releaseScope();
+  }
 });
 
 test('[P0] Team project balance gate ignores funded Personal wallet and blocks on empty Team wallet', async ({ page }) => {
@@ -1590,9 +1626,13 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
     releaseScope = resolve;
   });
   let scopeRequests = 0;
+  let heldScopeHeaders: Record<string, string> | null = null;
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
-    if (scopeRequests > 1) await scopeGate;
+    if (scopeRequests > 1) {
+      heldScopeHeaders = await route.request().allHeaders();
+      await scopeGate;
+    }
     await route.fulfill({
       json: {
         scope: {
@@ -1610,26 +1650,39 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
     events: false,
   });
 
-  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
-  await expectWorkspaceReady(page);
-  await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
-  await expect(page.getByTestId('chat-composer-input')).toBeEditable();
-  balanceRequests.resetBalanceRequests();
-  await page.getByTestId('chat-composer-input').fill(
-    'Do not charge the funded Personal wallet for this Team project.',
-  );
-  await page.getByTestId('chat-send').click();
+  try {
+    await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+    await expectWorkspaceReady(page);
+    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+    expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
+      TEAM_RUN_CONTEXT.workspaceMemberId,
+    );
+    await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+    balanceRequests.resetBalanceRequests();
+    await page.getByTestId('chat-composer-input').fill(
+      'Do not charge the funded Personal wallet for this Team project.',
+    );
+    await page.getByTestId('chat-send').click();
 
-  const dialog = page.getByTestId('amr-balance-dialog');
-  await expect(dialog).toBeVisible();
-  releaseScope();
-  await expect(dialog).toContainText('$0.00');
-  expect(balanceRequests.teamBillingRequests()).toBe(1);
-  // Conversely, funded Personal identity metadata cannot override Team $0.
-  expect(balanceRequests.personalWalletRequests()).toBe(1);
-  await runRequests.expectNone({
-    message: 'An empty Team wallet must block before POST /api/runs',
-  });
+    const dialog = page.getByTestId('amr-balance-dialog');
+    await expect(dialog).toBeVisible();
+    releaseScope();
+    await expect(dialog).toContainText('$0.00');
+    expect(balanceRequests.teamBillingRequests()).toBe(1);
+    expect(balanceRequests.teamBillingQueries()).toEqual([{
+      scope: 'workspace',
+      workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+      freshness: 'authoritative',
+    }]);
+    // Conversely, funded Personal identity metadata cannot override Team $0.
+    expect(balanceRequests.personalWalletRequests()).toBe(1);
+    await runRequests.expectNone({
+      message: 'An empty Team wallet must block before POST /api/runs',
+    });
+  } finally {
+    releaseScope();
+  }
 });
 
 test('[P0] @critical project detail composer agent menu lets the user switch the model', async ({ page }) => {

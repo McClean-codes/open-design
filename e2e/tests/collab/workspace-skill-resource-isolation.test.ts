@@ -241,7 +241,7 @@ describe('workspace-scoped skill resources', () => {
                 triggers: [],
               }),
             }),
-          ).toBe(403);
+          ).toBe(404);
           expect(
             await responseStatus(webUrl, `/api/skills/${encodeURIComponent(skillId)}`, {
               method: 'DELETE',

@@ -100,7 +100,7 @@ const TEAM_UNKNOWN_SEATS: WorkspaceFixture = {
 };
 
 type WorkspaceMocks = {
-  activeBodies: Array<{ workspaceId?: string }>;
+  activeBodies: Array<{ workspaceId?: string; workspaceMemberId?: string }>;
   inviteBodies: Array<{
     invites?: Array<{ email?: string; role?: string }>;
   }>;
@@ -168,7 +168,10 @@ test('[P0] workspace switcher changes identity, returns Home, and exposes team n
   await menu.getByRole('menuitem', { name: 'Atlas Team' }).click();
 
   await expect.poll(() => mocks.activeBodies).toEqual([
-    { workspaceId: TEAM_OWNER.workspaceId },
+    {
+      workspaceId: TEAM_OWNER.workspaceId,
+      workspaceMemberId: TEAM_OWNER.workspaceMemberId,
+    },
   ]);
   await expect(page.getByTestId('workspace-switcher')).toContainText('Atlas Team');
   await expect(page.getByTestId('entry-view-home')).toBeVisible();
@@ -652,7 +655,7 @@ test('[P0] an already-open move flow fails closed when the workspace locks befor
     window.dispatchEvent(new Event('od:workspace-context-refresh'));
   });
   await expect(page.getByTestId('workspace-switcher')).toContainText('Locked Atlas Team');
-  await card.getByRole('button', { name: 'More actions' }).click();
+  await expect(card.getByRole('button', { name: 'More actions' })).toHaveCount(0);
   await expect(card.getByRole('menu')).toHaveCount(0);
 });
 
@@ -951,6 +954,7 @@ test('[P0] inbound shared-project transfer shows syncing instead of a false empt
     name: remoteProject.name,
   };
   let pullAttempts = 0;
+  const scopeHeaderLog: Array<Record<string, string>> = [];
 
   await page.route('**/api/workspace/projects/team', async (route) => {
     await route.fulfill({ json: { projects: [remoteProject] } });
@@ -969,6 +973,21 @@ test('[P0] inbound shared-project transfer shows syncing instead of a false empt
   await page.route(`**/api/projects/${remoteProject.projectId}/**`, async (route) => {
     const request = route.request();
     const { pathname } = new URL(request.url());
+    if (pathname.endsWith('/workspace-scope') && request.method() === 'GET') {
+      scopeHeaderLog.push(await request.allHeaders());
+      await route.fulfill({
+        json: {
+          scope: {
+            kind: 'team',
+            projectId: remoteProject.projectId,
+            workspaceId: TEAM_MEMBER.workspaceId,
+            visibility: 'team',
+            context: TEAM_MEMBER,
+          },
+        },
+      });
+      return;
+    }
     if (pathname.endsWith('/collab/status') && request.method() === 'GET') {
       await route.fulfill({
         json: {
@@ -1022,6 +1041,12 @@ test('[P0] inbound shared-project transfer shows syncing instead of a false empt
   await expect(page.getByTestId('design-files-empty')).toHaveCount(0);
   await expect(page.getByText('New sketch', { exact: true })).toHaveCount(0);
   await expect.poll(() => pullAttempts).toBeGreaterThan(0);
+  expect(scopeHeaderLog).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      'x-od-workspace-id': TEAM_MEMBER.workspaceId,
+      'x-od-workspace-member-id': TEAM_MEMBER.workspaceMemberId,
+    }),
+  ]));
 });
 
 test('[P0] successful first-open materialization opens one read-only local mirror with the catalog title', async ({
@@ -1193,6 +1218,17 @@ async function wireWorkspaceMocks(
     const method = request.method();
 
     if (pathname === '/api/workspace/context' && method === 'GET') {
+      const headers = await request.allHeaders();
+      if (
+        headers['x-od-workspace-id'] !== current.workspaceId ||
+        headers['x-od-workspace-member-id'] !== current.workspaceMemberId
+      ) {
+        await route.fulfill({
+          status: headers['x-od-workspace-id'] ? 403 : 400,
+          json: { error: 'workspace_context_not_authorized' },
+        });
+        return;
+      }
       await route.fulfill({ json: { context: current } });
       return;
     }
@@ -1200,16 +1236,21 @@ async function wireWorkspaceMocks(
       await route.fulfill({
         json: {
           items: directory.map(directoryItem),
-          activeWorkspaceId: current.workspaceId,
+          activeWorkspaceId: null,
         },
       });
       return;
     }
     if (pathname === '/api/workspace/active' && method === 'PUT') {
-      const body = request.postDataJSON() as { workspaceId?: string };
+      const body = request.postDataJSON() as {
+        workspaceId?: string;
+        workspaceMemberId?: string;
+      };
       activeBodies.push(body);
       const selected = directory.find(
-        (candidate) => candidate.workspaceId === body.workspaceId,
+        (candidate) =>
+          candidate.workspaceId === body.workspaceId &&
+          candidate.workspaceMemberId === body.workspaceMemberId,
       );
       if (!selected) {
         await route.fulfill({ status: 404, json: { error: 'workspace_not_visible' } });
@@ -1389,7 +1430,10 @@ function scopedProjectSummary(
       canSendTo: true,
       canRestoreVersion: true,
     },
-    project,
+    project: {
+      ...project,
+      workspaceId: workspaceFixture.workspaceId,
+    },
   };
 }
 

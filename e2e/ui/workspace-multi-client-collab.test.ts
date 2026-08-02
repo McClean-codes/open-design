@@ -70,8 +70,8 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     const memberPage = cluster.clients.member!.page;
     await Promise.all([applyStandardMocks(ownerPage), applyStandardMocks(memberPage)]);
     await Promise.all([
-      openHomeAndPinWorkspace(ownerPage),
-      openHomeAndPinWorkspace(memberPage),
+      openHomeAndPinWorkspace(ownerPage, OWNER.memberId),
+      openHomeAndPinWorkspace(memberPage, MEMBER.memberId),
     ]);
 
     // Exercise the complete wallet invalidation chain: hub event → daemon
@@ -109,9 +109,14 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
 
     await expect.poll(
       async () => {
-        const response = await memberPage.request.get('/api/workspace/projects/team');
-        if (!response.ok()) return [];
-        const body = await response.json() as { projects?: Array<{ projectId?: string }> };
+        const response = await memberPage.request.get('/api/workspace/projects/team', {
+          headers: workspaceHeaders(MEMBER),
+        });
+        const raw = await response.text();
+        if (!response.ok()) {
+          throw new Error(`member Team catalog ${response.status()}: ${raw}`);
+        }
+        const body = JSON.parse(raw) as { projects?: Array<{ projectId?: string }> };
         return body.projects?.map((project) => project.projectId) ?? [];
       },
       { timeout: 20_000 },
@@ -244,6 +249,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
 
     const memberFile = await memberPage.request.get(
       `/api/projects/${projectId}/files/index.html`,
+      { headers: workspaceHeaders(MEMBER) },
     );
     const memberFileBody = await memberFile.text();
     expect(memberFile.ok(), memberFileBody).toBeTruthy();
@@ -434,15 +440,19 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
       30_000,
     );
 
-    // The former viewer keeps a local personal draft, but the authoritative
-    // team projection must disappear immediately and stay gone. This is the
-    // product's revocation boundary: the old mirror is no longer refreshed or
-    // republished as a shared project.
+    // A non-creator's local copy is a Team mirror, not their own draft. Once
+    // the owner unshares it, quarantine that mirror: it must disappear from
+    // every project list and must never be reclassified as Personal.
     await expect.poll(
       async () => {
-        const response = await memberPage.request.get('/api/workspace/projects/team');
-        if (!response.ok()) return ['request-failed'];
-        const body = await response.json() as { projects?: Array<{ projectId?: string }> };
+        const response = await memberPage.request.get('/api/workspace/projects/team', {
+          headers: workspaceHeaders(MEMBER),
+        });
+        const raw = await response.text();
+        if (!response.ok()) {
+          throw new Error(`member Team catalog ${response.status()}: ${raw}`);
+        }
+        const body = JSON.parse(raw) as { projects?: Array<{ projectId?: string }> };
         return body.projects?.map((project) => project.projectId) ?? [];
       },
       { timeout: 30_000 },
@@ -457,21 +467,20 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         const body = await response.json() as {
           projects?: Array<{ id?: string; visibility?: string }>;
         };
-        return body.projects?.find((project) => project.id === projectId)?.visibility ?? null;
+        return body.projects?.find((project) => project.id === projectId) ?? null;
       },
       { timeout: 30_000 },
-    ).toBe('personal');
+    ).toBeNull();
 
     await memberPage.goto('/', { waitUntil: 'domcontentloaded' });
     await ensureRailOpen(memberPage);
     await memberPage.getByTestId('entry-nav-all-projects').click();
     await expect(memberCard).toHaveCount(0);
     await memberPage.getByTestId('entry-nav-drafts').click();
-    const demotedDraft = memberPage.locator(
+    const quarantinedMirror = memberPage.locator(
       `.recent-projects__card[data-project-id="${projectId}"]:visible`,
     );
-    await expect(demotedDraft).toBeVisible();
-    await expect(demotedDraft.getByText('Shared', { exact: true })).toHaveCount(0);
+    await expect(quarantinedMirror).toHaveCount(0);
 
     await writeHtml(ownerPage, projectId, htmlFor('Owner version 3 after unshare'));
     await expect.poll(
@@ -486,11 +495,9 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     ).toBe(pushCountBeforeUnshare);
     const retainedMemberFile = await memberPage.request.get(
       `/api/projects/${projectId}/files/index.html`,
+      { headers: workspaceHeaders(MEMBER) },
     );
-    const retainedMemberBody = await retainedMemberFile.text();
-    expect(retainedMemberFile.ok(), retainedMemberBody).toBeTruthy();
-    expect(retainedMemberBody).toContain('Owner version 4 while member offline');
-    expect(retainedMemberBody).not.toContain('Owner version 3 after unshare');
+    expect(retainedMemberFile.status()).toBe(404);
 
     // Finally revoke the member's workspace membership while their browser is
     // still open. The hub invalidation must clear the stale team pin, recover
@@ -499,7 +506,25 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     hub.removeMember(MEMBER.memberId);
     await expect.poll(
       async () => {
-        const response = await memberPage.request.get('/api/workspace/context');
+        const directoryResponse = await memberPage.request.get('/api/workspace/directory');
+        if (!directoryResponse.ok()) return null;
+        const directory = await directoryResponse.json() as {
+          items?: Array<{
+            workspaceId?: string;
+            workspaceMemberId?: string;
+            workspaceType?: string;
+          }>;
+        };
+        const personal = directory.items?.find(
+          (item) => item.workspaceType === 'personal',
+        );
+        if (!personal?.workspaceId || !personal.workspaceMemberId) return null;
+        const response = await memberPage.request.get('/api/workspace/context', {
+          headers: {
+            'x-od-workspace-id': personal.workspaceId,
+            'x-od-workspace-member-id': personal.workspaceMemberId,
+          },
+        });
         if (!response.ok()) return null;
         const body = await response.json() as {
           context?: { workspaceId?: string; workspaceType?: string } | null;
@@ -518,7 +543,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     );
     await expect(memberPage.getByTestId('entry-nav-all-projects')).toHaveCount(0);
     const staleTeamReselect = await memberPage.request.put('/api/workspace/active', {
-      data: { workspaceId: WORKSPACE_ID },
+      data: { workspaceId: WORKSPACE_ID, workspaceMemberId: MEMBER.memberId },
     });
     expect(staleTeamReselect.status()).toBe(404);
   } catch (error) {
@@ -537,7 +562,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
   }
 });
 
-async function openHomeAndPinWorkspace(page: Page): Promise<void> {
+async function openHomeAndPinWorkspace(page: Page, workspaceMemberId: string): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await expect(page.getByText('Loading Open Design…')).toHaveCount(0, {
     timeout: 60_000,
@@ -551,7 +576,7 @@ async function openHomeAndPinWorkspace(page: Page): Promise<void> {
       .click();
   }
   const response = await page.request.put('/api/workspace/active', {
-    data: { workspaceId: WORKSPACE_ID },
+    data: { workspaceId: WORKSPACE_ID, workspaceMemberId },
     timeout: 15_000,
   });
   expect(response.ok(), await response.text()).toBeTruthy();
