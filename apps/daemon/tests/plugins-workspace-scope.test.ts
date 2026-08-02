@@ -24,6 +24,7 @@ import path from 'node:path';
 import {
   closeDatabase,
   ensureWorkspaceResource,
+  getWorkspaceResourceByResourceId,
   openDatabase,
   updateWorkspaceResource,
 } from '../src/db.js';
@@ -33,6 +34,7 @@ import {
   resolveAndActivateWorkspaceTeamPlugin,
   resolveWorkspaceTeamPluginWithBindingGate,
   upsertInstalledPlugin,
+  workspaceTeamPluginBindingActivationFence,
   workspaceTeamPluginBindingAllowsRead,
   workspaceTeamPluginBindingResourceId,
 } from '../src/plugins/registry.js';
@@ -236,7 +238,9 @@ describe('listInstalledPlugins workspace scope', () => {
         resolveStarted();
         return resolveGate;
       },
+      captureActivationFence: () => 'active',
       stillShared: async () => false,
+      activationFenceIsCurrent: () => false,
       activate: () => {
         updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
           resourceState: 'active',
@@ -276,10 +280,14 @@ describe('listInstalledPlugins workspace scope', () => {
         readStarted = resolve;
       });
       const oldListing = activateWorkspaceTeamPluginIfStillShared({
+        captureActivationFence: () =>
+          workspaceTeamPluginBindingActivationFence(db, workspaceId, pluginId),
         stillShared: async () => {
           readStarted();
           return authoritativeRead;
         },
+        activationFenceIsCurrent: (fence) =>
+          workspaceTeamPluginBindingActivationFence(db, workspaceId, pluginId) === fence,
         activate: () => {
           updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
             resourceState: 'active',
@@ -299,4 +307,56 @@ describe('listInstalledPlugins workspace scope', () => {
       ).toBe(false);
     },
   );
+
+  it('rejects a superseded positive shared read after a newer binding tombstone', async () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    const pluginId = 'plugin-superseded-positive';
+    const workspaceId = 'ws-team';
+    const bindingId = workspaceTeamPluginBindingResourceId(workspaceId, pluginId);
+    ensureWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+
+    let finishAuthoritativeRead!: (stillShared: boolean) => void;
+    const authoritativeRead = new Promise<boolean>((resolve) => {
+      finishAuthoritativeRead = resolve;
+    });
+    let readStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      readStarted = resolve;
+    });
+    const staleActivation = activateWorkspaceTeamPluginIfStillShared({
+      captureActivationFence: () =>
+        workspaceTeamPluginBindingActivationFence(db, workspaceId, pluginId),
+      stillShared: async () => {
+        readStarted();
+        return authoritativeRead;
+      },
+      activationFenceIsCurrent: (fence) =>
+        workspaceTeamPluginBindingActivationFence(db, workspaceId, pluginId) === fence,
+      activate: () => {
+        updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+          resourceState: 'active',
+        });
+        return true;
+      },
+    });
+    await started;
+    const originalUpdatedAt = Number(
+      getWorkspaceResourceByResourceId(db, 'plugin', bindingId)?.updatedAt,
+    );
+    updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+      resourceState: 'deleted',
+      // Simulate two writes in the same millisecond: resourceState must keep
+      // the tombstone visible even when updatedAt alone cannot distinguish it.
+      updatedAt: originalUpdatedAt,
+    });
+    finishAuthoritativeRead(true);
+
+    await expect(staleActivation).resolves.toBe(false);
+    expect(
+      workspaceTeamPluginBindingAllowsRead(db, workspaceId, pluginId),
+    ).toBe(false);
+  });
 });

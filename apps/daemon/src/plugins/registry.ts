@@ -285,6 +285,34 @@ export function workspaceTeamPluginBindingAllowsRead(
     && binding.resourceState !== 'deleted';
 }
 
+/**
+ * Snapshot the local binding generation before an asynchronous hub read.
+ * `resourceState` is intentionally part of the fence in addition to
+ * `updatedAt`: two synchronous SQLite writes can share the same millisecond,
+ * but an intervening tombstone must still invalidate an older positive read.
+ * `null` is the generation for a binding that does not exist yet.
+ */
+export function workspaceTeamPluginBindingActivationFence(
+  db: SqliteDb,
+  workspaceId: string,
+  pluginId: string,
+): string | null {
+  const binding = getWorkspaceResourceByResourceId(
+    db,
+    'plugin',
+    workspaceTeamPluginBindingResourceId(workspaceId, pluginId),
+  );
+  if (!binding) return null;
+  return JSON.stringify([
+    binding.workspaceId,
+    binding.visibility,
+    binding.resourceState ?? null,
+    binding.updatedAt,
+    binding.updatedByWorkspaceMemberId ?? null,
+    binding.resourceHubResourceId ?? null,
+  ]);
+}
+
 const WORKSPACE_TEAM_PLUGIN_BINDING_PREFIX = 'team-mirror:';
 
 /**
@@ -325,7 +353,9 @@ export async function resolveWorkspaceTeamPluginWithBindingGate<T>(input: {
 
 export async function resolveAndActivateWorkspaceTeamPlugin<T>(input: {
   resolve: () => Promise<T | null>;
+  captureActivationFence: () => string | null;
   stillShared: () => Promise<boolean>;
+  activationFenceIsCurrent: (fence: string | null) => boolean;
   activate: () => boolean;
 }): Promise<T | null> {
   const resolved = await input.resolve();
@@ -335,10 +365,19 @@ export async function resolveAndActivateWorkspaceTeamPlugin<T>(input: {
 }
 
 export async function activateWorkspaceTeamPluginIfStillShared(input: {
+  captureActivationFence: () => string | null;
   stillShared: () => Promise<boolean>;
+  activationFenceIsCurrent: (fence: string | null) => boolean;
   activate: () => boolean;
 }): Promise<boolean> {
+  const activationFence = input.captureActivationFence();
   if (!await input.stillShared()) return false;
+  // The hub read above is asynchronous. A newer reconciliation may retire the
+  // binding while it is pending, so a positive result is authoritative only
+  // for the binding generation captured before that read. Both this final
+  // check and `activate` are synchronous, leaving no event-loop interleave in
+  // which a tombstone can be overwritten.
+  if (!input.activationFenceIsCurrent(activationFence)) return false;
   return input.activate();
 }
 

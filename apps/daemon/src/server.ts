@@ -373,6 +373,7 @@ import {
   resolveAndActivateWorkspaceTeamPlugin,
   resolvePluginFolder,
   resolveWorkspaceTeamPluginWithBindingGate,
+  workspaceTeamPluginBindingActivationFence,
   workspaceTeamPluginBindingAllowsRead,
   workspaceTeamPluginBindingResourceId,
 } from './plugins/registry.js';
@@ -5007,11 +5008,13 @@ export async function startServer({
       resource.id,
       resource.id,
     );
+    const bindingResourceId = workspaceTeamPluginBindingResourceId(
+      workspaceId,
+      resource.id,
+    );
+    const captureActivationFence = (): string | null =>
+      workspaceTeamPluginBindingActivationFence(db, workspaceId, resource.id);
     const markTeamSynced = (): boolean => {
-      const bindingResourceId = workspaceTeamPluginBindingResourceId(
-        workspaceId,
-        resource.id,
-      );
       const existingBinding = getWorkspaceResourceByResourceId(
         db,
         'plugin',
@@ -5045,7 +5048,9 @@ export async function startServer({
       teamResourceVersions.get(workspaceId, 'plugin', resource.id) === resource.versionId
     ) {
       await activateWorkspaceTeamPluginIfStillShared({
+        captureActivationFence,
         stillShared: () => teamResourceStillShared('plugin', resource, scope),
+        activationFenceIsCurrent: (fence) => captureActivationFence() === fence,
         activate: markTeamSynced,
       });
       return;
@@ -5057,7 +5062,9 @@ export async function startServer({
       : '';
     if (fs.existsSync(targetDir) && !resource.versionId && (!remoteDescription || localDescription === remoteDescription)) {
       await activateWorkspaceTeamPluginIfStillShared({
+        captureActivationFence,
         stillShared: () => teamResourceStillShared('plugin', resource, scope),
+        activationFenceIsCurrent: (fence) => captureActivationFence() === fence,
         activate: markTeamSynced,
       });
       return;
@@ -5108,7 +5115,9 @@ export async function startServer({
           }
           return resolved.record;
         },
+        captureActivationFence,
         stillShared: () => teamResourceStillShared('plugin', resource, scope),
+        activationFenceIsCurrent: (fence) => captureActivationFence() === fence,
         activate: markTeamSynced,
       });
       if (!activated) return;
