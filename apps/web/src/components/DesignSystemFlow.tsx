@@ -2492,6 +2492,7 @@ export function DesignSystemDetailView({
         cancelSignal: cancelController.signal,
         projectId,
         conversationId,
+        userMessageId: userMsg.id,
         assistantMessageId: assistantMsg.id,
         clientRequestId: randomUUID(),
         skillId: null,

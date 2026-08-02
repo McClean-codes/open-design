@@ -441,7 +441,36 @@ export function mergeServerMessagesIntoConversation(
   for (const message of current) {
     if (!serverIds.has(message.id)) merged.push(message);
   }
-  return merged;
+  return normalizeConversationMessageOrder(merged);
+}
+
+export function normalizeConversationMessageOrder(messages: ChatMessage[]): ChatMessage[] {
+  let normalized: ChatMessage[] | null = null;
+  for (let index = 0; index < messages.length - 1; index += 1) {
+    const assistant = (normalized ?? messages)[index];
+    const user = (normalized ?? messages)[index + 1];
+    if (
+      assistant?.role !== 'assistant'
+      || user?.role !== 'user'
+      || typeof assistant.runId !== 'string'
+      || assistant.runId.length === 0
+      || typeof assistant.startedAt !== 'number'
+      || typeof user.createdAt !== 'number'
+      || assistant.startedAt !== user.createdAt
+    ) {
+      continue;
+    }
+    // POST /api/runs pins the assistant synchronously. Older clients persisted
+    // the matching user row through a separate best-effort PUT, so the two
+    // requests could land in the opposite order. The identical turn-start
+    // timestamp is a narrow positive witness; unrelated assistant/user pairs
+    // keep their server position.
+    normalized ??= [...messages];
+    normalized[index] = user;
+    normalized[index + 1] = assistant;
+    index += 1;
+  }
+  return normalized ?? messages;
 }
 
 function ensureConversationPresent(
@@ -2803,7 +2832,7 @@ export function ProjectView({
           requestWorkspaceContext,
         );
         if (cancelled) return;
-        setMessages(list);
+        setMessages(normalizeConversationMessageOrder(list));
         setMessagesInitialized(true);
         setAttachedComments([]);
         setArtifact(null);
@@ -7254,6 +7283,7 @@ export function ProjectView({
           handlers,
           projectId: project.id,
           conversationId: runConversationId,
+          userMessageId: userMsg.id,
           assistantMessageId: assistantId,
           clientRequestId: randomUUID(),
           skillId: project.skillId ?? null,
@@ -7406,6 +7436,7 @@ export function ProjectView({
           handlers,
           projectId: project.id,
           conversationId: runConversationId,
+          userMessageId: userMsg.id,
           assistantMessageId: assistantId,
           clientRequestId: randomUUID(),
           skillId: project.skillId ?? null,

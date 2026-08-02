@@ -303,6 +303,7 @@ export function useConversationChat(
         handlers,
         projectId,
         conversationId,
+        userMessageId: userMsg.id,
         assistantMessageId: assistantId,
         clientRequestId: randomUUID(),
         skillId: null,

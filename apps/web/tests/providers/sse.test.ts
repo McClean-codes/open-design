@@ -53,6 +53,7 @@ describe('streamViaDaemon', () => {
 
     await streamViaDaemon({
       agentId: 'mock',
+      userMessageId: '3',
       history: [
         { id: '1', role: 'user', content: 'pre-consent brief' },
         { id: '2', role: 'assistant', content: 'draft response' },
@@ -68,6 +69,7 @@ describe('streamViaDaemon', () => {
     expect(body.message).toContain('pre-consent brief');
     expect(body.message).toContain('post-consent revision');
     expect(body.currentPrompt).toBe('post-consent revision');
+    expect(body.userMessageId).toBe('3');
   });
 
   it('sends BYOK profile references without a raw provider payload', async () => {

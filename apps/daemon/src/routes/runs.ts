@@ -357,6 +357,7 @@ interface ChatRun {
 interface RunCreateMeta extends JsonRecord {
   projectId?: string;
   conversationId?: string;
+  userMessageId?: string;
   assistantMessageId?: string;
   clientRequestId?: string;
   requestFingerprint?: string;
@@ -793,6 +794,7 @@ function runRequestFingerprint(
   delete logicalRequest.requestFingerprint;
   delete logicalRequest.resume;
   delete logicalRequest.analyticsHints;
+  delete logicalRequest.userMessageId;
   delete logicalRequest.assistantMessageId;
   delete logicalRequest.projectMetadata;
   delete logicalRequest.appliedPluginSnapshotId;
@@ -1436,17 +1438,41 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     // omit it. Without a server-side pin, pinAssistantMessageOnRunCreate no-ops,
     // lastMessageId stays null, and multi-turn native session resume is skipped
     // (missing_cursor / resume_skipped). Ownership is validated above first.
-    // Also seed the user turn when the server bound conversationId via the
-    // headless fallback even if the client already supplied a pin — the pre-
-    // refactor path always seeded in that case, and MCP allows pin + omitted
-    // conversationId independently.
+    // A web client also supplies userMessageId so this route can pin the user
+    // row before the assistant row. Its separate best-effort PUT may arrive
+    // later; upserting the same id then preserves the position established
+    // here. Headless fallback keeps its existing generated-id behavior.
     //
     // Prepare seed payload before createOrReuse, but only persist when the run
     // is newly created so lost-response retries with clientRequestId do not
     // duplicate user turns.
     const missingClientPin =
       typeof meta.assistantMessageId !== 'string' || !meta.assistantMessageId;
-    let omitPinUserSeed: {
+    const clientUserMessageId =
+      typeof meta.userMessageId === 'string' && meta.userMessageId
+        ? meta.userMessageId
+        : null;
+    if (clientUserMessageId && !isSafeId(clientUserMessageId)) {
+      return sendApiError(res, 400, 'BAD_REQUEST', 'userMessageId is invalid');
+    }
+    if (clientUserMessageId && typeof meta.conversationId === 'string') {
+      const existingUserPin = db
+        .prepare(`SELECT conversation_id AS conversationId FROM messages WHERE id = ?`)
+        .get(clientUserMessageId) as { conversationId?: unknown } | undefined;
+      if (
+        existingUserPin
+        && existingUserPin.conversationId !== meta.conversationId
+      ) {
+        return sendApiError(
+          res,
+          409,
+          'IDEMPOTENCY_CONFLICT',
+          'userMessageId belongs to a different conversation',
+        );
+      }
+    }
+    let runUserSeed: {
+      id: string;
       conversationId: string;
       content: string;
       attachments: ReturnType<typeof seededUserMessageAttachmentFields>;
@@ -1455,7 +1481,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (
       typeof meta.conversationId === 'string' &&
       meta.conversationId &&
-      (missingClientPin || conversationFallbackBound)
+      (clientUserMessageId || missingClientPin || conversationFallbackBound)
     ) {
       if (missingClientPin) {
         meta.assistantMessageId = randomUUID();
@@ -1484,7 +1510,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
             ? originalMessage
             : null;
       if (promptForUserMessage !== null) {
-        omitPinUserSeed = {
+        runUserSeed = {
+          id: clientUserMessageId ?? randomUUID(),
           conversationId: meta.conversationId,
           content: promptForUserMessage,
           attachments: seededAttachments,
@@ -1552,22 +1579,22 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       }
       resumed = true;
     }
-    if (creation.kind === 'created' && omitPinUserSeed) {
+    if (creation.kind === 'created' && runUserSeed) {
       try {
         const now = Date.now();
-        upsertMessage(db, omitPinUserSeed.conversationId, {
-          id: randomUUID(),
+        upsertMessage(db, runUserSeed.conversationId, {
+          id: runUserSeed.id,
           role: 'user',
-          content: omitPinUserSeed.content,
+          content: runUserSeed.content,
           startedAt: now,
           endedAt: now,
           // Same turn metadata the web client writes via PUT /messages so
           // reload/retry keep sessionMode, runContext, and applied plugin.
-          ...omitPinUserSeed.turnMetadata,
+          ...runUserSeed.turnMetadata,
           // Preserve request attachments/commentAttachments on the seeded user
           // turn so reload/listMessages still show chips and annotation context
           // for omit-pin / headless clients (same columns as PUT /messages).
-          ...omitPinUserSeed.attachments,
+          ...runUserSeed.attachments,
         });
         // Bump parent project updatedAt so listProjects reorders (same as
         // PUT /messages). Headless/API turns that never hit that route would
