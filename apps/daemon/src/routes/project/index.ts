@@ -37,6 +37,8 @@ import {
   linkUserDesignSystemProject,
   listDesignSystems,
   propagateWorkspaceProjectRename,
+  type DesignSystemSummary,
+  type UserDesignSystemInput,
 } from '../../design-systems/index.js';
 import { buildProjectDesignTokenSuggestions } from '../../project-design-token-suggestions.js';
 import {
@@ -127,6 +129,17 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
    * retain their existing behavior.
    */
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
+  /**
+   * Persist a design system and its Workspace ownership envelope from the
+   * exact directory-verified creation context. Production injects the shared
+   * design-system creation service; the optional shape preserves isolated
+   * route harnesses and headerless/local compatibility.
+   */
+  createWorkspaceOwnedDesignSystem?: (
+    root: string,
+    input: UserDesignSystemInput,
+    context: WorkspaceResourceContext | null,
+  ) => Promise<DesignSystemSummary>;
   /**
    * Collab-cloud comment seams, threaded to the nested preview-comment routes.
    * `resolveAuthorMemberId` stamps the server-authoritative author AND identifies
@@ -3529,7 +3542,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         }
         /** @type {import('@open-design/contracts').DuplicateProjectResponse} */
         const body = {
-          project,
+          project: createHome
+            ? { ...project, workspaceId: createHome.workspaceId }
+            : project,
           conversationId,
           copiedFiles,
         };
@@ -3591,7 +3606,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       let createdDesignSystemId: string | null = null;
       let insertedProject = false;
       try {
-        const designSystem = await createUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, {
+        const createDesignSystem = ctx.createWorkspaceOwnedDesignSystem
+          ?? ((root: string, input: UserDesignSystemInput, context: WorkspaceResourceContext | null) =>
+            createUserDesignSystem(root, {
+              ...input,
+              ...(context ? { workspaceId: context.workspaceId } : {}),
+            }));
+        const designSystem = await createDesignSystem(USER_DESIGN_SYSTEMS_DIR, {
           title: targetName,
           summary: sourceNotes,
           category: 'Project Design System',
@@ -3603,7 +3624,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             notes: sourceNotes,
             sourceNotes,
           },
-        });
+        }, createHome);
         createdDesignSystemId = designSystem.id;
 
         const metadata = {
@@ -3693,7 +3714,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         await linkUserDesignSystemProject(USER_DESIGN_SYSTEMS_DIR, designSystem.id, targetProjectId);
         /** @type {import('@open-design/contracts').CreateDesignSystemProjectFromProjectResponse} */
         const body = {
-          project,
+          project: createHome
+            ? { ...project, workspaceId: createHome.workspaceId }
+            : project,
           conversationId,
           designSystemId: designSystem.id,
           copiedFiles,

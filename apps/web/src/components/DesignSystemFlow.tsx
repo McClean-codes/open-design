@@ -86,7 +86,7 @@ import { DesignSystemPicker } from './DesignSystemPicker';
 import { LibraryPicker } from './LibraryPicker';
 import { notifyConnectorsChanged } from './connectors-events';
 import { connectorAuthSnapshotChanged } from './connectors-state';
-import { FileWorkspace } from './FileWorkspace';
+import { FileWorkspace, type FileRefreshResult } from './FileWorkspace';
 import { Icon, type IconName } from './Icon';
 import { Spinner } from './Loading';
 import { Toast } from './Toast';
@@ -132,6 +132,7 @@ import type {
 } from '@open-design/contracts/analytics';
 import { useI18n } from '../i18n';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
+import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
 
 // Source counts the embedded DS creation flow can report back to its
 // wrapper at Generate-click time. OnboardingView uses this to emit the
@@ -320,8 +321,11 @@ async function resolveDesignSystemWorkspaceProject(
   const fallbackProject = await getProject(system.projectId, workspaceContext);
   if (!fallbackProject) return null;
   const files = workspaceContext
-    ? await fetchProjectFiles(system.projectId, { workspaceContext })
-    : await fetchProjectFiles(system.projectId);
+    ? await fetchProjectFiles(system.projectId, {
+        workspaceContext,
+        requireAuthoritative: true,
+      })
+    : await fetchProjectFiles(system.projectId, { requireAuthoritative: true });
   return {
     projectId: system.projectId,
     files,
@@ -1656,6 +1660,17 @@ export function DesignSystemDetailView({
   const [chatSeed, setChatSeed] = useState<{ id: string; text: string } | null>(null);
   const [workspaceProjectId, setWorkspaceProjectId] = useState<string | null>(null);
   const [workspaceProjectFiles, setWorkspaceProjectFiles] = useState<ProjectFile[]>([]);
+  const workspaceProjectFilesRef = useRef<ProjectFile[]>([]);
+  const [workspaceFilesGeneration, setWorkspaceFilesGeneration] = useState(0);
+  const workspaceFilesGenerationRef = useRef(0);
+  const workspaceFilesScopeKey = `${id}:${workspaceIdentityCacheKey(workspaceContext)}`;
+  const workspaceFilesScopeKeyRef = useRef(workspaceFilesScopeKey);
+  workspaceFilesScopeKeyRef.current = workspaceFilesScopeKey;
+  const workspaceFilesRequestSeqRef = useRef(0);
+  const workspaceFilesAuthorityRef = useRef<{
+    scopeKey: string;
+    projectId: string | null;
+  }>({ scopeKey: workspaceFilesScopeKey, projectId: null });
   // Daemon-resolved working directory of the workspace project — proof anchor
   // for classifying absolute disk hrefs in chat file links (AssistantMessage).
   const [workspaceProjectResolvedDir, setWorkspaceProjectResolvedDir] = useState<string | null>(
@@ -1701,10 +1716,18 @@ export function DesignSystemDetailView({
 
   useEffect(() => {
     let cancelled = false;
+    workspaceFilesRequestSeqRef.current += 1;
+    workspaceFilesAuthorityRef.current = {
+      scopeKey: workspaceFilesScopeKey,
+      projectId: null,
+    };
     setSystem(null);
     setRevisions([]);
     setWorkspaceProjectId(null);
+    workspaceProjectFilesRef.current = [];
     setWorkspaceProjectFiles([]);
+    workspaceFilesGenerationRef.current = 0;
+    setWorkspaceFilesGeneration(0);
     setWorkspaceLoadError(null);
     setConversations([]);
     setActiveConversationId(null);
@@ -1729,7 +1752,7 @@ export function DesignSystemDetailView({
     return () => {
       cancelled = true;
     };
-  }, [id, workspaceContext]);
+  }, [id, workspaceContext, workspaceFilesScopeKey]);
 
   useEffect(() => {
     if (!initialRevisionJob?.id) return;
@@ -1745,18 +1768,33 @@ export function DesignSystemDetailView({
   useEffect(() => {
     if (!system) return undefined;
     const currentSystem = system;
+    const requestScopeKey = workspaceFilesScopeKey;
     let cancelled = false;
     async function syncWorkspaceProject() {
       setWorkspaceLoadError(null);
-      const resolved = await resolveDesignSystemWorkspaceProject(currentSystem, workspaceContext);
-      if (cancelled) return;
+      let resolved: ResolvedDesignSystemWorkspaceProject | null;
+      try {
+        resolved = await resolveDesignSystemWorkspaceProject(currentSystem, workspaceContext);
+      } catch {
+        if (!cancelled && workspaceFilesScopeKeyRef.current === requestScopeKey) {
+          setWorkspaceLoadError(t('dsFlow.workspaceOpenFailed'));
+        }
+        return;
+      }
+      if (cancelled || workspaceFilesScopeKeyRef.current !== requestScopeKey) return;
       if (!resolved) {
         setWorkspaceLoadError(t('dsFlow.workspaceOpenFailed'));
         return;
       }
       const projectId = resolved.projectId;
+      workspaceFilesRequestSeqRef.current += 1;
+      workspaceFilesAuthorityRef.current = { scopeKey: requestScopeKey, projectId };
       setWorkspaceProjectId(projectId);
+      workspaceProjectFilesRef.current = resolved.files;
       setWorkspaceProjectFiles(resolved.files);
+      const acceptedGeneration = workspaceFilesGenerationRef.current + 1;
+      workspaceFilesGenerationRef.current = acceptedGeneration;
+      setWorkspaceFilesGeneration(acceptedGeneration);
       if (onOpenProject && openedProjectRef.current !== projectId) {
         openedProjectRef.current = projectId;
         await onProjectsRefresh?.();
@@ -1767,7 +1805,7 @@ export function DesignSystemDetailView({
     return () => {
       cancelled = true;
     };
-  }, [onOpenProject, onProjectsRefresh, system, t, workspaceContext]);
+  }, [onOpenProject, onProjectsRefresh, system, t, workspaceContext, workspaceFilesScopeKey]);
 
   useEffect(() => {
     if (!workspaceProjectId) return undefined;
@@ -2057,7 +2095,12 @@ export function DesignSystemDetailView({
     const updated = await savePatch({ body: nextBody });
     if (updated && workspaceProjectId) {
       await writeProjectTextFile(workspaceProjectId, 'DESIGN.md', nextBody, undefined, workspaceContext);
-      await refreshWorkspaceProjectFiles(workspaceProjectId);
+      try {
+        await refreshWorkspaceProjectFiles(workspaceProjectId);
+      } catch {
+        setStatusLine(t('dsFlow.workspaceOpenFailed'));
+        return;
+      }
     }
     setStatusLine(updated ? t('dsFlow.savedDesignMd') : t('dsFlow.saveChangesFailed'));
   }
@@ -2133,23 +2176,75 @@ export function DesignSystemDetailView({
   async function ensureWorkspaceProject(options?: { suppressInitialConversation?: boolean }) {
     if (!system) return workspaceProjectId;
     if (workspaceProjectId) return workspaceProjectId;
-    const resolved = await resolveDesignSystemWorkspaceProject(system, workspaceContext);
-    if (!resolved) return null;
+    const requestScopeKey = workspaceFilesScopeKey;
+    let resolved: ResolvedDesignSystemWorkspaceProject | null;
+    try {
+      resolved = await resolveDesignSystemWorkspaceProject(system, workspaceContext);
+    } catch {
+      if (workspaceFilesScopeKeyRef.current === requestScopeKey) {
+        setWorkspaceLoadError(t('dsFlow.workspaceOpenFailed'));
+      }
+      return null;
+    }
+    if (!resolved || workspaceFilesScopeKeyRef.current !== requestScopeKey) return null;
     if (options?.suppressInitialConversation) {
       suppressedInitialConversationProjectIdsRef.current.add(resolved.projectId);
     }
+    workspaceFilesRequestSeqRef.current += 1;
+    workspaceFilesAuthorityRef.current = {
+      scopeKey: requestScopeKey,
+      projectId: resolved.projectId,
+    };
     setWorkspaceProjectId(resolved.projectId);
+    workspaceProjectFilesRef.current = resolved.files;
     setWorkspaceProjectFiles(resolved.files);
+    const acceptedGeneration = workspaceFilesGenerationRef.current + 1;
+    workspaceFilesGenerationRef.current = acceptedGeneration;
+    setWorkspaceFilesGeneration(acceptedGeneration);
     return resolved.projectId;
   }
 
-  const refreshWorkspaceProjectFiles = useCallback(async (projectId: string) => {
-    const next = workspaceContext
-      ? await fetchProjectFiles(projectId, { workspaceContext })
-      : await fetchProjectFiles(projectId);
+  const refreshWorkspaceProjectFiles = useCallback(async (
+    projectId: string,
+    options?: { fresh?: boolean },
+    onAcceptedGeneration?: (generation: number) => void,
+  ) => {
+    const requestSeq = ++workspaceFilesRequestSeqRef.current;
+    const requestScopeKey = workspaceFilesScopeKey;
+    const requestIsCurrent = () => {
+      const authority = workspaceFilesAuthorityRef.current;
+      return requestSeq === workspaceFilesRequestSeqRef.current
+        && workspaceFilesScopeKeyRef.current === requestScopeKey
+        && authority.scopeKey === requestScopeKey
+        && authority.projectId === projectId;
+    };
+    let next: ProjectFile[];
+    try {
+      next = workspaceContext
+        ? await fetchProjectFiles(projectId, {
+            workspaceContext,
+            fresh: options?.fresh,
+            requireAuthoritative: true,
+          })
+        : await fetchProjectFiles(projectId, {
+            fresh: options?.fresh,
+            requireAuthoritative: true,
+          });
+    } catch {
+      // A failed read says nothing about deletion. Preserve the current
+      // snapshot and generation for the active lifetime; a stale lifetime
+      // returns null so its follow-up body/audit work also stops.
+      return requestIsCurrent() ? workspaceProjectFilesRef.current : null;
+    }
+    if (!requestIsCurrent()) return null;
+    const acceptedGeneration = workspaceFilesGenerationRef.current + 1;
+    workspaceFilesGenerationRef.current = acceptedGeneration;
+    workspaceProjectFilesRef.current = next;
     setWorkspaceProjectFiles(next);
+    setWorkspaceFilesGeneration(acceptedGeneration);
+    onAcceptedGeneration?.(acceptedGeneration);
     return next;
-  }, [workspaceContext]);
+  }, [workspaceContext, workspaceFilesScopeKey]);
 
   const syncDesignSystemBodyFromWorkspace = useCallback(async (projectId: string) => {
     if (!system || !editable) return false;
@@ -2184,11 +2279,33 @@ export function DesignSystemDetailView({
     return Boolean(result && result.synced.length > 0);
   }, [editable, system, workspaceContext]);
 
-  const refreshDesignSystemWorkspace = useCallback(async (projectId: string) => {
-    const nextFiles = await refreshWorkspaceProjectFiles(projectId);
+  const refreshDesignSystemWorkspace = useCallback(async (
+    projectId: string,
+    options?: { fresh?: boolean },
+    onAcceptedGeneration?: (generation: number) => void,
+  ) => {
+    const nextFiles = await refreshWorkspaceProjectFiles(
+      projectId,
+      options,
+      onAcceptedGeneration,
+    );
+    if (!nextFiles) return null;
     await syncDesignSystemBodyFromWorkspace(projectId);
     return nextFiles;
   }, [refreshWorkspaceProjectFiles, syncDesignSystemBodyFromWorkspace]);
+
+  const refreshActiveDesignSystemWorkspace = useCallback(async (
+    options?: { fresh?: boolean },
+  ): Promise<FileRefreshResult> => {
+    if (!workspaceProjectId) return { acceptedGeneration: null };
+    let acceptedGeneration: number | null = null;
+    await refreshDesignSystemWorkspace(
+      workspaceProjectId,
+      options,
+      (generation) => { acceptedGeneration = generation; },
+    );
+    return { acceptedGeneration };
+  }, [refreshDesignSystemWorkspace, workspaceProjectId]);
 
   const persistProjectMessage = useCallback(
     (projectId: string, conversationId: string | null, message: ChatMessage) => {
@@ -2422,6 +2539,7 @@ export function DesignSystemDetailView({
               pendingWorkspaceFileWritesRef.current.delete(event.toolUseId);
               if (event.isError) return;
               void refreshWorkspaceProjectFiles(projectId).then((nextFiles) => {
+                if (!nextFiles) return;
                 const decision = decideAutoOpenAfterWrite(filePath, nextFiles);
                 if (decision.shouldOpen && decision.fileName) {
                   requestWorkspaceFileOpen(decision.fileName);
@@ -2432,6 +2550,8 @@ export function DesignSystemDetailView({
                 if (isDesignSystemAssetPath(filePath)) {
                   void syncDesignSystemAssetsFromWorkspace();
                 }
+              }).catch(() => {
+                setChatError(t('dsFlow.workspaceOpenFailed'));
               });
             }
           },
@@ -2451,7 +2571,8 @@ export function DesignSystemDetailView({
             chatCancelRef.current = null;
             pendingWorkspaceFileWritesRef.current.clear();
             void (async () => {
-              await refreshWorkspaceProjectFiles(projectId);
+              const nextFiles = await refreshWorkspaceProjectFiles(projectId);
+              if (!nextFiles) return;
               const synced = await syncDesignSystemBodyFromWorkspace(projectId);
               // Unconditional per-run fallback (mirrors the body sync above):
               // catches asset writes the tool_result hook missed (a write
@@ -2488,7 +2609,9 @@ export function DesignSystemDetailView({
                 );
               }
               await onProjectsRefresh?.();
-            })();
+            })().catch(() => {
+              setChatError(t('dsFlow.workspaceOpenFailed'));
+            });
           },
           onError: (error) => {
             const message = error.message;
@@ -2905,10 +3028,9 @@ export function DesignSystemDetailView({
                 projectId={workspaceProjectId}
                 projectKind="prototype"
                 files={workspaceProjectFiles}
+                filesGeneration={workspaceFilesGeneration}
                 liveArtifacts={[]}
-                onRefreshFiles={() => {
-                  void refreshDesignSystemWorkspace(workspaceProjectId);
-                }}
+                onRefreshFiles={refreshActiveDesignSystemWorkspace}
                 isDeck={false}
                 streaming={chatStreaming || generationActive || saving}
                 openRequest={workspaceOpenRequest}

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import type { Brand } from '@open-design/contracts';
 import type { ComponentProps, ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,7 @@ import type {
   Conversation,
   DesignSystemSummary,
   Project,
+  ProjectFile,
   SkillSummary,
 } from '../../src/types';
 import {
@@ -22,7 +23,9 @@ import {
   listMessages,
   saveMessage,
 } from '../../src/state/projects';
-import { fetchPreviewComments } from '../../src/providers/registry';
+import { fetchPreviewComments, fetchProjectFiles } from '../../src/providers/registry';
+import { useProjectFileEvents } from '../../src/providers/project-events';
+import { resetSharedCancellableGet } from '../../src/lib/shared-cancellable-get';
 import {
   cancelBrandExtraction,
   continueBrandExtraction,
@@ -32,6 +35,17 @@ import {
 
 const brandBrowserBridgeMocks = vi.hoisted(() => ({
   getBrandBrowser: vi.fn(),
+}));
+const registryOriginals = vi.hoisted(() => ({
+  fetchProjectFiles: null as null | ((
+    projectId: string,
+    options?: {
+      signal?: AbortSignal;
+      workspaceContext?: import('@open-design/contracts').WorkspaceCollabContext | null;
+      fresh?: boolean;
+      requireAuthoritative?: boolean;
+    },
+  ) => Promise<ProjectFile[]>),
 }));
 
 const fileWorkspaceSpy = vi.hoisted(() => vi.fn());
@@ -138,13 +152,14 @@ vi.mock('../../src/providers/registry', async () => {
   const actual = await vi.importActual<typeof import('../../src/providers/registry')>(
     '../../src/providers/registry',
   );
+  registryOriginals.fetchProjectFiles = actual.fetchProjectFiles;
   return {
     ...actual,
     deletePreviewComment: vi.fn(),
     fetchDesignSystem: vi.fn(),
     fetchLiveArtifacts: vi.fn().mockResolvedValue([]),
     fetchPreviewComments: vi.fn(),
-    fetchProjectFiles: vi.fn().mockResolvedValue([]),
+    fetchProjectFiles: vi.fn(actual.fetchProjectFiles),
     fetchSkill: vi.fn(),
     getTemplate: vi.fn(),
     patchPreviewCommentStatus: vi.fn(),
@@ -188,6 +203,11 @@ vi.mock('../../src/components/FileWorkspace', () => ({
     onBrandExtractionStopRequest?: () => void;
     designSystemEditable?: boolean;
     filesRefreshKey?: number;
+    filesGeneration?: number;
+    files?: ProjectFile[];
+    onRefreshFiles?: (options?: { fresh?: boolean }) => Promise<{
+      acceptedGeneration: number | null;
+    }>;
   }) => {
     fileWorkspaceSpy(props);
     return <div data-testid="file-workspace" />;
@@ -221,6 +241,8 @@ const mockedListConversations = vi.mocked(listConversations);
 const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
+const mockedFetchProjectFiles = vi.mocked(fetchProjectFiles);
+const mockedUseProjectFileEvents = vi.mocked(useProjectFileEvents);
 const mockedCancelBrandExtraction = vi.mocked(cancelBrandExtraction);
 const mockedContinueBrandExtraction = vi.mocked(continueBrandExtraction);
 const mockedExtractBrandFromHtml = vi.mocked(extractBrandFromHtml);
@@ -308,12 +330,15 @@ describe('ProjectView pending prompt seeding', () => {
     );
     mockedListMessages.mockResolvedValue([]);
     mockedFetchPreviewComments.mockResolvedValue([]);
+    mockedFetchProjectFiles.mockResolvedValue([]);
     mockedFetchBrands.mockResolvedValue([]);
     brandBrowserBridgeMocks.getBrandBrowser.mockReturnValue(null);
   });
 
   afterEach(() => {
     cleanup();
+    resetSharedCancellableGet();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.clearAllMocks();
   });
@@ -326,6 +351,272 @@ describe('ProjectView pending prompt seeding', () => {
       expect(composerValue()).toBe('Use this prompt');
     });
     expect(onClearPendingPrompt).toHaveBeenCalledTimes(1);
+  });
+
+  it('commits refreshed file metadata and its generation key atomically', async () => {
+    const oldFile: ProjectFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const newFile: ProjectFile = { ...oldFile, size: 120, mtime: 2_000 };
+    mockedFetchProjectFiles.mockResolvedValueOnce([oldFile]);
+
+    renderProjectView(project('atomic-files'));
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([oldFile]);
+      expect(props?.filesRefreshKey).toBe(0);
+    });
+
+    let resolveRefresh!: (files: ProjectFile[]) => void;
+    mockedFetchProjectFiles.mockImplementationOnce(() => new Promise((resolve) => {
+      resolveRefresh = resolve;
+    }));
+    const handleProjectEvent = mockedUseProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'file-changed'; path: string; kind: 'change' }) => void)
+      | undefined;
+    expect(handleProjectEvent).toBeTypeOf('function');
+    const callsBeforeEvent = fileWorkspaceSpy.mock.calls.length;
+
+    act(() => {
+      handleProjectEvent?.({ type: 'file-changed', path: 'index.html', kind: 'change' });
+    });
+    await waitFor(() => expect(mockedFetchProjectFiles).toHaveBeenCalledTimes(2));
+
+    const pendingCalls = fileWorkspaceSpy.mock.calls.slice(callsBeforeEvent);
+    expect(pendingCalls.some(([props]) => (
+      props.filesRefreshKey === 1 && props.files?.[0]?.mtime === oldFile.mtime
+    ))).toBe(false);
+
+    resolveRefresh([newFile]);
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.filesRefreshKey).toBe(1);
+      expect(props?.files).toEqual([newFile]);
+    });
+  });
+
+  it('advances the accepted file generation for a fresh same-key revalidation', async () => {
+    const oldFile: ProjectFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const recreatedFile: ProjectFile = { ...oldFile, size: 120, mtime: 2_000 };
+    mockedFetchProjectFiles
+      .mockResolvedValueOnce([oldFile])
+      .mockResolvedValueOnce([recreatedFile]);
+
+    renderProjectView(project('same-key-generation'));
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([oldFile]);
+      expect(props?.filesRefreshKey).toBe(0);
+      expect(props?.filesGeneration).toBe(1);
+    });
+
+    const onRefreshFiles = fileWorkspaceSpy.mock.calls.at(-1)?.[0]?.onRefreshFiles;
+    expect(onRefreshFiles).toBeTypeOf('function');
+    let refreshResult: { acceptedGeneration: number | null } | undefined;
+    await act(async () => {
+      refreshResult = await onRefreshFiles?.({ fresh: true });
+    });
+
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([recreatedFile]);
+      expect(props?.filesRefreshKey).toBe(0);
+      expect(props?.filesGeneration).toBe(2);
+    });
+    expect(refreshResult).toEqual({ acceptedGeneration: 2 });
+    expect(mockedFetchProjectFiles.mock.calls.at(-1)?.[1]?.fresh).toBe(true);
+  });
+
+  it('does not advance the file generation when a fresh revalidation fails', async () => {
+    const file: ProjectFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    mockedFetchProjectFiles
+      .mockResolvedValueOnce([file])
+      .mockRejectedValueOnce(new Error('files unavailable'));
+
+    renderProjectView(project('failed-generation'));
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([file]);
+      expect(props?.filesGeneration).toBe(1);
+    });
+
+    const onRefreshFiles = fileWorkspaceSpy.mock.calls.at(-1)?.[0]?.onRefreshFiles;
+    await expect(onRefreshFiles?.({ fresh: true })).resolves.toEqual({
+      acceptedGeneration: null,
+    });
+
+    const finalProps = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+    expect(finalProps?.files).toEqual([file]);
+    expect(finalProps?.filesRefreshKey).toBe(0);
+    expect(finalProps?.filesGeneration).toBe(1);
+    expect(mockedFetchProjectFiles.mock.calls.at(-1)?.[1]).toMatchObject({
+      fresh: true,
+      requireAuthoritative: true,
+    });
+  });
+
+  it('forces a fresh project-files read when a file event races an older in-flight read', async () => {
+    const oldFile: ProjectFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const newFile: ProjectFile = { ...oldFile, size: 120, mtime: 2_000 };
+    const actualFetchProjectFiles = registryOriginals.fetchProjectFiles;
+    if (!actualFetchProjectFiles) throw new Error('expected actual fetchProjectFiles');
+    mockedFetchProjectFiles.mockImplementation(actualFetchProjectFiles);
+    resetSharedCancellableGet();
+
+    let fileReads = 0;
+    let phase: 'initial' | 'older-inflight' | 'fresh' = 'initial';
+    let olderInflightReads = 0;
+    let resolveOlderRead!: () => void;
+    const olderRead = new Promise<void>((resolve) => {
+      resolveOlderRead = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : String(input);
+      if (!url.endsWith('/api/projects/inflight-files/files')) {
+        return new Response('', { status: 404 });
+      }
+      fileReads += 1;
+      if (phase === 'older-inflight') {
+        olderInflightReads += 1;
+        await olderRead;
+        return new Response(JSON.stringify({ files: [oldFile] }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      return new Response(JSON.stringify({
+        files: [phase === 'fresh' ? newFile : oldFile],
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }));
+
+    renderProjectView(project('inflight-files'));
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([oldFile]);
+      expect(props?.filesRefreshKey).toBe(0);
+    });
+
+    resetSharedCancellableGet();
+    phase = 'older-inflight';
+    const onRefreshFiles = fileWorkspaceSpy.mock.calls.at(-1)?.[0]?.onRefreshFiles;
+    expect(onRefreshFiles).toBeTypeOf('function');
+    const olderRefresh = onRefreshFiles?.();
+    await waitFor(() => expect(olderInflightReads).toBe(1));
+
+    phase = 'fresh';
+    const handleProjectEvent = mockedUseProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'file-changed'; path: string; kind: 'change' }) => void)
+      | undefined;
+    act(() => {
+      handleProjectEvent?.({ type: 'file-changed', path: 'index.html', kind: 'change' });
+    });
+
+    await waitFor(() => expect(fileReads).toBeGreaterThan(olderInflightReads + 1));
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([newFile]);
+      expect(props?.filesRefreshKey).toBe(1);
+    });
+
+    resolveOlderRead();
+    await olderRefresh;
+    await Promise.resolve();
+    const finalProps = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+    expect(finalProps?.files).toEqual([newFile]);
+    expect(finalProps?.filesRefreshKey).toBe(1);
+  });
+
+  it('bypasses a settled project-files result still inside the shared one-second TTL', async () => {
+    const oldFile: ProjectFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 100,
+      mtime: 1_000,
+      kind: 'html',
+      mime: 'text/html',
+    };
+    const newFile: ProjectFile = { ...oldFile, size: 120, mtime: 2_000 };
+    const actualFetchProjectFiles = registryOriginals.fetchProjectFiles;
+    if (!actualFetchProjectFiles) throw new Error('expected actual fetchProjectFiles');
+    mockedFetchProjectFiles.mockImplementation(actualFetchProjectFiles);
+    resetSharedCancellableGet();
+
+    let fileReads = 0;
+    let servedFiles = [oldFile];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = typeof input === 'string'
+        ? input
+        : input instanceof Request
+          ? input.url
+          : String(input);
+      if (!url.endsWith('/api/projects/settled-files/files')) {
+        return new Response('', { status: 404 });
+      }
+      fileReads += 1;
+      return new Response(JSON.stringify({ files: servedFiles }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }));
+
+    renderProjectView(project('settled-files'));
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([oldFile]);
+      expect(props?.filesRefreshKey).toBe(0);
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 20));
+    const cachedReadCount = fileReads;
+    expect(cachedReadCount).toBeGreaterThan(0);
+
+    servedFiles = [newFile];
+    const handleProjectEvent = mockedUseProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'file-changed'; path: string; kind: 'change' }) => void)
+      | undefined;
+    act(() => {
+      handleProjectEvent?.({ type: 'file-changed', path: 'index.html', kind: 'change' });
+    });
+
+    await waitFor(() => expect(fileReads).toBeGreaterThan(cachedReadCount));
+    expect(mockedFetchProjectFiles.mock.calls.some(([, options]) => options?.fresh === true)).toBe(true);
+    await waitFor(() => {
+      const props = fileWorkspaceSpy.mock.calls.at(-1)?.[0];
+      expect(props?.files).toEqual([newFile]);
+      expect(props?.filesRefreshKey).toBe(1);
+    });
   });
 
   it('auto-sends the Home-carried workspace context with the first user message', async () => {

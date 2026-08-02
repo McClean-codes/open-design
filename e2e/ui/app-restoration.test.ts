@@ -411,12 +411,10 @@ test('[P0] returning from an uploaded design file route to the project root keep
   expect(uploadedName).toBeTruthy();
 
   await openAllProjectFiles(page);
-  const fileRow = page.locator('[data-testid^="design-file-row-"]', {
-    hasText: 'root-design-reference.png',
-  });
+  const fileRow = page.getByTestId('design-file-row-root-design-reference.png');
   await expect(fileRow).toBeVisible();
   await fileRow.getByRole('button').first().click();
-  await expect(page.getByTestId('design-file-preview')).toBeVisible();
+  await expect(page.getByRole('img', { name: 'root-design-reference.png' })).toBeVisible();
 
   const current = new URL(page.url());
   const [, projects, projectId] = current.pathname.split('/');

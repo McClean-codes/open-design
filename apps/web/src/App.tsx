@@ -95,6 +95,7 @@ import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
+  resolveBoundProjectWorkspaceContext,
   useWorkspaceBilling,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
@@ -2715,19 +2716,40 @@ function AppInner() {
     [handleCreateProject, t],
   );
 
+  const resolveSourceProjectWorkspaceContext = useCallback(async (
+    sourceProjectId: string,
+  ): Promise<WorkspaceCollabContext | null> => {
+    const routeProject = routeProjectSnapshotRef.current?.project;
+    const sourceProject =
+      routeProject?.id === sourceProjectId
+        ? routeProject
+        : projects.find((project) => project.id === sourceProjectId);
+    const persistedWorkspaceId = sourceProject?.workspaceId?.trim() ?? '';
+    if (!persistedWorkspaceId) return null;
+
+    const routeContext = projectRouteWorkspaceContextRef.current;
+    if (routeContext?.workspaceId === persistedWorkspaceId) return routeContext;
+    const ambientContext = workspaceContextRef.current;
+    if (ambientContext?.workspaceId === persistedWorkspaceId) return ambientContext;
+
+    const resolved = await resolveBoundProjectWorkspaceContext(persistedWorkspaceId);
+    if (!resolved) {
+      throw new Error('source project Workspace authority is unavailable');
+    }
+    return resolved;
+  }, [projects]);
+
   const handleCreateDesignSystemFromProject = useCallback(
     async (
       sourceProjectId: string,
       input: { name?: string; pendingPrompt?: string },
     ) => {
-      // Carry the active workspace identity — same reasoning as
-      // handleDeleteProject: without it enforceWorkspaceProjectMutation
-      // treats the request as a legacy pre-workspace caller and skips its
-      // ownership check entirely.
+      const sourceWorkspaceContext =
+        await resolveSourceProjectWorkspaceContext(sourceProjectId);
       const result = await createDesignSystemProjectFromProject(
         sourceProjectId,
         input,
-        workspaceContextRef.current,
+        sourceWorkspaceContext,
       );
       try {
         window.sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
@@ -2755,13 +2777,14 @@ function AppInner() {
         fileName: null,
       });
     },
-    [refreshDesignSystems, rememberLocalProject],
+    [refreshDesignSystems, rememberLocalProject, resolveSourceProjectWorkspaceContext],
   );
 
   const handleDuplicateProject = useCallback(
     async (sourceProjectId: string, input: { name?: string } = {}) => {
-      // Same reasoning as handleDeleteProject / handleCreateDesignSystemFromProject.
-      const result = await duplicateProject(sourceProjectId, input, workspaceContextRef.current);
+      const sourceWorkspaceContext =
+        await resolveSourceProjectWorkspaceContext(sourceProjectId);
+      const result = await duplicateProject(sourceProjectId, input, sourceWorkspaceContext);
       rememberLocalProject(result.project.id);
       setProjects((curr) => [
         result.project,
@@ -2774,7 +2797,7 @@ function AppInner() {
         fileName: null,
       });
     },
-    [rememberLocalProject],
+    [rememberLocalProject, resolveSourceProjectWorkspaceContext],
   );
 
   const handleCreatePluginShareProject = useCallback(
@@ -3215,12 +3238,12 @@ function AppInner() {
   // can leave an in-app history entry that points back to the same project.
   const handleBack = useCallback(() => {
     const currentProjectId = route.kind === 'project' ? route.projectId : null;
-    navigate({ kind: 'home', view: 'home' });
-    if (currentProjectId && typeof window !== 'undefined') {
-      window.setTimeout(() => {
+    navigate({ kind: 'home', view: 'home' }, {
+      onCommit: () => {
+        if (!currentProjectId) return;
         iframeKeepAlivePool.evictProject(currentProjectId, { includeActive: true });
-      }, 0);
-    }
+      },
+    });
   }, [iframeKeepAlivePool, route]);
 
   const handleClearPendingPrompt = useCallback(() => {

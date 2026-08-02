@@ -322,6 +322,9 @@ import {
   updateUserDesignSystemRevisionStatus,
   type UserDesignSystemInput,
 } from './design-systems/index.js';
+import {
+  createWorkspaceOwnedDesignSystem as persistWorkspaceOwnedDesignSystem,
+} from './design-systems/workspace-owned-create.js';
 import { createDesignSystemGenerationJobStore } from './design-systems/generation-jobs.js';
 import { createDesignSystemServerServices } from './design-systems/server-services.js';
 import { prepareDesignTokenContractRebuild } from './design-systems/token-contract-rebuild.js';
@@ -3004,7 +3007,9 @@ export async function startServer({
    * state can change between two tabs, so it is not authority for deciding
    * which Workspace a request reads or writes.
    */
-  async function resolveDesignSystemWorkspaceScope(req: any): Promise<string | null> {
+  async function resolveDesignSystemWorkspaceContext(
+    req: any,
+  ): Promise<import('./collab/workspace-resource-mutation.js').WorkspaceResourceContext | null> {
     const claimed = workspaceResourceContextFromRequest(req);
     // A completely headerless local/signed-out request is the explicit legacy
     // lane: built-ins plus unclaimed local resources, and new resources remain
@@ -3019,7 +3024,12 @@ export async function startServer({
         ...(verified.retryable ? { retryable: true } : {}),
       });
     }
-    return verified.context.workspaceId.trim() || null;
+    return verified.context;
+  }
+
+  async function resolveDesignSystemWorkspaceScope(req: any): Promise<string | null> {
+    const context = await resolveDesignSystemWorkspaceContext(req);
+    return context?.workspaceId.trim() || null;
   }
 
   /**
@@ -3039,23 +3049,21 @@ export async function startServer({
    * with zero rows there. Both writes happen from this single call site, so
    * they can never drift apart.
    */
+  const createWorkspaceOwnedDesignSystemForContext = (
+    root: string,
+    input: UserDesignSystemInput,
+    context: import('./collab/workspace-resource-mutation.js').WorkspaceResourceContext | null,
+  ) => persistWorkspaceOwnedDesignSystem(root, input, context, {
+    ensureWorkspaceResource: (resourceType, workspaceId, resourceId, envelope) =>
+      ensureWorkspaceResource(db, resourceType, workspaceId, resourceId, envelope),
+  });
   const createWorkspaceOwnedDesignSystem = async (
     root: string,
     input: UserDesignSystemInput,
     req: any,
   ) => {
-    const workspaceId = await resolveDesignSystemWorkspaceScope(req);
-    const created = await createUserDesignSystem(root, {
-      ...input,
-      ...(workspaceId ? { workspaceId } : {}),
-    });
-    if (workspaceId) {
-      ensureWorkspaceResource(db, 'design_system', workspaceId, created.id, {
-        visibility: 'personal',
-        resourceState: 'active',
-      });
-    }
-    return created;
+    const context = await resolveDesignSystemWorkspaceContext(req);
+    return createWorkspaceOwnedDesignSystemForContext(root, input, context);
   };
   // Persistent half of the sync design: a cheap digest GET decides whether the
   // catalog / member payload this daemon already has on disk is still current,
@@ -6222,6 +6230,7 @@ export async function startServer({
       revokedTeamProjectMirrors.has(projectId),
     fetchWorkspaceDirectory,
     fetchProjectCreationWorkspaceDirectory,
+    createWorkspaceOwnedDesignSystem: createWorkspaceOwnedDesignSystemForContext,
     events: projectEventDeps,
     ids: idDeps,
     telemetry: { reportFinalizedMessage },

@@ -922,6 +922,8 @@ describe('a Home auto-send observes a project billing scope that settles after m
 
     await waitFor(() => {
       expect(mockedFetchProjectFiles).toHaveBeenCalledWith(PROJECT_ID, {
+        fresh: true,
+        requireAuthoritative: true,
         workspaceContext: CALLER_CONTEXT,
       });
     });

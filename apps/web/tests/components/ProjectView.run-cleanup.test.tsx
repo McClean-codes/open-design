@@ -2201,7 +2201,10 @@ describe('ProjectView daemon cleanup', () => {
     );
 
     await waitFor(() =>
-      expect(fetchProjectFiles).toHaveBeenCalledWith('project-1', { workspaceContext: null }),
+      expect(fetchProjectFiles).toHaveBeenCalledWith('project-1', {
+        requireAuthoritative: true,
+        workspaceContext: null,
+      }),
     );
     expect(fetchChatRunStatus).not.toHaveBeenCalled();
     expect(reattachDaemonRun).not.toHaveBeenCalled();

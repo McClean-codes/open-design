@@ -253,6 +253,8 @@ describe('ProjectView file-sync badge — status check on local file change', ()
       evict: vi.fn(),
       evictProject: vi.fn(),
       evictMatching: vi.fn(),
+      subscribe: vi.fn(() => () => {}),
+      revision: vi.fn(() => 0),
     });
     mockedUseProjectCollab.mockReturnValue(sharedOwnerCollab());
     mockedListConversations.mockResolvedValue([conversation]);

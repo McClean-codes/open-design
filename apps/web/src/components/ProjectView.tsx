@@ -269,7 +269,12 @@ import {
 import { buildRepoImportPrompt, designSystemNeedsRepoConnect } from './design-system-github-evidence';
 import { isDesignSystemProject, resolveProjectDesignSystemId } from './design-system-project';
 import { collectReferencedJsxNames } from '../runtime/jsx-module-refs';
-import { DESIGN_SYSTEM_TAB, FileWorkspace, type BrowserOpenRequest } from './FileWorkspace';
+import {
+  DESIGN_SYSTEM_TAB,
+  FileWorkspace,
+  type BrowserOpenRequest,
+  type FileRefreshResult,
+} from './FileWorkspace';
 import {
   type PluginFolderAgentAction,
 } from './design-files/pluginFolderActions';
@@ -2028,11 +2033,30 @@ export function ProjectView({
   const [error, setError] = useState<string | null>(null);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [filesRefresh, setFilesRefresh] = useState(0);
+  const filesRefreshRequestKeyRef = useRef(0);
+  const bumpFilesRefresh = useCallback(() => {
+    setFilesRefresh((current) => {
+      const next = current + 1;
+      filesRefreshRequestKeyRef.current = next;
+      return next;
+    });
+  }, []);
   // True while a working-dir replace is reindexing the new folder. Surfaced
   // to the Design Files panel so the file list shows a loading state instead
   // of silently sitting on the old tree for the few seconds the scan takes.
-  const [projectFiles, setProjectFiles] = useState<ProjectFile[]>([]);
+  const [projectFilesSnapshot, setProjectFilesSnapshot] = useState<{
+    files: ProjectFile[];
+    refreshKey: number;
+    generation: number;
+  }>({ files: [], refreshKey: 0, generation: 0 });
+  const projectFiles = projectFilesSnapshot.files;
+  const committedFilesRefreshKey = projectFilesSnapshot.refreshKey;
+  const committedFilesGeneration = projectFilesSnapshot.generation;
+  const projectFilesGenerationRef = useRef(committedFilesGeneration);
+  const committedFilesRefreshKeyRef = useRef(committedFilesRefreshKey);
+  committedFilesRefreshKeyRef.current = committedFilesRefreshKey;
   const projectFilesRef = useRef<ProjectFile[]>([]);
+  const projectFilesRequestSeqRef = useRef(0);
   const [liveArtifacts, setLiveArtifacts] = useState<LiveArtifactSummary[]>([]);
   const [liveArtifactEvents, setLiveArtifactEvents] = useState<LiveArtifactEventItem[]>([]);
   const [workspaceFocused, setWorkspaceFocused] = useState(false);
@@ -3121,12 +3145,39 @@ export function ProjectView({
     });
   }, []);
 
-  const refreshProjectFiles = useCallback(async (): Promise<ProjectFile[]> => {
-    const next = await fetchProjectFiles(project.id, {
-      workspaceContext: projectRunWorkspaceContextRef.current,
-    });
-    projectFilesRef.current = next;
-    setProjectFiles(next);
+  const refreshProjectFiles = useCallback(async (
+    options?: { fresh?: boolean },
+    onAcceptedGeneration?: (generation: number) => void,
+  ): Promise<ProjectFile[]> => {
+    const requestSeq = ++projectFilesRequestSeqRef.current;
+    const requestedRefreshKey = filesRefreshRequestKeyRef.current;
+    let next: ProjectFile[];
+    try {
+      next = await fetchProjectFiles(project.id, {
+        workspaceContext: projectRunWorkspaceContextRef.current,
+        requireAuthoritative: true,
+        ...(options?.fresh ? { fresh: true } : {}),
+      });
+    } catch {
+      // A transport/HTTP failure is not an authoritative empty directory.
+      // Keep the last accepted snapshot and generation, while preserving the
+      // refresh helper's historical resolved-list contract for its callers.
+      return projectFilesRef.current;
+    }
+    if (requestSeq === projectFilesRequestSeqRef.current) {
+      const acceptedGeneration = projectFilesGenerationRef.current + 1;
+      projectFilesGenerationRef.current = acceptedGeneration;
+      projectFilesRef.current = next;
+      // Commit the list and both observation witnesses atomically. A refresh
+      // request must never publish a new key or generation alongside an older
+      // file snapshot.
+      setProjectFilesSnapshot({
+        files: next,
+        refreshKey: requestedRefreshKey,
+        generation: acceptedGeneration,
+      });
+      onAcceptedGeneration?.(acceptedGeneration);
+    }
     return next;
   }, [project.id, projectRunAuthorityKey]);
 
@@ -3174,10 +3225,27 @@ export function ProjectView({
     return next;
   }, [project.id, projectRunAuthorityKey]);
 
-  const refreshWorkspaceItems = useCallback(async (): Promise<ProjectFile[]> => {
-    const [nextFiles] = await Promise.all([refreshProjectFiles(), refreshLiveArtifacts()]);
+  const refreshWorkspaceItems = useCallback(async (
+    options?: { freshProjectFiles?: boolean },
+    onAcceptedFilesGeneration?: (generation: number) => void,
+  ): Promise<ProjectFile[]> => {
+    const [nextFiles] = await Promise.all([
+      refreshProjectFiles({ fresh: options?.freshProjectFiles }, onAcceptedFilesGeneration),
+      refreshLiveArtifacts(),
+    ]);
     return nextFiles;
   }, [refreshLiveArtifacts, refreshProjectFiles]);
+
+  const refreshFileWorkspace = useCallback(async (
+    options?: { fresh?: boolean },
+  ): Promise<FileRefreshResult> => {
+    let acceptedGeneration: number | null = null;
+    await refreshWorkspaceItems(
+      { freshProjectFiles: options?.fresh },
+      (generation) => { acceptedGeneration = generation; },
+    );
+    return { acceptedGeneration };
+  }, [refreshWorkspaceItems]);
 
   useEffect(() => {
     if (!currentBrandExtractionId) {
@@ -3192,7 +3260,7 @@ export function ProjectView({
     if (terminalBrandPreviewRefreshRef.current === refreshKey) return;
     terminalBrandPreviewRefreshRef.current = refreshKey;
     void refreshWorkspaceItems().catch(() => {});
-    setFilesRefresh((n) => n + 1);
+    bumpFilesRefresh();
   }, [
     currentBrandExtractionId,
     effectiveBrandExtractionStatus,
@@ -3345,7 +3413,7 @@ export function ProjectView({
       }, projectRunWorkspaceContext);
       if (file) {
         savedArtifactRef.current = file.name;
-        setFilesRefresh((n) => n + 1);
+        bumpFilesRefresh();
         // Surface the daemon's stub-guard warning when it fires in `warn`
         // mode (the default). Without this the warning would land in the
         // file metadata silently and the user would never see that the
@@ -3429,7 +3497,9 @@ export function ProjectView({
   // mount we also do an initial pull so attachments staged before the
   // agent has written anything still see the user's pasted images.
   useEffect(() => {
-    void refreshWorkspaceItems().catch(() => {
+    void refreshWorkspaceItems({
+      freshProjectFiles: filesRefresh > committedFilesRefreshKeyRef.current,
+    }).catch(() => {
       // The daemon probe can briefly lag behind a just-started local
       // runtime. Retry when daemonLive flips or the explicit refresh key
       // changes instead of leaving the project view in its empty shell.
@@ -3459,7 +3529,7 @@ export function ProjectView({
       project.id,
       projectRunWorkspaceContextRef.current,
     );
-    setFilesRefresh((n) => n + 1);
+    bumpFilesRefresh();
     // Round 7 (mrcfps): file mutations are the dominant staleness signal
     // post-finalize — bump the refresh key so DESIGN.md staleness
     // recomputes against the new mtimes.
@@ -6575,6 +6645,9 @@ export function ProjectView({
                 if (decision.shouldOpen && decision.fileName) {
                   requestOpenFile(decision.fileName);
                 }
+              }).catch(() => {
+                // A failed background read is non-authoritative. Keep the
+                // current file list and skip auto-open until a later event.
               });
             }
           }
@@ -6740,7 +6813,9 @@ export function ProjectView({
               cancelController,
             );
             if (ownsCurrentRun) updateConversationLatestRun('failed', endedAt);
-            void refreshProjectFiles();
+            void refreshProjectFiles().catch(() => {
+              // Retain the last accepted file list while the daemon recovers.
+            });
             onProjectsRefresh();
             clearTraceTouchedFilePaths();
             return;
@@ -7090,7 +7165,9 @@ export function ProjectView({
           if (refreshConversationAfterError) {
             scheduleConversationMessageRefresh(runConversationId);
           }
-          void refreshProjectFiles();
+          void refreshProjectFiles().catch(() => {
+            // Retain the last accepted file list while the daemon recovers.
+          });
           clearTraceTouchedFilePaths();
         },
       };
@@ -7505,7 +7582,7 @@ export function ProjectView({
               Promise.resolve(onDesignSystemsRefresh?.()),
               refreshWorkspaceItems(),
             ]);
-            setFilesRefresh((n) => n + 1);
+            bumpFilesRefresh();
             requestOpenFile(DESIGN_SYSTEM_TAB);
           })();
         });
@@ -9330,7 +9407,7 @@ export function ProjectView({
         Promise.resolve(onDesignSystemsRefresh?.()),
         refreshWorkspaceItems(),
       ]);
-      setFilesRefresh((n) => n + 1);
+      bumpFilesRefresh();
       requestOpenFile(brandPreviewFile);
       const returnedConversationId = conversationId?.trim() || null;
       if (returnedConversationId) {
@@ -10289,10 +10366,9 @@ export function ProjectView({
           resolvedDir={projectDetail.resolvedDir}
           files={projectFiles}
           liveArtifacts={liveArtifacts}
-          filesRefreshKey={filesRefresh}
-          onRefreshFiles={() => {
-            return refreshWorkspaceItems().then(() => undefined);
-          }}
+          filesRefreshKey={committedFilesRefreshKey}
+          filesGeneration={committedFilesGeneration}
+          onRefreshFiles={refreshFileWorkspace}
           isDeck={isDeck}
           streaming={currentConversationActionDisabled}
           commentQueueOnSend={commentQueueOnSend}

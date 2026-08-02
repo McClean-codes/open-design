@@ -2356,7 +2356,10 @@ test('[P1] project detail conversations menu supports new chat, search, counts, 
 });
 
 test('[P0] project detail share menu copies the current share link for uploaded html artifacts', async ({ page }) => {
-  let uploadedName = '';
+  // Upload opens the file tab immediately, so the first deployment read may
+  // precede the upload helper's return. Seed the deterministic file name so
+  // that read receives the deployment instead of a stale empty fixture.
+  let uploadedName = 'share-link-copy.html';
   await page.addInitScript(() => {
     const store: string[] = [];
     Object.defineProperty(window, '__copiedTexts', {
@@ -2410,7 +2413,9 @@ test('[P0] project detail share menu copies the current share link for uploaded 
 });
 
 test('[P0] project detail share menu opens the current share page for uploaded html artifacts', async ({ page }) => {
-  let uploadedName = '';
+  // See the copy-link case above: FileViewer can ask for deployments before
+  // the upload helper returns and assigns the persisted file name.
+  let uploadedName = 'share-page-open.html';
   await page.addInitScript(() => {
     const opened: string[] = [];
     Object.defineProperty(window, '__openedUrls', {

@@ -240,6 +240,7 @@ import {
   OD_PREVIEW_KEEP_ALIVE,
   PooledIframe,
   previewIframeKeepAliveKey,
+  useIframeKeepAlivePool,
 } from './IframeKeepAlivePool';
 import type {
   ChatCommentAttachment,
@@ -1695,6 +1696,17 @@ interface Props {
   artifactKind?: TrackingArtifactKind;
   metricsConsent?: boolean;
   installationId?: string | null;
+  /** False while this viewer is retained offscreen for an instant tab revisit. */
+  workspaceActive?: boolean;
+  /** Pin viewers that still own an in-progress edit so LRU eviction cannot drop work. */
+  onRetainActivityChange?: (fileName: string, retain: boolean) => void;
+  /** Register the safe manual-edit exit used to guard workspace navigation. */
+  onManualEditExitHandlerChange?: (
+    fileName: string,
+    handler: (() => Promise<boolean>) | null,
+  ) => void;
+  /** Prevent a second retained viewer from entering Manual Edit. */
+  manualEditEntryAllowed?: boolean;
 }
 
 // Memoized so FileWorkspace-local state churn (tab drag hover, closing a
@@ -1733,6 +1745,10 @@ export const FileViewer = memo(function FileViewer({
   artifactKind,
   metricsConsent,
   installationId,
+  workspaceActive = true,
+  onRetainActivityChange,
+  onManualEditExitHandlerChange,
+  manualEditEntryAllowed = true,
 }: Props) {
   const rendererMatch = artifactRendererRegistry.resolve({
     file,
@@ -1746,13 +1762,14 @@ export const FileViewer = memo(function FileViewer({
   const analytics = useAnalytics();
   const studioViewKeyRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!workspaceActive) return;
     const key = `${projectId}::${file.name}`;
     if (studioViewKeyRef.current === key) return;
     studioViewKeyRef.current = key;
     trackPageView(analytics.track, {
       page_name: 'artifact',
     });
-  }, [projectId, projectKind, file.name, file.kind, rendererMatch?.renderer.id, analytics.track]);
+  }, [projectId, projectKind, file.name, file.kind, rendererMatch?.renderer.id, analytics.track, workspaceActive]);
 
   if (rendererMatch?.renderer.id === 'html' || rendererMatch?.renderer.id === 'deck-html') {
     return (
@@ -1787,6 +1804,10 @@ export const FileViewer = memo(function FileViewer({
         artifactKind={artifactKind}
         metricsConsent={metricsConsent}
         installationId={installationId}
+        workspaceActive={workspaceActive}
+        onRetainActivityChange={onRetainActivityChange}
+        onManualEditExitHandlerChange={onManualEditExitHandlerChange}
+        manualEditEntryAllowed={manualEditEntryAllowed}
       />
     );
   }
@@ -6972,9 +6993,9 @@ export function fileViewerSourceAuthorizationScopeKey(
 function HtmlViewer({
   projectId,
   projectKind,
-  file,
+  file: requestedFile,
   liveHtml,
-  filesRefreshKey = 0,
+  filesRefreshKey: requestedFilesRefreshKey = 0,
   isDeck,
   streaming,
   commentQueueOnSend = false,
@@ -7000,6 +7021,10 @@ function HtmlViewer({
   artifactKind: handoffArtifactKind,
   metricsConsent = false,
   installationId,
+  workspaceActive = true,
+  onRetainActivityChange,
+  onManualEditExitHandlerChange,
+  manualEditEntryAllowed = true,
 }: {
   projectId: string;
   projectKind: TrackingProjectKind;
@@ -7032,17 +7057,123 @@ function HtmlViewer({
   artifactKind?: TrackingArtifactKind;
   metricsConsent?: boolean;
   installationId?: string | null;
+  workspaceActive?: boolean;
+  onRetainActivityChange?: (fileName: string, retain: boolean) => void;
+  onManualEditExitHandlerChange?: (
+    fileName: string,
+    handler: (() => Promise<boolean>) | null,
+  ) => void;
+  manualEditEntryAllowed?: boolean;
 }) {
   const { locale, t } = useI18n();
+  const iframeKeepAlivePool = useIframeKeepAlivePool();
+  // Keep the entire file revision coherent with the retained viewer's active
+  // state. A watcher commonly advances mtime and filesRefreshKey together;
+  // reading live mtime while freezing only the token still changes iframe src
+  // in the background. Hidden viewers record the latest revision and promote
+  // it once, synchronously, when they become active again.
+  const pendingFileRef = useRef(requestedFile);
+  const consumedFileRef = useRef(requestedFile);
+  pendingFileRef.current = requestedFile;
+  if (workspaceActive) consumedFileRef.current = pendingFileRef.current;
+  const file = consumedFileRef.current;
   const {
-    workspaceContext,
+    workspaceContext: observedWorkspaceContext,
     workspaceContextLoading,
   } = useProjectCollabContext();
-  const workspaceContextIdentityChangePending = false;
-  const sourceAuthorizationScopeKey = fileViewerSourceAuthorizationScopeKey(
+  const observedSourceAuthorizationScopeKey = fileViewerSourceAuthorizationScopeKey(
     workspaceContextLoading,
-    workspaceContext,
+    observedWorkspaceContext,
   );
+  // Project context providers may re-materialize an equivalent object while
+  // ambient focus/presence settles. Requests are scoped by the fields encoded
+  // in this key, so preserve the existing object until that wire identity
+  // actually changes. Otherwise every provider refresh retriggers raw/file-list
+  // effects and reloads a byte-identical preview.
+  const stableWorkspaceContextRef = useRef<{
+    key: string | null;
+    value: WorkspaceCollabContext | null;
+  }>({
+    key: observedSourceAuthorizationScopeKey,
+    value: workspaceContextLoading ? null : observedWorkspaceContext,
+  });
+  // A transient provider loading pulse is not an authority change when this
+  // mounted project already has an exact resolved witness. Keep that witness
+  // until a new resolved identity arrives; a first-ever loading render still
+  // has no witness and therefore remains fail closed.
+  if (
+    !workspaceContextLoading &&
+    stableWorkspaceContextRef.current.key !== observedSourceAuthorizationScopeKey
+  ) {
+    stableWorkspaceContextRef.current = {
+      key: observedSourceAuthorizationScopeKey,
+      value: observedWorkspaceContext,
+    };
+  }
+  const workspaceContext = stableWorkspaceContextRef.current.value;
+  const sourceAuthorizationScopeKey = stableWorkspaceContextRef.current.key;
+  const workspaceContextIdentityChangePending =
+    workspaceContextLoading && stableWorkspaceContextRef.current.key === null;
+  // A retained viewer must not consume global file-watch pulses while hidden.
+  // Remember only the latest token and apply it synchronously on activation so
+  // a long-hidden tab performs one refresh, never one request per missed pulse.
+  const pendingFilesRefreshKeyRef = useRef(requestedFilesRefreshKey);
+  const consumedFilesRefreshKeyRef = useRef(requestedFilesRefreshKey);
+  const appliedFilesRefreshKeyRef = useRef(requestedFilesRefreshKey);
+  const resumedFilesRefreshRef = useRef<{
+    projectId: string;
+    fileName: string;
+    refreshKey: number;
+  } | null>(null);
+  const previousWorkspaceActiveRef = useRef(workspaceActive);
+  const previousFileRevisionRef = useRef({
+    projectId,
+    fileName: file.name,
+    mtime: file.mtime,
+    size: file.size,
+  });
+  const workspaceActiveRef = useRef(workspaceActive);
+  workspaceActiveRef.current = workspaceActive;
+  pendingFilesRefreshKeyRef.current = requestedFilesRefreshKey;
+  if (workspaceActive) {
+    consumedFilesRefreshKeyRef.current = pendingFilesRefreshKeyRef.current;
+    const previousFileRevision = previousFileRevisionRef.current;
+    const sameFile = previousFileRevision.projectId === projectId
+      && previousFileRevision.fileName === file.name;
+    const fileRevisionChanged = sameFile && (
+      previousFileRevision.mtime !== file.mtime
+      || previousFileRevision.size !== file.size
+    );
+    // FileWorkspace freezes an inactive viewer's ProjectFile snapshot. When it
+    // reactivates with a newer mtime, the normal base URL/source refresh already
+    // loads that latest revision. The same is true when ProjectView atomically
+    // commits a refreshed metadata snapshot and its generation key. In either
+    // case, encode the generation in the declarative URL and skip a second
+    // delayed refresh.
+    if (
+      appliedFilesRefreshKeyRef.current !== pendingFilesRefreshKeyRef.current
+      && sameFile
+      && (!previousWorkspaceActiveRef.current || fileRevisionChanged)
+    ) {
+      resumedFilesRefreshRef.current = {
+        projectId,
+        fileName: file.name,
+        refreshKey: pendingFilesRefreshKeyRef.current,
+      };
+      appliedFilesRefreshKeyRef.current = pendingFilesRefreshKeyRef.current;
+    }
+    previousFileRevisionRef.current = {
+      projectId,
+      fileName: file.name,
+      mtime: file.mtime,
+      size: file.size,
+    };
+  }
+  previousWorkspaceActiveRef.current = workspaceActive;
+  const filesRefreshKey = consumedFilesRefreshKeyRef.current;
+  const activeFilesRefreshPending = workspaceActive
+    && filesRefreshKey !== 0
+    && appliedFilesRefreshKeyRef.current !== filesRefreshKey;
   const analytics = useAnalytics();
   // Team collaboration: resolve comment anchors through the drift ladder when
   // the viewer is a team member of a shared project. Off (exact-match, single
@@ -7103,6 +7234,7 @@ function HtmlViewer({
     fn: () => Promise<unknown> | unknown,
     context?: HtmlVersionExportContext | null,
   ) => {
+    if (!workspaceActive) return;
     const requestId = analytics.newRequestId();
     const artifactId = anonymizeArtifactId({ projectId, fileName: file.name });
     const artifactKind = artifactKindToTracking({ fileKind: file.kind ?? null });
@@ -7253,6 +7385,7 @@ function HtmlViewer({
       | 'versions',
     entryFrom?: 'toolbar' | 'more_menu',
   ) => {
+    if (!workspaceActive) return;
     trackArtifactToolbarClick(analytics.track, {
       page_name: 'artifact',
       area: 'artifact_toolbar',
@@ -7266,6 +7399,7 @@ function HtmlViewer({
     element: DrawToolbarElement,
     submitAction?: 'draft' | 'queue' | 'send',
   ) => {
+    if (!workspaceActive) return;
     trackDrawToolbarClick(analytics.track, {
       page_name: 'artifact',
       area: 'draw_toolbar',
@@ -7284,6 +7418,7 @@ function HtmlViewer({
       | 'share_dropdown'
       | 'settings',
   ) => {
+    if (!workspaceActive) return;
     trackArtifactHeaderClick(analytics.track, {
       page_name: 'artifact',
       area: 'artifact_header',
@@ -7295,6 +7430,7 @@ function HtmlViewer({
   const firePresentPopoverClick = (
     element: 'in_this_tab' | 'fullscreen' | 'new_tab',
   ) => {
+    if (!workspaceActive) return;
     trackPresentPopoverClick(analytics.track, {
       page_name: 'artifact',
       area: 'present_popover',
@@ -7317,6 +7453,7 @@ function HtmlViewer({
       slide_count?: number;
     },
   ) => {
+    if (!workspaceActive) return;
     trackDeckViewerClick(analytics.track, {
       page_name: 'artifact',
       area: 'deck_viewer',
@@ -7335,6 +7472,7 @@ function HtmlViewer({
   const fireCommentPopoverClick = (
     element: 'save_comment' | 'send_to_chat' | 'add_note',
   ) => {
+    if (!workspaceActive) return;
     trackCommentPopoverClick(analytics.track, {
       page_name: 'artifact',
       area: 'comment_popover',
@@ -7468,7 +7606,7 @@ function HtmlViewer({
   const deployProviderLoadSeqRef = useRef(0);
   const deployTokenInputRef = useRef<HTMLInputElement | null>(null);
   useEffect(() => {
-    if (!deployModalOpen) return;
+    if (!workspaceActive || !deployModalOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
@@ -7476,18 +7614,19 @@ function HtmlViewer({
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [closeDeployModal, deployModalOpen]);
+  }, [closeDeployModal, deployModalOpen, workspaceActive]);
   // Mirror the selected share access level onto the document body so shell-level
   // chrome can react to it (matches the demo's `data-artifact-share-access`).
   useEffect(() => {
-    if (typeof document === 'undefined') return;
+    if (!workspaceActive || typeof document === 'undefined') return;
     document.body.dataset.artifactShareAccess = shareAccess;
     return () => {
       delete document.body.dataset.artifactShareAccess;
     };
-  }, [shareAccess]);
+  }, [shareAccess, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     let cancelled = false;
     const refreshShareAccess = () => void projectIsSharedWithWorkspace(projectId, workspaceContext).then((shared) => {
       if (!cancelled) setShareAccess(shared ? 'workspace' : 'private');
@@ -7498,7 +7637,7 @@ function HtmlViewer({
       cancelled = true;
       window.removeEventListener(TEAM_PROJECTS_CHANGED_EVENT, refreshShareAccess);
     };
-  }, [projectId, deployMenuOpen, workspaceContext]);
+  }, [projectId, deployMenuOpen, workspaceActive, workspaceContext]);
 
   // Collapse the nested workspace-access listbox whenever the unified share
   // popover itself closes, so it never re-opens mid-flight.
@@ -7515,6 +7654,7 @@ function HtmlViewer({
     setPublishingPublicFile(false);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
+    if (!workspaceActive) return;
     // Off-team the read can only 409; don't spend a request per file open on it.
     if (!canPublishPublic) return;
     // A readonly viewer's publish surface is disabled outright, and the daemon
@@ -7545,7 +7685,14 @@ function HtmlViewer({
     // loads asynchronously, so a team member's first render looks off-team. Without
     // it the hydrate would be skipped for good and an already-published file would
     // render as unpublished.
-  }, [projectId, file.name, canPublishPublic, viewerOnly]);
+  }, [
+    projectId,
+    file.name,
+    canPublishPublic,
+    viewerOnly,
+    workspaceActive,
+    sourceAuthorizationScopeKey,
+  ]);
 
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
@@ -7674,8 +7821,10 @@ function HtmlViewer({
   // Files whose source has been shown at least once (projectId + name). A
   // revisit skips the loading skeleton entirely — the fetch still runs, but
   // the pane doesn't flash a skeleton for content the user has already seen.
+  const sourceLoadedFileKey =
+    `${sourceAuthorizationScopeKey ?? 'pending'}\u0000${projectId}\u0000${file.name}`;
   const sourceLoadedKeysRef = useRef<Set<string>>(
-    new Set(source !== null ? [`${projectId}\u0000${file.name}`] : []),
+    new Set(source !== null ? [sourceLoadedFileKey] : []),
   );
   // URL-load previews that have painted at least once (keep-alive key). The
   // loading skeleton above only waits for `source` (the file TEXT fetch); in
@@ -7695,6 +7844,10 @@ function HtmlViewer({
   // for hint managing hint box state
   const [openHintBox, setOpenHintBox] = useState(true);
   const [manualEditMode, setManualEditModeRaw] = useState(false);
+  useEffect(() => {
+    onRetainActivityChange?.(file.name, manualEditMode);
+    return () => onRetainActivityChange?.(file.name, false);
+  }, [file.name, manualEditMode, onRetainActivityChange]);
   const [manualEditSrcDocActive, setManualEditSrcDocActive] = useState(false);
   const [manualEditFrozenSource, setManualEditFrozenSource] = useState<string | null>(null);
   // Source snapshot frozen while a non-edit annotation pass (Mark/Draw,
@@ -7827,9 +7980,17 @@ function HtmlViewer({
   // the infinite-loop story (issue #2361).
   const srcDocFrameDedupeResetForRef = useRef<HTMLIFrameElement | null>(null);
   const isActivePreviewIframeSource = useCallback((source: MessageEventSource | null) => {
-    return !!source && source === iframeRef.current?.contentWindow;
-  }, []);
+    return workspaceActive && !!source && source === iframeRef.current?.contentWindow;
+  }, [workspaceActive]);
   const isOurPreviewIframeSource = useCallback((source: MessageEventSource | null) => {
+    if (!workspaceActive || !source) return false;
+    return (
+      source === iframeRef.current?.contentWindow ||
+      source === urlPreviewIframeRef.current?.contentWindow ||
+      source === srcDocPreviewIframeRef.current?.contentWindow
+    );
+  }, [workspaceActive]);
+  const isRetainedPreviewIframeSource = useCallback((source: MessageEventSource | null) => {
     if (!source) return false;
     return (
       source === iframeRef.current?.contentWindow ||
@@ -7838,6 +7999,7 @@ function HtmlViewer({
     );
   }, []);
   const capturePreviewRuntimeState = useCallback((target: HTMLIFrameElement | null) => {
+    if (!workspaceActive) return Promise.resolve<PreviewRuntimeState | null>(null);
     const source = target?.contentWindow;
     if (!source) return Promise.resolve<PreviewRuntimeState | null>(null);
     previewRuntimeStateRequestSequenceRef.current += 1;
@@ -7866,8 +8028,9 @@ function HtmlViewer({
       window.addEventListener('message', onMessage);
       source.postMessage({ type: 'od:preview-runtime-state-capture', id }, '*');
     });
-  }, []);
+  }, [workspaceActive]);
   const postAndConsumePreviewRuntimeState = useCallback((target: HTMLIFrameElement | null) => {
+    if (!workspaceActive) return false;
     const runtimeState = previewRuntimeStateRef.current;
     const win = target?.contentWindow;
     if (
@@ -7884,7 +8047,7 @@ function HtmlViewer({
     previewRuntimeStateRef.current = null;
     win.postMessage({ type: 'od:preview-runtime-state-restore', state: runtimeState }, '*');
     return true;
-  }, []);
+  }, [workspaceActive]);
   const setCommentComposerHostRef = useCallback((node: HTMLDivElement | null) => {
     setCommentComposerHost((current) => (current === node ? current : node));
   }, []);
@@ -7892,6 +8055,7 @@ function HtmlViewer({
     setCommentPreviewCanvasNode((current) => (current === node ? current : node));
   }, []);
   const requestDesktopPreviewContentMeasure = useCallback((target: HTMLIFrameElement | null = iframeRef.current) => {
+    if (!workspaceActive) return;
     const source = target?.contentWindow;
     if (!target || !source || target !== iframeRef.current) return;
     if (
@@ -7937,10 +8101,11 @@ function HtmlViewer({
       type: 'od:preview-content-size-request',
       ...request,
     }, '*');
-  }, [commentPreviewCanvasNode]);
+  }, [commentPreviewCanvasNode, workspaceActive]);
   const beginDesktopPreviewContentMeasurementGeneration = useCallback((
     target: HTMLIFrameElement | null,
   ) => {
+    if (!workspaceActive) return;
     if (!target || target !== iframeRef.current || target.dataset.odActive !== 'true') return;
     previewContentMeasurementGenerationSequenceRef.current += 1;
     previewContentMeasurementGenerationRef.current =
@@ -7950,7 +8115,7 @@ function HtmlViewer({
       frame: target,
       generation: previewContentMeasurementGenerationRef.current,
     };
-  }, [previewContentWidthCacheKey, reloadKey]);
+  }, [previewContentWidthCacheKey, reloadKey, workspaceActive]);
   const scheduleDesktopPreviewContentMeasure = useCallback((target: HTMLIFrameElement | null = iframeRef.current) => {
     requestDesktopPreviewContentMeasure(target);
     window.requestAnimationFrame(() => {
@@ -7960,7 +8125,7 @@ function HtmlViewer({
     });
   }, [requestDesktopPreviewContentMeasure]);
   useEffect(() => {
-    if (!onBrandExtractionStopRequest) return;
+    if (!workspaceActive || !onBrandExtractionStopRequest) return;
     const requestStop = onBrandExtractionStopRequest;
     function onMessage(ev: MessageEvent) {
       if (!isOurPreviewIframeSource(ev.source)) return;
@@ -7972,7 +8137,7 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [isOurPreviewIframeSource, onBrandExtractionStopRequest]);
+  }, [isOurPreviewIframeSource, onBrandExtractionStopRequest, workspaceActive]);
   const previewScrollRestoreRef = useRef<{
     hostLeft: number;
     hostTop: number;
@@ -8131,9 +8296,17 @@ function HtmlViewer({
   // resulting commit has been applied, so exit/dismiss/cancel never tear down
   // mid-round-trip and drop the final edit (the #3647 exit-path regression).
   const manualEditTextSessionIdRef = useRef<string | null>(null);
-  const manualEditTextFinishRef = useRef<(() => void) | null>(null);
+  const manualEditTextSessionStartSequenceRef = useRef<number | null>(null);
+  const manualEditTextFinishRef = useRef<((acknowledged?: boolean, sessionId?: string) => void) | null>(null);
   const manualEditTextCommitInFlightRef = useRef<Promise<unknown> | null>(null);
   const manualEditTextCommitSequenceRef = useRef(0);
+  const manualEditTextFailedSessionIdsRef = useRef<Set<string>>(new Set());
+  const manualEditTextLatestCommitRef = useRef<{
+    promise: Promise<unknown>;
+    result: boolean | null;
+    sequence: number;
+    sessionId: string;
+  } | null>(null);
   const [manualEditDraft, setManualEditDraft] = useState<ManualEditDraft>(() => emptyManualEditDraft());
   const [manualEditHistory, setManualEditHistory] = useState<ManualEditHistoryEntry[]>([]);
   const [manualEditUndone, setManualEditUndone] = useState<ManualEditHistoryEntry[]>([]);
@@ -8174,6 +8347,41 @@ function HtmlViewer({
       ? `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${liveHtml === undefined ? 'raw' : 'live'}`
       : null,
   );
+  const renderedSourceAuthorizationScopeKeyRef = useRef(sourceAuthorizationScopeKey);
+  if (renderedSourceAuthorizationScopeKeyRef.current !== sourceAuthorizationScopeKey) {
+    renderedSourceAuthorizationScopeKeyRef.current = sourceAuthorizationScopeKey;
+    // A real Workspace/member authority change is not a passive refresh. Fail
+    // closed before this render commits so no frame can briefly expose source,
+    // publication, deployment, or edit state proven under the prior scope.
+    setSource(null);
+    setRoutingSource(null);
+    setServerPoweredPreviewRequired(false);
+    sourceRef.current = null;
+    sourceFileKeyRef.current = null;
+    sourceEverLoadedRef.current = false;
+    lastGoodSourceForRoutingRef.current = null;
+    prevSourceBeforeReloadRef.current = null;
+    publicFileRequestSeqRef.current += 1;
+    setPublishedFileUrl('');
+    setPublishedFileSlug('');
+    setPublishingPublicFile(false);
+    setPublishLinkFeedback(null);
+    setPublishFailureKey(null);
+    setDeployment(null);
+    setDeploymentsByProvider({});
+    setDeployResult(null);
+    setDeployError(null);
+    setCopiedDeployLink(null);
+    setDeployPhase('idle');
+    setManualEditModeRaw(false);
+    manualEditPendingStyleRef.current = null;
+    manualEditTextSessionIdRef.current = null;
+    manualEditTextSessionStartSequenceRef.current = null;
+    manualEditTextFinishRef.current = null;
+    manualEditTextCommitInFlightRef.current = null;
+    manualEditTextFailedSessionIdsRef.current.clear();
+    manualEditTextLatestCommitRef.current = null;
+  }
   const templateNameId = useId();
   const templateDescriptionId = useId();
   const imageExportTitleId = useId();
@@ -8523,9 +8731,59 @@ function HtmlViewer({
   const shareRef = useRef<HTMLDivElement | null>(null);
   const [chromeActionsHost, setChromeActionsHost] = useState<HTMLElement | null>(null);
   useEffect(() => {
-    if (typeof document === 'undefined') return;
+    if (!workspaceActive || typeof document === 'undefined') {
+      setChromeActionsHost(null);
+      return;
+    }
     setChromeActionsHost(resolveChromeActionsHost());
-  }, []);
+  }, [workspaceActive]);
+
+  useEffect(() => {
+    if (workspaceActive) return;
+    setZoomMenuOpen(false);
+    setPresentMenuOpen(false);
+    setDeployMenuOpen(false);
+    setShareAccessMenuOpen(false);
+    setShareAccessConfirm(null);
+    setToolbarMoreOpen(false);
+    setVersionModalOpen(false);
+    setExportReadyNudge(false);
+    setTemplateModalOpen(false);
+    setDeployModalOpen(false);
+    setInTabPresent(false);
+    setPresentFullscreenPending(false);
+    setPresentEscHint(false);
+    presentFullscreenRequestedRef.current = false;
+    setBoardMode(false);
+    setCommentPanelOpen(false);
+    setCommentCreateMode(false);
+    setInspectMode(false);
+    setAgentToolsOpen(false);
+    setDrawOverlayOpen(false);
+    // Manual Edit is the one transient surface we intentionally preserve.
+    // The retained iframe still owns any live inline-text session and pending
+    // style draft; tearing it down here silently discards work. The inactive
+    // wrapper is inert and every host bridge is gated by workspaceActive, so
+    // the session remains paused until the user returns to this tab.
+    setActiveCommentTarget(null);
+    setHoveredCommentTarget(null);
+    setActiveInspectTarget(null);
+    setBoardPreviewIndex(null);
+    setImageExportModalOpen(false);
+    setPptxExportModalOpen(false);
+    setExportToast(null);
+    setCommentSavedToast(null);
+    setTemplateSavedToast(null);
+    setDeploySavedToast(null);
+    setDeployActionToast(null);
+    setVersionRestoredToast(null);
+    setShareGuideToast(null);
+    const popup = presenterWindowRef.current;
+    if (popup && !popup.closed) {
+      try { popup.close(); } catch { /* already gone */ }
+    }
+    presenterWindowRef.current = null;
+  }, [workspaceActive]);
 
   useEffect(() => {
     liveCommentTargetsRef.current = liveCommentTargets;
@@ -8543,12 +8801,13 @@ function HtmlViewer({
     !isDeck;
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const sourceFileKey =
       `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${liveHtml === undefined ? 'raw' : 'live'}`;
     if (liveHtml !== undefined) {
       sourceFileKeyRef.current = sourceFileKey;
       sourceEverLoadedRef.current = true;
-      sourceLoadedKeysRef.current.add(`${projectId}\u0000${file.name}`);
+      sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
       setSource(liveHtml);
       setRoutingSource(liveHtml);
       setServerPoweredPreviewRequired(false);
@@ -8573,7 +8832,7 @@ function HtmlViewer({
       sourceRef.current = cachedSource;
       if (cachedSource !== null) {
         sourceEverLoadedRef.current = true;
-        sourceLoadedKeysRef.current.add(`${projectId}\u0000${file.name}`);
+        sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
         lastGoodSourceForRoutingRef.current = cachedSource;
       }
       // Note: prevSourceBeforeReloadRef is cleared by the [projectId,
@@ -8600,7 +8859,7 @@ function HtmlViewer({
     ) {
       setRoutingSource(sourceRef.current);
       sourceEverLoadedRef.current = true;
-      sourceLoadedKeysRef.current.add(`${projectId}\u0000${file.name}`);
+      sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
       return () => {
         cancelled = true;
       };
@@ -8658,7 +8917,7 @@ function HtmlViewer({
       if (text == null) {
         if (shouldDeferPassivePreviewSource) {
           sourceEverLoadedRef.current = true;
-      sourceLoadedKeysRef.current.add(`${projectId}\u0000${file.name}`);
+      sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
           setRoutingSource('');
           setServerPoweredPreviewRequired(false);
           return;
@@ -8695,7 +8954,7 @@ function HtmlViewer({
       }
       prevSourceBeforeReloadRef.current = null;
       sourceEverLoadedRef.current = true;
-      sourceLoadedKeysRef.current.add(`${projectId}\u0000${file.name}`);
+      sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
       lastGoodSourceForRoutingRef.current = text;
       setRoutingSource(text);
       if (sourceLoadMode === 'routing-preview') {
@@ -8727,9 +8986,11 @@ function HtmlViewer({
     sourceSnapshotRefreshKey,
     sourceAuthorizationScopeKey,
     shouldDeferPassivePreviewSource,
+    workspaceActive,
   ]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const requestSeq = ++deploymentsLoadSeqRef.current;
     let cancelled = false;
     setDeployResult(null);
@@ -8747,7 +9008,7 @@ function HtmlViewer({
     return () => {
       cancelled = true;
     };
-  }, [projectId, file.name, deployProviderId, workspaceContext]);
+  }, [projectId, file.name, deployProviderId, workspaceActive, workspaceContext]);
 
   // A retained HtmlViewer stays mounted while the user visits Design Files and
   // comes back, so its initial deployment snapshot can legitimately be older
@@ -9021,11 +9282,22 @@ function HtmlViewer({
   // flashes through the (unstyled) URL-load path before the list lands.
   const [projectFilePathSet, setProjectFilePathSet] = useState<ReadonlySet<string> | null>(null);
   useEffect(() => {
+    // Do not include workspaceActive itself in this effect's dependencies:
+    // every retained viewer is first mounted while active. A same-token
+    // inactive -> active transition must reuse the loaded path snapshot,
+    // while a file-watch token accumulated during inactivity changes
+    // filesRefreshKey and therefore still runs this effect on activation.
+    if (!workspaceActiveRef.current) return;
     let cancelled = false;
     setProjectFilePathSet(null);
-    void fetchProjectFiles(projectId, { workspaceContext }).then((files) => {
-      if (!cancelled) setProjectFilePathSet(new Set(files.map((entry) => entry.name)));
-    });
+    void fetchProjectFiles(projectId, { workspaceContext })
+      .then((files) => {
+        if (!cancelled) setProjectFilePathSet(new Set(files.map((entry) => entry.name)));
+      })
+      .catch(() => {
+        // Keep the conservative `null` state: a failed read is not proof that
+        // the project has no root-relative assets.
+      });
     return () => {
       cancelled = true;
     };
@@ -9035,6 +9307,7 @@ function HtmlViewer({
     [source, projectFilePathSet],
   );
   useEffect(() => {
+    if (!workspaceActive) return;
     setPreviewAssetWarning(null);
     if (mode !== 'preview' || effectiveDeck) return;
     const s = routingHtmlSource;
@@ -9088,6 +9361,7 @@ function HtmlViewer({
     projectId,
     reloadKey,
     routingHtmlSource,
+    workspaceActive,
     workspaceContext,
   ]);
   // A real WebGL/Worker/WASM/SharedArrayBuffer artifact needs the "powered
@@ -9157,6 +9431,13 @@ function HtmlViewer({
     frozenPreviewSrcUrlRef.current = null;
   }
   const effectiveBasePreviewSrcUrl = frozenPreviewSrcUrlRef.current ?? basePreviewSrcUrl;
+  const resumedFilesRefresh = resumedFilesRefreshRef.current;
+  const resumedPreviewSrcUrl = resumedFilesRefresh
+    && resumedFilesRefresh.projectId === projectId
+    && resumedFilesRefresh.fileName === file.name
+    && resumedFilesRefresh.refreshKey === filesRefreshKey
+    ? appendResourceQuery(effectiveBasePreviewSrcUrl, `fr=${filesRefreshKey}`)
+    : null;
   // Switching to a different file/project while an annotation tool is still
   // open must NOT keep the viewer pinned to the previous artifact. The
   // per-file annotation data is already reset on file.name change, but the
@@ -9194,20 +9475,25 @@ function HtmlViewer({
     // preview to bypass the loading skeleton entirely and mount an empty srcDoc
     // iframe when a reload snapshot was non-null at switch time (PR #4652
     // third-pass review, PerishCode finding).
-    sourceEverLoadedRef.current = sourceLoadedKeysRef.current.has(`${projectId}\u0000${file.name}`);
+    sourceEverLoadedRef.current = sourceLoadedKeysRef.current.has(sourceLoadedFileKey);
     lastGoodSourceForRoutingRef.current = null;
     prevSourceBeforeReloadRef.current = null;
-  }, [projectId, file.name]);
-  const activePreviewSrcUrl = (
-    previewSrcUrl === effectiveBasePreviewSrcUrl ||
-    previewSrcUrl.startsWith(`${effectiveBasePreviewSrcUrl}&`)
-  )
+  }, [projectId, file.name, sourceLoadedFileKey]);
+  const activePreviewSrcUrl = resumedPreviewSrcUrl ?? (activeFilesRefreshPending
     ? previewSrcUrl
-    : effectiveBasePreviewSrcUrl;
+    : (
+        previewSrcUrl === effectiveBasePreviewSrcUrl
+        || previewSrcUrl.startsWith(`${effectiveBasePreviewSrcUrl}&`)
+      )
+      ? previewSrcUrl
+      : effectiveBasePreviewSrcUrl);
+  const previewSrcCarriesCurrentRefresh = filesRefreshKey !== 0
+    && new RegExp(`[?&]fr=${filesRefreshKey}(?:&|$)`).test(previewSrcUrl);
   useEffect(() => {
+    if (activeFilesRefreshPending || previewSrcCarriesCurrentRefresh) return;
     setPreviewSrcUrl(effectiveBasePreviewSrcUrl);
     setUrlSelectionBridgeReady(false);
-  }, [effectiveBasePreviewSrcUrl]);
+  }, [activeFilesRefreshPending, effectiveBasePreviewSrcUrl, previewSrcCarriesCurrentRefresh]);
   useEffect(() => {
     const activeFrame = useUrlLoadPreview
       ? urlPreviewIframeRef.current
@@ -9237,6 +9523,7 @@ function HtmlViewer({
   // reloads itself past its hop budget. Only trust our own two preview frames,
   // then park the srcDoc iframe on static content so the loop cannot continue.
   useEffect(() => {
+    if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
       const fromPreview =
         ev.source === srcDocPreviewIframeRef.current?.contentWindow ||
@@ -9248,7 +9535,7 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [workspaceActive]);
 
   // Resolve the cross-origin powered-preview URL for artifacts that need it.
   // `resolved:false` means the (cached) daemon isolation probe is still in
@@ -9262,6 +9549,7 @@ function HtmlViewer({
     url: null,
   });
   useEffect(() => {
+    if (!workspaceActive) return;
     if (!(needsPowered && useUrlLoadPreview)) {
       setPowered({ resolved: false, url: null });
       return;
@@ -9278,12 +9566,31 @@ function HtmlViewer({
     return () => {
       cancelled = true;
     };
-  }, [needsPowered, useUrlLoadPreview, projectId, file.name, file.mtime, reloadKey]);
+  }, [
+    needsPowered,
+    useUrlLoadPreview,
+    projectId,
+    file.name,
+    file.mtime,
+    reloadKey,
+    workspaceActive,
+  ]);
   const usePoweredPreview = needsPowered && useUrlLoadPreview && powered.url != null;
   const poweredResolving = needsPowered && useUrlLoadPreview && !powered.resolved;
+  const [poweredPreviewSrcOverride, setPoweredPreviewSrcOverride] = useState<{
+    projectId: string;
+    fileName: string;
+    mtime: number;
+    size: number;
+    refreshKey: number;
+    reloadKey: number;
+    url: string;
+  } | null>(null);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     if (filesRefreshKey === 0) return;
+    if (appliedFilesRefreshKeyRef.current === filesRefreshKey) return;
     // Defer the file-watcher live-reload while annotating; the effect re-runs
     // when the mode closes (interactivePreviewModeActive flips) and applies
     // the now-current URL in one pass.
@@ -9303,10 +9610,21 @@ function HtmlViewer({
     );
     const nextSrc = appendResourceQuery(refreshPreviewSrcUrl, `fr=${filesRefreshKey}`);
     const timeout = window.setTimeout(() => {
-      if (useUrlLoadPreview && urlPreviewIframeRef.current?.contentWindow) {
-        urlPreviewIframeRef.current.contentWindow.location.replace(nextSrc);
+      appliedFilesRefreshKeyRef.current = filesRefreshKey;
+      if (usePoweredPreview) {
+        setPoweredPreviewSrcOverride({
+          projectId,
+          fileName: file.name,
+          mtime: file.mtime,
+          size: file.size,
+          refreshKey: filesRefreshKey,
+          reloadKey,
+          url: nextSrc,
+        });
       } else {
-        setPreviewSrcUrl(nextSrc);
+        // The final URL transport layer appends the document epoch. Keep the
+        // base state epoch-free so React does not emit duplicate query keys.
+        setPreviewSrcUrl(appendResourceQuery(refreshBasePreviewSrcUrl, `fr=${filesRefreshKey}`));
       }
     }, 180);
     return () => window.clearTimeout(timeout);
@@ -9318,8 +9636,14 @@ function HtmlViewer({
     needsPowered,
     powered.resolved,
     powered.url,
+    projectId,
+    file.name,
+    file.mtime,
+    file.size,
+    reloadKey,
     transportPreviewMeasurementDocumentEpoch,
     usePoweredPreview,
+    workspaceActive,
   ]);
 
   useEffect(() => {
@@ -9472,7 +9796,15 @@ function HtmlViewer({
   // a different origin + sandbox, so reusing a plain frame's DOM node for it
   // (or vice-versa) would leave a stale sandbox attribute on a live iframe.
   const urlPreviewKeepAliveKey =
-    previewIframeKeepAliveKey(projectId, file.name) + (usePoweredPreview ? ':powered' : '');
+    `${previewIframeKeepAliveKey(projectId, file.name)}`
+    + `:scope:${encodeURIComponent(sourceAuthorizationScopeKey ?? 'pending')}`
+    + (usePoweredPreview ? ':powered' : '');
+  const previousUrlPreviewKeepAliveKeyRef = useRef(urlPreviewKeepAliveKey);
+  useEffect(() => {
+    const previousKey = previousUrlPreviewKeepAliveKeyRef.current;
+    previousUrlPreviewKeepAliveKeyRef.current = urlPreviewKeepAliveKey;
+    if (previousKey !== urlPreviewKeepAliveKey) iframeKeepAlivePool.evict(previousKey);
+  }, [iframeKeepAlivePool, urlPreviewKeepAliveKey]);
   // Reset the shell-ready latch whenever the srcDoc iframe re-mounts. The
   // next shell will post `od:srcdoc-transport-ready` (or fire onLoad) and
   // flip this back to true. See #2253.
@@ -9485,6 +9817,7 @@ function HtmlViewer({
   // installed, dropping the message and stranding the iframe on the empty
   // 536-byte body.
   useEffect(() => {
+    if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
       if (ev.source !== srcDocPreviewIframeRef.current?.contentWindow) return;
       const data = ev.data as { type?: string } | null;
@@ -9493,8 +9826,9 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [workspaceActive]);
   useEffect(() => {
+    if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
       const frame = urlPreviewIframeRef.current;
       if (ev.source !== frame?.contentWindow) return;
@@ -9505,7 +9839,7 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, []);
+  }, [workspaceActive]);
   // Lazy transport preloads an empty shell only while URL-load is the active
   // transport. Once srcdoc becomes active (sandbox shim, Draw, Screenshot,
   // Tweaks, etc.), mount the real artifact HTML directly so we do not depend on
@@ -9552,6 +9886,15 @@ function HtmlViewer({
     shouldUrlLoadHtmlPreview({ ...urlLoadDecision, drawMode: false });
   const urlTransportSrc =
     useUrlLoadPreview || srcDocForcedOnlyByDraw ? activePreviewSrcUrl : 'about:blank';
+  const activePoweredPreviewSrcOverride = poweredPreviewSrcOverride
+    && poweredPreviewSrcOverride.projectId === projectId
+    && poweredPreviewSrcOverride.fileName === file.name
+    && poweredPreviewSrcOverride.mtime === file.mtime
+    && poweredPreviewSrcOverride.size === file.size
+    && poweredPreviewSrcOverride.refreshKey === filesRefreshKey
+    && poweredPreviewSrcOverride.reloadKey === reloadKey
+    ? poweredPreviewSrcOverride.url
+    : null;
   // Powered preview: swap the URL-load iframe to the cross-origin isolated
   // daemon origin + `allow-same-origin` so Workers/Storage/WASM/SAB work.
   // While the isolation probe resolves, park at about:blank instead of loading
@@ -9561,12 +9904,17 @@ function HtmlViewer({
     : poweredResolving
       ? 'about:blank'
       : urlTransportSrc;
-  const urlFrameSrc = urlFrameBaseSrc === 'about:blank'
+  const computedUrlFrameSrc = urlFrameBaseSrc === 'about:blank'
     ? urlFrameBaseSrc
     : appendResourceQuery(
         urlFrameBaseSrc,
         `odPreviewEpoch=${encodeURIComponent(transportPreviewMeasurementDocumentEpoch)}`,
       );
+  const lastRenderedUrlFrameSrcRef = useRef(computedUrlFrameSrc);
+  const urlFrameSrc = activeFilesRefreshPending
+    ? lastRenderedUrlFrameSrcRef.current
+    : activePoweredPreviewSrcOverride ?? computedUrlFrameSrc;
+  lastRenderedUrlFrameSrcRef.current = urlFrameSrc;
   const urlFrameSandbox = usePoweredPreview
     ? POWERED_PREVIEW_SANDBOX
     : 'allow-scripts allow-downloads';
@@ -9661,10 +10009,12 @@ function HtmlViewer({
   }, [activateSrcDocTransport, useUrlLoadPreview, useLazySrcDocTransport]);
   
   useEffect(() => {
+    if (!workspaceActive) return;
     restorePreviewScrollPosition();
-  }, [boardMode, drawOverlayOpen, manualEditMode, srcDoc, restorePreviewScrollPosition]);
+  }, [boardMode, drawOverlayOpen, manualEditMode, srcDoc, restorePreviewScrollPosition, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
       if (!isOurPreviewIframeSource(ev.source)) return;
       if (!isActivePreviewIframeSource(ev.source)) return;
@@ -9811,9 +10161,11 @@ function HtmlViewer({
     isActivePreviewIframeSource,
     isOurPreviewIframeSource,
     setDesktopPreviewContentWidth,
+    workspaceActive,
   ]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
       if (!isActivePreviewIframeSource(ev.source)) return;
       const data = ev.data as { type?: unknown; fileName?: unknown } | null;
@@ -9830,9 +10182,10 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [file.name, isActivePreviewIframeSource, onOpenFileReplacing]);
+  }, [file.name, isActivePreviewIframeSource, onOpenFileReplacing, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     if (!effectiveDeck) {
       setSlideState(null);
       return;
@@ -9852,9 +10205,10 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [effectiveDeck, isActivePreviewIframeSource, isOurPreviewIframeSource, previewStateKey]);
+  }, [effectiveDeck, isActivePreviewIframeSource, isOurPreviewIframeSource, previewStateKey, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     win.postMessage({
@@ -9862,29 +10216,33 @@ function HtmlViewer({
       enabled: boardMode,
       mode: boardTool,
     }, '*');
-  }, [boardMode, boardTool, srcDoc, useUrlLoadPreview]);
+  }, [boardMode, boardTool, srcDoc, useUrlLoadPreview, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     win.postMessage({ type: 'od-edit-mode', enabled: manualEditMode }, '*');
     postSelectedManualEditTargetToIframe(manualEditMode ? selectedManualEditTarget?.id ?? null : null);
-  }, [manualEditMode, selectedManualEditTarget?.id, srcDoc, useUrlLoadPreview]);
+  }, [manualEditMode, selectedManualEditTarget?.id, srcDoc, useUrlLoadPreview, workspaceActive]);
 
   const previewStyleToIframe = useCallback((id: string, styles: Partial<ManualEditStyles>, version: number) => {
+    if (!workspaceActive) return false;
     const win = iframeRef.current?.contentWindow;
     if (!win) return false;
     win.postMessage({ type: 'od-edit-preview-style', id, styles, version }, '*');
     return true;
-  }, []);
+  }, [workspaceActive]);
 
   function postSelectedManualEditTargetToIframe(id: string | null, target: HTMLIFrameElement | null = iframeRef.current) {
+    if (!workspaceActive) return;
     const win = target?.contentWindow;
     if (!win) return;
     win.postMessage({ type: 'od-edit-selected-target', id }, '*');
   }
 
   function syncBridgeModes(target: HTMLIFrameElement | null = iframeRef.current) {
+    if (!workspaceActive) return;
     const win = target?.contentWindow;
     if (!win) return;
     postAndConsumePreviewRuntimeState(target);
@@ -9899,10 +10257,11 @@ function HtmlViewer({
   }
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const win = iframeRef.current?.contentWindow;
     if (!win) return;
     win.postMessage({ type: 'od:inspect-mode', enabled: inspectMode }, '*');
-  }, [inspectMode, srcDoc, useUrlLoadPreview]);
+  }, [inspectMode, srcDoc, useUrlLoadPreview, workspaceActive]);
 
   // Mirror the bridge's `od:comment-targets` broadcast into
   // `liveCommentTargets` whenever EITHER Inspect or Comments mode is
@@ -9916,6 +10275,7 @@ function HtmlViewer({
   // artifacts) because the comment-mode listener short-circuits on
   // `!boardMode`. Issue #890.
   useEffect(() => {
+    if (!workspaceActive) return;
     if (!inspectMode && !boardMode) {
       setLiveCommentTargets((current) => (current.size > 0 ? new Map() : current));
       return;
@@ -9960,7 +10320,7 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [inspectMode, boardMode, file.name, isOurPreviewIframeSource]);
+  }, [inspectMode, boardMode, file.name, isOurPreviewIframeSource, workspaceActive]);
 
   useEffect(() => {
     setActiveCommentTarget(null);
@@ -10032,7 +10392,7 @@ function HtmlViewer({
   }, [selectedManualEditTarget?.id]);
 
   useEffect(() => {
-    if (!boardMode) {
+    if (!workspaceActive || !boardMode) {
       setCommentCreateMode(false);
       setActiveCommentTarget((current) => (current ? null : current));
       setHoveredCommentTarget((current) => (current ? null : current));
@@ -10214,16 +10574,16 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [activeCommentTarget, boardMode, boardTool, cancelHoverCardDismiss, commentPortalHost, file.name, isOurPreviewIframeSource, previewComments, scheduleHoverCardDismiss]);
+  }, [activeCommentTarget, boardMode, boardTool, cancelHoverCardDismiss, commentPortalHost, file.name, isOurPreviewIframeSource, previewComments, scheduleHoverCardDismiss, workspaceActive]);
 
   useEffect(() => {
-    if (!boardMode || !activeCommentTarget || activeCommentTarget.selectionKind === 'pod') return;
+    if (!workspaceActive || !boardMode || !activeCommentTarget || activeCommentTarget.selectionKind === 'pod') return;
     iframeRef.current?.contentWindow?.postMessage({
       type: 'od:comment-active-target',
       elementId: activeCommentTarget.elementId,
       selector: activeCommentTarget.selector,
     }, '*');
-  }, [activeCommentTarget?.elementId, activeCommentTarget?.selector, activeCommentTarget?.selectionKind, boardMode]);
+  }, [activeCommentTarget?.elementId, activeCommentTarget?.selector, activeCommentTarget?.selectionKind, boardMode, workspaceActive]);
 
   useEffect(() => {
     if (!manualEditMode) {
@@ -10236,8 +10596,11 @@ function HtmlViewer({
       selectedManualEditTargetIdRef.current = null;
       manualEditSelectionDraftRef.current = null;
       manualEditTextSessionIdRef.current = null;
+      manualEditTextSessionStartSequenceRef.current = null;
       manualEditTextFinishRef.current = null;
       manualEditTextCommitInFlightRef.current = null;
+      manualEditTextFailedSessionIdsRef.current.clear();
+      manualEditTextLatestCommitRef.current = null;
       setManualEditError(null);
       manualEditPendingStyleRef.current = null;
       if (manualEditStyleTimerRef.current) {
@@ -10247,9 +10610,17 @@ function HtmlViewer({
       return;
     }
     function onMessage(ev: MessageEvent) {
-      if (!isOurPreviewIframeSource(ev.source)) return;
+      if (!isRetainedPreviewIframeSource(ev.source)) return;
       const data = ev.data as ManualEditBridgeMessage | null;
       if (!data?.type) return;
+      // A direct/automatic tab transition may make the viewer inactive before
+      // its inline edit acknowledges the safe-exit request. Keep only those
+      // commit/settlement messages live offscreen; ignore fresh interactions.
+      if (
+        !workspaceActive
+        && data.type !== 'od-edit-text-commit'
+        && data.type !== 'od-edit-text-session'
+      ) return;
       if (data.type === 'od-edit-targets' && Array.isArray(data.targets)) {
         setManualEditTargets(data.targets);
         // Target broadcasts can be briefly empty while the iframe/save path is
@@ -10295,15 +10666,33 @@ function HtmlViewer({
         // iframe-initiated) can await it and honor a failed save before tearing
         // down. It self-clears once resolved, keyed to identity so a newer
         // commit is never clobbered.
-        manualEditTextCommitSequenceRef.current += 1;
+        const sessionId = String(data.id);
+        const sequence = manualEditTextCommitSequenceRef.current + 1;
+        manualEditTextCommitSequenceRef.current = sequence;
         const commit = applyManualEdit({
-          id: String(data.id),
+          id: sessionId,
           kind: 'set-text',
           value: String(data.value),
         }, 'Edit text');
         manualEditTextCommitInFlightRef.current = commit;
+        const record: NonNullable<typeof manualEditTextLatestCommitRef.current> = {
+          promise: commit,
+          result: null,
+          sequence,
+          sessionId,
+        };
+        manualEditTextLatestCommitRef.current = record;
         void (async () => {
-          try { await commit; } catch { /* failure honored by teardown / surfaced by applyManualEdit */ }
+          try {
+            record.result = (await commit) !== false;
+          } catch {
+            record.result = false;
+          }
+          if (record.result) {
+            manualEditTextFailedSessionIdsRef.current.delete(sessionId);
+          } else {
+            manualEditTextFailedSessionIdsRef.current.add(sessionId);
+          }
           if (manualEditTextCommitInFlightRef.current === commit) {
             manualEditTextCommitInFlightRef.current = null;
           }
@@ -10314,16 +10703,18 @@ function HtmlViewer({
         const sessionId = String(data.id || '');
         if (data.active) {
           manualEditTextSessionIdRef.current = sessionId;
+          manualEditTextSessionStartSequenceRef.current = manualEditTextCommitSequenceRef.current;
           return;
         }
         if (manualEditTextSessionIdRef.current === sessionId) {
           manualEditTextSessionIdRef.current = null;
+          manualEditTextSessionStartSequenceRef.current = null;
         }
         const pending = manualEditTextFinishRef.current;
         if (pending) {
           // settle() awaits the in-flight commit before resolving the caller's
           // teardown, so the final edit is never dropped.
-          pending();
+          pending(true, sessionId);
         }
         // Iframe-driven finishes (Enter / clicking another target) leave the
         // commit promise in place; it self-clears on resolution, and any later
@@ -10350,7 +10741,7 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [isOurPreviewIframeSource, manualEditMode, source]);
+  }, [isRetainedPreviewIframeSource, manualEditMode, source, workspaceActive]);
 
   function nextManualEditPreviewVersion(): number {
     manualEditPreviewVersionRef.current += 1;
@@ -10427,8 +10818,17 @@ function HtmlViewer({
     const pending = manualEditPendingStyleRef.current;
     if (!pending) return true;
     if (manualEditSavingRef.current) return false;
-    manualEditPendingStyleRef.current = null;
-    return applyManualEdit({ id: pending.id, kind: 'set-style', styles: pending.styles }, pending.label);
+    const ok = await applyManualEdit(
+      { id: pending.id, kind: 'set-style', styles: pending.styles },
+      pending.label,
+    );
+    // Keep the exact failed snapshot for retry. If another style change landed
+    // while this save was in flight, it has already replaced/extended the ref
+    // and must likewise remain pending.
+    if (ok && manualEditPendingStyleRef.current === pending) {
+      manualEditPendingStyleRef.current = null;
+    }
+    return ok;
   }
 
   function cancelManualEditStyleDraft() {
@@ -10471,31 +10871,63 @@ function HtmlViewer({
   // error so a failed save never looks like a successful one (#4291 review).
   function finishManualEditTextSession(commit: boolean): Promise<boolean> {
     const win = iframeRef.current?.contentWindow;
-    if (!win || !manualEditTextSessionIdRef.current) return Promise.resolve(true);
+    const sessionId = manualEditTextSessionIdRef.current;
+    if (!sessionId) return Promise.resolve(true);
+    if (!win) return Promise.resolve(false);
+    const sessionStartSequence = manualEditTextSessionStartSequenceRef.current
+      ?? manualEditTextCommitSequenceRef.current;
+    const commitSequenceAtFinish = manualEditTextCommitSequenceRef.current;
+    const commitAtFinish = manualEditTextLatestCommitRef.current;
+    const sameSessionCommitAtFinish = commitAtFinish?.sessionId === sessionId
+      && commitAtFinish.sequence > sessionStartSequence
+      ? commitAtFinish
+      : null;
     return new Promise<boolean>((resolve) => {
       let settled = false;
       let timer: ReturnType<typeof setTimeout> | null = null;
-      const settle = () => {
+      const settle = (acknowledged = false, acknowledgedSessionId?: string) => {
+        if (acknowledged && acknowledgedSessionId !== sessionId) return;
         if (settled) return;
         settled = true;
         if (timer) { clearTimeout(timer); timer = null; }
-        // Mark the session ended even on the timeout path, so a follow-up
-        // clearManualEditTargetSelection (e.g. from cancel) does not see a live
-        // session and re-finish it with commit:true — turning cancel into save.
-        manualEditTextSessionIdRef.current = null;
         if (manualEditTextFinishRef.current === settle) manualEditTextFinishRef.current = null;
         // Wait out the in-flight commit before resolving, so the final edit is
         // persisted before teardown even if the timeout backstop won the race
         // against the iframe's ack. The commit clears its own ref on resolution.
-        const commitInFlight = manualEditTextCommitInFlightRef.current;
+        const latestCommit = manualEditTextLatestCommitRef.current;
+        const currentSessionCommit = latestCommit
+          && latestCommit.sequence > commitSequenceAtFinish
+          && latestCommit.sessionId === sessionId
+          ? latestCommit
+          : null;
+        const relevantCommit = currentSessionCommit ?? sameSessionCommitAtFinish;
         void (async () => {
-          let committed = true;
+          let committed = acknowledged;
           try {
             // applyManualEdit resolves false when the save fails (or the source
             // changed externally); surface that so callers can abort teardown.
-            if ((await commitInFlight) === false) committed = false;
+            if (relevantCommit) {
+              committed = relevantCommit.result
+                ?? (await relevantCommit.promise) !== false;
+              relevantCommit.result = committed;
+              if (committed) {
+                manualEditTextFailedSessionIdsRef.current.delete(relevantCommit.sessionId);
+              } else {
+                manualEditTextFailedSessionIdsRef.current.add(relevantCommit.sessionId);
+              }
+            }
           } catch {
             committed = false;
+          }
+          // A timeout by itself does not prove that the iframe ended the
+          // editing session. Keep the session live so every later teardown
+          // attempt remains fail-closed until the iframe acks or a matching
+          // commit provides a terminal witness. Clearing it on a bare timeout
+          // lets a second navigation destroy the iframe and lose its DOM edit.
+          if ((acknowledged || relevantCommit)
+            && manualEditTextSessionIdRef.current === sessionId) {
+            manualEditTextSessionIdRef.current = null;
+            manualEditTextSessionStartSequenceRef.current = null;
           }
           resolve(committed);
         })();
@@ -10504,7 +10936,7 @@ function HtmlViewer({
       win.postMessage({ type: 'od-edit-text-finish', commit }, '*');
       // Backstop a detached iframe so teardown can never hang; the ack path
       // clears this timer when it wins.
-      timer = setTimeout(settle, 1500);
+      timer = setTimeout(() => settle(false), 1500);
     });
   }
 
@@ -10517,13 +10949,20 @@ function HtmlViewer({
     if (manualEditTextSessionIdRef.current) {
       return finishManualEditTextSession(commitActiveSession);
     }
-    const commitInFlight = manualEditTextCommitInFlightRef.current;
-    if (!commitInFlight) return true;
-    try {
-      return (await commitInFlight) !== false;
-    } catch {
-      return false;
+    const latestCommit = manualEditTextLatestCommitRef.current;
+    if (latestCommit && latestCommit.result == null) {
+      try {
+        latestCommit.result = (await latestCommit.promise) !== false;
+      } catch {
+        latestCommit.result = false;
+      }
+      if (latestCommit.result) {
+        manualEditTextFailedSessionIdsRef.current.delete(latestCommit.sessionId);
+      } else {
+        manualEditTextFailedSessionIdsRef.current.add(latestCommit.sessionId);
+      }
     }
+    return manualEditTextFailedSessionIdsRef.current.size === 0;
   }
 
   async function exitManualEditModeAfterFlush(): Promise<boolean> {
@@ -10532,12 +10971,44 @@ function HtmlViewer({
     if (!(await settlePendingManualEditCommit())) {
       return false;
     }
+    // Finishing the currently active session may succeed while another text
+    // session still has an unpersisted Enter commit. Only a successful retry
+    // for that same session consumes its failure witness.
+    if (manualEditTextFailedSessionIdsRef.current.size > 0) return false;
     const ok = await flushManualEditStyleSave();
     if (!ok) return false;
     setManualEditPanelPosition(null);
     setManualEditMode(false);
     return true;
   }
+
+  const exitManualEditModeAfterFlushRef = useRef(exitManualEditModeAfterFlush);
+  exitManualEditModeAfterFlushRef.current = exitManualEditModeAfterFlush;
+  const manualEditSafeExitInFlightRef = useRef<Promise<boolean> | null>(null);
+  const requestManualEditSafeExitRef = useRef<() => Promise<boolean>>(async () => true);
+  requestManualEditSafeExitRef.current = () => {
+    if (manualEditSafeExitInFlightRef.current) return manualEditSafeExitInFlightRef.current;
+    const pending = exitManualEditModeAfterFlushRef.current().finally(() => {
+      if (manualEditSafeExitInFlightRef.current === pending) {
+        manualEditSafeExitInFlightRef.current = null;
+      }
+    });
+    manualEditSafeExitInFlightRef.current = pending;
+    return pending;
+  };
+  useEffect(() => {
+    if (!manualEditMode) {
+      onManualEditExitHandlerChange?.(file.name, null);
+      return;
+    }
+    const handler = () => requestManualEditSafeExitRef.current();
+    onManualEditExitHandlerChange?.(file.name, handler);
+    return () => onManualEditExitHandlerChange?.(file.name, null);
+  }, [file.name, manualEditMode, onManualEditExitHandlerChange]);
+  useEffect(() => {
+    if (workspaceActive || !manualEditMode) return;
+    void requestManualEditSafeExitRef.current();
+  }, [manualEditMode, workspaceActive]);
 
   // Clears the hover affordance and re-arms the iframe's per-element hover
   // dedupe so re-entering the same element re-announces it. Called from the
@@ -10588,6 +11059,7 @@ function HtmlViewer({
     selectedManualEditTargetIdRef.current = null;
     manualEditSelectionDraftRef.current = null;
     manualEditTextSessionIdRef.current = null;
+    manualEditTextSessionStartSequenceRef.current = null;
     setSelectedManualEditTarget(null);
     setManualEditPanelPosition(null);
     setManualEditDraft(emptyManualEditDraft(sourceRef.current ?? ''));
@@ -10931,7 +11403,7 @@ function HtmlViewer({
   // The bridge tags the message with a computed-style snapshot so the panel
   // can show real starting values for color / typography / spacing / radius.
   useEffect(() => {
-    if (!inspectMode) return;
+    if (!workspaceActive || !inspectMode) return;
     function onMessage(ev: MessageEvent) {
       if (!isOurPreviewIframeSource(ev.source)) return;
       const data = ev.data as
@@ -10967,7 +11439,7 @@ function HtmlViewer({
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [inspectMode, isOurPreviewIframeSource]);
+  }, [inspectMode, isOurPreviewIframeSource, workspaceActive]);
 
   function postSlide(action: 'next' | 'prev' | 'first' | 'last' | 'go', index?: number) {
     // Track prev/next here so every entry point (top toolbar, floating nav,
@@ -11217,7 +11689,7 @@ function HtmlViewer({
   // Keyboard nav on the host, so the user can press ←/→ even when focus
   // is on the chat composer or any other host control.
   useEffect(() => {
-    if (!effectiveDeck || mode !== 'preview') return;
+    if (!workspaceActive || !effectiveDeck || mode !== 'preview') return;
     function onKey(e: KeyboardEvent) {
       if (document.activeElement === iframeRef.current) return;
       const target = e.target as HTMLElement | null;
@@ -11249,9 +11721,10 @@ function HtmlViewer({
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [effectiveDeck, mode]);
+  }, [effectiveDeck, mode, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     function onPresenterMessage(ev: MessageEvent) {
       if (!presenterWindowRef.current || ev.source !== presenterWindowRef.current) return;
       const data = ev.data as
@@ -11280,9 +11753,10 @@ function HtmlViewer({
     }
     window.addEventListener('message', onPresenterMessage);
     return () => window.removeEventListener('message', onPresenterMessage);
-  }, [projectId, file.name, deckSlideCount, previewStateKey, speakerNotes, source]);
+  }, [projectId, file.name, deckSlideCount, previewStateKey, speakerNotes, source, workspaceActive]);
 
   useEffect(() => {
+    if (!workspaceActive) return;
     const popup = presenterWindowRef.current;
     if (!popup || popup.closed) return;
     popup.postMessage({
@@ -11293,7 +11767,7 @@ function HtmlViewer({
       count: Math.max(deckSlideCount, speakerNotes.length, 1),
       notes: speakerNotes,
     }, '*');
-  }, [activeDeckSlideIndex, deckSlideCount, speakerNotes, projectId, file.name]);
+  }, [activeDeckSlideIndex, deckSlideCount, speakerNotes, projectId, file.name, workspaceActive]);
 
   // Keep the fullscreen present overlay in lockstep with the active slide. The
   // overlay is a SEPARATE iframe from the background preview, so host-side
@@ -11303,13 +11777,13 @@ function HtmlViewer({
   // overlay opens on the right slide via buildSrcdoc's initialSlideIndex, so
   // this only drives subsequent moves.
   useEffect(() => {
-    if (!inTabPresent || !effectiveDeck) return;
+    if (!workspaceActive || !inTabPresent || !effectiveDeck) return;
     const frame = presentOverlayRef.current?.querySelector('iframe');
     frame?.contentWindow?.postMessage(
       { type: 'od:slide', action: 'go', index: activeDeckSlideIndex },
       '*',
     );
-  }, [inTabPresent, effectiveDeck, activeDeckSlideIndex]);
+  }, [inTabPresent, effectiveDeck, activeDeckSlideIndex, workspaceActive]);
 
   // The reverse direction: the fullscreen overlay is its own iframe and drives
   // its own slide when clicked (deckClickNavigation), so adopt the moves it
@@ -11320,7 +11794,7 @@ function HtmlViewer({
   // lockstep effect above re-posts the adopted index back as a no-op, so there
   // is no feedback loop.
   useEffect(() => {
-    if (!inTabPresent || !effectiveDeck) return;
+    if (!workspaceActive || !inTabPresent || !effectiveDeck) return;
     function onOverlaySlideState(ev: MessageEvent) {
       const frame = presentOverlayRef.current?.querySelector('iframe');
       if (!frame || ev.source !== frame.contentWindow) return;
@@ -11333,19 +11807,19 @@ function HtmlViewer({
     }
     window.addEventListener('message', onOverlaySlideState);
     return () => window.removeEventListener('message', onOverlaySlideState);
-  }, [inTabPresent, effectiveDeck, previewStateKey]);
+  }, [inTabPresent, effectiveDeck, previewStateKey, workspaceActive]);
 
   // The Esc hint is a momentary confirmation, not a persistent chrome: fade it
   // out a few seconds after the presentation starts. (closeInTabPresentation
   // also clears it immediately when the user leaves.)
   useEffect(() => {
-    if (!presentEscHint) return;
+    if (!workspaceActive || !presentEscHint) return;
     const id = window.setTimeout(() => setPresentEscHint(false), 3600);
     return () => window.clearTimeout(id);
-  }, [presentEscHint]);
+  }, [presentEscHint, workspaceActive]);
 
   useEffect(() => {
-    if (!presentMenuOpen) return;
+    if (!workspaceActive || !presentMenuOpen) return;
     const onPointer = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (!target) return;
@@ -11361,10 +11835,10 @@ function HtmlViewer({
       document.removeEventListener('mousedown', onPointer);
       document.removeEventListener('keydown', onKey);
     };
-  }, [presentMenuOpen]);
+  }, [presentMenuOpen, workspaceActive]);
 
   useEffect(() => {
-    if (!zoomMenuOpen) return;
+    if (!workspaceActive || !zoomMenuOpen) return;
     const onDocClick = (e: MouseEvent) => {
       if (!zoomMenuRef.current) return;
       if (!zoomMenuRef.current.contains(e.target as Node)) setZoomMenuOpen(false);
@@ -11378,10 +11852,10 @@ function HtmlViewer({
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
-  }, [zoomMenuOpen]);
+  }, [workspaceActive, zoomMenuOpen]);
 
   useEffect(() => {
-    if (!agentToolsOpen) return;
+    if (!workspaceActive || !agentToolsOpen) return;
     const onDocClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement | null;
       if (target?.closest('.artifact-tool-menu-anchor')) return;
@@ -11396,10 +11870,10 @@ function HtmlViewer({
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
-  }, [agentToolsOpen]);
+  }, [agentToolsOpen, workspaceActive]);
 
   useEffect(() => {
-    if (!deployMenuOpen) return;
+    if (!workspaceActive || !deployMenuOpen) return;
     const onDocClick = (e: MouseEvent) => {
       if (!shareRef.current) return;
       if (shareRef.current.contains(e.target as Node)) return;
@@ -11415,10 +11889,10 @@ function HtmlViewer({
       document.removeEventListener('mousedown', onDocClick);
       document.removeEventListener('keydown', onKey);
     };
-  }, [deployMenuOpen]);
+  }, [deployMenuOpen, workspaceActive]);
 
   useEffect(() => {
-    if (!inTabPresent) return;
+    if (!workspaceActive || !inTabPresent) return;
     const bodyStyle = document.body.style;
     const previousChromeHeight = bodyStyle.getPropertyValue('--workspace-tabs-chrome-height');
     const updateChromeHeight = () => {
@@ -11465,10 +11939,10 @@ function HtmlViewer({
         bodyStyle.removeProperty('--workspace-tabs-chrome-height');
       }
     };
-  }, [inTabPresent]);
+  }, [inTabPresent, workspaceActive]);
 
   useEffect(() => {
-    if (!inTabPresent || !presentFullscreenPending) return;
+    if (!workspaceActive || !inTabPresent || !presentFullscreenPending) return;
     const overlay = presentOverlayRef.current;
     if (!overlay || typeof overlay.requestFullscreen !== 'function') {
       setPresentFullscreenPending(false);
@@ -11483,7 +11957,7 @@ function HtmlViewer({
     return () => {
       cancelled = true;
     };
-  }, [inTabPresent, presentFullscreenPending]);
+  }, [inTabPresent, presentFullscreenPending, workspaceActive]);
 
   function closeInTabPresentation() {
     setInTabPresent(false);
@@ -12117,7 +12591,7 @@ function HtmlViewer({
   }
 
   function activateManualEditTool() {
-    if (viewerOnly) return; // read-only viewer cannot enter manual edit mode
+    if (viewerOnly || (!manualEditMode && !manualEditEntryAllowed)) return;
     fireArtifactToolbarClick('edit');
     capturePreviewScrollPosition();
     if (!manualEditMode) {
@@ -13343,12 +13817,12 @@ function HtmlViewer({
       commenting
     />
   ) : null;
-  const commentComposer = commentComposerNode && commentComposerPortalMetrics
+  const commentComposer = workspaceActive && commentComposerNode && commentComposerPortalMetrics
     ? createPortal(commentComposerNode, commentComposerPortalMetrics.host)
-    : commentComposerNode;
+    : workspaceActive ? commentComposerNode : null;
   const boardPreviewImage =
     boardPreviewIndex !== null ? boardImagePreviews[boardPreviewIndex] ?? null : null;
-  const boardImagePreviewModal = boardPreviewImage
+  const boardImagePreviewModal = workspaceActive && boardPreviewImage
     ? createPortal(
         <div
           className="staged-preview-modal"
@@ -13379,7 +13853,7 @@ function HtmlViewer({
         document.body,
       )
     : null;
-  const commentSidePanel = commentPanelOpen ? (
+  const commentSidePanel = workspaceActive && commentPanelOpen ? (
     <CommentSideDock
       comments={visibleSideComments}
       projectId={projectId}
@@ -13723,7 +14197,7 @@ function HtmlViewer({
                 data-testid="manual-edit-mode-toggle"
                 data-tooltip={viewerOnly ? viewerOnlyDisabledTitle : t('fileViewer.edit')}
                 data-tooltip-placement="bottom"
-                disabled={viewerOnly}
+                disabled={viewerOnly || (!manualEditMode && !manualEditEntryAllowed)}
                 title={viewerOnly ? viewerOnlyDisabledTitle : t('fileViewer.edit')}
                 aria-label={t('fileViewer.edit')}
                 aria-pressed={manualEditMode}
@@ -13905,6 +14379,7 @@ function HtmlViewer({
                       type="button"
                       className={`viewer-toolbar-more-item${manualEditMode ? ' active' : ''}`}
                       role="menuitem"
+                      disabled={viewerOnly || (!manualEditMode && !manualEditEntryAllowed)}
                       onClick={() => {
                         activateManualEditTool();
                         setToolbarMoreOpen(false);
@@ -13955,7 +14430,7 @@ function HtmlViewer({
           </div>
         </div>
       </div>
-      {((filePrimaryActions: ReactNode) => (
+      {workspaceActive ? ((filePrimaryActions: ReactNode) => (
         chromeActionsHost ? createPortal(filePrimaryActions, chromeActionsHost) : filePrimaryActions
       ))(<>
           {showPresent ? (
@@ -14514,7 +14989,7 @@ function HtmlViewer({
               </div>
             </div>
           ) : null}
-        </>)}
+      </>) : null}
       <div className="viewer-body" ref={previewBodyRef}>
         {initialPreviewLoading || sourceModeLoading ? (
           initialPreviewLoading ? (
@@ -14606,11 +15081,13 @@ function HtmlViewer({
                         <PooledIframe
                           ref={urlPreviewIframeRef}
                           cacheKey={urlPreviewKeepAliveKey}
-                          data-testid={useUrlLoadPreview ? 'artifact-preview-frame' : 'artifact-preview-frame-url-load'}
+                          data-testid={workspaceActive
+                            ? (useUrlLoadPreview ? 'artifact-preview-frame' : 'artifact-preview-frame-url-load')
+                            : `artifact-preview-frame-retained-${file.name}`}
                           data-od-render-mode="url-load"
-                          data-od-active={useUrlLoadPreview ? 'true' : 'false'}
-                          aria-hidden={useUrlLoadPreview ? undefined : true}
-                          tabIndex={useUrlLoadPreview ? 0 : -1}
+                          data-od-active={workspaceActive && useUrlLoadPreview ? 'true' : 'false'}
+                          aria-hidden={workspaceActive && useUrlLoadPreview ? undefined : true}
+                          tabIndex={workspaceActive && useUrlLoadPreview ? 0 : -1}
                           title={file.name}
                           data-od-powered={usePoweredPreview ? 'true' : undefined}
                           sandbox={urlFrameSandbox}
@@ -14647,11 +15124,13 @@ function HtmlViewer({
                       ) : (
                         <iframe
                           ref={urlPreviewIframeRef}
-                          data-testid={useUrlLoadPreview ? 'artifact-preview-frame' : 'artifact-preview-frame-url-load'}
+                          data-testid={workspaceActive
+                            ? (useUrlLoadPreview ? 'artifact-preview-frame' : 'artifact-preview-frame-url-load')
+                            : `artifact-preview-frame-retained-${file.name}`}
                           data-od-render-mode="url-load"
-                          data-od-active={useUrlLoadPreview ? 'true' : 'false'}
-                          aria-hidden={useUrlLoadPreview ? undefined : true}
-                          tabIndex={useUrlLoadPreview ? 0 : -1}
+                          data-od-active={workspaceActive && useUrlLoadPreview ? 'true' : 'false'}
+                          aria-hidden={workspaceActive && useUrlLoadPreview ? undefined : true}
+                          tabIndex={workspaceActive && useUrlLoadPreview ? 0 : -1}
                           title={file.name}
                           data-od-powered={usePoweredPreview ? 'true' : undefined}
                           sandbox={urlFrameSandbox}
@@ -14689,11 +15168,13 @@ function HtmlViewer({
                       <iframe
                         key={srcDocTransportResetKey}
                         ref={srcDocPreviewIframeRef}
-                        data-testid={useUrlLoadPreview ? 'artifact-preview-frame-srcdoc' : 'artifact-preview-frame'}
+                        data-testid={workspaceActive
+                          ? (useUrlLoadPreview ? 'artifact-preview-frame-srcdoc' : 'artifact-preview-frame')
+                          : `artifact-preview-frame-srcdoc-retained-${file.name}`}
                         data-od-render-mode="srcdoc"
-                        data-od-active={useUrlLoadPreview ? 'false' : 'true'}
-                        aria-hidden={useUrlLoadPreview ? true : undefined}
-                        tabIndex={useUrlLoadPreview ? -1 : 0}
+                        data-od-active={workspaceActive && !useUrlLoadPreview ? 'true' : 'false'}
+                        aria-hidden={workspaceActive && !useUrlLoadPreview ? undefined : true}
+                        tabIndex={workspaceActive && !useUrlLoadPreview ? 0 : -1}
                         title={file.name}
                         sandbox="allow-scripts allow-downloads"
                         srcDoc={srcDocTransportContent}
@@ -14814,7 +15295,7 @@ function HtmlViewer({
               ) : null}
               {/* Portaled to <body> so the screenshot/export toast escapes the
                   preview pane's transform + overflow:hidden. */}
-              {exportToast && !versionModalOpen
+              {workspaceActive && exportToast && !versionModalOpen
                 ? createPortal(
                     <Toast
                       message={exportToast.message}
@@ -14827,7 +15308,7 @@ function HtmlViewer({
                     document.body,
                   )
                 : null}
-              {commentSavedToast ? (
+              {workspaceActive && commentSavedToast ? (
                 <div className="comment-toast-anchor">
                   <Toast
                     message={commentSavedToast}
@@ -14836,7 +15317,7 @@ function HtmlViewer({
                   />
                 </div>
               ) : null}
-              {templateSavedToast ? (
+              {workspaceActive && templateSavedToast ? (
                 <div className="comment-toast-anchor">
                   <Toast
                     message={templateSavedToast}
@@ -15017,7 +15498,7 @@ function HtmlViewer({
         )}
       </div>
       {speakerNotesPanel}
-      {inTabPresent && source && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && inTabPresent && source && typeof document !== 'undefined' ? createPortal(
         <div
           ref={presentOverlayRef}
           className="present-overlay"
@@ -15054,7 +15535,7 @@ function HtmlViewer({
           write action it hosts — `restoreDisabled` includes `viewerOnly` —
           so re-blocking the whole panel only stopped a read-only viewer from
           BROWSING versions (recvq56vFjQKfT). */}
-      {versionModalOpen && versioningAvailable && typeof document !== 'undefined' ? (
+      {workspaceActive && versionModalOpen && versioningAvailable && typeof document !== 'undefined' ? (
         <FileVersionManagerModal
           projectId={projectId}
           projectKind={projectKind}
@@ -15072,7 +15553,7 @@ function HtmlViewer({
           viewerOnly={viewerOnly}
         />
       ) : null}
-      {pptxExportModalOpen && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && pptxExportModalOpen && typeof document !== 'undefined' ? createPortal(
         <div className="modal-backdrop viewer-modal-backdrop image-export-backdrop" role="presentation">
           <div
             className="modal deploy-modal image-export-modal"
@@ -15161,7 +15642,7 @@ function HtmlViewer({
         </div>,
         document.body,
       ) : null}
-      {imageExportModalOpen && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && imageExportModalOpen && typeof document !== 'undefined' ? createPortal(
         <div
           className="modal-backdrop viewer-modal-backdrop image-export-backdrop"
           role="presentation"
@@ -15234,7 +15715,7 @@ function HtmlViewer({
         </div>,
         document.body,
       ) : null}
-      {templateModalOpen && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && templateModalOpen && typeof document !== 'undefined' ? createPortal(
         <div className="modal-backdrop viewer-modal-backdrop" role="presentation">
           <div className="modal deploy-modal" role="dialog" aria-modal="true">
             <div className="modal-head">
@@ -15296,7 +15777,7 @@ function HtmlViewer({
         </div>,
         document.body,
       ) : null}
-      {deployModalOpen && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && deployModalOpen && typeof document !== 'undefined' ? createPortal(
         <div
           className="modal-backdrop viewer-modal-backdrop deploy-flow-backdrop"
           role="presentation"
@@ -15638,7 +16119,7 @@ function HtmlViewer({
         </div>,
         document.body,
       ) : null}
-      {deploySavedToast && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && deploySavedToast && typeof document !== 'undefined' ? createPortal(
         <Toast
           message={deploySavedToast.message}
           details={deploySavedToast.details}
@@ -15649,7 +16130,7 @@ function HtmlViewer({
         />,
         document.body,
       ) : null}
-      {deployActionToast && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && deployActionToast && typeof document !== 'undefined' ? createPortal(
         <Toast
           message={deployActionToast}
           placement="top"
@@ -15659,7 +16140,7 @@ function HtmlViewer({
         />,
         document.body,
       ) : null}
-      {shareAccessConfirm ? (
+      {workspaceActive && shareAccessConfirm ? (
         <MoveToTeamConfirmDialog
           action={shareAccessConfirm === 'workspace' ? 'to-team' : 'to-personal'}
           onCancel={() => setShareAccessConfirm(null)}
@@ -15670,7 +16151,7 @@ function HtmlViewer({
           }}
         />
       ) : null}
-      {versionRestoredToast && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && versionRestoredToast && typeof document !== 'undefined' ? createPortal(
         <Toast
           key={versionRestoredToast.id}
           message={versionRestoredToast.message}
@@ -15681,7 +16162,7 @@ function HtmlViewer({
         />,
         document.body,
       ) : null}
-      {shareGuideToast && typeof document !== 'undefined' ? createPortal(
+      {workspaceActive && shareGuideToast && typeof document !== 'undefined' ? createPortal(
         <Toast
           message={shareGuideToast}
           placement="top"
