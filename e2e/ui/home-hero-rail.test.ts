@@ -1541,6 +1541,22 @@ test('[P1] home hero example presets update the composer input for prototype and
 });
 
 test('[P1] live dashboard preset sends the active workspace name to plugin apply', async ({ page }) => {
+  await page.route('**/api/workspace/directory', async (route) => {
+    await route.fulfill({
+      json: {
+        items: [{
+          workspaceId: 'ws-qa',
+          workspaceName: 'QA Team',
+          workspaceType: 'team',
+          workspaceMemberId: 'wm-qa',
+          role: 'member',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }],
+        activeWorkspaceId: null,
+      },
+    });
+  });
   await page.route('**/api/workspace/context', async (route) => {
     await route.fulfill({
       json: {
@@ -1570,7 +1586,6 @@ test('[P1] live dashboard preset sends the active workspace name to plugin apply
             canViewWorkspaceSettings: true,
             canManageSharedResources: false,
           },
-          workspaceName: 'QA Team',
         },
       },
     });

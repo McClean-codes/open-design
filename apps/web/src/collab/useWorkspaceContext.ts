@@ -518,7 +518,18 @@ export function useWorkspaceContext(): WorkspaceContextState {
           error.status = res.status;
           throw error;
         }
-        return (await res.json()) as WorkspaceContextResponse;
+        const body = (await res.json()) as WorkspaceContextResponse;
+        if (!body.context || body.context.workspaceName?.trim()) return body;
+        // Older Vela context payloads predate `workspaceName`, while the
+        // membership directory already carries it. Reuse the name from the
+        // exact Workspace/member row selected for THIS tab so label consumers
+        // (including plugin context defaults) remain compatible. This is display
+        // metadata only: authority still comes from the explicit ids above, and
+        // no daemon/backend "active workspace" state is consulted or written.
+        const workspaceName = selected.workspaceName.trim();
+        return workspaceName
+          ? { context: { ...body.context, workspaceName } }
+          : body;
       };
       // Coalesced: every mounted consumer of this hook (and every focus/pageshow
       // refresh across them) fires the same read on a home-view burst — collapse
