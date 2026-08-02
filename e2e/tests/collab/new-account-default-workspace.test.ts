@@ -19,6 +19,11 @@ const DEFAULT_WORKSPACE = {
   lifecycleState: 'active' as const,
 };
 
+const DEFAULT_WORKSPACE_HEADERS = {
+  'x-od-workspace-id': DEFAULT_WORKSPACE.workspaceId,
+  'x-od-workspace-member-id': DEFAULT_WORKSPACE.workspaceMemberId,
+};
+
 let authority: Server;
 let authorityUrl: string;
 let currentWorkspaceSelected = false;
@@ -107,10 +112,12 @@ describe('new account default workspace bootstrap', () => {
               workspaceType: string;
               billingState: string;
             } | null;
-          }>(webUrl, '/api/workspace/context');
+          }>(webUrl, '/api/workspace/context', {
+            headers: DEFAULT_WORKSPACE_HEADERS,
+          });
 
-          // Fresh-account path: no server-side current workspace, so the
-          // daemon chooses and locally pins the personal directory item.
+          // Fresh-account path: the explicit caller selects the personal
+          // directory item without mutating a process-global active pointer.
           expect(firstContext.context?.workspaceId).toBe(DEFAULT_WORKSPACE.workspaceId);
           expect(firstContext.context?.workspaceName).toBe('Ada workspace');
           expect(firstContext.context?.workspaceType).toBe('personal');
@@ -119,7 +126,7 @@ describe('new account default workspace bootstrap', () => {
             activeWorkspaceId: string | null;
             items: Array<typeof DEFAULT_WORKSPACE>;
           }>(webUrl, '/api/workspace/directory');
-          expect(directory.activeWorkspaceId).toBe(DEFAULT_WORKSPACE.workspaceId);
+          expect(directory.activeWorkspaceId).toBeNull();
           expect(directory.items).toEqual([DEFAULT_WORKSPACE]);
 
           // Once the local pin exists, the authoritative current context
@@ -132,7 +139,9 @@ describe('new account default workspace bootstrap', () => {
               billingState: string;
               planId: string | null;
             } | null;
-          }>(webUrl, '/api/workspace/context');
+          }>(webUrl, '/api/workspace/context', {
+            headers: DEFAULT_WORKSPACE_HEADERS,
+          });
           expect(settledContext.context).toMatchObject({
             workspaceId: DEFAULT_WORKSPACE.workspaceId,
             workspaceName: 'Ada workspace',

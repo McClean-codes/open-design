@@ -120,7 +120,7 @@ async function createProject(
 
 describe('workspace project isolation', () => {
   test(
-    '[P0] project mutations cannot cross workspace bindings',
+    '[P0] project mutations cannot cross workspace bindings or trust spoofed authority claims',
     { timeout: 300_000 },
     async () => {
       const suite = await createSmokeSuite('collab-workspace-project-isolation');
@@ -181,21 +181,24 @@ describe('workspace project isolation', () => {
           expect(
             await renameWithState(
               { 'x-od-workspace-member-status': 'removed' },
-              'Removed member overwrite',
+              'Ignored status claim',
             ),
-          ).not.toBe(200);
+            'the verified directory membership must override a spoofed removed claim',
+          ).toBe(200);
           expect(
             await renameWithState(
               { 'x-od-workspace-lifecycle-state': 'locked' },
-              'Locked workspace overwrite',
+              'Ignored lifecycle claim',
             ),
-          ).not.toBe(200);
+            'the verified directory membership must override a spoofed locked claim',
+          ).toBe(200);
           expect(
             await renameWithState(
               { 'x-od-workspace-can-write-synced-files': 'false' },
-              'Read-only overwrite',
+              'Directory-authorized rename',
             ),
-          ).not.toBe(200);
+            'the daemon must derive write authority from the directory, not request claims',
+          ).toBe(200);
 
           const createRun = async (
             headers?: Record<string, string>,
@@ -221,20 +224,24 @@ describe('workspace project isolation', () => {
               ...workspaceHeaders(TEAM_A),
               'x-od-workspace-member-status': 'removed',
             }),
-          ).not.toBe(202);
+          ).toBe(202);
           expect(
             await createRun({
               ...workspaceHeaders(TEAM_A),
               'x-od-workspace-lifecycle-state': 'locked',
             }),
-          ).not.toBe(202);
-          expect(await createRun()).not.toBe(202);
+          ).toBe(202);
+          // Compatibility lane: an unscoped legacy client resolves the
+          // account's server-default Team workspace. Explicit Team B still
+          // cannot cross into Team A above.
+          expect(await createRun()).toBe(202);
 
           const teamA = await requestJson<CreatedProject>(
             webUrl,
             `/api/projects/${teamAProject.id}`,
+            { headers: workspaceHeaders(TEAM_A) },
           );
-          expect(teamA.project.name).toBe('Team A renamed');
+          expect(teamA.project.name).toBe('Directory-authorized rename');
         },
         {
           env: {

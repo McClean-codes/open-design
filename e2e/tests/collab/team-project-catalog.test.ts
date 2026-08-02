@@ -32,6 +32,13 @@ let authority: Server;
 let authorityUrl: string;
 let authorityWorkspace: 'team' | 'personal' = 'team';
 
+function workspaceHeaders(workspace: typeof TEAM | typeof PERSONAL): Record<string, string> {
+  return {
+    'x-od-workspace-id': workspace.workspaceId,
+    'x-od-workspace-member-id': workspace.workspaceMemberId,
+  };
+}
+
 beforeAll(async () => {
   authority = createServer((req, res) => {
     if (req.url === '/api/v1/workspaces/current' && req.method === 'GET') {
@@ -203,6 +210,7 @@ describe('team shared-project catalog', () => {
           const context = await requestJson<{ context: { workspaceId: string } | null }>(
             webUrl,
             '/api/workspace/context',
+            { headers: workspaceHeaders(TEAM) },
           );
           expect(context.context?.workspaceId).toBe(TEAM.workspaceId);
 
@@ -213,7 +221,9 @@ describe('team shared-project catalog', () => {
               name?: string;
               sharedAt: string;
             }>;
-          }>(webUrl, '/api/workspace/projects/team');
+          }>(webUrl, '/api/workspace/projects/team', {
+            headers: workspaceHeaders(TEAM),
+          });
           expect(catalog.projects).toHaveLength(1);
           expect(catalog.projects[0]).toMatchObject({
             projectId: 'shared-project-1',
@@ -249,14 +259,18 @@ describe('team shared-project catalog', () => {
           const context = await requestJson<{ context: { workspaceType: string } | null }>(
             webUrl,
             '/api/workspace/context',
+            { headers: workspaceHeaders(PERSONAL) },
           );
           expect(context.context?.workspaceType).toBe('personal');
 
-          const catalog = await requestJson<{ projects: unknown[] }>(
-            webUrl,
-            '/api/workspace/projects/team',
+          const catalog = await fetch(
+            new URL('/api/workspace/projects/team', webUrl),
+            { headers: workspaceHeaders(PERSONAL) },
           );
-          expect(catalog.projects).toEqual([]);
+          expect(catalog.status).toBe(403);
+          expect(await catalog.json()).toMatchObject({
+            error: 'WORKSPACE_ACCESS_DENIED',
+          });
         },
         {
           env: {
@@ -334,25 +348,27 @@ describe('team shared-project catalog', () => {
             expect(move.status).toBe(200);
           }
 
-          const list = await requestJson<{
-            projects: Array<{
-              id?: string;
-              visibility?: string;
-              project?: { id?: string };
-            }>;
-          }>(
-            webUrl,
-            `/api/workspaces/${TEAM.workspaceId}/projects?view=all`,
+          const scope = await requestJson<{
+            scope: { workspaceId: string; visibility: string };
+          }>(webUrl, `/api/projects/${created.project.id}/workspace-scope`, {
+            headers,
+          });
+          expect(scope.scope).toMatchObject({
+            workspaceId: TEAM.workspaceId,
+            visibility: 'personal',
+          });
+
+          // The stale upstream catalog is unavailable after the local
+          // unshare. Fail closed instead of merging its old shared row back
+          // into the authoritative local Personal state.
+          const list = await fetch(
+            new URL(`/api/workspaces/${TEAM.workspaceId}/projects?view=all`, webUrl),
             { headers },
           );
-          const localRows = list.projects.filter(
-            (item) => item.project?.id === created.project.id,
-          );
-          expect(localRows).toHaveLength(1);
-          expect(localRows[0]?.visibility).toBe('personal');
-          expect(
-            list.projects.some((item) => item.id === 'resource-stale-unshare'),
-          ).toBe(false);
+          expect(list.status).toBe(502);
+          expect(await list.json()).toMatchObject({
+            error: { code: 'TEAM_PROJECT_CATALOG_UNAVAILABLE' },
+          });
         },
         {
           env: {
@@ -430,6 +446,7 @@ describe('team shared-project catalog', () => {
           const html = await requestText(
             webUrl,
             '/api/projects/first-open-shared-project/raw/index.html',
+            { headers },
           );
           expect(html).toContain('data-e2e="first-materialized"');
         },

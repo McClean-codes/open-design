@@ -1,11 +1,15 @@
 import { mkdir } from 'node:fs/promises';
 
-import { expect, test, type Page } from '@playwright/test';
+import type { Page } from '@playwright/test';
 
-import { createCollabCluster } from '@/playwright/collab-cluster';
+import {
+  createCollabCluster,
+  type CollabCluster,
+} from '@/playwright/collab-cluster';
 import { startFakeCollabHub } from '@/playwright/fake-collab-hub';
 import { applyStandardMocks } from '@/playwright/mock-factory';
 import { ensureRailOpen } from '@/playwright/rail';
+import { expect, test } from '@/playwright/suite';
 
 const WORKSPACE_ID = 'ws-multi-client';
 const PROJECT_NAME = 'Realtime shared workspace';
@@ -27,7 +31,7 @@ const MEMBER = {
   role: 'member' as const,
 };
 
-test.describe.configure({ mode: 'serial', timeout: 300_000 });
+test.describe.configure({ timeout: 300_000 });
 
 test('[P0] two isolated clients converge live content, presence, and owner unshare', async ({
   browser,
@@ -49,19 +53,19 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     VELA_API_URL: hub.url,
     VELA_BIN: velaBin,
   };
-  const cluster = await createCollabCluster(browser, testInfo, [
-    {
-      id: 'owner',
-      env: { ...commonEnv, VELA_CONTROL_KEY: OWNER.controlKey },
-    },
-    {
-      id: 'member',
-      env: { ...commonEnv, VELA_CONTROL_KEY: MEMBER.controlKey },
-    },
-  ]);
-
+  let cluster: CollabCluster | undefined;
   let failed = false;
   try {
+    cluster = await createCollabCluster(browser, testInfo, [
+      {
+        id: 'owner',
+        env: { ...commonEnv, VELA_CONTROL_KEY: OWNER.controlKey },
+      },
+      {
+        id: 'member',
+        env: { ...commonEnv, VELA_CONTROL_KEY: MEMBER.controlKey },
+      },
+    ]);
     const ownerPage = cluster.clients.owner!.page;
     const memberPage = cluster.clients.member!.page;
     await Promise.all([applyStandardMocks(ownerPage), applyStandardMocks(memberPage)]);
@@ -528,7 +532,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     });
     throw error;
   } finally {
-    await cluster.close({ preserve: failed });
+    await cluster?.close({ preserve: failed });
     await hub.close();
   }
 });

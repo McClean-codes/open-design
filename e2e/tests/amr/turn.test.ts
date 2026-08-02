@@ -448,7 +448,10 @@ describe('AMR chat-run end-to-end', () => {
               skillId: null,
             },
           });
-          await waitForRunStatus(webUrl, run.runId, 'succeeded', { timeoutMs: 30_000 });
+          await waitForRunStatus(webUrl, run.runId, 'succeeded', {
+            headers,
+            timeoutMs: 30_000,
+          });
 
           const childInvocations = (await readFile(spawnEnvLog, 'utf8'))
             .trim()

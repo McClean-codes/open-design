@@ -119,8 +119,9 @@ async function expectStatus(
   webUrl: string,
   path: string,
   expected: number,
+  headers: Record<string, string>,
 ): Promise<Record<string, unknown>> {
-  const response = await fetch(new URL(path, `${webUrl}/`));
+  const response = await fetch(new URL(path, `${webUrl}/`), { headers });
   expect(response.status).toBe(expected);
   return (await response.json()) as Record<string, unknown>;
 }
@@ -140,6 +141,7 @@ describe('workspace switching and scoped billing', () => {
           const initial = await requestJson<{ context: { workspaceId: string } | null }>(
             webUrl,
             '/api/workspace/context',
+            { headers: workspaceHeaders(PERSONAL) },
           );
           expect(initial.context?.workspaceId).toBe(PERSONAL.workspaceId);
 
@@ -169,7 +171,9 @@ describe('workspace switching and scoped billing', () => {
             summary: { workspaceId: null; membershipTier: string } | null;
             workspaceBalance: { workspaceId: string; workspaceMemberId: string; balanceUsd: string } | null;
             workspaceSnapshot?: { billing: { billingState: string; planId: string | null } };
-          }>(webUrl, `/api/workspace/billing?scope=workspace&workspaceId=${TEAM.workspaceId}`);
+          }>(webUrl, `/api/workspace/billing?scope=workspace&workspaceId=${TEAM.workspaceId}`, {
+            headers: workspaceHeaders(TEAM),
+          });
           expect(billing.summary?.workspaceId).toBeNull();
           expect(billing.workspaceBalance).toMatchObject({
             workspaceId: TEAM.workspaceId,
@@ -185,6 +189,7 @@ describe('workspace switching and scoped billing', () => {
             '/api/workspace/billing/checkout',
             {
               method: 'POST',
+              headers: workspaceHeaders(TEAM),
               body: { planId: 'team_pro', seats: 3 },
             },
           );
@@ -196,11 +201,16 @@ describe('workspace switching and scoped billing', () => {
             webUrl,
             `/api/workspace/billing?scope=workspace&workspaceId=${PERSONAL.workspaceId}`,
             403,
+            workspaceHeaders(PERSONAL),
           );
           await expectStatus(
             webUrl,
             '/api/workspace/billing?scope=workspace&workspaceId=ws-foreign',
             403,
+            {
+              'x-od-workspace-id': 'ws-foreign',
+              'x-od-workspace-member-id': 'mem-foreign',
+            },
           );
         },
         {
@@ -226,7 +236,9 @@ describe('workspace switching and scoped billing', () => {
 
       await suite.with.toolsDev(
         async ({ webUrl }) => {
-          await requestJson(webUrl, '/api/workspace/context');
+          await requestJson(webUrl, '/api/workspace/context', {
+            headers: workspaceHeaders(PERSONAL),
+          });
           await requestJson(webUrl, '/api/workspace/active', {
             method: 'PUT',
             body: { workspaceId: TEAM.workspaceId },
@@ -238,24 +250,27 @@ describe('workspace switching and scoped billing', () => {
           directoryItems = [PERSONAL];
           teamCurrentUnavailable = true;
 
+          const directory = await requestJson<{ activeWorkspaceId: string | null }>(
+            webUrl,
+            '/api/workspace/directory',
+          );
+          expect(directory.activeWorkspaceId).toBe(PERSONAL.workspaceId);
+
           const recovered = await requestJson<{
             context: {
               workspaceId: string;
               workspaceName?: string;
               workspaceType: string;
             } | null;
-          }>(webUrl, '/api/workspace/context');
+          }>(webUrl, '/api/workspace/context', {
+            headers: workspaceHeaders(PERSONAL),
+          });
           expect(recovered.context).toMatchObject({
             workspaceId: PERSONAL.workspaceId,
             workspaceName: PERSONAL.workspaceName,
             workspaceType: 'personal',
           });
 
-          const directory = await requestJson<{ activeWorkspaceId: string | null }>(
-            webUrl,
-            '/api/workspace/directory',
-          );
-          expect(directory.activeWorkspaceId).toBe(PERSONAL.workspaceId);
         },
         {
           env: {
@@ -269,3 +284,10 @@ describe('workspace switching and scoped billing', () => {
     },
   );
 });
+
+function workspaceHeaders(workspace: typeof PERSONAL | typeof TEAM): Record<string, string> {
+  return {
+    'x-od-workspace-id': workspace.workspaceId,
+    'x-od-workspace-member-id': workspace.workspaceMemberId,
+  };
+}

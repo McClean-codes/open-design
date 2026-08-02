@@ -195,6 +195,7 @@ describe('workspace-scoped skill resources', () => {
           const context = await requestJson<{ context: { workspaceId: string } | null }>(
             webUrl,
             '/api/workspace/context',
+            { headers: workspaceHeaders(TEAM_A) },
           );
           expect(context.context?.workspaceId).toBe(TEAM_A.workspaceId);
 
@@ -261,7 +262,9 @@ describe('workspace-scoped skill resources', () => {
           const teamList = await requestJson<{
             ids: string[];
             resources: Array<{ id: string; canUnshare?: boolean }>;
-          }>(webUrl, '/api/workspace/skills/team');
+          }>(webUrl, '/api/workspace/skills/team', {
+            headers: workspaceHeaders(TEAM_A),
+          });
           expect(teamList.ids).toEqual([skillId]);
           expect(teamList.resources).toEqual([
             expect.objectContaining({ id: skillId, canUnshare: true }),
@@ -277,7 +280,9 @@ describe('workspace-scoped skill resources', () => {
           );
           expect(unshared.unshared).toBe(true);
           expect(
-            await requestJson<{ ids: string[] }>(webUrl, '/api/workspace/skills/team'),
+            await requestJson<{ ids: string[] }>(webUrl, '/api/workspace/skills/team', {
+              headers: workspaceHeaders(TEAM_A),
+            }),
           ).toEqual(expect.objectContaining({ ids: [] }));
 
           const calls = (await readFile(resourceLogFile, 'utf8'))
@@ -360,6 +365,7 @@ describe('workspace-scoped skill resources', () => {
                 const team = await requestJson<{ ids: string[] }>(
                   memberWebUrl,
                   '/api/workspace/skills/team',
+                  { headers: workspaceHeaders(TEAM_A_MEMBER) },
                 );
                 return team.ids;
               }).toContain(skillId);
@@ -387,6 +393,7 @@ describe('workspace-scoped skill resources', () => {
               const team = await requestJson<{ ids: string[] }>(
                 memberWebUrl,
                 '/api/workspace/skills/team',
+                { headers: workspaceHeaders(TEAM_A_MEMBER) },
               );
               expect(team.ids).not.toContain(skillId);
             },
