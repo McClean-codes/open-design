@@ -58,6 +58,11 @@ import { recordFirstLoopStep } from '../onboarding/first-loop';
 import { MarkdownRenderer, artifactRendererRegistry } from '../artifacts/renderer-registry';
 import { renderMarkdownToSafeHtml } from '../artifacts/markdown';
 import {
+  artifactExportOriginProps,
+  matchingArtifactVersionId,
+  type ArtifactExportOriginProps,
+} from '../artifacts/version-origin';
+import {
   buildScrollAnchors,
   extractMarkdownBlockLines,
   mapScrollPosition,
@@ -181,8 +186,10 @@ import {
 } from './file-viewer-render-mode';
 import {
   collectPreviewAssetPaths,
+  htmlHasRelativeProjectAssetRefs,
   htmlHasRootRelativeProjectAssetRefs,
   normalizeRootRelativeProjectAssetRefs,
+  rewriteProjectAssetRefsToRawUrls,
   rewriteInlinedCssAssetRefs,
   rewriteInlinedScriptAssetRefs,
 } from './file-viewer-preview-assets';
@@ -3163,6 +3170,7 @@ type HtmlVersionExportContext = {
   content: string;
   title: string;
   versionId?: string;
+  version?: ProjectFileVersion;
 };
 
 type ExportToastState = {
@@ -3638,6 +3646,7 @@ function FileVersionManagerModal({
     const context: HtmlVersionExportContext = {
       content,
       title: version.current ? file.name.replace(/\.html?$/i, '') || file.name : fileVersionExportTitle(file.name, version),
+      version,
       ...(version.current ? {} : { versionId: version.id }),
     };
     setVersionExportToast(null);
@@ -7043,6 +7052,38 @@ function HtmlViewer({
   // Latest per-slide capture progress for the programmatic exporters, read by
   // the loading-toast ticker in fireShareExport to render elapsed time + ETA.
   const exportProgressRef = useRef<{ done: number; total: number } | null>(null);
+  const unknownExportOrigin = (
+    status: ArtifactExportOriginProps['artifact_origin_status'] = 'missing_version',
+  ): ArtifactExportOriginProps => ({
+    entry_surface: 'open_design_ui',
+    artifact_origin_status: status,
+    origin_entry_surface: 'unknown',
+  });
+  const resolveArtifactExportOrigin = async (
+    context?: HtmlVersionExportContext | null,
+  ): Promise<ArtifactExportOriginProps> => {
+    const content = context?.content ?? sourceRef.current;
+    if (content == null) return unknownExportOrigin();
+    let version = context?.version ?? null;
+    if (!version) {
+      const result = await fetchProjectFileVersions(projectId, file.name);
+      version = result?.versions.find((candidate) => candidate.current) ?? null;
+    }
+    return artifactExportOriginProps(content, version);
+  };
+  const resolveManualEditParentVersionId = async (
+    content: string,
+  ): Promise<string | undefined> => {
+    try {
+      const result = await fetchProjectFileVersions(projectId, file.name);
+      const currentVersion = result?.versions?.find((candidate) => candidate.current) ?? null;
+      return matchingArtifactVersionId(content, currentVersion);
+    } catch {
+      // Provenance is fail-closed: inability to prove the parent must not
+      // block a user edit, but it also must not inherit an origin.
+      return undefined;
+    }
+  };
   // Shared helper for the share menu: emit studio_click share_option on
   // entry and artifact_export_result on resolution. Sync exports report
   // success immediately after the call returns; async exports get .then
@@ -7060,6 +7101,7 @@ function HtmlViewer({
       | 'share_link'
       | 'share_page',
     fn: () => Promise<unknown> | unknown,
+    context?: HtmlVersionExportContext | null,
   ) => {
     const requestId = analytics.newRequestId();
     const artifactId = anonymizeArtifactId({ projectId, fileName: file.name });
@@ -7079,7 +7121,10 @@ function HtmlViewer({
       { requestId },
     );
     const started = performance.now();
-    const finish = (result: 'success' | 'failed' | 'cancelled', errorCode?: string) => {
+    const originPromise = resolveArtifactExportOrigin(context)
+      .catch(() => unknownExportOrigin());
+    const finish = async (result: 'success' | 'failed' | 'cancelled', errorCode?: string) => {
+      const originProps = await originPromise;
       trackArtifactExportResult(
         analytics.track,
         {
@@ -7091,6 +7136,7 @@ function HtmlViewer({
           project_kind: projectKind,
           export_format: trackingFormat,
           result,
+          ...originProps,
           ...(errorCode ? { error_code: errorCode } : {}),
           export_duration_ms: Math.round(performance.now() - started),
         },
@@ -7152,30 +7198,30 @@ function HtmlViewer({
           (result) => {
             stopTicker();
             if (result === 'cancelled') {
-              finish('cancelled');
+              void finish('cancelled');
               if (toastFormats.has(format)) setExportToast(null);
               return;
             }
-            finish('success');
+            void finish('success');
             if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportDone'), tone: 'success' });
           },
           (err) => {
-            finish('failed', exportErrorCode(err));
+            void finish('failed', exportErrorCode(err));
             failToast(err);
           },
         );
       } else {
         stopTicker();
         if (out === 'cancelled') {
-          finish('cancelled');
+          void finish('cancelled');
           if (toastFormats.has(format)) setExportToast(null);
           return;
         }
-        finish('success');
+        void finish('success');
         if (toastFormats.has(format)) setExportToast({ message: t('fileViewer.exportDone'), tone: 'success' });
       }
     } catch (err) {
-      finish('failed', exportErrorCode(err));
+      void finish('failed', exportErrorCode(err));
       failToast(err);
     }
   };
@@ -8240,6 +8286,7 @@ function HtmlViewer({
   // export is a separate modal flow, so it owns its own request id / start.
   const imageExportRequestIdRef = useRef<string | null>(null);
   const imageExportStartedRef = useRef(0);
+  const imageExportOriginPromiseRef = useRef<Promise<ArtifactExportOriginProps> | null>(null);
   // Guards against double-emitting the image export result: each modal
   // session (reset in openImageExportModal) resolves to exactly one
   // success / failed / cancelled, no matter which exit path runs.
@@ -8248,6 +8295,7 @@ function HtmlViewer({
   // export result only after the template is actually saved (not on open).
   const templateExportRequestIdRef = useRef<string | null>(null);
   const templateExportStartedRef = useRef(0);
+  const templateExportOriginPromiseRef = useRef<Promise<ArtifactExportOriginProps> | null>(null);
   // Same one-terminal-result guard as image export: a template session
   // (reset in openSaveAsTemplateModal) emits exactly one success/failed/
   // cancelled, whether it ends in a save or a modal dismiss.
@@ -8858,7 +8906,21 @@ function HtmlViewer({
     if (!effectiveDeck || source == null) return source;
     return normalizeDeckVisualSource(removeSpeakerNotesFromHtml(source));
   }, [effectiveDeck, source]);
-  const livePreviewSource = inlinedSource ?? deckVisualSource;
+  const relativeProjectAssetRefs = useMemo(
+    () => source != null && htmlHasRelativeProjectAssetRefs(source, file.name, null),
+    [source, file.name],
+  );
+  // Browser-owned iframe subresource requests cannot attach Workspace headers,
+  // and URL resolution does not inherit the query string from the document's
+  // scoped raw URL. Hold the Team preview until every confirmed relative asset
+  // has been rewritten to its own scoped raw URL; otherwise the first srcDoc
+  // paint can leak an unscoped font/image request before the async rewrite
+  // finishes.
+  const scopedRelativeAssetRefs = workspaceContext != null && relativeProjectAssetRefs;
+  const livePreviewSource = scopedRelativeAssetRefs && inlinedSource === null
+    ? null
+    : (inlinedSource ?? deckVisualSource);
+  const assetInliningSource = effectiveDeck ? deckVisualSource : source;
   // Annotation modes that should hold the preview still while open. Manual
   // Edit is handled by its own freeze just below; these are the non-edit
   // passes (Mark/Draw, Comment, Inspect) that also must not be yanked out
@@ -9057,7 +9119,7 @@ function HtmlViewer({
     forceInline: (forceInline || needsSandboxShim) && !needsPowered,
     needsFocusGuard: needsFocusGuard && !needsPowered,
     needsRedirectGuard: needsRedirectGuard && !needsPowered,
-    projectRootAssetRefs,
+    projectRootAssetRefs: projectRootAssetRefs || scopedRelativeAssetRefs,
   };
   const useUrlLoadPreview = shouldUrlLoadHtmlPreview(urlLoadDecision) && !manualEditRequiresSrcDoc;
   const basePreviewSrcUrl = useMemo(
@@ -9263,15 +9325,15 @@ function HtmlViewer({
   useEffect(() => {
     setInlinedSource(null);
     if (useUrlLoadPreview) return;
-    if (!source || effectiveDeck) return;
+    if (!assetInliningSource) return;
     // Root-relative project asset refs need the confirmed file list before
     // they can be normalized; wait for it rather than inlining a half-fixed
     // document (the effect re-runs when the set lands).
-    if (projectRootAssetRefs && projectFilePathSet === null) return;
-    if (!hasRelativeAssetRefs(source) && !projectRootAssetRefs) return;
+    if ((projectRootAssetRefs || scopedRelativeAssetRefs) && projectFilePathSet === null) return;
+    if (!relativeProjectAssetRefs && !projectRootAssetRefs) return;
     let cancelled = false;
     void inlineRelativeAssets(
-      source,
+      assetInliningSource,
       projectId,
       file.name,
       projectFilePathSet,
@@ -9283,13 +9345,14 @@ function HtmlViewer({
       cancelled = true;
     };
   }, [
-    source,
-    effectiveDeck,
+    assetInliningSource,
     projectId,
     file.name,
     reloadKey,
     useUrlLoadPreview,
     projectRootAssetRefs,
+    relativeProjectAssetRefs,
+    scopedRelativeAssetRefs,
     projectFilePathSet,
     workspaceContext,
   ]);
@@ -10665,10 +10728,12 @@ function HtmlViewer({
         baseSource,
         'The file changed outside manual edit mode. Refreshing before applying manual edits.',
       ))) return false;
+      const parentVersionId = await resolveManualEditParentVersionId(baseSource);
       const saved = await writeProjectTextFileDetailed(projectId, file.name, result.source, {
         artifactManifest: file.artifactManifest,
         versionSource: 'manual',
         versionLabel: label,
+        ...(parentVersionId ? { parentVersionId } : {}),
       }, workspaceContext);
       if (!saved.ok) {
         const status = 'status' in saved ? saved.status : undefined;
@@ -10776,6 +10841,14 @@ function HtmlViewer({
     return false;
   }
 
+  function describeManualEditSaveFailure(
+    prefix: string,
+    saved: Exclude<Awaited<ReturnType<typeof writeProjectTextFileDetailed>>, { ok: true }>,
+  ): string {
+    const status = saved.status ? ` (${saved.status}${saved.code ? ` ${saved.code}` : ''})` : '';
+    return `${prefix}${status}: ${saved.message}`;
+  }
+
   async function undoManualEdit() {
     if (manualEditSavingRef.current) return;
     const [latest, ...rest] = manualEditHistory;
@@ -10787,13 +10860,15 @@ function HtmlViewer({
         latest.afterSource,
         'The file changed outside manual edit mode. History was cleared to avoid overwriting newer content.',
       ))) return;
-      const saved = await writeProjectTextFile(projectId, file.name, latest.beforeSource, {
+      const parentVersionId = await resolveManualEditParentVersionId(latest.afterSource);
+      const saved = await writeProjectTextFileDetailed(projectId, file.name, latest.beforeSource, {
         artifactManifest: file.artifactManifest,
         versionSource: 'manual',
         versionLabel: `Undo ${latest.label}`,
+        ...(parentVersionId ? { parentVersionId } : {}),
       }, workspaceContext);
-      if (!saved) {
-        setManualEditError('Could not save the undo result.');
+      if (!saved.ok) {
+        setManualEditError(describeManualEditSaveFailure('Could not save the undo result', saved));
         return;
       }
       // Same srcDoc rebuild as a committed patch — keep the scroll position
@@ -10824,13 +10899,15 @@ function HtmlViewer({
         latest.beforeSource,
         'The file changed outside manual edit mode. History was cleared to avoid overwriting newer content.',
       ))) return;
-      const saved = await writeProjectTextFile(projectId, file.name, latest.afterSource, {
+      const parentVersionId = await resolveManualEditParentVersionId(latest.beforeSource);
+      const saved = await writeProjectTextFileDetailed(projectId, file.name, latest.afterSource, {
         artifactManifest: file.artifactManifest,
         versionSource: 'manual',
         versionLabel: `Redo ${latest.label}`,
+        ...(parentVersionId ? { parentVersionId } : {}),
       }, workspaceContext);
-      if (!saved) {
-        setManualEditError('Could not save the redo result.');
+      if (!saved.ok) {
+        setManualEditError(describeManualEditSaveFailure('Could not save the redo result', saved));
         return;
       }
       // Same srcDoc rebuild as a committed patch — keep the scroll position
@@ -11448,6 +11525,8 @@ function HtmlViewer({
     const requestId = analytics.newRequestId();
     templateExportRequestIdRef.current = requestId;
     templateExportStartedRef.current = performance.now();
+    templateExportOriginPromiseRef.current = resolveArtifactExportOrigin()
+      .catch(() => unknownExportOrigin());
     templateExportResolvedRef.current = false;
     trackShareOptionPopoverClick(
       analytics.track,
@@ -11480,22 +11559,27 @@ function HtmlViewer({
     templateExportResolvedRef.current = true;
     const requestId = templateExportRequestIdRef.current ?? analytics.newRequestId();
     const started = templateExportStartedRef.current || performance.now();
-    trackArtifactExportResult(
-      analytics.track,
-      {
-        page_name: 'artifact',
-        area: 'share_option_popover',
-        artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-        artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-        export_format: 'template',
-        result,
-        ...(errorCode ? { error_code: errorCode } : {}),
-        export_duration_ms: Math.round(performance.now() - started),
-        project_id: projectId,
-        project_kind: projectKind,
-      },
-      { requestId },
-    );
+    const originPromise = templateExportOriginPromiseRef.current
+      ?? resolveArtifactExportOrigin().catch(() => unknownExportOrigin());
+    void originPromise.then((originProps) => {
+      trackArtifactExportResult(
+        analytics.track,
+        {
+          page_name: 'artifact',
+          area: 'share_option_popover',
+          artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
+          artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
+          export_format: 'template',
+          result,
+          ...originProps,
+          ...(errorCode ? { error_code: errorCode } : {}),
+          export_duration_ms: Math.round(performance.now() - started),
+          project_id: projectId,
+          project_kind: projectKind,
+        },
+        { requestId },
+      );
+    });
     // Onboarding first-loop 交付 step (spec §8.3): only a SUCCESSFUL template
     // export closes the loop. Project-scoped no-op unless started from Home.
     if (result === 'success') recordFirstLoopStep(analytics.track, 'delivered', projectId);
@@ -12318,7 +12402,7 @@ function HtmlViewer({
   }
 
   function triggerPdfExport(context?: HtmlVersionExportContext) {
-    fireShareExport('pdf', () => exportHtmlPdf(context));
+    fireShareExport('pdf', () => exportHtmlPdf(context), context);
   }
 
   function triggerZipExport(context?: HtmlVersionExportContext) {
@@ -12329,7 +12413,7 @@ function HtmlViewer({
       fallbackTitle: context?.title ?? exportTitle,
       workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
-    }));
+    }), context);
   }
 
   function triggerHtmlExport(context?: HtmlVersionExportContext) {
@@ -12340,7 +12424,7 @@ function HtmlViewer({
       fallbackTitle: context?.title ?? exportTitle,
       workspaceContext,
       ...(context?.versionId ? { versionId: context.versionId } : {}),
-    }));
+    }), context);
   }
 
   useEffect(() => {
@@ -12612,6 +12696,8 @@ function HtmlViewer({
     const requestId = analytics.newRequestId();
     imageExportRequestIdRef.current = requestId;
     imageExportStartedRef.current = performance.now();
+    imageExportOriginPromiseRef.current = resolveArtifactExportOrigin(context)
+      .catch(() => unknownExportOrigin());
     imageExportResolvedRef.current = false;
     trackShareOptionPopoverClick(
       analytics.track,
@@ -12648,22 +12734,27 @@ function HtmlViewer({
     imageExportResolvedRef.current = true;
     const requestId = imageExportRequestIdRef.current ?? analytics.newRequestId();
     const started = imageExportStartedRef.current || performance.now();
-    trackArtifactExportResult(
-      analytics.track,
-      {
-        page_name: 'artifact',
-        area: 'share_option_popover',
-        artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-        artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
-        export_format: 'image',
-        result,
-        ...(errorCode ? { error_code: errorCode } : {}),
-        export_duration_ms: Math.round(performance.now() - started),
-        project_id: projectId,
-        project_kind: projectKind,
-      },
-      { requestId },
-    );
+    const originPromise = imageExportOriginPromiseRef.current
+      ?? resolveArtifactExportOrigin().catch(() => unknownExportOrigin());
+    void originPromise.then((originProps) => {
+      trackArtifactExportResult(
+        analytics.track,
+        {
+          page_name: 'artifact',
+          area: 'share_option_popover',
+          artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
+          artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
+          export_format: 'image',
+          result,
+          ...originProps,
+          ...(errorCode ? { error_code: errorCode } : {}),
+          export_duration_ms: Math.round(performance.now() - started),
+          project_id: projectId,
+          project_kind: projectKind,
+        },
+        { requestId },
+      );
+    });
     // Onboarding first-loop 交付 step (spec §8.3): only a SUCCESSFUL image
     // export closes the loop. Project-scoped no-op unless started from Home.
     if (result === 'success') recordFirstLoopStep(analytics.track, 'delivered', projectId);
@@ -15647,18 +15738,6 @@ function isBlockedPreviewAssetScheme(assetRef: string): boolean {
   return /^(?:javascript|data):/i.test(clean);
 }
 
-function hasRelativeAssetRefs(html: string): boolean {
-  const attr = /\s(?:src|href)\s*=\s*["']([^"']+)["']/gi;
-  let match: RegExpExecArray | null;
-  while ((match = attr.exec(html)) !== null) {
-    const value = match[1]?.trim();
-    if (!value) continue;
-    if (/^(?:https?:|data:|blob:|mailto:|tel:|#|\/)/i.test(value)) continue;
-    return true;
-  }
-  return false;
-}
-
 async function inlineRelativeAssets(
   html: string,
   projectId: string,
@@ -15722,7 +15801,13 @@ async function inlineRelativeAssets(
   const resolved = (await Promise.all(replacements)).filter(
     (item): item is { from: string; to: string } => item !== null,
   );
-  return resolved.reduce((next, { from, to }) => next.replace(from, () => to), normalized);
+  const inlined = resolved.reduce(
+    (next, { from, to }) => next.replace(from, () => to),
+    normalized,
+  );
+  return workspaceContext && projectFilePaths
+    ? rewriteProjectAssetRefsToRawUrls(inlined, fileName, projectFilePaths, toRawUrl)
+    : inlined;
 }
 
 async function fetchProjectRelativeText(

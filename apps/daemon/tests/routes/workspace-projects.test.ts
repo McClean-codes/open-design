@@ -1423,6 +1423,9 @@ describe('workspace project routes', () => {
         },
       });
       expect(body.projects[0].project.id).toBe(remoteProjectId);
+      expect(body.projects[0].project.metadata).toEqual({
+        sharedProjectPlaceholderAt: 20,
+      });
     } finally {
       await close(routeServer.server);
     }

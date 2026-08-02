@@ -8,7 +8,7 @@ import type {
   WorkspaceDirectoryItem,
 } from '@open-design/contracts';
 import type { Locator, Page, Request } from '@playwright/test';
-import { applyStandardMocks, fulfillAgentsRoute, STORAGE_KEY } from '@/playwright/mock-factory';
+import { applyStandardMocks, fulfillAgentsRoute, routeSuccessfulRuns, STORAGE_KEY } from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 const LOCAL_CLI_LABEL = /Local CLI|Local coding agent|本机 CLI|本地 CLI/i;
 const WEBGL_AURORA_PREVIEW_HTML = readFileSync(
@@ -305,24 +305,7 @@ test('[P0] @critical workspace selection remains isolated across two browser tab
 });
 
 test('[P0] @critical home hero submit creates a project and lands on a usable workspace', async ({ page }) => {
-  await page.route('**/api/runs', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 202,
-      contentType: 'application/json',
-      body: '{"runId":"home-entry-workspace-smoke"}',
-    });
-  });
-  await page.route('**/api/runs/*/events', async (route) => {
-    await route.fulfill({
-      status: 200,
-      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-      body: ['event: end', 'data: {"code":0,"status":"succeeded"}', '', ''].join('\n'),
-    });
-  });
+  await routeSuccessfulRuns(page, { runIdPrefix: 'home-entry-workspace-smoke' });
 
   await gotoEntryHome(page);
 
@@ -350,6 +333,11 @@ test('[P0] @critical home hero submit creates a project and lands on a usable wo
 test('[P1] onboarding lands on the home composer without a recommended-start strip', async ({ page }) => {
   const createdBodies: Array<Record<string, unknown>> = [];
   const runBodies: Array<Record<string, unknown>> = [];
+  const runRequests = await routeSuccessfulRuns(page, {
+    bodies: runBodies,
+    runIdPrefix: 'recommendation-should-not-auto-send',
+    events: false,
+  });
   const projectId = `onboarding-recommendation-${Date.now()}`;
   await page.addInitScript((key) => {
     window.localStorage.setItem(
@@ -412,19 +400,6 @@ test('[P1] onboarding lands on the home composer without a recommended-start str
       },
     });
   });
-  await page.route('**/api/runs', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.continue();
-      return;
-    }
-    runBodies.push(route.request().postDataJSON() as Record<string, unknown>);
-    await route.fulfill({
-      status: 202,
-      contentType: 'application/json',
-      body: '{"runId":"recommendation-should-not-auto-send"}',
-    });
-  });
-
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.getByText('Loading Open Design…').waitFor({ state: 'hidden', timeout: T.long });
   await page.getByRole('button', { name: LOCAL_CLI_LABEL }).click();

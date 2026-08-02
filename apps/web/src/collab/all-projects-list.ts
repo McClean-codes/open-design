@@ -71,6 +71,39 @@ export function belongsToWorkspace(
   return projectWorkspaceId === workspaceContext.workspaceId;
 }
 
+export function reconcileSharedProjectCatalogFields(input: {
+  projects: Project[];
+  teamProjects: TeamProject[];
+  workspaceContext: WorkspaceCollabContext | null;
+}): Project[] {
+  const selfMemberId = input.workspaceContext?.workspaceMemberId;
+  if (!selfMemberId) return input.projects;
+
+  const catalogOverrides = new Map(
+    asTeamProjectRows(input.teamProjects)
+      .filter((teamProject) => teamProject.ownerMemberId !== selfMemberId)
+      .map((teamProject) => [
+        teamProject.projectId,
+        {
+          name: teamProject.name?.trim() || '',
+          createdAt: teamProject.createdAt,
+          updatedAt: teamProject.updatedAt,
+        },
+      ]),
+  );
+
+  return input.projects.map((project) => {
+    const catalog = catalogOverrides.get(project.id);
+    if (!catalog) return project;
+    return {
+      ...project,
+      ...(catalog.name ? { name: catalog.name } : {}),
+      ...(typeof catalog.createdAt === 'number' ? { createdAt: catalog.createdAt } : {}),
+      ...(typeof catalog.updatedAt === 'number' ? { updatedAt: catalog.updatedAt } : {}),
+    };
+  });
+}
+
 /**
  * The card list behind the 全部项目 grid.
  *
@@ -94,11 +127,12 @@ export function belongsToWorkspace(
  * synthesized into a normal card: placeholder name until the pull registers it
  * under its real name, timestamps from when it was shared.
  *
- * Names follow the hub catalog for rows owned by SOMEONE ELSE (a pulled copy's
- * local name freezes at pull time, so an owner's rename would otherwise never
- * converge here). The member's own rows keep the local name — their fresh
- * rename may not have round-tripped to the catalog yet, and letting the stale
- * catalog name win would look like the rename bounced.
+ * Names and timestamps follow the hub catalog for rows owned by SOMEONE ELSE.
+ * A pulled copy's local name freezes at pull time, while its transport
+ * placeholder is stamped with `now`; allowing either to win would hide an
+ * owner's rename and make merely opening a shared project look like a content
+ * update. The member's own rows keep the local fields — their fresh changes may
+ * not have round-tripped to the catalog yet.
  */
 export function buildAllProjectsList(input: {
   projects: Project[];
@@ -130,20 +164,11 @@ export function buildAllProjectsList(input: {
   // workspace's local rows while a switch is still in flight.
   const scopedProjects = projects.filter((project) => belongsToWorkspace(project, workspaceContext));
   const localProjectIds = new Set(scopedProjects.map((project) => project.id));
-  const selfMemberId = workspaceContext?.workspaceMemberId ?? null;
-
-  const catalogNameOverride = new Map(
-    teamProjects
-      .filter((teamProject) => teamProject.ownerMemberId !== selfMemberId)
-      .map((teamProject) => [teamProject.projectId, teamProject.name?.trim() || '']),
-  );
-
-  const localCards = scopedProjects
-    .filter((project) => isShared(project.id))
-    .map((project) => {
-      const catalogName = catalogNameOverride.get(project.id);
-      return catalogName && catalogName !== project.name ? { ...project, name: catalogName } : project;
-    });
+  const localCards = reconcileSharedProjectCatalogFields({
+    projects: scopedProjects.filter((project) => isShared(project.id)),
+    teamProjects,
+    workspaceContext,
+  });
 
   const sharedCards: Project[] = teamProjects
     .filter(

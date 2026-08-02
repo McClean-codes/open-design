@@ -110,19 +110,25 @@ import { seedHomeComposerPrompt } from './components/HomeView';
 import { goBack, navigate, useRoute, type Route } from './router';
 import {
   fetchDaemonConfig,
+  fetchByokCredentialProfilesFromDaemon,
   DEFAULT_PET,
   fetchMediaProvidersFromDaemon,
   hasAnyConfiguredProvider,
   fetchComposioConfigFromDaemon,
+  legacyByokMigrationErrorPresentation,
   loadConfig,
+  migrateLegacyByokCredentialsToDaemon,
   mergeDaemonConfig,
+  mergeByokCredentialProfiles,
   mergeDaemonMediaProviders,
   saveConfig,
+  persistByokCredentialProfileToDaemon,
   shouldSyncLocalMediaProvidersToDaemon,
   syncComposioConfigToDaemon,
   syncConfigToDaemon,
   syncMediaProvidersToDaemon,
 } from './state/config';
+import { createSilentUpdatePreferenceWriter } from './state/silent-update-preference';
 import { applyAppearanceToDocument } from './state/appearance';
 import { isMacPlatform } from './utils/platform';
 import { summarizeProjectNameFromPrompt } from './utils/projectName';
@@ -843,6 +849,8 @@ function AppInner() {
     failure: 'missing' | 'materialization-failed';
   } | null>(null);
   const [deepLinkRetryRevision, setDeepLinkRetryRevision] = useState(0);
+  const [legacyByokMigrationError, setLegacyByokMigrationError] =
+    useState<Error | null>(null);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
   const [settingsHighlight, setSettingsHighlight] = useState<SettingsHighlight>(null);
@@ -997,6 +1005,10 @@ function AppInner() {
   // so they don't race ahead of the daemon-stored choice and overwrite it
   // with a freshly picked first-available agent.
   const [daemonConfigLoaded, setDaemonConfigLoaded] = useState(false);
+  // True only when GET /api/app-config returned a real config object. Used to
+  // gate silent-update default seeding: a failed/null fetch must not be treated
+  // as "no preference yet" or we would overwrite a daemon-backed opt-out.
+  const [daemonAppConfigReady, setDaemonAppConfigReady] = useState(false);
   // Narrower flag dedicated to the Composio API key hydration. The key is
   // persisted by the daemon (and only reflected back via apiKeyConfigured
   // + apiKeyTail), so after a dev-server restart there is a window where
@@ -1604,6 +1616,7 @@ function AppInner() {
         setProjectsLoading(false);
         setPromptTemplatesLoading(false);
         setDaemonConfigLoaded(true);
+        setDaemonAppConfigReady(false);
         // Composio hydration also depends on the daemon. With no daemon
         // we just keep whatever localStorage already held; drop the
         // skeleton so the Settings → Connectors input reflects state.
@@ -1705,6 +1718,21 @@ function AppInner() {
         setAppVersionInfo(info);
       });
 
+      const legacyByokMigration =
+        await migrateLegacyByokCredentialsToDaemon(
+          latestPersistedConfigRef.current,
+        );
+      if (cancelled) return;
+      setLegacyByokMigrationError(
+        legacyByokMigration.status === 'failed'
+          ? legacyByokMigration.error
+          : null,
+      );
+      const migrationBaseConfig = legacyByokMigration.config;
+      if (legacyByokMigration.status === 'migrated') {
+        latestPersistedConfigRef.current = migrationBaseConfig;
+      }
+
       // Daemon-persisted config + composio config + media provider config land
       // together so the welcome-modal decision and daemon-backed settings
       // apply in one merge, avoiding a flash where local-only state is shown
@@ -1713,10 +1741,14 @@ function AppInner() {
         fetchDaemonConfig(),
         fetchComposioConfigFromDaemon(),
         fetchMediaProvidersFromDaemon(),
+        migrationBaseConfig.byokProfileId
+          ? fetchByokCredentialProfilesFromDaemon()
+          : Promise.resolve(null),
       ]).then(([
         daemonConfig,
         daemonComposioConfig,
         daemonMediaProvidersResult,
+        byokCredentialProfiles,
       ]) => {
         if (cancelled) return;
         const daemonMediaProvidersLoaded =
@@ -1730,34 +1762,35 @@ function AppInner() {
             ? t('settings.mediaProviderLoadError')
             : null,
         );
-        // Compute the next config outside the setConfig updater so we can
-        // both (a) call navigate() after setConfig returns — calling it
-        // inside the updater would trigger a Router setState during React's
-        // render phase — and (b) read next.onboardingCompleted synchronously,
-        // since React batches setConfig and the updater doesn't run until
-        // the next render. latestPersistedConfigRef is kept in sync with
-        // the rendered config and is safe to read here.
+        // Settings remain interactive while daemon hydration is in flight.
+        // Rebase the daemon response on the latest persisted state so a
+        // completed user write cannot be overwritten by the boot snapshot.
         const baseConfig = latestPersistedConfigRef.current;
         const migratedLocalMediaProviders = shouldSyncLocalMediaProvidersToDaemon(
           baseConfig.mediaProviders,
           daemonMediaProvidersLoaded,
         );
-        const next = mergeDaemonMediaProviders(
-          clearStaleAmrModelChoiceOnProfileChange(
-            baseConfig,
-            mergeDaemonConfig(baseConfig, daemonConfig),
+        const next = mergeByokCredentialProfiles(
+          mergeDaemonMediaProviders(
+            clearStaleAmrModelChoiceOnProfileChange(
+              baseConfig,
+              mergeDaemonConfig(baseConfig, daemonConfig),
+            ),
+            daemonMediaProvidersLoaded,
           ),
-          daemonMediaProvidersLoaded,
+          byokCredentialProfiles,
         );
         const hasLocalComposioKey = Boolean(next.composio?.apiKey?.trim());
         if (!hasLocalComposioKey && daemonComposioConfig) {
           next.composio = daemonComposioConfig;
         }
-        saveConfig(next);
+        if (legacyByokMigration.status !== 'failed') {
+          saveConfig(next);
+        }
         if (
-          daemonMediaProvidersResult.status === 'ok' &&
-          migratedLocalMediaProviders &&
-          hasAnyConfiguredProvider(next.mediaProviders)
+          daemonMediaProvidersResult.status === 'ok'
+          && migratedLocalMediaProviders
+          && hasAnyConfiguredProvider(next.mediaProviders)
         ) {
           void syncMediaProvidersToDaemon(next.mediaProviders, {
             daemonProviders: daemonMediaProvidersLoaded,
@@ -1781,6 +1814,8 @@ function AppInner() {
           navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
         }
         setDaemonConfigLoaded(true);
+        // Only a non-null GET payload means we actually observed daemon prefs.
+        setDaemonAppConfigReady(daemonConfig != null);
         // Composio key hydration is part of this same daemon-config
         // fetch — by the time we land here the daemon has either
         // returned the saved-key shape (apiKeyConfigured + tail) or
@@ -2058,6 +2093,35 @@ function AppInner() {
   }, []);
 
   /**
+   * Non-optimistic, serialized write for the daemon-owned silent-update
+   * preference. Concurrent Settings / popup toggles cannot commit out of
+   * order: only the latest request applies to app state after its daemon
+   * write succeeds.
+   */
+  const silentUpdatePreferenceWriterRef = useRef(
+    createSilentUpdatePreferenceWriter<AppConfig>({
+      readBase: () => latestPersistedConfigRef.current,
+      writeDaemon: async (next) => {
+        await syncConfigToDaemon(next, { throwOnError: true });
+      },
+      commit: (allowSilentUpdates) => {
+        const next: AppConfig = {
+          ...latestPersistedConfigRef.current,
+          allowSilentUpdates,
+        };
+        latestPersistedConfigRef.current = next;
+        setConfig((prev) => ({ ...prev, allowSilentUpdates }));
+        // saveConfig strips daemon-owned keys from localStorage; in-memory
+        // config still carries allowSilentUpdates for the rest of the session.
+        saveConfig(next);
+      },
+    }),
+  );
+  const handleSilentUpdatePreferenceChange = useCallback(async (allowSilentUpdates: boolean) => {
+    await silentUpdatePreferenceWriterRef.current.write(allowSilentUpdates);
+  }, []);
+
+  /**
    * Autosave-driven persistence path. The settings dialog calls this on
    * every committed edit (via a debounced effect) so localStorage and
    * the daemon stay in lock-step with the user's draft. We deliberately
@@ -2074,7 +2138,15 @@ function AppInner() {
     // a half-typed key can't survive in localStorage. If the dialog is
     // closing, preserve any onboarding completion that the close gesture
     // already committed so an unmount autosave cannot re-open the welcome flow.
-    const persisted = buildPersistedConfig(next, configRef.current);
+    // allowSilentUpdates is daemon-owned and must not be applied optimistically:
+    // keep the previous value in memory until the daemon write succeeds.
+    const prevSilent = latestPersistedConfigRef.current.allowSilentUpdates;
+    const nextSilent = next.allowSilentUpdates;
+    const silentChanged = nextSilent !== prevSilent;
+    const nextForOptimistic = silentChanged
+      ? { ...next, allowSilentUpdates: prevSilent }
+      : next;
+    const persisted = buildPersistedConfig(nextForOptimistic, configRef.current);
     latestPersistedConfigRef.current = persisted;
     saveConfig(persisted);
     setConfig(persisted);
@@ -2083,6 +2155,9 @@ function AppInner() {
       && shouldSyncMediaProvidersOnSave(persisted.mediaProviders, {
         force: options?.forceMediaProviderSync,
       });
+    const daemonPayload = silentChanged
+      ? { ...persisted, allowSilentUpdates: nextSilent }
+      : persisted;
     await Promise.all([
       shouldSyncMediaProviders
         ? syncMediaProvidersToDaemon(persisted.mediaProviders, {
@@ -2091,8 +2166,15 @@ function AppInner() {
             throwOnError: options?.forceMediaProviderSync,
           })
         : Promise.resolve(),
-      syncConfigToDaemon(persisted, { throwOnError: true }),
+      syncConfigToDaemon(daemonPayload, { throwOnError: true }),
     ]);
+    if (silentChanged) {
+      latestPersistedConfigRef.current = {
+        ...latestPersistedConfigRef.current,
+        allowSilentUpdates: nextSilent,
+      };
+      setConfig((curr) => ({ ...curr, allowSilentUpdates: nextSilent }));
+    }
   }, [daemonMediaProviders, daemonMediaProvidersFetchState]);
 
   const handleSettingsDraftChange = useCallback((draft: AppConfig) => {
@@ -2125,14 +2207,15 @@ function AppInner() {
    */
   const handleConfigPersistComposioKey = useCallback(
     async (composio: AppConfig['composio']) => {
-      const next = await persistComposioConfigChange(config, composio);
-      setConfig((curr) => {
-        const merged: AppConfig = { ...curr, composio: next.composio };
-        saveConfig(merged);
-        return merged;
-      });
+      const next = await persistComposioConfigChange(
+        latestPersistedConfigRef.current,
+        composio,
+      );
+      latestPersistedConfigRef.current = next;
+      saveConfig(next);
+      setConfig(next);
     },
-    [config],
+    [],
   );
 
   const handleModeChange = useCallback(
@@ -2512,6 +2595,16 @@ function AppInner() {
             `od:auto-send-first:${result.project.id}`,
             '1',
           );
+          if (derivedPendingPrompt !== undefined) {
+            window.sessionStorage.setItem(
+              `od:auto-send-prompt:${result.project.id}`,
+              derivedPendingPrompt,
+            );
+          } else {
+            window.sessionStorage.removeItem(
+              `od:auto-send-prompt:${result.project.id}`,
+            );
+          }
           if (input.amrGatePrecheckWitness) {
             window.sessionStorage.setItem(
               `od:auto-send-amr-gate-witness:${result.project.id}`,
@@ -2596,11 +2689,9 @@ function AppInner() {
     async (designSystemId: string, designSystemTitle: string) => {
       // "Create with this design system" must NOT assume a prototype. Route
       // the click through the hidden default design router (od-default) —
-      // exactly like a free-form Home prompt — so the agent first asks (via
-      // the task-type question-form) what to build with this system instead
-      // of silently binding the web-prototype scenario + high-fidelity
-      // metadata. The preset prompt seeds the conversation and is auto-sent
-      // so the router surfaces the confirmation form immediately; `kind`
+      // exactly like a free-form Home prompt. The preset prompt seeds the
+      // conversation and is auto-sent so the router can infer the task type
+      // from the brief, asking only when the route remains ambiguous. `kind`
       // stays the neutral 'other' so no surface-specific default leaks back
       // in on the daemon side.
       const presetPrompt = t('nextStep.brandCreateDesignPrompt', {
@@ -2640,6 +2731,13 @@ function AppInner() {
       );
       try {
         window.sessionStorage.setItem(`od:auto-send-first:${result.project.id}`, '1');
+        const pendingPrompt = input.pendingPrompt ?? result.project.pendingPrompt;
+        if (pendingPrompt !== undefined) {
+          window.sessionStorage.setItem(
+            `od:auto-send-prompt:${result.project.id}`,
+            pendingPrompt,
+          );
+        }
       } catch {
         // If sessionStorage is unavailable, the project still opens with the
         // pending prompt ready for the user to send manually.
@@ -2704,6 +2802,12 @@ function AppInner() {
           `od:auto-send-first:${outcome.project.id}`,
           '1',
         );
+        if (outcome.project.pendingPrompt !== undefined) {
+          window.sessionStorage.setItem(
+            `od:auto-send-prompt:${outcome.project.id}`,
+            outcome.project.pendingPrompt,
+          );
+        }
       } catch {
         // If sessionStorage is unavailable, the project still opens with
         // the prepared prompt in the composer.
@@ -3784,6 +3888,8 @@ function AppInner() {
       }
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
+      onPersistByokCredential={persistByokCredentialProfileToDaemon}
+      onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
       onClose={handleCloseSettings}
@@ -4083,6 +4189,9 @@ function AppInner() {
         onApiProtocolChange={handleApiProtocolChange}
         onApiModelChange={handleApiModelChange}
         onConfigPersist={handleConfigPersist}
+        onPersistByokCredential={persistByokCredentialProfileToDaemon}
+        daemonAppConfigReady={daemonAppConfigReady}
+        onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
         onSkillsRefresh={refreshSkills}
         onSkillsChanged={handleSkillsChanged}
         onRefreshAgents={refreshAgents}
@@ -4150,6 +4259,12 @@ function AppInner() {
       />
     );
   }
+  const legacyByokMigrationErrorView = legacyByokMigrationError
+    ? legacyByokMigrationErrorPresentation(
+        legacyByokMigrationError,
+        t('settings.autosaveError'),
+      )
+    : null;
   return (
     <>
       <div
@@ -4222,6 +4337,21 @@ function AppInner() {
           role="alert"
           tone="error"
           onDismiss={() => setProjectOpenError(null)}
+        />
+      ) : null}
+      {legacyByokMigrationErrorView ? (
+        <Toast
+          message={legacyByokMigrationErrorView.message}
+          details={legacyByokMigrationErrorView.details}
+          actionLabel={t('settings.title')}
+          onAction={() => {
+            setLegacyByokMigrationError(null);
+            openSettings('execution');
+          }}
+          role="alert"
+          tone="error"
+          ttlMs={0}
+          onDismiss={() => setLegacyByokMigrationError(null)}
         />
       ) : null}
       {/* First-run privacy consent banner. It waits for daemon config

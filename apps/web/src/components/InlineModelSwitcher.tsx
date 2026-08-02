@@ -38,6 +38,9 @@ import { getResolvedDeviceId } from '../analytics/client';
 import { trackExecutionSettingsPopoverClick } from '../analytics/events';
 import {
   beginAmrAuthTracking,
+  confirmAmrAuthTracking,
+  observeAmrAuthTracking,
+  reconcileAmrAuthAttemptId,
   resolveAmrAuthTracking,
 } from '../analytics/amr-auth';
 import {
@@ -237,6 +240,9 @@ export function InlineModelSwitcher({
     useState(false);
   const amrPollRef = useRef<number | null>(null);
   const amrLoginStartedAtRef = useRef<number | null>(null);
+  const amrLoginStartPendingRef = useRef(false);
+  const amrLoginCancelRequestedRef = useRef(false);
+  const amrAuthAttemptIdRef = useRef<string | null>(null);
 
   const getModelPopoverBoundary = useCallback(() => {
     const scrollContainer = wrapRef.current?.closest<HTMLElement>(
@@ -269,6 +275,13 @@ export function InlineModelSwitcher({
 
   const refreshAmrStatus = useCallback(async () => {
     const next = await fetchVelaLoginStatus();
+    if (next?.authAttemptId) {
+      amrAuthAttemptIdRef.current = next.authAttemptId;
+    }
+    const authAttemptId = amrAuthAttemptIdRef.current;
+    if (next && authAttemptId) {
+      observeAmrAuthTracking(analytics.track, next, authAttemptId);
+    }
     if (next) {
       setAmrStatus(next);
       const pendingStartup =
@@ -285,18 +298,25 @@ export function InlineModelSwitcher({
       }
     }
     return next;
-  }, []);
+  }, [analytics.track]);
 
-  const startAmrPolling = useCallback((startedAt = Date.now()) => {
+  const startAmrPolling = useCallback((
+    startedAt = Date.now(),
+    authAttemptId = amrAuthAttemptIdRef.current,
+  ) => {
     stopAmrPolling();
     amrLoginStartedAtRef.current = startedAt;
+    if (authAttemptId) amrAuthAttemptIdRef.current = authAttemptId;
     const tick = async () => {
       const next = await refreshAmrStatus();
       const outcome = amrLoginPollOutcome(next, startedAt);
       if (outcome === 'signed-in') {
-        resolveAmrAuthTracking(analytics.track, 'success', undefined, {
-          signedInUserId: next?.user?.id ?? null,
-        });
+        if (authAttemptId) {
+          resolveAmrAuthTracking(analytics.track, 'success', undefined, {
+            authAttemptId,
+            signedInUserId: next?.user?.id ?? null,
+          });
+        }
         notifyAmrLoginStatusChanged();
         stopAmrPolling();
         amrLoginStartedAtRef.current = null;
@@ -306,13 +326,23 @@ export function InlineModelSwitcher({
       if (outcome === 'stopped' || outcome === 'timed-out') {
         stopAmrPolling();
         if (outcome === 'timed-out') {
-          resolveAmrAuthTracking(analytics.track, 'timeout', 'login_timeout');
+          if (authAttemptId) {
+            resolveAmrAuthTracking(analytics.track, 'timeout', 'login_timeout', {
+              authAttemptId,
+            });
+            void cancelVelaLogin(authAttemptId).then((result) =>
+              notifyAmrLoginStatusChanged(
+                result.canceled === true ? 'login-canceled' : 'status-changed',
+              ),
+            );
+          }
           console.error('[amr-login] poll timed out waiting for a signed-in status');
-          void cancelVelaLogin().then(() =>
-            notifyAmrLoginStatusChanged('login-canceled'),
-          );
         } else {
-          resolveAmrAuthTracking(analytics.track, 'failed', 'login_stopped');
+          if (authAttemptId) {
+            resolveAmrAuthTracking(analytics.track, 'failed', 'login_stopped', {
+              authAttemptId,
+            });
+          }
           console.error('[amr-login] poll loop stopped without a terminal status');
         }
         amrLoginStartedAtRef.current = null;
@@ -330,17 +360,86 @@ export function InlineModelSwitcher({
   ) => {
     const startedAt = Date.now();
     amrLoginStartedAtRef.current = startedAt;
+    amrLoginCancelRequestedRef.current = false;
     setAmrLoginError(null);
     setAmrLoginPending(true);
-    beginAmrAuthTracking(attribution, startedAt);
+    const provisionalAuthAttemptId = beginAmrAuthTracking(
+      attribution,
+      startedAt,
+    );
+    amrAuthAttemptIdRef.current = provisionalAuthAttemptId;
     const odDeviceId = amrHandoffDeviceId({
       metricsConsent: config.telemetry?.metrics === true,
       resolvedDeviceId: getResolvedDeviceId(),
       installationId: config.installationId,
     });
-    const result = await startVelaLogin(attribution, odDeviceId);
+    amrLoginStartPendingRef.current = true;
+    const result = await startVelaLogin(
+      attribution,
+      odDeviceId,
+      provisionalAuthAttemptId,
+    ).finally(() => {
+      amrLoginStartPendingRef.current = false;
+    });
+    const authAttemptId = reconcileAmrAuthAttemptId(
+      provisionalAuthAttemptId,
+      result.authAttemptId,
+      { joinedExisting: result.alreadyRunning === true },
+    );
+    amrAuthAttemptIdRef.current = authAttemptId;
+    if (result.ok || result.alreadyRunning) {
+      confirmAmrAuthTracking(analytics.track, authAttemptId, {
+        joinedExisting: result.alreadyRunning === true,
+      });
+    }
+    observeAmrAuthTracking(analytics.track, result, authAttemptId);
+    if (amrLoginCancelRequestedRef.current) {
+      if (result.ok || result.alreadyRunning) {
+        const cancelResult = await cancelVelaLogin(authAttemptId);
+        if (!cancelResult.ok) {
+          amrLoginCancelRequestedRef.current = false;
+          amrLoginStartedAtRef.current = null;
+          setAmrLoginPending(false);
+          setAmrLoginError(t('settings.amrLoginErrorCompact'));
+          return;
+        }
+        if (cancelResult.canceled !== true) {
+          const next = await refreshAmrStatus();
+          amrLoginCancelRequestedRef.current = false;
+          if (next?.loginInFlight) {
+            startAmrPolling(
+              startedAt,
+              next.authAttemptId ?? authAttemptId,
+            );
+          }
+          return;
+        }
+        resolveAmrAuthTracking(analytics.track, 'cancelled', undefined, {
+          authAttemptId,
+        });
+        amrLoginCancelRequestedRef.current = false;
+        amrLoginStartedAtRef.current = null;
+        setAmrLoginPending(false);
+        setAmrStatus((current) => (
+          current
+            ? { ...current, loggedIn: false, loginInFlight: false, user: null }
+            : current
+        ));
+        notifyAmrLoginStatusChanged('login-canceled');
+        return;
+      }
+      resolveAmrAuthTracking(analytics.track, 'cancelled', undefined, {
+        authAttemptId,
+      });
+      amrLoginCancelRequestedRef.current = false;
+      amrLoginStartedAtRef.current = null;
+      setAmrLoginPending(false);
+      return;
+    }
     if (!result.ok && !result.alreadyRunning) {
-      resolveAmrAuthTracking(analytics.track, 'failed', 'spawn_failed');
+      resolveAmrAuthTracking(analytics.track, 'failed', 'spawn_failed', {
+        authAttemptId,
+      });
       console.error('[amr-login] startVelaLogin failed', result);
       amrLoginStartedAtRef.current = null;
       setAmrLoginPending(false);
@@ -348,25 +447,64 @@ export function InlineModelSwitcher({
       return;
     }
     notifyAmrLoginStatusChanged('login-started');
-    startAmrPolling(startedAt);
+    startAmrPolling(startedAt, authAttemptId);
   }, [
     analytics.track,
     config.installationId,
     config.telemetry?.metrics,
+    refreshAmrStatus,
     startAmrPolling,
     t,
   ]);
 
   const handleAmrCancelLogin = useCallback(async () => {
-    resolveAmrAuthTracking(analytics.track, 'cancelled');
+    const loginStartPending = amrLoginStartPendingRef.current;
+    const authAttemptId = amrAuthAttemptIdRef.current;
     stopAmrPolling();
-    amrLoginStartedAtRef.current = null;
     setAmrLoginError(null);
+    const result = authAttemptId
+      ? await cancelVelaLogin(authAttemptId)
+      : { ok: false, canceled: false };
+    if (!result.ok) {
+      amrLoginStartedAtRef.current = null;
+      setAmrLoginPending(false);
+      setAmrLoginError(t('settings.amrLoginErrorCompact'));
+      return;
+    }
+    if (result.canceled !== true) {
+      const next = await refreshAmrStatus();
+      if (loginStartPending && next?.loginInFlight !== true) {
+        amrLoginCancelRequestedRef.current = true;
+        return;
+      }
+      if (next?.loginInFlight) {
+        startAmrPolling(
+          amrLoginStartedAtRef.current ?? Date.now(),
+          next.authAttemptId ?? null,
+        );
+      }
+      return;
+    }
+    if (authAttemptId) {
+      resolveAmrAuthTracking(analytics.track, 'cancelled', undefined, {
+        authAttemptId,
+      });
+    }
+    amrLoginStartedAtRef.current = null;
     setAmrLoginPending(false);
-    await cancelVelaLogin();
+    setAmrStatus((current) => (
+      current
+        ? { ...current, loggedIn: false, loginInFlight: false, user: null }
+        : current
+    ));
     notifyAmrLoginStatusChanged('login-canceled');
-    await refreshAmrStatus();
-  }, [analytics.track, refreshAmrStatus, stopAmrPolling]);
+  }, [
+    analytics.track,
+    refreshAmrStatus,
+    startAmrPolling,
+    stopAmrPolling,
+    t,
+  ]);
 
   const handleAgentButtonClick = useCallback(
     async (agentId: string) => {
@@ -499,12 +637,20 @@ export function InlineModelSwitcher({
         setAmrLoginPending(false);
       }
       void refreshAmrStatus().then((next) => {
+        if (next?.authAttemptId) {
+          amrAuthAttemptIdRef.current = next.authAttemptId;
+        }
         if (next?.loggedIn) {
           amrLoginStartedAtRef.current = null;
           stopAmrPolling();
           return;
         }
-        if (next?.loginInFlight) startAmrPolling();
+        if (next?.loginInFlight) {
+          startAmrPolling(
+            amrLoginStartedAtRef.current ?? Date.now(),
+            next.authAttemptId ?? null,
+          );
+        }
       });
     };
     window.addEventListener(AMR_LOGIN_STATUS_EVENT, onStatusChange);

@@ -146,6 +146,10 @@ export async function mockAmrPersonalWorkspace(
   });
 
   if (projectId) {
+    // These AMR UI scenarios exercise run/error recovery rather than Vela's
+    // remote directory transport. Scope only the project they create, and let
+    // every files/conversations/messages/run request continue to the real
+    // daemon with the context the Web derives from this response.
     await page.route(
       `**/api/projects/${encodeURIComponent(projectId)}/workspace-scope`,
       async (route) => {

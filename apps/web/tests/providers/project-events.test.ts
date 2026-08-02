@@ -307,6 +307,20 @@ describe('createProjectEventsConnection', () => {
     conn.close();
   });
 
+  it('notifies consumers after the ready handshake so they can reconcile missed events', () => {
+    const onReady = vi.fn();
+    const conn = createProjectEventsConnection(
+      'p1',
+      vi.fn(),
+      { EventSourceCtor: MockEventSource as unknown as typeof EventSource, onReady },
+    );
+
+    MockEventSource.instances[0]!.dispatch('ready', { data: '{}' });
+
+    expect(onReady).toHaveBeenCalledTimes(1);
+    conn.close();
+  });
+
   it('reconnects with exponential backoff on error', () => {
     let nextDelay = 0;
     const setTimeoutFn = vi.fn((cb: () => void, ms: number) => {

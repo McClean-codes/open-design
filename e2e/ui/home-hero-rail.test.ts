@@ -5,7 +5,13 @@ import {
   openHomeTemplateMenu,
   pickHomeTemplate,
 } from '@/playwright/home-hero';
-import { routeAgents, suppressWhatsNew } from '@/playwright/mock-factory';
+import {
+  routeAgents,
+  routeSuccessfulRuns,
+  successfulRunEventBody,
+  suppressWhatsNew,
+  trackRunRequests,
+} from '@/playwright/mock-factory';
 import { T } from '@/timeouts';
 
 test.describe.configure({ timeout: T.xlong });
@@ -412,6 +418,13 @@ test.beforeEach(async ({ page }) => {
         config: HOME_CONFIG,
       },
     });
+  });
+
+  // These Home composer scenarios exercise the signed-out/local path. Settle
+  // workspace bootstrap explicitly so strict workspace write guards do not
+  // confuse an unresolved test fixture with an authenticated cloud identity.
+  await page.route('**/api/workspace/directory', async (route) => {
+    await route.fulfill({ json: { items: [] } });
   });
 
   await page.route('**/api/projects', async (route) => {
@@ -990,25 +1003,9 @@ test('[P1] home staged workspace context auto-sends into the first project run',
   await page.route('**/api/live-artifacts**', async (route) => {
     await route.fulfill({ json: { liveArtifacts: [] } });
   });
-  await page.route('**/api/runs', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.fallback();
-      return;
-    }
-    const raw = route.request().postData();
-    if (raw) runBodies.push(JSON.parse(raw) as Record<string, unknown>);
-    await route.fulfill({
-      status: 202,
-      contentType: 'application/json',
-      body: JSON.stringify({ runId: 'home-autosend-context-run' }),
-    });
-  });
-  await page.route('**/api/runs/*/events**', async (route) => {
-    await route.fulfill({
-      status: 200,
-      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-      body: ['event: end', 'data: {"code":0,"status":"succeeded"}', '', ''].join('\n'),
-    });
+  const runRequests = await routeSuccessfulRuns(page, {
+    bodies: runBodies,
+    runId: 'home-autosend-context-run',
   });
   await page.route('**/api/dialog/open-folder', async (route) => {
     await route.fulfill({ json: { path: '/tmp/open-design/local-code-home-autosend' } });
@@ -1038,7 +1035,7 @@ test('[P1] home staged workspace context auto-sends into the first project run',
   ]);
 
   await expect(page).toHaveURL(new RegExp(`/projects/${projectId}`));
-  await expect.poll(() => runBodies.length, { timeout: 15_000 }).toBe(1);
+  await runRequests.expectCount(1, { timeout: 15_000 });
   expect(runBodies[0]?.message).toContain(prompt);
   expect(runBodies[0]?.projectId).toBe(projectId);
   expect(runBodies[0]?.conversationId).toBe(conversationId);
@@ -1272,6 +1269,24 @@ test('[P2] home template picker clears from the ring centre and dismisses on Esc
   await openHomeTemplateMenu(page);
   await page.getByTestId('home-hero-input').click();
   await expect(page.getByTestId('home-hero-template-menu')).toHaveCount(0);
+});
+
+test('[P1] home suggestion entry remains retryable after create failures', async ({ page }) => {
+  const projectCreateCount = await routeProjectCreates(page, { failFirstCreate: true });
+  await routeRunsAccepted(page);
+  const runRequests = trackRunRequests(page);
+  await gotoEntryHome(page);
+
+  await page.getByTestId('home-hero-submit').click();
+  await expect.poll(projectCreateCount).toBe(1);
+  await expect(page).toHaveURL(/\/$/);
+  await expect(page.getByTestId('home-hero-submit')).toBeEnabled();
+  await expect(page.getByRole('alert').filter({ hasText: /Failed to start the run/i })).toBeVisible();
+  await runRequests.expectNone({ message: 'failed blank project create should not start a run' });
+
+  await page.getByTestId('home-hero-submit').click();
+  await expect.poll(projectCreateCount).toBe(2);
+  await expect(page).toHaveURL(/\/projects\/[^/]+$/);
 });
 
 test('[P2] zh-CN home smoke exposes the localized template, design system, working directory, and send entries', async ({ page }) => {
@@ -1698,23 +1713,9 @@ async function routeMinimalProjectWorkspace(
 }
 
 async function routeRunsAccepted(page: Page) {
-  await page.route('**/api/runs', async (route) => {
-    if (route.request().method() !== 'POST') {
-      await route.continue();
-      return;
-    }
-    await route.fulfill({
-      status: 202,
-      contentType: 'application/json',
-      body: '{"runId":"home-run-smoke"}',
-    });
-  });
-  await page.route('**/api/runs/*/events', async (route) => {
-    await route.fulfill({
-      status: 200,
-      headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-      body: ['event: end', 'data: {"code":0,"status":"succeeded"}', '', ''].join('\n'),
-    });
+  await routeSuccessfulRuns(page, {
+    runId: 'home-run-smoke',
+    eventBody: successfulRunEventBody(),
   });
 }
 
@@ -1750,6 +1751,7 @@ async function routeProjectCreates(page: Page, options: { failFirstCreate?: bool
     }
     await route.continue();
   });
+  return () => createCount;
 }
 
 async function routeHomeDesignSystems(page: Page, options: { includeBrandKit?: boolean } = {}) {

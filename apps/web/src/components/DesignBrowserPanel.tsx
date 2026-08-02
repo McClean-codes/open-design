@@ -56,6 +56,7 @@ import {
   type BrowserPageArchiveCapture,
   type BrowserPageArchiveManifest,
   type BrowserElementSnapshot,
+  type BrowserViewportId,
   browserApplyStyleScript,
   browserApplyTextScript,
   browserCommentFilePath,
@@ -942,6 +943,11 @@ export function DesignBrowserPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [webviewNode, setWebviewNode] = useState<WebviewElement | null>(null);
   const [drawOverlayOpen, setDrawOverlayOpen] = useState(false);
+  const [viewport, setViewportState] = useState<BrowserViewportId>(() => loadBrowserViewport(projectId));
+  const setViewport = useCallback((nextViewport: BrowserViewportId) => {
+    saveBrowserViewport(projectId, nextViewport);
+    setViewportState(nextViewport);
+  }, [projectId]);
   const [activeTool, setActiveTool] = useState<BrowserTool | null>(null);
   const [activeCommentTarget, setActiveCommentTarget] = useState<BrowserElementSnapshot | null>(null);
   const [activePreviewCommentId, setActivePreviewCommentId] = useState<string | null>(null);
@@ -1031,6 +1037,7 @@ export function DesignBrowserPanel({
   }, []);
 
   useEffect(() => {
+    setViewportState(loadBrowserViewport(projectId));
     setHistory(loadHistory(projectId));
     const nextInitialState = initialBrowserState(initialUrl, initialTitle);
     setLoadUrl(nextInitialState.url);
@@ -3492,6 +3499,33 @@ export function saveHistory(projectId: string, history: BrowserHistoryEntry[]) {
 
 function historyStorageKey(projectId: string): string {
   return `od:design-browser:${projectId}:history:v1`;
+}
+
+function viewportStorageKey(projectId: string): string {
+  return `od:design-browser:${projectId}:viewport:v1`;
+}
+
+function isBrowserViewportId(value: unknown): value is BrowserViewportId {
+  return value === 'desktop' || value === 'tablet' || value === 'mobile';
+}
+
+export function loadBrowserViewport(projectId: string): BrowserViewportId {
+  if (typeof window === 'undefined') return 'desktop';
+  try {
+    const stored = window.localStorage.getItem(viewportStorageKey(projectId));
+    return isBrowserViewportId(stored) ? stored : 'desktop';
+  } catch {
+    return 'desktop';
+  }
+}
+
+export function saveBrowserViewport(projectId: string, viewport: BrowserViewportId) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(viewportStorageKey(projectId), viewport);
+  } catch {
+    // Ignore storage quota and private-mode failures.
+  }
 }
 
 export function isHistoryEntry(value: unknown): value is BrowserHistoryEntry {

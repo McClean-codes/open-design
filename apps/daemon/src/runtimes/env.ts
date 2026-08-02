@@ -176,6 +176,20 @@ export function spawnEnvForAgent(
   return finalizeRuntimeEnv(env, sandboxRuntime);
 }
 
+export function openDesignAmrRunAttempt(input: {
+  retryAttemptCount?: number | null;
+  manualResumeAttemptCount?: number | null;
+}): number {
+  const normalizedCount = (value: number | null | undefined): number =>
+    typeof value === 'number' && Number.isFinite(value) && value >= 0
+      ? Math.floor(value)
+      : 0;
+  return (
+    normalizedCount(input.retryAttemptCount) +
+    normalizedCount(input.manualResumeAttemptCount)
+  );
+}
+
 export function openDesignAmrTraceEnv(input: {
   agentId: string;
   runId: string;
@@ -186,6 +200,7 @@ export function openDesignAmrTraceEnv(input: {
   // selection. Omission means the historical project is genuinely unbound;
   // Vela/AMR owns the resulting wallet and membership decision.
   workspaceId?: string | null;
+  externalPluginAnalytics?: Record<string, unknown> | null;
 }): NodeJS.ProcessEnv {
   if (input.agentId !== 'amr') return {};
 
@@ -199,11 +214,53 @@ export function openDesignAmrTraceEnv(input: {
 
   const conversationId = input.conversationId?.trim();
   const workspaceId = input.workspaceId?.trim();
+  const plugin = input.externalPluginAnalytics;
+  const bounded = (key: string, max = 128): string | null => {
+    const value = plugin?.[key];
+    return typeof value === 'string'
+      && value.length > 0
+      && value.length <= max
+      && /^[A-Za-z0-9._:@/-]+$/u.test(value)
+      ? value
+      : null;
+  };
+  const digest = bounded('logicalRequestDigest', 64);
+  const digestVersion =
+    plugin?.logicalRequestDigestVersion === 1 ? '1' : null;
   return {
     OPEN_DESIGN_RUN_ID: runId,
     OPEN_DESIGN_RUN_ATTEMPT: String(Math.floor(input.runAttempt)),
     ...(conversationId ? { OPEN_DESIGN_SESSION_ID: conversationId } : {}),
     ...(workspaceId ? { OPEN_DESIGN_WORKSPACE_ID: workspaceId } : {}),
+    ...(bounded('pluginWorkflowId')
+      ? { OPEN_DESIGN_PLUGIN_WORKFLOW_ID: bounded('pluginWorkflowId')! }
+      : {}),
+    ...(digest
+      ? { OPEN_DESIGN_LOGICAL_REQUEST_DIGEST: digest }
+      : {}),
+    ...(digestVersion
+      ? { OPEN_DESIGN_LOGICAL_REQUEST_DIGEST_VERSION: digestVersion }
+      : {}),
+    ...(bounded('externalPluginId')
+      ? { OPEN_DESIGN_EXTERNAL_PLUGIN_ID: bounded('externalPluginId')! }
+      : {}),
+    ...(bounded('externalPluginVersion', 64)
+      ? {
+          OPEN_DESIGN_EXTERNAL_PLUGIN_VERSION:
+            bounded('externalPluginVersion', 64)!,
+        }
+      : {}),
+    ...(bounded('distributionMechanism', 64)
+      ? {
+          OPEN_DESIGN_DISTRIBUTION_MECHANISM:
+            bounded('distributionMechanism', 64)!,
+        }
+      : {}),
+    ...(bounded('publisherClass', 32)
+      ? {
+          OPEN_DESIGN_PUBLISHER_CLASS: bounded('publisherClass', 32)!,
+        }
+      : {}),
   };
 }
 

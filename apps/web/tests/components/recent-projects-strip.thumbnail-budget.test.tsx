@@ -203,6 +203,19 @@ describe('RecentProjectsStrip thumbnail request budget (Batch A §4.2)', () => {
     expect(mountedCoverIframes()).toHaveLength(0);
   });
 
+  it('does not probe local files for an unmaterialized shared-project placeholder', async () => {
+    const placeholder = makeProject('remote-placeholder');
+    placeholder.metadata = { kind: 'prototype', sharedProjectPlaceholderAt: 20 };
+    renderStrip([placeholder]);
+    await flush();
+    intersectAll();
+    await flush(20);
+
+    expect(registryMocks.fetchProjectFiles).not.toHaveBeenCalled();
+    expect(headCalls).toHaveLength(0);
+    expect(mountedCoverIframes()).toHaveLength(0);
+  });
+
   it('keeps concurrently loading cover iframes within the budget and still renders every card', async () => {
     renderStrip(range(10).map((i) => makeProject(`budget-${i}`)));
     await flush();

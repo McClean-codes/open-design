@@ -577,12 +577,18 @@ export function RecentProjectsStrip({
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [menuOpenId]);
 
-  // Cover fetching must key off the *set of project ids*, not the
+  // Cover fetching must key off the *set of project ids and their readiness*, not the
   // `visibleProjects` array reference. That reference changes on every render
   // (upstream props/derived lists are recreated, and a 2s poll re-renders the
   // shell), and depending on it re-ran this effect — and re-fetched every
   // project's files — on every render (observed ~23× per project in a trace).
-  const coverFetchKey = visibleProjects.map(({ project }) => project.id).join('|');
+  // A catalog placeholder can materialize without changing id or updatedAt,
+  // though, so include that one transition to start its first real scan.
+  const coverFetchKey = visibleProjects
+    .map(({ project }) =>
+      `${project.id}:${project.metadata?.sharedProjectPlaceholderAt == null ? 'ready' : 'placeholder'}`,
+    )
+    .join('|');
   const visibleProjectsRef = useRef(new Map<string, Project>());
   visibleProjectsRef.current = new Map(
     visibleProjects.map(({ project }) => [project.id, project]),
@@ -613,6 +619,12 @@ export function RecentProjectsStrip({
     signal: AbortSignal,
     requestWorkspaceContext: WorkspaceCollabContext | null,
   ): Promise<ProjectCoverOverride | null | undefined> => {
+    // Catalog-only Team projects intentionally have no local directory until
+    // the first open materializes them. Probing `/files` here can only produce
+    // a noisy 404. This is transient rather than an authoritative no-cover
+    // decision: hydration can clear the stamp without changing id/updatedAt,
+    // at which point coverFetchKey starts the first real scan.
+    if (project.metadata?.sharedProjectPlaceholderAt != null) return undefined;
     const designSystemProject = isDesignSystemProject(project);
     if (project.metadata?.entryFile && !designSystemProject) return null;
     let files: Awaited<ReturnType<typeof fetchProjectFiles>>;

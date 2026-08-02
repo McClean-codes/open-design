@@ -5,6 +5,7 @@ import {
   buildAllProjectsList,
   buildDraftsList,
   createSharedProjectPredicate,
+  reconcileSharedProjectCatalogFields,
 } from '../src/collab/all-projects-list';
 import type { Project } from '../src/types';
 
@@ -111,6 +112,33 @@ describe('buildAllProjectsList', () => {
     expect(list[0]?.name).toBe('Renamed by owner');
   });
 
+  it("keeps another member's catalog update time after the shared project is pulled locally", () => {
+    const catalogCreatedAt = 1_700_000_000_000;
+    const catalogUpdatedAt = 1_700_000_060_000;
+    const pulledPlaceholder = {
+      ...localProject('p-shared', 'Pulled copy'),
+      createdAt: 1_800_000_000_000,
+      updatedAt: 1_800_000_000_000,
+    };
+    const list = build({
+      projects: [pulledPlaceholder],
+      teamProjects: [
+        sharedProject({
+          projectId: 'p-shared',
+          name: 'Catalog name',
+          createdAt: catalogCreatedAt,
+          updatedAt: catalogUpdatedAt,
+        }),
+      ],
+    });
+
+    expect(list[0]).toMatchObject({
+      name: 'Catalog name',
+      createdAt: catalogCreatedAt,
+      updatedAt: catalogUpdatedAt,
+    });
+  });
+
   it('keeps the local name for the member’s OWN project so a fresh rename holds', () => {
     const list = build({
       projects: [localProject('p-mine', 'Just renamed')],
@@ -153,6 +181,35 @@ describe('buildAllProjectsList', () => {
     const list = build({ projects, teamProjects: [], workspaceContext: null });
 
     expect(list).toBe(projects);
+  });
+});
+
+describe('reconcileSharedProjectCatalogFields', () => {
+  it("uses another member's catalog timestamp instead of a pulled placeholder's current time", () => {
+    const catalogUpdatedAt = 1_700_000_060_000;
+    const projects = [
+      {
+        ...localProject('p-shared', '共享项目'),
+        updatedAt: 1_800_000_000_000,
+      },
+    ];
+
+    const reconciled = reconcileSharedProjectCatalogFields({
+      projects,
+      teamProjects: [
+        sharedProject({
+          projectId: 'p-shared',
+          name: 'Catalog name',
+          updatedAt: catalogUpdatedAt,
+        }),
+      ],
+      workspaceContext: teamContext(),
+    });
+
+    expect(reconciled[0]).toMatchObject({
+      name: 'Catalog name',
+      updatedAt: catalogUpdatedAt,
+    });
   });
 });
 
