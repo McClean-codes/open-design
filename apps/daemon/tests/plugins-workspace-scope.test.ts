@@ -28,6 +28,7 @@ import {
   updateWorkspaceResource,
 } from '../src/db.js';
 import {
+  activateWorkspaceTeamPluginIfStillShared,
   listInstalledPlugins,
   resolveAndActivateWorkspaceTeamPlugin,
   resolveWorkspaceTeamPluginWithBindingGate,
@@ -254,4 +255,48 @@ describe('listInstalledPlugins workspace scope', () => {
       workspaceTeamPluginBindingAllowsRead(db, workspaceId, pluginId),
     ).toBe(false);
   });
+
+  it.each(['versioned', 'unversioned'] as const)(
+    'does not let an older cached %s listing reactivate a retired Team plugin',
+    async (mode) => {
+      const db = openDatabase(tempDir, { dataDir: tempDir });
+      const pluginId = `plugin-old-${mode}`;
+      const workspaceId = 'ws-team';
+      const bindingId = workspaceTeamPluginBindingResourceId(workspaceId, pluginId);
+      ensureWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+        visibility: 'team',
+        resourceState: 'active',
+      });
+      let finishAuthoritativeRead!: (stillShared: boolean) => void;
+      const authoritativeRead = new Promise<boolean>((resolve) => {
+        finishAuthoritativeRead = resolve;
+      });
+      let readStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        readStarted = resolve;
+      });
+      const oldListing = activateWorkspaceTeamPluginIfStillShared({
+        stillShared: async () => {
+          readStarted();
+          return authoritativeRead;
+        },
+        activate: () => {
+          updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+            resourceState: 'active',
+          });
+          return true;
+        },
+      });
+      await started;
+      updateWorkspaceResource(db, 'plugin', workspaceId, bindingId, {
+        resourceState: 'deleted',
+      });
+      finishAuthoritativeRead(false);
+      await oldListing;
+
+      expect(
+        workspaceTeamPluginBindingAllowsRead(db, workspaceId, pluginId),
+      ).toBe(false);
+    },
+  );
 });

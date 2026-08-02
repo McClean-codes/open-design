@@ -368,6 +368,7 @@ import {
   uninstallPlugin,
 } from './plugins/index.js';
 import {
+  activateWorkspaceTeamPluginIfStillShared,
   pluginIdFromWorkspaceTeamPluginBinding,
   resolveAndActivateWorkspaceTeamPlugin,
   resolvePluginFolder,
@@ -5040,7 +5041,10 @@ export async function startServer({
       resource.versionId &&
       teamResourceVersions.get(workspaceId, 'plugin', resource.id) === resource.versionId
     ) {
-      markTeamSynced();
+      await activateWorkspaceTeamPluginIfStillShared({
+        stillShared: () => teamResourceStillShared('plugin', resource, scope),
+        activate: markTeamSynced,
+      });
       return;
     }
     const existing = getInstalledPlugin(db, resource.id);
@@ -5049,7 +5053,10 @@ export async function startServer({
       ? existing.manifest.description.trim()
       : '';
     if (fs.existsSync(targetDir) && !resource.versionId && (!remoteDescription || localDescription === remoteDescription)) {
-      markTeamSynced();
+      await activateWorkspaceTeamPluginIfStillShared({
+        stillShared: () => teamResourceStillShared('plugin', resource, scope),
+        activate: markTeamSynced,
+      });
       return;
     }
 

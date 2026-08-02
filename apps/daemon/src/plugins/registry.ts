@@ -330,9 +330,16 @@ export async function resolveAndActivateWorkspaceTeamPlugin<T>(input: {
 }): Promise<T | null> {
   const resolved = await input.resolve();
   if (resolved == null) return null;
-  if (!await input.stillShared()) return null;
-  if (!input.activate()) return null;
+  if (!await activateWorkspaceTeamPluginIfStillShared(input)) return null;
   return resolved;
+}
+
+export async function activateWorkspaceTeamPluginIfStillShared(input: {
+  stillShared: () => Promise<boolean>;
+  activate: () => boolean;
+}): Promise<boolean> {
+  if (!await input.stillShared()) return false;
+  return input.activate();
 }
 
 /**
