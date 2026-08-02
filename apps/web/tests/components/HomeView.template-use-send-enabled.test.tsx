@@ -24,10 +24,27 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { HomeView } from '../../src/components/HomeView';
 import { createPluginUseHandoff } from '../../src/components/home-hero/plugin-authoring';
 import { I18nProvider } from '../../src/i18n';
 import { writeHomeGuideStage } from '../../src/components/home-hero/firstRunGuide';
+
+let workspaceContextForTest: WorkspaceCollabContext | null = null;
+const reloadTeamProjects = vi.fn();
+
+vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>()),
+  useWorkspaceContext: () => ({
+    context: workspaceContextForTest,
+    loading: false,
+  }),
+  useTeamProjects: () => ({
+    projects: [],
+    loading: false,
+    reload: reloadTeamProjects,
+  }),
+}));
 
 const BASE = {
   version: '0.1.0',
@@ -197,7 +214,42 @@ const NO_PLACEHOLDER_QUERY = {
   },
 };
 
-const ALL = [PITCH_DECK, DESIGN_BRIEF, CONTROL_DECK, WRITE_BACK_PLUGIN, NO_PLACEHOLDER_QUERY];
+// The QA-reported third card. Its required `workspace_name` has no default and
+// its prompt contains no placeholder that could write a value back.
+const LIVE_DASHBOARD = {
+  ...BASE,
+  id: 'example-live-dashboard-workspace',
+  title: 'Notion-style Team Dashboard',
+  source: '/tmp/live-dashboard-workspace',
+  fsPath: '/tmp/live-dashboard-workspace',
+  manifest: {
+    name: 'example-live-dashboard-workspace',
+    title: 'Notion-style Team Dashboard',
+    version: '0.1.0',
+    description: 'Build a Notion-style team dashboard with live KPIs.',
+    od: {
+      kind: 'scenario',
+      taskKind: 'new-generation',
+      useCase: {
+        query: 'Build a Notion-style team dashboard with live KPIs.',
+      },
+      inputs: [
+        { name: 'workspace_name', type: 'string', required: true },
+        { name: 'page_title', type: 'string', default: 'Team Dashboard' },
+      ],
+    },
+  },
+};
+
+const ALL = [
+  PITCH_DECK,
+  DESIGN_BRIEF,
+  CONTROL_DECK,
+  WRITE_BACK_PLUGIN,
+  NO_PLACEHOLDER_QUERY,
+  LIVE_DASHBOARD,
+];
+const postedPluginInputs: Array<{ pluginId: string; inputs: Record<string, unknown> }> = [];
 
 function hasValue(value: unknown): boolean {
   return value !== undefined && value !== null && value !== '';
@@ -221,6 +273,10 @@ function stubFetch() {
         const record = ALL.find((entry) => entry.id === decodeURIComponent(applyMatch[1]!));
         const posted = (JSON.parse(String(init?.body ?? '{}')) as { inputs?: Record<string, unknown> })
           .inputs ?? {};
+        postedPluginInputs.push({
+          pluginId: decodeURIComponent(applyMatch[1]!),
+          inputs: posted,
+        });
         const fields = record?.manifest.od.inputs ?? [];
         const missing = fields
           .filter((field) => field.required === true)
@@ -274,6 +330,9 @@ afterEach(() => {
   vi.unstubAllGlobals();
   cleanup();
   window.localStorage.clear();
+  workspaceContextForTest = null;
+  postedPluginInputs.length = 0;
+  reloadTeamProjects.mockReset();
 });
 
 describe('community template Use lands a sendable composer', () => {
@@ -340,6 +399,122 @@ describe('community template Use lands a sendable composer', () => {
     renderHome(1, NO_PLACEHOLDER_QUERY.id);
     const submit = await boundSubmit();
     expect(submit.disabled).toBe(false);
+  });
+
+  it('fills live-dashboard workspace_name from the active Workspace', async () => {
+    writeHomeGuideStage('done');
+    workspaceContextForTest = {
+      workspaceId: 'ws-qa',
+      workspaceType: 'team',
+      workspaceMemberId: 'wm-qa',
+      role: 'member',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+      billingState: 'active',
+      planId: 'team',
+      providerMode: 'platform_credits',
+      seatSummary: {
+        seatLimit: 10,
+        usedSeats: 1,
+        availableSeats: 9,
+        isSeatFull: false,
+      },
+      permissions: {
+        canInviteMembers: false,
+        canManageMembers: false,
+        canManageBilling: false,
+        canManageAutoRecharge: false,
+        canShareProjects: true,
+        canWriteSyncedFiles: true,
+        canViewWorkspaceSettings: true,
+        canManageSharedResources: false,
+      },
+      workspaceName: 'QA Team',
+    };
+    stubFetch();
+
+    renderHome(1, LIVE_DASHBOARD.id);
+    const submit = await boundSubmit();
+    expect(submit.disabled).toBe(false);
+
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(postedPluginInputs).toContainEqual({
+        pluginId: LIVE_DASHBOARD.id,
+        inputs: expect.objectContaining({
+          workspace_name: 'QA Team',
+          page_title: 'Team Dashboard',
+        }),
+      });
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('refreshes live-dashboard workspace_name after the tab switches Workspaces', async () => {
+    writeHomeGuideStage('done');
+    workspaceContextForTest = {
+      workspaceId: 'ws-personal',
+      workspaceType: 'personal',
+      workspaceMemberId: 'wm-personal',
+      role: 'owner',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+      billingState: 'active',
+      planId: null,
+      providerMode: 'platform_credits',
+      seatSummary: {
+        seatLimit: 1,
+        usedSeats: 1,
+        availableSeats: 0,
+        isSeatFull: true,
+      },
+      permissions: {
+        canInviteMembers: false,
+        canManageMembers: true,
+        canManageBilling: true,
+        canManageAutoRecharge: true,
+        canShareProjects: true,
+        canWriteSyncedFiles: true,
+        canViewWorkspaceSettings: true,
+        canManageSharedResources: true,
+      },
+      workspaceName: 'Personal Workspace',
+    };
+    stubFetch();
+
+    const submittedPluginInputs: Record<string, unknown>[] = [];
+    const tree = () => (
+      <I18nProvider initial="en">
+        <HomeView
+          projects={[]}
+          onSubmit={(payload) => {
+            submittedPluginInputs.push(payload.pluginInputs ?? {});
+          }}
+          onOpenProject={() => undefined}
+          onViewAllProjects={() => undefined}
+          promptHandoff={createPluginUseHandoff(1, LIVE_DASHBOARD.id, { action: 'use-with-query' })}
+        />
+      </I18nProvider>
+    );
+    const view = render(tree());
+    const submit = await boundSubmit();
+
+    workspaceContextForTest = {
+      ...workspaceContextForTest,
+      workspaceId: 'ws-team',
+      workspaceType: 'team',
+      workspaceMemberId: 'wm-team',
+      workspaceName: 'Design Team',
+    };
+    view.rerender(tree());
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(submittedPluginInputs).toContainEqual(
+        expect.objectContaining({ workspace_name: 'Design Team' }),
+      );
+    });
   });
 });
 

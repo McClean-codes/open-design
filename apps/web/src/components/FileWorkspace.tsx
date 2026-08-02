@@ -171,6 +171,14 @@ import type { CommentSendResult } from './comment-send-result';
 
 type TranslateFn = (key: keyof Dict, vars?: Record<string, string | number>) => string;
 
+function syncInertAttribute(element: HTMLElement | null, inert: boolean): void {
+  if (!element) return;
+  // React 18 treats `inert` as an unknown string attribute while React 19
+  // treats it as boolean. Updating the standard DOM attribute directly keeps
+  // retained viewers accessible in both runtimes without either warning.
+  element.toggleAttribute('inert', inert);
+}
+
 export interface FileRefreshResult {
   acceptedGeneration: number | null;
 }
@@ -4398,10 +4406,12 @@ export function FileWorkspace({
           return (
             <div
               key={`${projectId}:${file.name}`}
+              ref={(element) => {
+                syncInertAttribute(element, !workspaceActive);
+              }}
               data-testid="retained-file-viewer"
               data-file-name={file.name}
               aria-hidden={workspaceActive ? undefined : true}
-              inert={(workspaceActive ? undefined : '') as unknown as boolean}
               style={{
                 display: 'flex',
                 flex: workspaceActive ? '1 1 auto' : undefined,
@@ -4427,9 +4437,11 @@ export function FileWorkspace({
         })}
         {viewerFile ? (
           <div
+            ref={(element) => {
+              syncInertAttribute(element, !viewerFileActive);
+            }}
             data-testid="retained-file-viewer"
             aria-hidden={viewerFileActive ? undefined : true}
-            inert={(viewerFileActive ? undefined : '') as unknown as boolean}
             style={{
               display: 'flex',
               flex: viewerFileActive ? '1 1 auto' : undefined,

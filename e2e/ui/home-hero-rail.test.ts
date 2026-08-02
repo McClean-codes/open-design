@@ -193,6 +193,39 @@ const HOME_PLUGINS = [
     },
   },
   {
+    id: 'example-live-dashboard',
+    title: 'Live Dashboard',
+    version: '0.1.0',
+    trust: 'bundled',
+    sourceKind: 'bundled',
+    source: '/tmp/live-dashboard',
+    fsPath: '/tmp/live-dashboard',
+    capabilitiesGranted: ['prompt:inject'],
+    installedAt: 0,
+    updatedAt: 0,
+    manifest: {
+      name: 'example-live-dashboard',
+      title: 'Live Dashboard',
+      version: '0.1.0',
+      description: 'Notion-style team dashboard rendered as a Live Artifact.',
+      tags: ['live-dashboard', 'team-workspace-dashboard'],
+      od: {
+        kind: 'scenario',
+        taskKind: 'new-generation',
+        mode: 'prototype',
+        scenario: 'operation',
+        surface: 'web',
+        useCase: {
+          query: 'Build a Notion-style team dashboard with live KPIs.',
+        },
+        inputs: [
+          { name: 'workspace_name', type: 'string', required: true },
+          { name: 'page_title', type: 'string', default: 'Team Dashboard' },
+        ],
+      },
+    },
+  },
+  {
     id: 'od-media-generation',
     title: 'Media generation',
     version: '0.1.0',
@@ -274,6 +307,37 @@ const HOME_PLUGINS = [
 ];
 
 const APPLY_RESPONSES: Record<string, unknown> = {
+  'example-live-dashboard': {
+    query: 'Build a Notion-style team dashboard with live KPIs.',
+    contextItems: [],
+    inputs: [],
+    assets: [],
+    mcpServers: [],
+    trust: 'bundled',
+    capabilitiesGranted: ['prompt:inject'],
+    capabilitiesRequired: ['prompt:inject'],
+    appliedPlugin: {
+      snapshotId: 'snap-live-dashboard',
+      pluginId: 'example-live-dashboard',
+      pluginVersion: '0.1.0',
+      manifestSourceDigest: 'a'.repeat(64),
+      inputs: {
+        workspace_name: 'QA Team',
+        page_title: 'Team Dashboard',
+      },
+      resolvedContext: { items: [] },
+      capabilitiesGranted: ['prompt:inject'],
+      capabilitiesRequired: ['prompt:inject'],
+      assetsStaged: [],
+      taskKind: 'new-generation',
+      appliedAt: 0,
+      connectorsRequired: [],
+      connectorsResolved: [],
+      mcpServers: [],
+      status: 'fresh',
+    },
+    projectMetadata: {},
+  },
   'example-simple-deck': {
     query: 'Draft a quarterly review deck.',
     contextItems: [],
@@ -1474,6 +1538,132 @@ test('[P1] home hero example presets update the composer input for prototype and
   await usePreset(page, 'image-template-notion-team-dashboard-live-artifact');
   await useExamplePreset(page, 'image-template-notion-team-dashboard-live-artifact');
   await expect(input).toHaveText('Create a live Notion dashboard artifact.');
+});
+
+test('[P1] live dashboard preset sends the active workspace name to plugin apply', async ({ page }) => {
+  const personalWorkspace = {
+    workspaceId: 'ws-personal',
+    workspaceName: 'Personal Workspace',
+    workspaceType: 'personal',
+    workspaceMemberId: 'wm-personal',
+    role: 'owner',
+    memberStatus: 'active',
+    lifecycleState: 'active',
+  } as const;
+  const teamWorkspace = {
+    workspaceId: 'ws-qa',
+    workspaceName: 'QA Team',
+    workspaceType: 'team',
+    workspaceMemberId: 'wm-qa',
+    role: 'member',
+    memberStatus: 'active',
+    lifecycleState: 'active',
+  } as const;
+  const workspaceContext = (
+    selected: typeof personalWorkspace | typeof teamWorkspace,
+    includeWorkspaceName = false,
+  ) => ({
+    workspaceId: selected.workspaceId,
+    workspaceType: selected.workspaceType,
+    workspaceMemberId: selected.workspaceMemberId,
+    role: selected.role,
+    memberStatus: 'active' as const,
+    lifecycleState: 'active' as const,
+    billingState: 'active' as const,
+    planId: selected.workspaceType === 'team' ? 'team' : null,
+    providerMode: 'platform_credits' as const,
+    seatSummary: {
+      seatLimit: 10,
+      usedSeats: 1,
+      availableSeats: 9,
+      isSeatFull: false,
+    },
+    permissions: {
+      canInviteMembers: false,
+      canManageMembers: false,
+      canManageBilling: false,
+      canManageAutoRecharge: false,
+      canShareProjects: true,
+      canWriteSyncedFiles: true,
+      canViewWorkspaceSettings: true,
+      canManageSharedResources: false,
+    },
+    ...(includeWorkspaceName ? { workspaceName: selected.workspaceName } : {}),
+  });
+  await page.route('**/api/workspace/directory', async (route) => {
+    await route.fulfill({
+      json: {
+        items: [personalWorkspace, teamWorkspace],
+        activeWorkspaceId: null,
+      },
+    });
+  });
+  await page.route('**/api/workspace/context', async (route) => {
+    const workspaceId = route.request().headers()['x-od-workspace-id'];
+    const selected = workspaceId === teamWorkspace.workspaceId
+      ? teamWorkspace
+      : personalWorkspace;
+    await route.fulfill({
+      json: {
+        context: workspaceContext(selected),
+      },
+    });
+  });
+  await page.route('**/api/workspace/active', async (route) => {
+    if (route.request().method() !== 'PUT') {
+      await route.fallback();
+      return;
+    }
+    const body = route.request().postDataJSON() as {
+      workspaceId?: unknown;
+      workspaceMemberId?: unknown;
+    };
+    const selected = [personalWorkspace, teamWorkspace].find(
+      (item) =>
+        item.workspaceId === body.workspaceId
+        && item.workspaceMemberId === body.workspaceMemberId,
+    );
+    if (!selected) {
+      await route.fulfill({ status: 400, json: { error: 'exact_workspace_scope_required' } });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        activeWorkspaceId: selected.workspaceId,
+        context: workspaceContext(selected, true),
+      },
+    });
+  });
+
+  await gotoEntryHome(page);
+  await page.getByTestId('workspace-home-rail-toggle').click();
+  await expect(page.getByTestId('workspace-switcher')).toContainText('Personal Workspace');
+
+  await pickHomeTemplate(page, 'live-artifact');
+  await usePreset(page, 'example-live-dashboard');
+  await expect(page.getByTestId('home-hero-submit')).toBeEnabled();
+
+  // The preset is already bound to Personal. Switching the request-local tab
+  // context must replace that context-owned input and invalidate the old apply
+  // snapshot before Send — no account-level active Workspace participates.
+  await page.getByTestId('workspace-switcher').click();
+  await page.getByRole('menuitem', { name: 'QA Team' }).click();
+  await expect(page.getByTestId('workspace-switcher')).toContainText('QA Team');
+
+  const applyRequestPromise = page.waitForRequest((request) =>
+    request.method() === 'POST'
+      && request.url().includes('/api/plugins/example-live-dashboard/apply'),
+  );
+  await page.getByTestId('home-hero-submit').click();
+
+  const applyRequest = await applyRequestPromise;
+  const body = applyRequest.postDataJSON() as {
+    inputs?: Record<string, unknown>;
+  };
+  expect(body.inputs).toMatchObject({
+    workspace_name: 'QA Team',
+    page_title: 'Team Dashboard',
+  });
 });
 
 test('[P1] home hero example preset card has no hover overlay and applies the template directly', async ({ page }) => {

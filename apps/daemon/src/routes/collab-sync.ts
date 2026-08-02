@@ -29,6 +29,7 @@ import {
   type ProactivePullAuthorizationWitness,
 } from '../collab/proactive-content-pull.js';
 import {
+  isAuthorizedTeamProjectPullReceiptExpired,
   isAuthorizedTeamProjectPullUnavailable,
   stageAuthorizedTeamProjectPull,
   validateAuthorizedTeamProjectPullReceipt,
@@ -1543,156 +1544,223 @@ export function registerCollabSyncRoutes(
       authorizedStageInvocation &&
       expectedVersion != null
     ) {
-      if (
-        !deps.verifyWorkspaceScope ||
-        !(await deps.verifyWorkspaceScope(scope)) ||
-        !authorizedStageInvocation.isStillExpected()
+      const authorizedInvocationIsStillValid = async (): Promise<boolean> => {
+        if (
+          !deps.verifyWorkspaceScope ||
+          !isAuthorizedProactivePullInvocation(
+            authorizedStageInvocation,
+            {
+              projectId,
+              workspaceId: scope.workspaceId,
+              resourceTeamId: scope.resourceTeamId,
+              viewerMemberId: scope.viewerMemberId,
+              ownerMemberId: scope.ownerMemberId,
+            },
+            expectedVersion,
+          )
+        ) {
+          return false;
+        }
+        try {
+          const scopeStillAuthorized = await deps.verifyWorkspaceScope(scope);
+          return (
+            scopeStillAuthorized &&
+            isAuthorizedProactivePullInvocation(
+              authorizedStageInvocation,
+              {
+                projectId,
+                workspaceId: scope.workspaceId,
+                resourceTeamId: scope.resourceTeamId,
+                viewerMemberId: scope.viewerMemberId,
+                ownerMemberId: scope.ownerMemberId,
+              },
+              expectedVersion,
+            )
+          );
+        } catch {
+          return false;
+        }
+      };
+      const shouldRetryStaleReceipt = async (
+        error: unknown,
+        attempt: number,
+      ): Promise<boolean> => {
+        if (
+          attempt !== 0 ||
+          !isAuthorizedTeamProjectPullReceiptExpired(error) ||
+          authorizedStageInvocation.signal.aborted
+        ) {
+          return false;
+        }
+        return authorizedInvocationIsStillValid();
+      };
+      for (
+        let authorizedAttempt = 0;
+        authorizedAttempt < 2;
+        authorizedAttempt += 1
       ) {
-        return complete({ status: 'register_failed' });
-      }
-      let staged: StagedAuthorizedTeamProjectPull | null = null;
-      reportAuthorizedPullTiming('authorized-stage-started');
-      try {
-        staged = await (authorizedPull.stage ?? stageAuthorizedTeamProjectPull)({
-          projectId,
-          liveDir: resolvePullDir(projectId),
-          scope,
-          expectedVersion,
-          signal: authorizedStageInvocation.signal,
-        });
-        reportAuthorizedPullTiming('authorized-stage-done', 'staged');
-      } catch (error) {
-        const capabilityUnavailable =
-          isAuthorizedTeamProjectPullUnavailable(error);
-        reportAuthorizedPullTiming(
-          'authorized-stage-done',
-          capabilityUnavailable ? 'capability-unavailable' : 'failed',
-        );
-        if (!capabilityUnavailable) {
-          console.warn('[od] authorized proactive team pull failed closed:', {
-            projectId,
-            version: expectedVersion,
-            ...errorLogFields(error),
-          });
+        if (!(await authorizedInvocationIsStillValid())) {
           return complete({ status: 'register_failed' });
         }
-        // Old CLIs can materialize successfully while returning no version.
-        // The event version is only a proven lower bound after the legacy
-        // pull and every post-pull authorization/registration gate succeeds;
-        // it is never persisted as an authorized receipt.
-        authorizedCapabilityFallbackVersion = expectedVersion;
-      }
-      if (staged) {
-        let localRecordChanged = false;
-        let promotionStarted = false;
+        let staged: StagedAuthorizedTeamProjectPull | null = null;
+        reportAuthorizedPullTiming('authorized-stage-started');
         try {
-          validateAuthorizedTeamProjectPullReceipt(staged.receipt, {
+          staged = await (authorizedPull.stage ?? stageAuthorizedTeamProjectPull)({
             projectId,
+            liveDir: resolvePullDir(projectId),
             scope,
             expectedVersion,
+            signal: authorizedStageInvocation.signal,
           });
-          reportAuthorizedPullTiming('authorized-receipt-validated');
-          const prepared = await preparePulledProjectRegistration(
-            projectId,
-            scope,
-            staged.stageDir,
-          );
-          if (
-            !deps.verifyWorkspaceScope ||
-            !(await deps.verifyWorkspaceScope(scope)) ||
-            !authorizedStageInvocation.isStillExpected()
-          ) {
-            throw new Error(
-              'authorized team project scope changed before promotion',
-            );
-          }
-          reportAuthorizedPullTiming('authorized-scope-revalidated');
-          reportAuthorizedPullTiming('promotion-started');
-          promotionStarted = true;
-          const result = await (
-            authorizedPull.promote ?? promoteAuthorizedTeamProjectStage
-          )({
-            receipt: staged.receipt,
-            liveDir: resolvePullDir(projectId),
-            stageDir: staged.stageDir,
-            expectedStageIdentity: staged.identity,
-            journalDir: authorizedPull.journalDir,
-            isScopeStillAuthorized:
-              authorizedStageInvocation.isStillExpected,
-            isExpectedVersion:
-              authorizedStageInvocation.isStillExpected,
-            validateReceipt: () =>
-              validateAuthorizedTeamProjectPullReceipt(staged!.receipt, {
-                projectId,
-                scope,
-                expectedVersion,
-              }),
-            commit: () => {
-              const committed = {
-                localRecordChanged: registerPreparedPulledProject(
-                  prepared,
-                  scope,
-                  null,
-                  staged!.receipt,
-                ),
-              };
-              reportAuthorizedPullTiming(
-                'version-persisted',
-                undefined,
-                staged!.receipt.version,
-              );
-              return committed;
-            },
-            onPostCommitCleanupError: (error) => {
-              console.warn(
-                '[od] authorized team project committed; deferred promotion cleanup:',
-                {
-                  projectId,
-                  version: expectedVersion,
-                  ...errorLogFields(error),
-                },
-              );
-            },
-          });
-          reportAuthorizedPullTiming('promotion-done', 'pulled');
-          localRecordChanged = result.localRecordChanged;
+          reportAuthorizedPullTiming('authorized-stage-done', 'staged');
         } catch (error) {
-          if (promotionStarted) {
-            reportAuthorizedPullTiming('promotion-done', 'failed');
-          }
-          const versionStillExpected =
-            authorizedStageInvocation.isStillExpected();
-          const reason = !versionStillExpected
-            ? 'version-superseded'
-            : 'promotion-failed';
-          console.warn('[od] failed to promote authorized team project', {
-            projectId,
-            version: expectedVersion,
-            reason,
-            ...errorLogFields(error),
-          });
-          return complete({ status: 'register_failed' });
-        } finally {
-          try {
-            await staged.cleanup();
-          } catch (error) {
-            console.warn('[od] failed to clean authorized team project stage:', {
+          const capabilityUnavailable =
+            isAuthorizedTeamProjectPullUnavailable(error);
+          reportAuthorizedPullTiming(
+            'authorized-stage-done',
+            capabilityUnavailable ? 'capability-unavailable' : 'failed',
+          );
+          if (!capabilityUnavailable) {
+            if (await shouldRetryStaleReceipt(error, authorizedAttempt)) {
+              continue;
+            }
+            console.warn('[od] authorized proactive team pull failed closed:', {
               projectId,
               version: expectedVersion,
               ...errorLogFields(error),
             });
+            return complete({ status: 'register_failed' });
           }
+          // Old CLIs can materialize successfully while returning no version.
+          // The event version is only a proven lower bound after the legacy
+          // pull and every post-pull authorization/registration gate succeeds;
+          // it is never persisted as an authorized receipt.
+          authorizedCapabilityFallbackVersion = expectedVersion;
         }
-        notifyFilesChanged?.(projectId);
-        if (localRecordChanged) notifyProjectMetadataChanged?.(projectId);
-        markTeamProjectRevoked?.(projectId, false);
-        // Real hub content is on disk and registered — the local record is no
-        // longer an unmaterialized placeholder, so publishing may resume.
-        markSharedProjectPlaceholder?.(projectId, false);
-        return complete({
-          status: 'pulled',
-          version: staged.receipt.version,
-        });
+        if (staged) {
+          let localRecordChanged = false;
+          let promotionStarted = false;
+          let retryAuthorizedStage = false;
+          let cleanupSucceeded = true;
+          try {
+            validateAuthorizedTeamProjectPullReceipt(staged.receipt, {
+              projectId,
+              scope,
+              expectedVersion,
+            });
+            reportAuthorizedPullTiming('authorized-receipt-validated');
+            const prepared = await preparePulledProjectRegistration(
+              projectId,
+              scope,
+              staged.stageDir,
+            );
+            if (!(await authorizedInvocationIsStillValid())) {
+              throw new Error(
+                'authorized team project scope changed before promotion',
+              );
+            }
+            reportAuthorizedPullTiming('authorized-scope-revalidated');
+            reportAuthorizedPullTiming('promotion-started');
+            promotionStarted = true;
+            const result = await (
+              authorizedPull.promote ?? promoteAuthorizedTeamProjectStage
+            )({
+              receipt: staged.receipt,
+              liveDir: resolvePullDir(projectId),
+              stageDir: staged.stageDir,
+              expectedStageIdentity: staged.identity,
+              journalDir: authorizedPull.journalDir,
+              isScopeStillAuthorized:
+                authorizedStageInvocation.isStillExpected,
+              isExpectedVersion:
+                authorizedStageInvocation.isStillExpected,
+              validateReceipt: () =>
+                validateAuthorizedTeamProjectPullReceipt(staged!.receipt, {
+                  projectId,
+                  scope,
+                  expectedVersion,
+                }),
+              commit: () => {
+                const committed = {
+                  localRecordChanged: registerPreparedPulledProject(
+                    prepared,
+                    scope,
+                    null,
+                    staged!.receipt,
+                  ),
+                };
+                reportAuthorizedPullTiming(
+                  'version-persisted',
+                  undefined,
+                  staged!.receipt.version,
+                );
+                return committed;
+              },
+              onPostCommitCleanupError: (error) => {
+                console.warn(
+                  '[od] authorized team project committed; deferred promotion cleanup:',
+                  {
+                    projectId,
+                    version: expectedVersion,
+                    ...errorLogFields(error),
+                  },
+                );
+              },
+            });
+            reportAuthorizedPullTiming('promotion-done', 'pulled');
+            localRecordChanged = result.localRecordChanged;
+          } catch (error) {
+            if (promotionStarted) {
+              reportAuthorizedPullTiming('promotion-done', 'failed');
+            }
+            const versionStillExpected =
+              authorizedStageInvocation.isStillExpected();
+            const reason = !versionStillExpected
+              ? 'version-superseded'
+              : 'promotion-failed';
+            retryAuthorizedStage = await shouldRetryStaleReceipt(
+              error,
+              authorizedAttempt,
+            );
+            if (!retryAuthorizedStage) {
+              console.warn('[od] failed to promote authorized team project', {
+                projectId,
+                version: expectedVersion,
+                reason,
+                ...errorLogFields(error),
+              });
+              return complete({ status: 'register_failed' });
+            }
+          } finally {
+            try {
+              await staged.cleanup();
+            } catch (error) {
+              cleanupSucceeded = false;
+              console.warn('[od] failed to clean authorized team project stage:', {
+                projectId,
+                version: expectedVersion,
+                ...errorLogFields(error),
+              });
+            }
+          }
+          if (retryAuthorizedStage) {
+            if (!cleanupSucceeded) {
+              return complete({ status: 'register_failed' });
+            }
+            continue;
+          }
+          notifyFilesChanged?.(projectId);
+          if (localRecordChanged) notifyProjectMetadataChanged?.(projectId);
+          markTeamProjectRevoked?.(projectId, false);
+          // Real hub content is on disk and registered — the local record is no
+          // longer an unmaterialized placeholder, so publishing may resume.
+          markSharedProjectPlaceholder?.(projectId, false);
+          return complete({
+            status: 'pulled',
+            version: staged.receipt.version,
+          });
+        }
+        break;
       }
     }
     const reuseInitialAuthorization = Boolean(

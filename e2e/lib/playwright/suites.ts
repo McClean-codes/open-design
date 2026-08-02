@@ -36,6 +36,7 @@ export const uiP0Groups = {
       "ui/settings-api-protocol.test.ts",
       "ui/settings-connectors-auth-happy-path.test.ts",
       "ui/settings-connectors-auth-recovery.test.ts",
+      "ui/workspace-team-interactions.test.ts",
     ],
   },
   "project-workspace": {
@@ -46,6 +47,7 @@ export const uiP0Groups = {
       "ui/app-design-files.test.ts",
       "ui/app-manual-edit.test.ts",
       "ui/project-management-flows.test.ts",
+      "ui/workspace-multi-client-collab.test.ts",
       "ui/workspace-keyboard-flows.test.ts",
     ],
   },
@@ -93,6 +95,8 @@ const uiP0CoverageFiles = [
   "ui/settings-connectors-auth-happy-path.test.ts",
   "ui/settings-connectors-auth-recovery.test.ts",
   "ui/settings-local-cli-codex-fallback.test.ts",
+  "ui/workspace-team-interactions.test.ts",
+  "ui/workspace-multi-client-collab.test.ts",
   "ui/workspace-keyboard-flows.test.ts",
 ] as const;
 

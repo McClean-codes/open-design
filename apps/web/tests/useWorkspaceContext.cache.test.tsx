@@ -18,6 +18,7 @@ const SIGNED_IN = workspaceContextFixture({
   workspaceId: 'ws-1',
   workspaceMemberId: 'member-1',
   teamName: 'Acme',
+  workspaceName: 'Acme',
 });
 
 function stubContextFetch(context: typeof SIGNED_IN): void {
@@ -59,5 +60,45 @@ describe('useWorkspaceContext module cache', () => {
     expect(second.result.current.context).toEqual(SIGNED_IN);
     expect(second.result.current.loading).toBe(false);
     second.unmount();
+  });
+
+  it('fills a missing context workspace name from the verified tab selection', async () => {
+    const legacyContext = workspaceContextFixture({
+      workspaceId: 'ws-legacy',
+      workspaceMemberId: 'member-legacy',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        new Response(JSON.stringify(
+          String(input) === '/api/workspace/directory'
+            ? {
+                items: [{
+                  workspaceId: 'ws-legacy',
+                  workspaceName: 'QA Team',
+                  workspaceType: 'team',
+                  workspaceMemberId: 'member-legacy',
+                  role: 'member',
+                  memberStatus: 'active',
+                  lifecycleState: 'active',
+                }],
+                activeWorkspaceId: null,
+              }
+            : { context: legacyContext },
+        ), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
+    const result = renderHook(() => useWorkspaceContext());
+    await waitFor(() => {
+      expect(result.result.current.context).toMatchObject({
+        workspaceId: 'ws-legacy',
+        workspaceMemberId: 'member-legacy',
+        workspaceName: 'QA Team',
+      });
+    });
   });
 });

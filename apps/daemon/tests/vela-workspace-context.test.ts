@@ -365,6 +365,38 @@ describe('createWorkspaceDirectoryAuthorityBroker', () => {
     await nextMutation;
   });
 
+  it('starts a post-mutation fetch after draining an older in-flight directory read', async () => {
+    let resolvePreMutation:
+      | ((result: { ok: true; items: [] }) => void)
+      | undefined;
+    const accepted = {
+      ok: true as const,
+      items: [{ ...B_TEAM_CONTEXT }],
+    };
+    const fetchDirectory = vi
+      .fn()
+      .mockImplementationOnce(
+        () => new Promise<{ ok: true; items: [] }>((resolve) => {
+          resolvePreMutation = resolve;
+        }),
+      )
+      .mockResolvedValueOnce(accepted);
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'account-a:config-a',
+    });
+
+    const preMutationRead = authority.read();
+    const postMutationRefresh = authority.refreshAfterMutation();
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+
+    resolvePreMutation?.({ ok: true, items: [] });
+    await expect(preMutationRead).resolves.toEqual({ ok: true, items: [] });
+    await expect(postMutationRefresh).resolves.toEqual(accepted);
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+    await expect(authority.read()).resolves.toEqual(accepted);
+  });
+
   it('publishes a fresh revocation result into the subsequent read lease', async () => {
     const active = {
       ok: true as const,
