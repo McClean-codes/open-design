@@ -67,10 +67,21 @@ export async function createCollabCluster(
         root,
         toolsDevRoot: join(scratchDir, 'tools-dev'),
       });
-      await runtime.startWeb(spec.env);
-      const context = await browser.newContext({ baseURL: runtime.url.web() });
-      const page = await context.newPage();
-      started.push({ ...spec, context, page, runtime });
+      let context: BrowserContext | null = null;
+      try {
+        await runtime.startWeb(spec.env);
+        context = await browser.newContext({ baseURL: runtime.url.web() });
+        const page = await context.newPage();
+        started.push({ ...spec, context, page, runtime });
+      } catch (error) {
+        await context?.close().catch(() => undefined);
+        try {
+          await attachRuntimeLogs(runtime, spec, testInfo);
+        } finally {
+          await runtime.stopWeb(spec.env).catch(() => undefined);
+        }
+        throw error;
+      }
     }
   } catch (error) {
     await closeStartedClients(started, clusterRoot, testInfo, true);
@@ -100,19 +111,32 @@ async function closeStartedClients(
 ): Promise<void> {
   for (const client of [...clients].reverse()) {
     await client.context.close().catch(() => undefined);
-    if (preserve) {
-      const logs = await client.runtime.logs(client.env).catch(() => null);
-      if (logs) {
-        await testInfo.attach(`collab-${client.id}-runtime-logs`, {
-          body: JSON.stringify(logs, null, 2),
-          contentType: 'application/json',
-        });
-      }
+    try {
+      if (preserve) await attachRuntimeLogs(client.runtime, client, testInfo);
+    } finally {
+      await client.runtime.stopWeb(client.env).catch(() => undefined);
     }
-    await client.runtime.stopWeb(client.env).catch(() => undefined);
   }
   if (!preserve) {
     await rm(clusterRoot, { force: true, recursive: true });
+  }
+}
+
+async function attachRuntimeLogs(
+  runtime: ToolsDevSuite,
+  client: CollabClusterClientSpec,
+  testInfo: TestInfo,
+): Promise<void> {
+  try {
+    const logs = await runtime.logs(client.env).catch(() => null);
+    if (!logs) return;
+    await testInfo.attach(`collab-${client.id}-runtime-logs`, {
+      body: JSON.stringify(logs, null, 2),
+      contentType: 'application/json',
+    });
+  } catch {
+    // Diagnostics are best effort and must never mask startup failures or
+    // prevent already-acquired client resources from being released.
   }
 }
 
