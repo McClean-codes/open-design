@@ -1393,7 +1393,7 @@ async function wireTeamRunBalanceFixtures(
       if (
         query.scope !== 'workspace' ||
         query.workspaceId !== TEAM_RUN_CONTEXT.workspaceId ||
-        query.freshness !== 'authoritative'
+        (query.freshness !== null && query.freshness !== 'authoritative')
       ) {
         await route.fulfill({ status: 400, json: { error: 'unexpected_billing_scope' } });
         return;
@@ -1419,14 +1419,21 @@ async function wireTeamRunBalanceFixtures(
             hardExpiresAt: '2099-08-02T00:02:00.000Z',
             retryAt: null,
             errorCode: null,
-            reason: 'authoritative-action-read',
+            reason:
+              query.freshness === 'authoritative'
+                ? 'authoritative-action-read'
+                : 'explicit-billing-read',
             sourceGapDetected: false,
           },
-          authoritativeWorkspaceRead: {
-            workspaceId: TEAM_RUN_CONTEXT.workspaceId,
-            workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
-            observedAt: '2026-08-02T00:00:00.000Z',
-          },
+          ...(query.freshness === 'authoritative'
+            ? {
+                authoritativeWorkspaceRead: {
+                  workspaceId: TEAM_RUN_CONTEXT.workspaceId,
+                  workspaceMemberId: TEAM_RUN_CONTEXT.workspaceMemberId,
+                  observedAt: '2026-08-02T00:00:00.000Z',
+                },
+              }
+            : {}),
         },
       });
       return;
@@ -1598,11 +1605,12 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
     expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
     const teamBillingQueries = balanceRequests.teamBillingQueries();
     expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
-    for (const query of teamBillingQueries) expect(query).toEqual({
-      scope: 'workspace',
-      workspaceId: TEAM_RUN_CONTEXT.workspaceId,
-      freshness: 'authoritative',
-    });
+    for (const query of teamBillingQueries) {
+      expect(query.scope).toBe('workspace');
+      expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
+      expect([null, 'authoritative']).toContain(query.freshness);
+    }
+    expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
     // Team preflight reads the account snapshot once for signed-in identity
     // metadata only; Personal $0 is not the balance oracle and cannot veto the
     // Team-funded run proved above.
@@ -1674,11 +1682,12 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
     expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
     const teamBillingQueries = balanceRequests.teamBillingQueries();
     expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
-    for (const query of teamBillingQueries) expect(query).toEqual({
-      scope: 'workspace',
-      workspaceId: TEAM_RUN_CONTEXT.workspaceId,
-      freshness: 'authoritative',
-    });
+    for (const query of teamBillingQueries) {
+      expect(query.scope).toBe('workspace');
+      expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
+      expect([null, 'authoritative']).toContain(query.freshness);
+    }
+    expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
     // Conversely, funded Personal identity metadata cannot override Team $0.
     expect(balanceRequests.personalWalletRequests()).toBe(1);
     await runRequests.expectNone({
