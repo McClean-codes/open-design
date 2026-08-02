@@ -472,6 +472,7 @@ export function HomeView({
   const [fallbackProjectMetadata, setFallbackProjectMetadata] =
     useState<ProjectMetadata | null>(null);
   const [active, setActive] = useState<ActivePlugin | null>(null);
+  const previousWorkspaceNameRef = useRef<string | null>(null);
   // A placeholder-carousel scenario the user submitted on an empty composer.
   // We seed the prompt + bind the template synchronously, then let an effect
   // fire submit() once both have committed (submit() reads state, not args).
@@ -961,6 +962,53 @@ export function HomeView({
         : t('designSystemPicker.noneTitle'),
     [designSystemId, designSystemPickerSystems, t],
   );
+
+  // A preset can bind while one Workspace is selected, then remain mounted as
+  // this tab switches to another Workspace. `usePlugin` seeds workspace_name
+  // at bind time, but that snapshot must not outlive the request-local
+  // Workspace context. Refresh only a missing value or the value previously
+  // supplied by context, preserving an explicit plugin input when one exists.
+  // This reads the exact context selected for this tab; it never consults or
+  // writes Vela/daemon account-level active-workspace state. That model cannot
+  // represent two clients of one account open in different Workspaces.
+  useEffect(() => {
+    const nextWorkspaceName = workspaceContext?.workspaceName?.trim() || null;
+    const previousWorkspaceName = previousWorkspaceNameRef.current;
+    previousWorkspaceNameRef.current = nextWorkspaceName;
+
+    setActive((currentActive) => {
+      if (!currentActive) return currentActive;
+      const workspaceField = currentActive.inputFields.find(
+        (field) => field.name === 'workspace_name',
+      );
+      if (!workspaceField || workspaceField.default !== undefined) return currentActive;
+
+      const currentValue = currentActive.inputs.workspace_name;
+      const currentWorkspaceName =
+        currentValue === undefined || currentValue === null
+          ? ''
+          : String(currentValue).trim();
+      const contextOwnsCurrentValue =
+        currentWorkspaceName.length === 0
+        || (previousWorkspaceName !== null
+          && currentWorkspaceName === previousWorkspaceName);
+      if (!contextOwnsCurrentValue || currentWorkspaceName === (nextWorkspaceName ?? '')) {
+        return currentActive;
+      }
+
+      const inputs = { ...currentActive.inputs };
+      if (nextWorkspaceName) inputs.workspace_name = nextWorkspaceName;
+      else delete inputs.workspace_name;
+      return {
+        ...currentActive,
+        inputs,
+        inputsValid: pluginInputsAreValid(currentActive.inputFields, inputs),
+        // The pinned apply snapshot belongs to the old inputs. Force submit to
+        // resolve a new snapshot for the newly selected Workspace.
+        result: null,
+      };
+    });
+  }, [workspaceContext?.workspaceName]);
 
   function focusPromptAtEnd() {
     requestAnimationFrame(() => {

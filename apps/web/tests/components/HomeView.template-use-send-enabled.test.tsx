@@ -450,6 +450,72 @@ describe('community template Use lands a sendable composer', () => {
     });
     expect(screen.queryByRole('alert')).toBeNull();
   });
+
+  it('refreshes live-dashboard workspace_name after the tab switches Workspaces', async () => {
+    writeHomeGuideStage('done');
+    workspaceContextForTest = {
+      workspaceId: 'ws-personal',
+      workspaceType: 'personal',
+      workspaceMemberId: 'wm-personal',
+      role: 'owner',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+      billingState: 'active',
+      planId: null,
+      providerMode: 'platform_credits',
+      seatSummary: {
+        seatLimit: 1,
+        usedSeats: 1,
+        availableSeats: 0,
+        isSeatFull: true,
+      },
+      permissions: {
+        canInviteMembers: false,
+        canManageMembers: true,
+        canManageBilling: true,
+        canManageAutoRecharge: true,
+        canShareProjects: true,
+        canWriteSyncedFiles: true,
+        canViewWorkspaceSettings: true,
+        canManageSharedResources: true,
+      },
+      workspaceName: 'Personal Workspace',
+    };
+    stubFetch();
+
+    const submittedPluginInputs: Record<string, unknown>[] = [];
+    const tree = () => (
+      <I18nProvider initial="en">
+        <HomeView
+          projects={[]}
+          onSubmit={(payload) => {
+            submittedPluginInputs.push(payload.pluginInputs ?? {});
+          }}
+          onOpenProject={() => undefined}
+          onViewAllProjects={() => undefined}
+          promptHandoff={createPluginUseHandoff(1, LIVE_DASHBOARD.id, { action: 'use-with-query' })}
+        />
+      </I18nProvider>
+    );
+    const view = render(tree());
+    const submit = await boundSubmit();
+
+    workspaceContextForTest = {
+      ...workspaceContextForTest,
+      workspaceId: 'ws-team',
+      workspaceType: 'team',
+      workspaceMemberId: 'wm-team',
+      workspaceName: 'Design Team',
+    };
+    view.rerender(tree());
+    fireEvent.click(submit);
+
+    await waitFor(() => {
+      expect(submittedPluginInputs).toContainEqual(
+        expect.objectContaining({ workspace_name: 'Design Team' }),
+      );
+    });
+  });
 });
 
 describe('required-input gate survives where the user can still fill it', () => {
