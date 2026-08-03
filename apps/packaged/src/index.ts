@@ -45,6 +45,7 @@ import { confirmPackagedLauncherRuntime, resolvePackagedLauncherRuntime } from "
 import {
   applyPackagedElectronPathOverrides,
   claimPackagedSingleInstanceLock,
+  createPackagedSecondInstanceHandoff,
   ensurePackagedNamespacePaths,
   stabilizePackagedWorkingDirectory,
 } from "./launch.js";
@@ -63,8 +64,7 @@ import { resolvePackagedWindowTitle } from "./window-title.js";
 import { syncWindowsUninstallDisplayVersion } from "./windows-lifecycle.js";
 
 let packagedLogger: PackagedDesktopLogger | null = null;
-let pendingSecondInstanceFocus = false;
-let showExistingDesktop: (() => void) | null = null;
+const secondInstanceHandoff = createPackagedSecondInstanceHandoff();
 
 // Telemetry context for the fatal-exit path. Populated once config + launcher
 // runtime are resolved so the `main().catch` below can report a startup failure
@@ -219,12 +219,8 @@ async function main(): Promise<void> {
   });
   applyPackagedElectronPathOverrides(paths);
   applyPackagedUpdaterEnv(activeConfig.updateMetadataUrl);
-  if (!claimPackagedSingleInstanceLock(app, () => {
-    if (showExistingDesktop == null) {
-      pendingSecondInstanceFocus = true;
-      return;
-    }
-    showExistingDesktop();
+  if (!claimPackagedSingleInstanceLock(app, (argv) => {
+    secondInstanceHandoff.handle(findPackagedDeeplinkArg(argv));
   })) {
     return;
   }
@@ -345,10 +341,10 @@ async function main(): Promise<void> {
       }).catch((error: unknown) => {
         packagedLogger?.warn("failed to sync Windows uninstall registry version", { error });
       });
-      showExistingDesktop = controls.show;
-      if (!pendingSecondInstanceFocus) return;
-      pendingSecondInstanceFocus = false;
-      controls.show();
+      secondInstanceHandoff.attach({
+        dispatchDeeplink: controls.dispatchInviteDeeplink,
+        show: controls.show,
+      });
     },
     preloadPath: join(app.getAppPath(), "preload.cjs"),
     update: {
