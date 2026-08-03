@@ -106,7 +106,7 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
       const cta = dialog.querySelector('[data-download-prompt-cta]');
 
       const KEYS = {
-        pages: 'od_download_prompt_pages_v1',
+        pageViews: 'od_download_prompt_page_views_v2',
         activeSeconds: 'od_download_prompt_active_seconds_v1',
         shown: 'od_download_prompt_shown_v1',
         dismissedAt: 'od_download_prompt_dismissed_at_v1',
@@ -154,6 +154,11 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
           navigator.platform ||
           ''
         ).toLowerCase();
+        // Desktop-mode Safari reports `MacIntel` on iPadOS. Keep every direct
+        // installer CTA on its neutral /download/ fallback for touch-capable
+        // iPads instead of handing them an unusable macOS .dmg.
+        const isIpadOS = navigator.maxTouchPoints > 1 && /mac/.test(p);
+        if (isIpadOS || /iphone|ipad|ipod/.test(ua)) return null;
         if (/win/.test(p) || /windows/.test(ua)) {
           return { key: 'windows', label: 'Windows', match: (name) => /win.*setup\.exe$/i.test(name) };
         }
@@ -220,7 +225,7 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
         track('surface_view', {
           element: 'engagement_modal',
           trigger,
-          page_count: pages.length,
+          page_count: pageViews,
           active_seconds: activeSeconds,
         });
         return true;
@@ -231,17 +236,17 @@ const DOWNLOAD_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000;
         else dialog.removeAttribute('open');
       };
 
-      let pages = [];
-      try {
-        const stored = JSON.parse(read(sessionStorage, KEYS.pages) || '[]');
-        if (Array.isArray(stored)) pages = stored.filter((item) => typeof item === 'string');
-      } catch (error) {}
-      if (!pages.includes(pageName)) pages.push(pageName);
-      pages = pages.slice(-12);
-      write(sessionStorage, KEYS.pages, JSON.stringify(pages));
+      // Count actual navigations within the session, including reloads and
+      // repeat visits to the same route. The conversion rule is "three page
+      // views", not "three distinct route names".
+      const storedPageViews = Number(read(sessionStorage, KEYS.pageViews) || 0);
+      const pageViews = (Number.isFinite(storedPageViews) && storedPageViews > 0
+        ? storedPageViews
+        : 0) + 1;
+      write(sessionStorage, KEYS.pageViews, String(pageViews));
 
       let activeSeconds = Math.max(0, Number(read(sessionStorage, KEYS.activeSeconds) || 0) || 0);
-      if (pages.length >= PAGE_COUNT_THRESHOLD) {
+      if (pageViews >= PAGE_COUNT_THRESHOLD) {
         window.setTimeout(() => show('page_count'), 1200);
       }
       timer = window.setInterval(() => {

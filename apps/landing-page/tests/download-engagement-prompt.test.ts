@@ -19,6 +19,111 @@ const downloadPageSource = readFileSync(
   'utf8',
 );
 
+const enhancerStart = componentSource.indexOf('    (() => {');
+const enhancerEndMarker = '    })();';
+const enhancerEnd = componentSource.indexOf(enhancerEndMarker, enhancerStart);
+assert.ok(enhancerStart >= 0 && enhancerEnd > enhancerStart, 'prompt enhancer script not found');
+const enhancerSource = componentSource.slice(
+  enhancerStart,
+  enhancerEnd + enhancerEndMarker.length,
+);
+
+function createMemoryStorage() {
+  const values = new Map<string, string>();
+  return {
+    getItem(key: string) { return values.get(key) ?? null; },
+    setItem(key: string, value: string) { values.set(key, String(value)); },
+  };
+}
+
+function runPromptEnhancer(options: {
+  sessionStorage: ReturnType<typeof createMemoryStorage>;
+  pageName?: string;
+  runPageCountTimeout?: boolean;
+}) {
+  const attributes = new Map<string, string>();
+  const cta = {
+    setAttribute(name: string, value: string) { attributes.set(name, value); },
+    addEventListener() {},
+  };
+  const dialog = {
+    open: false,
+    returnValue: '',
+    querySelector: () => cta,
+    addEventListener() {},
+    setAttribute() {},
+    removeAttribute() {},
+    showModal() { this.open = true; },
+    close(value: string) { this.returnValue = value; this.open = false; },
+  };
+  const linkAttributes = new Map<string, string>();
+  const directLink = {
+    href: '/download/',
+    setAttribute(name: string, value: string) { linkAttributes.set(name, value); },
+    removeAttribute(name: string) { linkAttributes.delete(name); },
+  };
+  const document = {
+    visibilityState: 'visible',
+    documentElement: { classList: { add() {}, remove() {} } },
+    querySelector: () => dialog,
+    querySelectorAll: () => [directLink],
+    createElement: () => { throw new Error('iPadOS must not probe macOS WebGL'); },
+  };
+  const window = {
+    location: { search: '' },
+    matchMedia: () => ({ matches: true }),
+    setInterval: () => 1,
+    clearInterval() {},
+    setTimeout(callback: () => void, delay: number) {
+      if (options.runPageCountTimeout && delay === 1200) callback();
+      return 1;
+    },
+    __odTrack: undefined,
+    __odDownloadPrompt: undefined,
+  };
+  const navigator = {
+    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15) Version/18.0 Mobile/15E148 Safari/604.1',
+    platform: 'MacIntel',
+    maxTouchPoints: 5,
+  };
+
+  // Execute the production inline enhancer with a wide iPadOS fixture. Its
+  // touch-capable MacIntel signature must never be rewritten to a macOS DMG.
+  // eslint-disable-next-line no-new-func
+  new Function(
+    'window',
+    'document',
+    'navigator',
+    'sessionStorage',
+    'localStorage',
+    'pageName',
+    'locale',
+    'ACTIVE_SECONDS_THRESHOLD',
+    'PAGE_COUNT_THRESHOLD',
+    'DISMISS_COOLDOWN_MS',
+    'DOWNLOAD_COOLDOWN_MS',
+    'directAssets',
+    'Element',
+    enhancerSource,
+  )(
+    window,
+    document,
+    navigator,
+    options.sessionStorage,
+    createMemoryStorage(),
+    options.pageName ?? 'solutions_prototype',
+    'en',
+    35,
+    3,
+    7 * 24 * 60 * 60 * 1000,
+    30 * 24 * 60 * 60 * 1000,
+    { macArm64: 'https://example.com/open-design-mac-arm64.dmg' },
+    class Element {},
+  );
+
+  return { dialog, ctaAttributes: attributes, directLink, linkAttributes };
+}
+
 test('download prompt: every active locale has complete, localized copy', () => {
   assert.deepEqual(
     LANDING_LOCALES.map(({ code }) => code),
@@ -146,6 +251,27 @@ test('download prompt: production rules and suppression windows stay explicit', 
   assert.match(componentSource, /pageName !== 'download'/);
   assert.match(componentSource, /matchMedia\('\(min-width: 768px\)'\)/);
   assert.match(componentSource, /document\.visibilityState !== 'visible'/);
+});
+
+test('download prompt: wide iPadOS keeps the neutral download-page fallback', () => {
+  const result = runPromptEnhancer({ sessionStorage: createMemoryStorage() });
+
+  assert.equal(result.directLink.href, '/download/');
+  assert.equal(result.linkAttributes.has('download'), false);
+  assert.equal(result.linkAttributes.has('data-download-platform-label'), false);
+});
+
+test('download prompt: three repeated visits to the same route trigger page-count lifecycle', () => {
+  const sessionStorage = createMemoryStorage();
+  const first = runPromptEnhancer({ sessionStorage, runPageCountTimeout: true });
+  const second = runPromptEnhancer({ sessionStorage, runPageCountTimeout: true });
+  const third = runPromptEnhancer({ sessionStorage, runPageCountTimeout: true });
+
+  assert.equal(first.dialog.open, false);
+  assert.equal(second.dialog.open, false);
+  assert.equal(third.dialog.open, true);
+  assert.equal(third.ctaAttributes.get('data-download-prompt-trigger'), 'page_count');
+  assert.equal(sessionStorage.getItem('od_download_prompt_page_views_v2'), '3');
 });
 
 test('download prompt: CTA attribution and modal lifecycle are tracked', () => {
