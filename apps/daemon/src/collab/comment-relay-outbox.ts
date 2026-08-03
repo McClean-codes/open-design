@@ -43,6 +43,26 @@ export interface CommentRelayOutboxStore {
   count(): number;
 }
 
+export interface CommentRelayLocalProjectBinding {
+  workspaceId?: string | null;
+  visibility?: string | null;
+  resourceState?: string | null;
+  createdByWorkspaceMemberId?: string | null;
+}
+
+export function commentRelayLocalBindingMatches(
+  record: CommentRelayOutboxRecord,
+  binding: CommentRelayLocalProjectBinding | null | undefined,
+): boolean {
+  if (
+    binding?.workspaceId?.trim() !== record.workspaceId
+    || binding.visibility !== 'team'
+    || binding.resourceState === 'deleted'
+  ) return false;
+  const currentOwnerMemberId = binding.createdByWorkspaceMemberId?.trim() || null;
+  return currentOwnerMemberId === record.expectedOwnerMemberId;
+}
+
 export function migrateCommentRelayOutbox(db: SqliteDb): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS comment_relay_outbox (

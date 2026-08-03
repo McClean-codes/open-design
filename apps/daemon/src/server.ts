@@ -823,7 +823,10 @@ import {
 } from './collab/resource-principal.js';
 import { createCollabCloudClientFromEnv } from './integrations/collab-cloud.js';
 import { createCollabCloudService } from './collab/collab-cloud-service.js';
-import { createCommentRelayOutboxStore } from './collab/comment-relay-outbox.js';
+import {
+  commentRelayLocalBindingMatches,
+  createCommentRelayOutboxStore,
+} from './collab/comment-relay-outbox.js';
 import { createWorkspaceInvalidationPoller } from './collab/workspace-invalidation-poller.js';
 import {
   handleHubTeamProjectsChanged,
@@ -3380,8 +3383,10 @@ export async function startServer({
           return { workspaceId, ownerMemberId };
         },
         validateCommentRelayProjectBinding: (record) =>
-          getWorkspaceProjectByProjectId(db, record.projectId)?.workspaceId?.trim()
-            === record.workspaceId,
+          commentRelayLocalBindingMatches(
+            record,
+            getWorkspaceProjectByProjectId(db, record.projectId),
+          ),
         resolveCommentRelayWorkspaceContext: async (queuedIdentity) => {
           const context = await resolveAuthoritativeTeamWorkspaceContext(
             queuedIdentity.workspaceId,

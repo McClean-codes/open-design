@@ -474,10 +474,11 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
       for (const record of records) {
         if (deps.validateCommentRelayProjectBinding(record)) eligible.push(record);
         else {
-          deferOutboxRecord(
-            record,
-            new Error('comment relay project binding is unavailable or changed'),
-          );
+          // A local unshare/delete/re-home is authoritative and cannot become
+          // valid again for this queued revision. Cancel it even if the remote
+          // catalog still carries a briefly-stale row.
+          deps.commentOutbox?.acknowledge(record);
+          deps.onError?.(new Error('comment relay project binding changed; canceled'));
         }
       }
     }

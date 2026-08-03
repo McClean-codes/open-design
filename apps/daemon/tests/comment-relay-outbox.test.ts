@@ -16,7 +16,11 @@ import {
   openDatabase,
 } from '../src/db.js';
 import { createCollabCloudService } from '../src/collab/collab-cloud-service.js';
-import { createCommentRelayOutboxStore } from '../src/collab/comment-relay-outbox.js';
+import {
+  commentRelayLocalBindingMatches,
+  createCommentRelayOutboxStore,
+  type CommentRelayLocalProjectBinding,
+} from '../src/collab/comment-relay-outbox.js';
 import type { CollabCloudClient } from '../src/integrations/collab-cloud.js';
 
 let tempDir: string | null = null;
@@ -92,10 +96,12 @@ function clientWithPush(
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise;
+    reject = rejectPromise;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 async function waitForCondition(predicate: () => boolean): Promise<void> {
@@ -705,5 +711,138 @@ describe('durable Team comment relay outbox', () => {
       await polling;
       service.dispose();
     }
+  });
+
+  it.each<{
+    name: string;
+    binding: CommentRelayLocalProjectBinding;
+  }>([
+    {
+      name: 'local unshare',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'project-owner',
+      },
+    },
+    {
+      name: 'local deletion',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'deleted',
+        createdByWorkspaceMemberId: 'project-owner',
+      },
+    },
+    {
+      name: 'local owner mismatch',
+      binding: {
+        workspaceId: 'workspace-a',
+        visibility: 'team',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'different-owner',
+      },
+    },
+  ])('does not push after $name even while the remote catalog is stale', async ({ binding }) => {
+    const db = seededDb();
+    const queuedContext = context('member');
+    let pushes = 0;
+    const outbox = createCommentRelayOutboxStore(db, () => 1_200);
+    const deps = Object.assign({
+      client: clientWithPush(async () => {
+        pushes += 1;
+        return { seq: 1 };
+      }),
+      commentOutbox: outbox,
+      resolveLocalProjectRelayBinding: () => ({
+        workspaceId: 'workspace-a',
+        ownerMemberId: 'project-owner',
+      }),
+      validateCommentRelayProjectBinding: (record: Parameters<
+        typeof commentRelayLocalBindingMatches
+      >[0]) => commentRelayLocalBindingMatches(record, binding),
+      listProjectIds: () => [],
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+      now: () => 1_200,
+      retryDelayMs: () => 0,
+    }, {
+      resolveCommentRelayWorkspaceContext: async () => queuedContext,
+      listRemoteProjectRelayBindings: async () => [{
+        projectId: 'p1',
+        ownerMemberId: 'project-owner',
+      }],
+    });
+    const service = createCollabCloudService(deps);
+    service.enqueueComment(comment(), queuedContext);
+
+    await service.flushPendingComments();
+
+    expect(pushes).toBe(0);
+    expect(outbox.count()).toBe(0);
+    service.dispose();
+  });
+
+  it('handles a detached outbox failure after dispose without another delivery', async () => {
+    const db = seededDb();
+    const queuedContext = context('member');
+    const stalledPush = deferred<{ seq: number }>();
+    const errors: unknown[] = [];
+    let pushStarted = false;
+    let confirmations = 0;
+    const outbox = createCommentRelayOutboxStore(db, () => 1_300);
+    const client = {
+      pushComment: async () => {
+        pushStarted = true;
+        return stalledPush.promise;
+      },
+      registerMember: async () => ({
+        memberId: 'member-member',
+        displayName: 'member',
+        role: 'member' as const,
+      }),
+      pullComments: async () => ({
+        comments: [],
+        latestSeq: 0,
+        etag: null,
+        notModified: true,
+      }),
+    } as unknown as CollabCloudClient;
+    const deps = Object.assign({
+      client,
+      commentOutbox: outbox,
+      resolveLocalProjectRelayBinding: () => ({
+        workspaceId: 'workspace-a',
+        ownerMemberId: 'project-owner',
+      }),
+      listProjectIds: () => ['p1'],
+      resolveProjectWorkspaceContext: async () => queuedContext,
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+      onCommentPushed: () => {
+        confirmations += 1;
+      },
+      onError: (error: unknown) => errors.push(error),
+      now: () => 1_300,
+      retryDelayMs: () => 0,
+    }, {
+      resolveCommentRelayWorkspaceContext: async () => queuedContext,
+      listRemoteProjectRelayBindings: async () => [{
+        projectId: 'p1',
+        ownerMemberId: 'project-owner',
+      }],
+    });
+    const service = createCollabCloudService(deps);
+    service.enqueueComment(comment(), queuedContext);
+
+    await service.pollOnce();
+    await waitForCondition(() => pushStarted);
+    service.dispose();
+    stalledPush.reject(new Error('relay stopped during shutdown'));
+    await waitForCondition(() => errors.length === 1);
+
+    expect(confirmations).toBe(0);
+    expect(outbox.count()).toBe(1);
   });
 });
