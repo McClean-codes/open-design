@@ -41,6 +41,7 @@ import {
   duplicatePluginAsProject,
   listPlugins,
   listPluginsFresh,
+  readCachedVisiblePlugins,
   patchProject,
   resolvedWorkspaceContextForWrite,
   renderPluginBriefTemplate,
@@ -444,14 +445,18 @@ export function HomeView({
     homePageViewFiredRef.current = true;
     trackPageView(analytics.track, { page_name: 'home' });
   }, [analytics.track]);
-  // Start empty + loading (cheap first render — seeding the full list here made
-  // the mount do all plugin-dependent render work on the click's critical path,
-  // a visible freeze). The effect below uses the cache-aware loader, which on a
-  // warm cache resolves on a microtask, so `pluginsLoading` clears within a
-  // frame without the heavy `/api/plugins` re-fetch that greyed the rail for
-  // 1-2s on every Home remount.
-  const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
-  const [pluginsLoading, setPluginsLoading] = useState(true);
+  // A project route fully unmounts HomeView. Restore the last successful
+  // catalog synchronously when Home mounts again so known creation actions do
+  // not become disabled merely because the 10-second refresh TTL elapsed while
+  // the user was in a project. The effect below still revalidates an expired
+  // catalog; only a true cold start (no successful catalog yet) stays guarded.
+  const initialPluginsRef = useRef<InstalledPluginRecord[] | null>(readCachedVisiblePlugins());
+  const [plugins, setPlugins] = useState<InstalledPluginRecord[]>(
+    () => initialPluginsRef.current ?? [],
+  );
+  const [pluginsLoading, setPluginsLoading] = useState(
+    () => initialPluginsRef.current === null,
+  );
   const [pendingApplyId, setPendingApplyId] = useState<string | null>(null);
   const [pendingChipId, setPendingChipId] = useState<string | null>(null);
   const [pendingAuthoringChipId, setPendingAuthoringChipId] = useState<string | null>(null);
