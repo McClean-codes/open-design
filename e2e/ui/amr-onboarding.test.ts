@@ -334,7 +334,9 @@ test('[P0] onboarding cancel during a slow AMR status check does not start login
 
   const primary = cloudPrimaryButton(page);
   await expect(primary).toHaveText(/Sign in to Open Design|登录 Open Design/i);
-  await expect.poll(() => page.evaluate(() => window.__amrOnboardingCancelCalls ?? 0)).toBe(1);
+  // The status read was canceled before a daemon login attempt was created,
+  // so there is no attempt-scoped process for the client to cancel.
+  await expect.poll(() => page.evaluate(() => window.__amrOnboardingCancelCalls ?? 0)).toBe(0);
   await expect
     .poll(() => page.evaluate(() => window.__amrOnboardingSlowStatusResolved ?? false))
     .toBe(true);
@@ -1069,11 +1071,7 @@ async function wireOnboardingMocks(
   let statusCallsAfterLogin = 0;
   let loginCalls = 0;
   let cancelCalls = 0;
-<<<<<<< HEAD
-  let byokProfile: Record<string, unknown> | null = null;
-=======
   let authAttemptId: string | null = null;
->>>>>>> 4d0376e43 (fix(byok): restore local runtime configuration (#6356))
 
   await page.route('**/api/health', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
@@ -1202,6 +1200,11 @@ async function wireOnboardingMocks(
   }
 
   await page.route('**/api/integrations/vela/login', async (route) => {
+    const body = route.request().postDataJSON() as { authAttemptId?: string };
+    authAttemptId = body.authAttemptId ?? null;
+    expect(authAttemptId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
     loginCalls += 1;
     loginInFlight = true;
     if (!options.keepAmrLoginIncomplete) {
@@ -1213,11 +1216,17 @@ async function wireOnboardingMocks(
     }, loginCalls);
     await route.fulfill({
       status: 202,
-      json: { pid: 4242, startedAt: new Date().toISOString(), profile: 'local' },
+      json: {
+        pid: 4242,
+        startedAt: new Date().toISOString(),
+        profile: 'local',
+        authAttemptId,
+      },
     });
   });
 
   await page.route('**/api/integrations/vela/login/cancel', async (route) => {
+    expect(route.request().postDataJSON()).toEqual({ authAttemptId });
     cancelCalls += 1;
     loginInFlight = false;
     await page.evaluate((calls) => {
