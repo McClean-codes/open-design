@@ -845,6 +845,7 @@ import {
   createVelaCliTeamProjectCatalogClientFromEnv,
   createVelaCliTeamProjectCatalogFromEnv,
 } from './collab/vela-cli-team-projects.js';
+import { createTeamProjectsChangeEmitter } from './collab/team-projects-change-emitter.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';
 import {
   assembleExample,
@@ -3522,6 +3523,7 @@ export async function startServer({
       string,
       ReturnType<typeof createSwrCache<TeamProject[]>>
     >();
+    const workspaceIds = new Map<string, string>();
     const read = (scope: TeamProjectsDisplayScope) => {
       const key = teamProjectsDisplayScopeKey(scope);
       let list = lists.get(key);
@@ -3533,6 +3535,7 @@ export async function startServer({
           freshMs,
         );
         lists.set(key, list);
+        workspaceIds.set(key, scope.workspaceId);
       }
       return list();
     };
@@ -3542,6 +3545,7 @@ export async function startServer({
           const key = teamProjectsDisplayScopeKey(scope);
           lists.get(key)?.invalidate();
           lists.delete(key);
+          workspaceIds.delete(key);
           teamProjectsCatalogSnapshots.get(key)?.invalidate();
           teamProjectsCatalogSnapshots.delete(key);
           return;
@@ -3552,6 +3556,19 @@ export async function startServer({
         }
         lists.clear();
         teamProjectsCatalogSnapshots.clear();
+        workspaceIds.clear();
+      },
+      invalidateWorkspace(workspaceIdInput: string) {
+        const workspaceId = workspaceIdInput.trim();
+        if (!workspaceId) return;
+        for (const [key, cachedWorkspaceId] of workspaceIds) {
+          if (cachedWorkspaceId !== workspaceId) continue;
+          lists.get(key)?.invalidate();
+          lists.delete(key);
+          teamProjectsCatalogSnapshots.get(key)?.invalidate();
+          teamProjectsCatalogSnapshots.delete(key);
+          workspaceIds.delete(key);
+        }
       },
     });
   })();
@@ -4656,42 +4673,17 @@ export async function startServer({
       });
     }
   };
-  // One hub write can legitimately fan out as two thin events. Collapse
-  // repeats of the SAME semantic target while preserving a later targeted
-  // metadata signal: modern clients use its project id to patch one row.
-  const lastTeamProjectsSignalAt = new Map<string, number>();
-  const emitTeamProjectsChangedDeduped = (
-    workspaceId: string,
-    change: { projectId?: string; kind?: 'catalog' | 'metadata' } = {},
-  ) => {
-    const now = Date.now();
-    const dedupeKey = `${workspaceId}:${change.kind ?? 'catalog'}:${change.projectId ?? '*'}`;
-    const lastSignalAt = lastTeamProjectsSignalAt.get(dedupeKey) ?? 0;
-    if (now - lastSignalAt < 250) return;
-    lastTeamProjectsSignalAt.set(dedupeKey, now);
-    if (lastTeamProjectsSignalAt.size > 1_024) {
-      for (const key of lastTeamProjectsSignalAt.keys()) {
-        lastTeamProjectsSignalAt.delete(key);
-        if (lastTeamProjectsSignalAt.size <= 768) break;
-      }
-    }
-    void resolveAuthoritativeTeamWorkspaceContext(workspaceId)
-      .then((context) => {
-        const scope = teamProjectsDisplayScopeFromContext(context);
-        if (scope) teamProjectsDisplayCache.invalidate(scope);
-        return teamProjectsForDisplay(context);
-      })
-      .catch(() => undefined);
-    emitWorkspaceEvent(
-      workspaceId,
-      {
-        type: 'team-projects-changed',
-        ...(change.projectId ? { projectId: change.projectId } : {}),
-        kind: change.kind ?? 'catalog',
-        at: now,
-      },
-    );
-  };
+  const emitTeamProjectsChanged = createTeamProjectsChangeEmitter({
+    invalidateWorkspace: (workspaceId) => {
+      teamProjectsDisplayCache.invalidateWorkspace(workspaceId);
+      workspaceTeamProjectCatalog?.invalidateWorkspace(workspaceId);
+    },
+    emit: emitWorkspaceEvent,
+    warmWorkspace: async (workspaceId) => {
+      const context = await resolveAuthoritativeTeamWorkspaceContext(workspaceId);
+      await teamProjectsForDisplay(context);
+    },
+  });
   const startWorkspaceHubSubscriber = (subscribedWorkspaceId: string) =>
     startHubEventsSubscriber({
     resolveEndpoint: async () => {
@@ -4757,7 +4749,7 @@ export async function startServer({
           // signal the web, AND run a real `workspace_projects`
           // reconciliation pass — see `collab/workspace-projects-reconciler.ts`.
           handleHubTeamProjectsChanged(
-            () => emitTeamProjectsChangedDeduped(
+            () => emitTeamProjectsChanged(
               eventWorkspaceId,
               {
                 ...(event.projectId ? { projectId: event.projectId } : {}),
@@ -4786,7 +4778,7 @@ export async function startServer({
           // as team-projects-changed) and additionally ping the open project
           // view so its title can follow the rename. No reconciliation pass:
           // a rename never changes WHICH projects are team-shared.
-          emitTeamProjectsChangedDeduped(
+          emitTeamProjectsChanged(
             eventWorkspaceId,
             {
               ...(event.projectId ? { projectId: event.projectId } : {}),

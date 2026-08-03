@@ -285,6 +285,42 @@ describe('Vela CLI team-project catalog adapter', () => {
     expect(calls).toEqual(['team-a', 'team-b', 'team-a', 'team-b']);
   });
 
+  it('drops every member cache in one exact Workspace without evicting another Workspace', async () => {
+    const calls: string[] = [];
+    const cached = createScopedVelaTeamProjectCatalogClientCache({
+      list: async (principal) => {
+        calls.push(`${principal.teamId}:${principal.memberId}`);
+        return [];
+      },
+      upsert: async () => null,
+    });
+    const principalA1 = {
+      memberId: 'member-a1', teamId: 'team-a', role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+    const principalA2 = {
+      memberId: 'member-a2', teamId: 'team-a', role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+    const principalB = {
+      memberId: 'member-b', teamId: 'team-b', role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+
+    await cached.list(principalA1);
+    await cached.list(principalA2);
+    await cached.list(principalB);
+    cached.invalidateWorkspace('team-a');
+    await cached.list(principalA1);
+    await cached.list(principalA2);
+    await cached.list(principalB);
+
+    expect(calls).toEqual([
+      'team-a:member-a1', 'team-a:member-a2', 'team-b:member-b',
+      'team-a:member-a1', 'team-a:member-a2',
+    ]);
+  });
+
   it('rejects a rich catalog with rows outside the explicit workspace as incomplete', async () => {
     const client = createVelaCliTeamProjectCatalogClient({
       supportsTeamProjects: () => true,

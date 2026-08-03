@@ -51,6 +51,8 @@ export interface ScopedVelaTeamProjectCatalogClientCache
    * hub event).
    */
   invalidate(principal?: ResourceHubPrincipal): void;
+  /** Invalidate every member-scoped entry for one exact Workspace. */
+  invalidateWorkspace(workspaceId: string): void;
 }
 
 type TeamProjectWire = {
@@ -275,6 +277,7 @@ export function createScopedVelaTeamProjectCatalogClientCache(
   freshMs = 3000,
 ): ScopedVelaTeamProjectCatalogClientCache {
   const lists = new Map<string, SwrCache<VelaTeamProjectRecord[]>>();
+  const workspaceIds = new Map<string, string>();
   const scopeKey = (principal: ResourceHubPrincipal): string =>
     JSON.stringify([
       principal.teamId,
@@ -289,10 +292,23 @@ export function createScopedVelaTeamProjectCatalogClientCache(
       const key = scopeKey(principal);
       lists.get(key)?.invalidate();
       lists.delete(key);
+      workspaceIds.delete(key);
       return;
     }
     for (const list of lists.values()) list.invalidate();
     lists.clear();
+    workspaceIds.clear();
+  };
+
+  const invalidateWorkspace = (workspaceIdInput: string): void => {
+    const workspaceId = workspaceIdInput.trim();
+    if (!workspaceId) return;
+    for (const [key, cachedWorkspaceId] of workspaceIds) {
+      if (cachedWorkspaceId !== workspaceId) continue;
+      lists.get(key)?.invalidate();
+      lists.delete(key);
+      workspaceIds.delete(key);
+    }
   };
 
   return {
@@ -307,6 +323,7 @@ export function createScopedVelaTeamProjectCatalogClientCache(
           freshMs,
         );
         lists.set(key, list);
+        workspaceIds.set(key, capturedPrincipal.teamId);
       }
       return list();
     },
@@ -316,6 +333,7 @@ export function createScopedVelaTeamProjectCatalogClientCache(
       return result;
     },
     invalidate,
+    invalidateWorkspace,
   };
 }
 
