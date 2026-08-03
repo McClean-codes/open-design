@@ -66,12 +66,17 @@ test('[P0] a Team design system materializes in the picker, retracts live, and c
     ]);
     const ownerPage = cluster.clients['owner-design-system']!.page;
     const memberPage = cluster.clients['member-design-system']!.page;
-    let memberCatalogRequests = 0;
+    const memberCatalogRequests = {
+      designSystems: 0,
+      plugins: 0,
+      skills: 0,
+    };
     memberPage.on('request', (request) => {
       const url = new URL(request.url());
-      if (request.method() === 'GET' && url.pathname === '/api/design-systems') {
-        memberCatalogRequests += 1;
-      }
+      if (request.method() !== 'GET') return;
+      if (url.pathname === '/api/design-systems') memberCatalogRequests.designSystems += 1;
+      if (url.pathname === '/api/plugins') memberCatalogRequests.plugins += 1;
+      if (url.pathname === '/api/skills') memberCatalogRequests.skills += 1;
     });
     await Promise.all([applyStandardMocks(ownerPage), applyStandardMocks(memberPage)]);
 
@@ -152,6 +157,31 @@ test('[P0] a Team design system materializes in the picker, retracts live, and c
       'Shared Product Language',
     );
 
+    // Returning from a hidden-tab gap is the browser-level reconnect signal.
+    // Because thin resource events are not replayed, the shell must re-read
+    // every Team resource catalog rather than guessing which kind changed.
+    const catalogRequestsBeforeReconnect = { ...memberCatalogRequests };
+    await memberPage.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'hidden',
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+      Object.defineProperty(document, 'visibilityState', {
+        configurable: true,
+        value: 'visible',
+      });
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await expect.poll(
+      () => (
+        memberCatalogRequests.designSystems > catalogRequestsBeforeReconnect.designSystems
+        && memberCatalogRequests.plugins > catalogRequestsBeforeReconnect.plugins
+        && memberCatalogRequests.skills > catalogRequestsBeforeReconnect.skills
+      ),
+      { timeout: T.long },
+    ).toBe(true);
+
     // Keep the member's real picker open while the owner retracts the Team
     // resource. The already-running member daemon and browser must converge
     // from the hub event; reopening Home or visiting Design Systems would hide
@@ -161,7 +191,7 @@ test('[P0] a Team design system materializes in the picker, retracts live, and c
     await expect(
       openPicker.getByTestId(`project-ds-picker-option-${designSystemId}`),
     ).toBeVisible();
-    const catalogRequestsBeforeRetraction = memberCatalogRequests;
+    const catalogRequestsBeforeRetraction = memberCatalogRequests.designSystems;
     const retractResponse = await ownerPage.request.delete(
       `/api/workspace/design-systems/${encodeURIComponent(designSystemId!)}/share`,
       {
@@ -178,7 +208,7 @@ test('[P0] a Team design system materializes in the picker, retracts live, and c
       T.long,
     );
     await expect.poll(
-      () => memberCatalogRequests,
+      () => memberCatalogRequests.designSystems,
       { timeout: T.long },
     ).toBeGreaterThan(catalogRequestsBeforeRetraction);
     await expect(

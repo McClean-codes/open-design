@@ -1011,7 +1011,10 @@ after_desktop_shortcut:
   !insertmacro UN_LOG_PATH_STATE "start_menu_shortcut_after_delete" "$SMPROGRAMS\\${shortcutName}"
   DeleteRegKey HKCU "${registryKey}"
   DeleteRegKey HKCU "${appPathsKey}"
+  ReadRegStr $0 HKCU "${inviteProtocolKey}\\shell\\open\\command" ""
+  StrCmp $0 '$\"$INSTDIR\\${exeName}$\" $\"%1$\"' 0 preserve_invite_protocol
   DeleteRegKey HKCU "${inviteProtocolKey}"
+preserve_invite_protocol:
   Push "event=registry_after_delete key=${registryKey} appPathsKey=${appPathsKey}"
   Call un.LogInstallerEvent
   \${If} $RemoveCacheDataState == \${BST_CHECKED}

@@ -2064,7 +2064,17 @@ function AppInner() {
         window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
       }
     },
-  }, { workspaceContext });
+  }, {
+    workspaceContext,
+    onActive: () => {
+      // Thin resource events are not replayed after the shared EventSource is
+      // parked with a hidden tab. A reconnect cannot identify which catalog
+      // changed during that gap, so catch up all three Team resource views.
+      void refreshDesignSystems();
+      void refreshSkills();
+      window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
+    },
+  });
 
   // The skills catalog is workspace-scoped on the daemon exactly like the
   // design-system catalog above, and needs the same workspace-keyed refresh for
