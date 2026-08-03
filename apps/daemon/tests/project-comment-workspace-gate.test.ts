@@ -401,7 +401,6 @@ describe('project comments — workspace mutation gate', () => {
       // Models the stale daemon-global answer after another tab moved to B.
       resolveAuthorMemberId: async () => 'member-b',
       resolveWorkspaceContext: async () => ({ ok: true, context: projectContext }),
-      shouldSyncProjectComments: async () => true,
       onCommentCreated: (
         _comment: unknown,
         scope: WorkspaceCollabContext | null,
@@ -437,6 +436,43 @@ describe('project comments — workspace mutation gate', () => {
         workspaceMemberId: OTHER_MEMBER_ID,
       },
     ]);
+  });
+
+  it('persists and enqueues without waiting for a pending remote catalog read', async () => {
+    const projectContext = activeTeamContext();
+    const remoteCatalogGate = vi.fn(
+      () => new Promise<boolean>(() => {
+        // Deliberately never resolves: delivery authority belongs to the
+        // outbox worker, not the mutation response path.
+      }),
+    );
+    const enqueued: string[] = [];
+    const baseUrl = await startServer({
+      resolveWorkspaceContext: async () => ({ ok: true, context: projectContext }),
+      // Compatibility-shaped trap: the route must not call/await this remote
+      // catalog seam before placing the local mutation into the outbox.
+      shouldSyncProjectComments: remoteCatalogGate,
+      onCommentCreated: (comment: { id: string }) => enqueued.push(comment.id),
+    });
+
+    const response = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-mirror/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({ target: COMMENT_TARGET, note: 'queue immediately' }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { comment: { id: string } };
+    expect(enqueued).toEqual([payload.comment.id]);
+    expect(remoteCatalogGate).not.toHaveBeenCalled();
+    expect(listPreviewComments(database!, TEAM_MIRROR_PROJECT, 'conv-team-mirror'))
+      .toEqual([expect.objectContaining({ id: payload.comment.id })]);
   });
 
   it('fails closed before saving or relaying when project scope authority is unavailable', async () => {

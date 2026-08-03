@@ -168,11 +168,6 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
     projectId: string,
     context?: WorkspaceCollabContext | null,
   ) => Promise<boolean>;
-  shouldSyncProjectComments?: (
-    authorization: string | undefined,
-    projectId: string,
-    context?: WorkspaceCollabContext | null,
-  ) => Promise<boolean>;
   onCommentCreated?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,

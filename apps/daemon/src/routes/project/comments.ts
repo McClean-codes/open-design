@@ -89,17 +89,6 @@ export interface RegisterProjectCommentRoutesDeps extends RouteDeps<'db' | 'proj
     context?: WorkspaceCollabContext | null,
   ) => Promise<boolean>;
   /**
-   * Whether this project should still sync comment mutations to the team relay.
-   * Local comments are allowed to save regardless; this gate only prevents stale
-   * pulled copies from continuing to publish into a project after it leaves the
-   * team catalog.
-   */
-  shouldSyncProjectComments?: (
-    authorization: string | undefined,
-    projectId: string,
-    context?: WorkspaceCollabContext | null,
-  ) => Promise<boolean>;
-  /**
    * Fired after a comment is created OR edited (body upsert), so the collab-cloud
    * service can push it to the cross-daemon relay (best-effort — a push failure
    * must not fail the local save). No-op off-team / when the collab cloud is
@@ -253,21 +242,26 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
     return ctx.resolveAuthorMemberId(req.headers.authorization);
   }
 
-  async function shouldSyncComments(
-    req: Request,
+  function isLocalTeamRelayCandidate(
     projectId: string,
     context: WorkspaceCollabContext | null,
-  ): Promise<boolean> {
-    if (!ctx.shouldSyncProjectComments) return true;
-    try {
-      return await ctx.shouldSyncProjectComments(
-        req.headers.authorization,
-        projectId,
-        context,
-      );
-    } catch {
-      return false;
-    }
+    callbackConfigured: boolean,
+  ): boolean {
+    if (!ctx.resolveWorkspaceContext) return callbackConfigured;
+    if (
+      !callbackConfigured
+      || !context
+      || context.workspaceType !== 'team'
+      || context.memberStatus !== 'active'
+      || context.lifecycleState === 'deleted'
+    ) return false;
+    const binding = getWorkspaceProjectByProjectId(db, projectId);
+    return Boolean(
+      binding
+      && binding.workspaceId === context.workspaceId
+      && binding.visibility === 'team'
+      && binding.resourceState !== 'deleted',
+    );
   }
 
   /**
@@ -385,16 +379,18 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
       // genuinely new comment's pin_seq starts unconfirmed on a team-shared
       // project — see UpsertPreviewCommentOptions in db.ts. Ignored on the
       // edit branch, so computing it here for an edit-via-POST is harmless.
-      const syncEnabled = await shouldSyncComments(
-        req,
+      const syncEnabled = isLocalTeamRelayCandidate(
         req.params.id,
         workspaceContext,
+        Boolean(ctx.onCommentCreated),
       );
       const comment = upsertPreviewComment(db, req.params.id, req.params.cid, body, {
         pinPendingCloudConfirm: syncEnabled,
       });
       updateProject(db, req.params.id, {});
-      // Best-effort cross-daemon push; never fails the local save.
+      // Production persists this callback into the relay outbox before
+      // returning; transport delivery remains asynchronous so a Vela outage
+      // never stalls the local save.
       if (comment && syncEnabled) {
         try {
           ctx.onCommentCreated?.(
@@ -402,7 +398,7 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
             workspaceContext,
           );
         } catch {
-          /* push is best-effort */
+          /* optional integration callback must not roll back the local save */
         }
       }
       res.json({ comment });
@@ -455,14 +451,18 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
         if (!comment)
           return res.status(404).json({ error: 'comment not found' });
         updateProject(db, req.params.id, {});
-        if (await shouldSyncComments(req, req.params.id, workspaceContext)) {
+        if (isLocalTeamRelayCandidate(
+          req.params.id,
+          workspaceContext,
+          Boolean(ctx.onCommentUpdated),
+        )) {
           try {
             ctx.onCommentUpdated?.(
               comment as unknown as PreviewComment,
               workspaceContext,
             );
           } catch {
-            /* push is best-effort */
+            /* optional integration callback must not roll back the local save */
           }
         }
         res.json({ comment });
@@ -587,11 +587,15 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
       );
       if (!ok) return res.status(404).json({ error: 'comment not found' });
       updateProject(db, req.params.id, {});
-      if (await shouldSyncComments(req, req.params.id, workspaceContext)) {
+      if (isLocalTeamRelayCandidate(
+        req.params.id,
+        workspaceContext,
+        Boolean(ctx.onCommentDeleted),
+      )) {
         try {
           ctx.onCommentDeleted?.(existing, workspaceContext);
         } catch {
-          /* push is best-effort */
+          /* optional integration callback must not roll back the local delete */
         }
       }
       res.json({ ok: true });

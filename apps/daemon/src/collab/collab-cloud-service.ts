@@ -16,6 +16,10 @@ import type {
 } from '@open-design/contracts';
 import type { CollabCloudClient } from '../integrations/collab-cloud.js';
 import type { WorkspaceContextProvider } from './workspace-context.js';
+import type {
+  CommentRelayOutboxRecord,
+  CommentRelayOutboxStore,
+} from './comment-relay-outbox.js';
 
 /** The daemon-local seams the service needs; injected so this file stays free of
  *  SQLite and the poller is unit-testable with fakes. */
@@ -32,7 +36,18 @@ export interface CollabCloudServiceDeps {
   /** Resolve the exact persisted + directory-verified scope for one project. */
   resolveProjectWorkspaceContext?: (
     projectId: string,
+    options?: { fresh?: boolean },
   ) => Promise<WorkspaceCollabContext | null>;
+  /** Local binding witness captured synchronously when the mutation commits. */
+  resolveLocalProjectRelayBinding?: (projectId: string) => {
+    workspaceId: string;
+    ownerMemberId: string | null;
+  } | null;
+  /** Fresh remote catalog witness checked immediately before each relay push. */
+  resolveRemoteProjectOwnerMemberId?: (
+    projectId: string,
+    context: WorkspaceCollabContext,
+  ) => Promise<string | null>;
   /**
    * Resolve a LOCAL conversation id to re-home synced comments onto (conversation
    * ids do not cross daemons, and preview_comments has a conversation FK). Null
@@ -50,6 +65,16 @@ export interface CollabCloudServiceDeps {
   }) => boolean;
   /** Poll cadence; defaults to the spec's foreground 5s (§D4.5). */
   pollIntervalMs?: number;
+  /** Durable outbound Team-comment queue. Omitted by isolated/local callers. */
+  commentOutbox?: CommentRelayOutboxStore;
+  /** Called after a queued create/edit receives its authoritative relay seq. */
+  onCommentPushed?: (input: {
+    projectId: string;
+    commentId: string;
+    seq: number;
+  }) => void;
+  now?: () => number;
+  retryDelayMs?: (attemptCount: number) => number;
   onError?: (error: unknown) => void;
   onMerged?: (input: { projectId: string; inserted: number }) => void;
 }
@@ -127,6 +152,18 @@ export interface CollabCloudService {
     comment: PreviewComment,
     context: WorkspaceCollabContext,
   ): Promise<void>;
+  /** Persist a create/edit for asynchronous, restart-safe relay delivery. */
+  enqueueComment(
+    comment: PreviewComment,
+    context: WorkspaceCollabContext,
+  ): boolean;
+  /** Persist a delete tombstone for asynchronous, restart-safe delivery. */
+  enqueueCommentDeletion(
+    comment: PreviewComment,
+    context: WorkspaceCollabContext,
+  ): boolean;
+  /** Drain due durable deliveries; exposed for deterministic tests/catch-up. */
+  flushPendingComments(): Promise<void>;
   /** The explicitly scoped team's member directory (empty off-team / on error). */
   listMembers(
     context: WorkspaceCollabContext,
@@ -165,6 +202,9 @@ export interface CollabCloudService {
 
 export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCloudService {
   const pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const now = deps.now ?? Date.now;
+  const retryDelayMs = deps.retryDelayMs ?? ((attemptCount: number) =>
+    Math.min(30_000, 1_000 * (2 ** Math.min(Math.max(0, attemptCount), 5))));
   // Per-project pull cursor + last ETag, so each poll only fetches new comments
   // and a 304 costs nothing.
   const cursors = new Map<string, number>();
@@ -172,6 +212,8 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
   const inFlightPulls = new Map<string, Promise<boolean>>();
   let timer: NodeJS.Timeout | null = null;
   let running = false;
+  let outboxRunning = false;
+  let started = false;
   // The identity we last pushed to the member directory. Re-registering only
   // when this changes keeps `pollOnce` from spawning a `vela member register`
   // process on every 5s tick (see pollOnce).
@@ -235,6 +277,137 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
     // edit so it can't be mistaken for a stale record on the relay/receiver.
     cloud.updatedAt = Date.now();
     await deps.client.pushComment(identity.teamId, comment.projectId, cloud);
+  }
+
+  function queuedCloudComment(
+    comment: PreviewComment,
+    context: WorkspaceCollabContext,
+    deleted: boolean,
+  ): boolean {
+    if (!deps.commentOutbox) return false;
+    const identity = explicitTeamIdentity(context);
+    if (!identity) return false;
+    const localBinding = deps.resolveLocalProjectRelayBinding?.(comment.projectId) ?? null;
+    const expectedOwnerMemberId = localBinding?.ownerMemberId?.trim() || null;
+    if (
+      !localBinding
+      || localBinding.workspaceId !== context.workspaceId
+    ) return false;
+    const cloud = previewCommentToCloud(comment, identity.memberId);
+    if (deleted) {
+      cloud.deleted = true;
+      cloud.updatedAt = now();
+    }
+    try {
+      deps.commentOutbox.enqueue({
+        workspaceId: context.workspaceId,
+        workspaceMemberId: identity.memberId,
+        teamId: identity.teamId,
+        projectId: comment.projectId,
+        expectedOwnerMemberId,
+        comment: cloud,
+      });
+    } catch (error) {
+      deps.onError?.(error);
+      return false;
+    }
+    if (started) {
+      queueMicrotask(() => {
+        void flushPendingComments().catch((error) => deps.onError?.(error));
+      });
+    }
+    return true;
+  }
+
+  function deferOutboxRecord(record: CommentRelayOutboxRecord, error: unknown): void {
+    const attemptCount = record.attemptCount + 1;
+    const message = error instanceof Error ? error.message : String(error);
+    deps.commentOutbox?.defer(record, {
+      nextAttemptAt: now() + Math.max(0, retryDelayMs(attemptCount)),
+      error: message,
+    });
+    deps.onError?.(error);
+  }
+
+  async function flushPendingComments(): Promise<void> {
+    if (!deps.commentOutbox || outboxRunning) return;
+    outboxRunning = true;
+    try {
+      const pending = deps.commentOutbox.listDue(now());
+      for (const record of pending) {
+        try {
+          // A persisted delivery is only valid under the SAME fresh,
+          // directory-authorized Workspace membership that created it. An
+          // account switch, Workspace switch, membership outage/removal, or
+          // Personal context leaves the row pending; it never retargets it.
+          const context =
+            await deps.resolveProjectWorkspaceContext?.(
+              record.projectId,
+              { fresh: true },
+            ) ?? null;
+          const identity = context ? explicitTeamIdentity(context) : null;
+          if (
+            !context
+            || !identity
+            || context.workspaceId !== record.workspaceId
+            || identity.memberId !== record.workspaceMemberId
+            || identity.teamId !== record.teamId
+          ) {
+            deferOutboxRecord(
+              record,
+              new Error('comment relay delivery authority is unavailable or changed'),
+            );
+            continue;
+          }
+          // Directory membership proves WHO is sending. The uncached remote
+          // catalog independently proves the project is STILL shared in that
+          // Team and still belongs to the owner captured by the local binding.
+          // An unavailable catalog is retryable; an authoritative absence or
+          // owner conflict is terminal and cancels the stale delivery.
+          const remoteOwnerMemberId =
+            await deps.resolveRemoteProjectOwnerMemberId?.(
+              record.projectId,
+              context,
+            );
+          if (
+            !remoteOwnerMemberId
+            || (
+              record.expectedOwnerMemberId !== null
+              && remoteOwnerMemberId !== record.expectedOwnerMemberId
+            )
+          ) {
+            deps.commentOutbox.acknowledge(record);
+            if (
+              remoteOwnerMemberId
+              && record.expectedOwnerMemberId !== null
+              && remoteOwnerMemberId !== record.expectedOwnerMemberId
+            ) {
+              deps.onError?.(new Error('comment relay delivery owner changed; canceled'));
+            }
+            continue;
+          }
+          const result = await deps.client.pushComment(
+            identity.teamId,
+            record.projectId,
+            record.comment,
+          );
+          // Revision-conditional ACK: if an edit/delete was queued while this
+          // payload was in flight, its newer row remains for the next drain.
+          deps.commentOutbox.acknowledge(record);
+          if (!record.comment.deleted) {
+            deps.onCommentPushed?.({
+              projectId: record.projectId,
+              commentId: record.commentId,
+              seq: result.seq,
+            });
+          }
+        } catch (error) {
+          deferOutboxRecord(record, error);
+        }
+      }
+    } finally {
+      outboxRunning = false;
+    }
   }
 
   async function listMembersForTeamId(
@@ -338,6 +511,7 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
   }
 
   async function pollOnce(): Promise<void> {
+    await flushPendingComments();
     for (const projectId of deps.listProjectIds()) {
       try {
         const context =
@@ -378,17 +552,28 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
     registerSelf,
     pushComment,
     pushCommentDeletion,
+    enqueueComment(comment, context) {
+      return queuedCloudComment(comment, context, false);
+    },
+    enqueueCommentDeletion(comment, context) {
+      return queuedCloudComment(comment, context, true);
+    },
+    flushPendingComments,
     listMembers,
     resolveMember,
     pollOnce,
     pullProject,
     start() {
       if (timer) return;
+      started = true;
       timer = setInterval(tick, pollIntervalMs);
       // Do not keep the event loop alive solely for polling.
       timer.unref?.();
+      // Recover rows left by a prior daemon before waiting a whole poll period.
+      tick();
     },
     dispose() {
+      started = false;
       if (timer) {
         clearInterval(timer);
         timer = null;

@@ -15,6 +15,7 @@ import type {
 } from '@open-design/contracts';
 import { eventsEndedWithUnfinishedWork } from '@open-design/contracts';
 import { migrateCollabSyncSnapshots } from './collab/sync-snapshot-store.js';
+import { migrateCommentRelayOutbox } from './collab/comment-relay-outbox.js';
 import {
   collapseWorkspaceProjectHomes,
   type WorkspaceProjectHomeRow,
@@ -529,6 +530,7 @@ function migrate(db: SqliteDb): void {
   migrateLibrary(db);
   migratePlugins(db);
   migrateCollabSyncSnapshots(db);
+  migrateCommentRelayOutbox(db);
 }
 
 /**

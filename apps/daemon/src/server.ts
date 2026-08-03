@@ -815,6 +815,7 @@ import {
 } from './collab/resource-principal.js';
 import { createCollabCloudClientFromEnv } from './integrations/collab-cloud.js';
 import { createCollabCloudService } from './collab/collab-cloud-service.js';
+import { createCommentRelayOutboxStore } from './collab/comment-relay-outbox.js';
 import { createWorkspaceInvalidationPoller } from './collab/workspace-invalidation-poller.js';
 import {
   handleHubTeamProjectsChanged,
@@ -3299,11 +3300,16 @@ export async function startServer({
   const collabCloudClient = velaCliCollabClient ?? createCollabCloudClientFromEnv();
   const resolveBoundProjectWorkspaceContext = async (
     projectId: string,
+    options: { fresh?: boolean } = {},
   ): Promise<WorkspaceCollabContext | null> => {
     const binding = getWorkspaceProjectByProjectId(db, projectId);
     const workspaceId = binding?.workspaceId?.trim();
     if (!workspaceId) return null;
-    const directory = await fetchWorkspaceDirectory().catch(() => ({
+    const directory = await (
+      options.fresh
+        ? fetchFreshMutationWorkspaceDirectory()
+        : fetchWorkspaceDirectory()
+    ).catch(() => ({
       ok: false as const,
       items: [],
     }));
@@ -3318,6 +3324,13 @@ export async function startServer({
     return membership ? workspaceContextFromDirectoryItem(membership) : null;
   };
 
+  // Uncached remote catalog authority for both comment relay delivery and the
+  // later project-sharing routes. A missing row is authoritative unshare;
+  // transport failure throws so the durable outbox keeps the delivery pending.
+  const teamProjectsLister = createTeamProjectsLister({
+    ...(velaCliTeamProjectCatalog ? { teamProjectCatalog: velaCliTeamProjectCatalog } : {}),
+  });
+
   // Collab cloud (C-lane §D2.5/§D4): cross-daemon comment sync + member
   // directory. The client is null (all calls degrade to no-op) unless
   // OD_COLLAB_CLOUD_URL is set. The service ties it to the one workspace context
@@ -3327,6 +3340,22 @@ export async function startServer({
   const collabCloud = collabCloudClient
     ? createCollabCloudService({
         client: collabCloudClient,
+        commentOutbox: createCommentRelayOutboxStore(db),
+        resolveLocalProjectRelayBinding: (projectId) => {
+          const binding = getWorkspaceProjectByProjectId(db, projectId);
+          const workspaceId = binding?.workspaceId?.trim() ?? '';
+          const ownerMemberId = binding?.createdByWorkspaceMemberId?.trim() || null;
+          if (
+            !workspaceId
+            || binding?.visibility !== 'team'
+            || binding?.resourceState === 'deleted'
+          ) return null;
+          return { workspaceId, ownerMemberId };
+        },
+        resolveRemoteProjectOwnerMemberId: async (projectId, context) =>
+          (await teamProjectsLister(context.workspaceId))
+            .find((project) => project.projectId === projectId)
+            ?.ownerMemberId ?? null,
         workspaceContext: collab.workspaceContext,
         // Only poll comments for projects the UI is actively viewing — those
         // have a live `/api/projects/:id/events` SSE subscriber, so their id is
@@ -3342,7 +3371,10 @@ export async function startServer({
           getLatestConversationIdForProject(db, projectId),
         mergeComment: ({ projectId, conversationId, comment }) =>
           mergeSyncedPreviewComment(db, projectId, conversationId, comment),
-        onError: (error) => console.warn('[od] collab cloud poll error:', error),
+        onError: (error) => console.warn('[od] collab cloud sync error:', error),
+        onCommentPushed: ({ projectId, commentId, seq }) => {
+          confirmPreviewCommentPinSeq(db, projectId, commentId, seq);
+        },
         // Collab realtime hop-2 (reference path): when the ~5s comment self-poll
         // merges any teammate change into local storage (a new comment, a
         // strictly-newer edit/status change, or a delete tombstone all count),
@@ -3366,9 +3398,6 @@ export async function startServer({
   // project's owner from the team hub (the same list the discovery endpoint
   // serves) rather than trusting a client-supplied id, so a pulled project is
   // recorded read-only under its true single writer.
-  const teamProjectsLister = createTeamProjectsLister({
-    ...(velaCliTeamProjectCatalog ? { teamProjectCatalog: velaCliTeamProjectCatalog } : {}),
-  });
   type TeamProjectsDisplayScope = {
     workspaceId: string;
     workspaceMemberId: string;
@@ -6430,15 +6459,6 @@ export async function startServer({
         }),
       );
     },
-    shouldSyncProjectComments: async (_authorization, projectId, context) => {
-      if (!context || context.workspaceType !== 'team') return false;
-      return Boolean(
-        await resolveSharedProjectOwner(projectId, {
-          workspaceId: context.workspaceId,
-          workspaceMemberId: context.workspaceMemberId,
-        }),
-      );
-    },
     ...(collabCloud
       ? {
           onCommentsRead: (
@@ -6482,7 +6502,7 @@ export async function startServer({
                 .catch(() => dirtyCommentProjects.add(projectId));
             }
           },
-          // Both hooks also reconcile pin_seq (recvq5BVsolIxi): a genuinely
+          // The durable outbox also reconciles pin_seq (recvq5BVsolIxi): a genuinely
           // new comment on a team-shared project is inserted with a
           // provisional LOCAL pin_seq (pin_seq_confirmed=0 — see
           // upsertPreviewComment); once this push resolves with the
@@ -6490,32 +6510,26 @@ export async function startServer({
           // overwrites it with that authoritative value, which is what keeps
           // two devices creating a comment in the same ~5s poll window from
           // ever landing on the same number. The guard inside
-          // confirmPreviewCommentPinSeq makes calling it from BOTH hooks safe:
-          // it only ever applies once per comment (whichever push resolves
-          // first wins), so an edit's push resolving here is a no-op once the
-          // create's already has, and a resilience net when the create's push
-          // itself failed.
+          // confirmPreviewCommentPinSeq is idempotent, so a coalesced edit can
+          // safely supply the first successful relay seq when the create's
+          // original delivery failed.
           onCommentCreated: (comment, context) => {
             if (!context) return;
-            void collabCloud
-              .pushComment(comment, context)
-              .then((result) => {
-                if (result) confirmPreviewCommentPinSeq(db, comment.projectId, comment.id, result.seq);
-              })
-              .catch(() => {});
+            if (!collabCloud.enqueueComment(comment, context)) {
+              console.warn('[od] refused to enqueue comment without exact Team authority');
+            }
           },
           onCommentUpdated: (comment, context) => {
             if (!context) return;
-            void collabCloud
-              .pushComment(comment, context)
-              .then((result) => {
-                if (result) confirmPreviewCommentPinSeq(db, comment.projectId, comment.id, result.seq);
-              })
-              .catch(() => {});
+            if (!collabCloud.enqueueComment(comment, context)) {
+              console.warn('[od] refused to enqueue comment update without exact Team authority');
+            }
           },
           onCommentDeleted: (comment, context) => {
             if (!context) return;
-            void collabCloud.pushCommentDeletion(comment, context).catch(() => {});
+            if (!collabCloud.enqueueCommentDeletion(comment, context)) {
+              console.warn('[od] refused to enqueue comment deletion without exact Team authority');
+            }
           },
         }
       : {}),
@@ -13018,6 +13032,7 @@ export async function startServer({
       workspaceHubSubscriptions?.dispose();
       workspaceBillingRuntime.dispose();
       proactiveContentPull.dispose();
+      collabCloud?.dispose();
     };
     const shutdownDaemonRuns = async () => {
       if (daemonShutdownStarted) return;
