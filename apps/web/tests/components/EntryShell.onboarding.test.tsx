@@ -674,6 +674,7 @@ describe('EntryShell onboarding Open Design AMR runtime', () => {
     renderOnboarding();
 
     expect(screen.getByRole('heading', { name: 'Sign in to Open Design' })).toBeTruthy();
+    expect(document.querySelector('img[src="/onboarding/onboarding-cloud-art.webp"]')).toBeTruthy();
     expect(await findCloudSignInButton()).toBeTruthy();
     // No runtime card, no AMR version text, no "Sign in to continue" CTA.
     expect(screen.queryByRole('button', { name: /Open Design AMR/i })).toBeNull();
@@ -702,7 +703,10 @@ describe('EntryShell onboarding Open Design AMR runtime', () => {
 
     await clickSignedInCloudContinue();
 
-    expect(screen.getByRole('radio', { name: /Open Design Hosted/i }).getAttribute('aria-checked')).toBe('true');
+    const hostedOption = screen.getByRole('radio', { name: /Open Design Hosted/i });
+    expect(hostedOption.getAttribute('aria-checked')).toBe('true');
+    expect(hostedOption.className).toContain('hostedOption');
+    expect(document.querySelector('img[src="/onboarding/onboarding-cloud-art.webp"]')).toBeTruthy();
     expect(screen.getByText('Recommended')).toBeTruthy();
     expect(screen.getByRole('radio', { name: /Local Agent/i })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /Bring Your Own Key/i })).toBeTruthy();

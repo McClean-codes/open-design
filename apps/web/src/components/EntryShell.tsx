@@ -3503,7 +3503,7 @@ function OnboardingView({
         className="onboarding-view onboarding-view--cloud"
         aria-label={t('settings.onboardingExecutionTitle')}
       >
-        <div className="onboarding-cloud__pane">
+        <div className={`onboarding-cloud__pane ${onboardingSourceStyles.pane}`}>
           <div className={`onboarding-cloud__center ${onboardingSourceStyles.center}`}>
             <h1 className="onboarding-cloud__title">{t('settings.onboardingExecutionTitle')}</h1>
             <p className="onboarding-cloud__body">{t('settings.onboardingExecutionBody')}</p>
@@ -3512,7 +3512,7 @@ function OnboardingView({
                 variant="subtle"
                 role="radio"
                 aria-checked={modelSource === 'amr'}
-                className={`${onboardingSourceStyles.option} ${modelSource === 'amr' ? onboardingSourceStyles.optionActive : ''}`}
+                className={`${onboardingSourceStyles.option} ${onboardingSourceStyles.hostedOption} ${modelSource === 'amr' ? onboardingSourceStyles.optionActive : ''}`}
                 onClick={() => setModelSource('amr')}
               >
                 <span className={onboardingSourceStyles.optionIcon}><Icon name="sparkles" size={17} /></span>
