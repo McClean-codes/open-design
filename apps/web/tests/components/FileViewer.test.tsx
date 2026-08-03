@@ -2318,6 +2318,17 @@ describe('FileViewer SVG artifacts', () => {
     expect(srcDocFrameAfter).toBe(srcDocFrame);
     expect(srcDocFrameAfter?.srcdoc).toContain('__odArtifactBootCount');
     expect(srcDocFrameAfter?.srcdoc).toContain('data-od-edit-bridge');
+    // Switching transport can update the iframe ref before the activated
+    // srcDoc has installed its runtime-state listener. Keep the snapshot until
+    // the iframe load confirms the activated document is ready.
+    expect(srcDocPostSpy).not.toHaveBeenCalledWith(
+      { type: 'od:preview-runtime-state-restore', state: capturedState },
+      '*',
+    );
+
+    srcDocPostSpy.mockClear();
+    fireEvent.load(srcDocFrameAfter!);
+
     expect(srcDocPostSpy).toHaveBeenCalledWith(
       { type: 'od:preview-runtime-state-restore', state: capturedState },
       '*',

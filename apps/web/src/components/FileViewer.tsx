@@ -9499,7 +9499,6 @@ function HtmlViewer({
       ? urlPreviewIframeRef.current
       : srcDocPreviewIframeRef.current;
     iframeRef.current = activeFrame;
-    if (!useUrlLoadPreview) postAndConsumePreviewRuntimeState(activeFrame);
     if (
       activeFrame?.dataset.odLoadedPreviewEpoch === transportPreviewMeasurementDocumentEpoch
     ) {
@@ -9508,7 +9507,6 @@ function HtmlViewer({
     }
   }, [
     beginDesktopPreviewContentMeasurementGeneration,
-    postAndConsumePreviewRuntimeState,
     transportPreviewMeasurementDocumentEpoch,
     scheduleDesktopPreviewContentMeasure,
     useUrlLoadPreview,
@@ -15228,6 +15226,12 @@ function HtmlViewer({
                             ...dcViewportRef.current,
                           }, '*');
                           replayInspectOverridesToIframe(frame);
+                          // Restore the URL preview snapshot only after the
+                          // activated srcDoc has loaded and installed its
+                          // bridge. Consuming it during the earlier ref swap
+                          // can post into the pre-activation document, which
+                          // is then overwritten before it can preserve the
+                          // runtime-rendered page.
                           syncBridgeModes(frame);
                           syncCachedSlideStateToIframe(frame);
                           if (!useUrlLoadPreview) restorePreviewScrollPosition();
