@@ -108,6 +108,13 @@ export class CollabClient {
    */
   private contentTransferStateGeneration = 0;
   private contentTransferStatusRequestGeneration = 0;
+  /**
+   * Orders every response that can replace the presence roster. Heartbeats and
+   * read-only invalidation refreshes share this fence because either response
+   * may race the other. stop() and identity changes also advance it so an
+   * obsolete session can never publish a late roster into the next render.
+   */
+  private presenceRequestGeneration = 0;
   private running = false;
   private onVisibilityChange: (() => void) | null = null;
 
@@ -140,11 +147,15 @@ export class CollabClient {
    */
   setMember(member: CollabPresenceMember | null): void {
     const previousMemberId = this.member?.memberId ?? null;
+    const nextMemberId = member?.memberId ?? null;
     this.member = member;
+    if (nextMemberId !== previousMemberId) {
+      this.presenceRequestGeneration += 1;
+    }
     if (
       this.running
       && member
-      && member.memberId !== previousMemberId
+      && nextMemberId !== previousMemberId
     ) {
       void this.heartbeat();
     }
@@ -185,6 +196,7 @@ export class CollabClient {
   stop(): void {
     if (!this.running) return;
     this.running = false;
+    this.presenceRequestGeneration += 1;
     for (const timer of this.timers) clearInterval(timer);
     this.timers.length = 0;
     if (this.onVisibilityChange && typeof document !== 'undefined') {
@@ -226,9 +238,15 @@ export class CollabClient {
       if (this.snapshot.present.length > 0) this.update({ present: [] });
       return;
     }
+    const requestGeneration = ++this.presenceRequestGeneration;
     try {
       const body = await this.post('/presence/heartbeat', this.member);
-      if (Array.isArray(body?.present)) this.update({ present: body.present as CollabPresenceMember[] });
+      if (
+        requestGeneration === this.presenceRequestGeneration
+        && Array.isArray(body?.present)
+      ) {
+        this.update({ present: body.present as CollabPresenceMember[] });
+      }
     } catch (error) {
       this.onError?.(error);
     }
@@ -242,9 +260,13 @@ export class CollabClient {
    * feedback loop, so push-channel consumers must use this read-only path.
    */
   async refreshPresence(): Promise<void> {
+    const requestGeneration = ++this.presenceRequestGeneration;
     try {
       const body = await this.get('/presence');
-      if (Array.isArray(body?.present)) {
+      if (
+        requestGeneration === this.presenceRequestGeneration
+        && Array.isArray(body?.present)
+      ) {
         this.update({
           present: body.present as CollabPresenceMember[],
         });

@@ -336,6 +336,146 @@ describe('CollabClient', () => {
     expect(calls.some((call) => call.url.endsWith('/presence/heartbeat'))).toBe(false);
   });
 
+  it('does not let an older presence read overwrite a newer roster', async () => {
+    const presenceReads: Array<(response: Response) => void> = [];
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        expect(pathname).toBe('/api/projects/p1/presence');
+        return new Promise<Response>((resolve) => {
+          presenceReads.push(resolve);
+        });
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: null,
+      fetch: fetchImpl,
+    });
+
+    const olderRefresh = client.refreshPresence();
+    const newerRefresh = client.refreshPresence();
+    expect(presenceReads).toHaveLength(2);
+
+    presenceReads[1]!(
+      new Response(
+        JSON.stringify({ present: [{ memberId: 'new-member' }] }),
+        { status: 200 },
+      ),
+    );
+    await newerRefresh;
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'new-member' },
+    ]);
+
+    presenceReads[0]!(
+      new Response(
+        JSON.stringify({ present: [{ memberId: 'stale-member' }] }),
+        { status: 200 },
+      ),
+    );
+    await olderRefresh;
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'new-member' },
+    ]);
+  });
+
+  it('does not let an older heartbeat response overwrite a newer presence read', async () => {
+    let resolveHeartbeat!: (response: Response) => void;
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          return new Promise<Response>((resolve) => {
+            resolveHeartbeat = resolve;
+          });
+        }
+        expect(pathname).toBe('/api/projects/p1/presence');
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ present: [{ memberId: 'new-member' }] }),
+            { status: 200 },
+          ),
+        );
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: { memberId: 'm1' },
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolveHeartbeat).toBeTypeOf('function');
+
+    await client.refreshPresence();
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'new-member' },
+    ]);
+
+    resolveHeartbeat(
+      new Response(
+        JSON.stringify({ present: [{ memberId: 'stale-member' }] }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'new-member' },
+    ]);
+
+    client.stop();
+  });
+
+  it('does not apply a presence read that resolves after stop', async () => {
+    let resolvePresence!: (response: Response) => void;
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+              { status: 200 },
+            ),
+          );
+        }
+        expect(pathname).toBe('/api/projects/p1/presence');
+        return new Promise<Response>((resolve) => {
+          resolvePresence = resolve;
+        });
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: null,
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    const refresh = client.refreshPresence();
+    client.stop();
+    resolvePresence(
+      new Response(
+        JSON.stringify({ present: [{ memberId: 'late-member' }] }),
+        { status: 200 },
+      ),
+    );
+    await refresh;
+
+    expect(client.getSnapshot().present).toEqual([]);
+  });
+
   it('reports author changes and requests a publish through the sync routes', async () => {
     const { fetchImpl, calls } = makeFetch();
     const client = new CollabClient({ projectId: 'p9', member: { memberId: 'm1' }, fetch: fetchImpl });

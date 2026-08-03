@@ -151,7 +151,7 @@ describe('useCollab', () => {
     expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/collab/publish'))).toBe(true);
   });
 
-  it('handles a presence invalidation with one read and no feedback heartbeat', async () => {
+  it('handles consecutive presence invalidations with reads and no feedback heartbeat', async () => {
     const { fetchImpl, calls } = makeFetch([{ memberId: 'm2' }], 1);
     const { result } = renderHook(() =>
       useCollab({
@@ -168,15 +168,20 @@ describe('useCollab', () => {
 
     await act(async () => {
       result.current.refreshPresence();
+      result.current.refreshPresence();
+      result.current.refreshPresence();
       await vi.advanceTimersByTimeAsync(0);
     });
 
-    expect(calls).toEqual([
-      expect.objectContaining({
-        url: '/api/projects/p1/presence',
-        method: 'GET',
-      }),
-    ]);
+    expect(calls).toHaveLength(3);
+    expect(calls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          url: '/api/projects/p1/presence',
+          method: 'GET',
+        }),
+      ]),
+    );
     expect(calls.some((call) => call.url.endsWith('/presence/heartbeat'))).toBe(false);
     expect(result.current.present).toEqual([{ memberId: 'm2' }]);
   });
