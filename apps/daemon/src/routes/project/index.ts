@@ -111,6 +111,8 @@ import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
 
 export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync'> {
   teamProjectCatalog?: VelaTeamProjectCatalogClient;
+  /** Bounded authoritative verifier for idempotent Workspace project reads. */
+  verifyWorkspaceReadAuthority?: VerifyWorkspaceRequestAuthority;
   /** Authoritative verifier for every Workspace-bound project mutation. */
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority;
   /** Shared fresh exact authority gate for all project data-plane routes. */
@@ -1657,6 +1659,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   const enforceWorkspaceProjectMutation = createEnforceWorkspaceProjectMutation(
     ctx.verifyWorkspaceRequestAuthority,
   );
+  const verifyWorkspaceProjectReadAuthority =
+    ctx.verifyWorkspaceReadAuthority ?? ctx.verifyWorkspaceRequestAuthority;
   const authorizeProjectRequest =
     ctx.authorizeProjectRequest ??
     createAuthorizeProjectRequest({
@@ -1696,13 +1700,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     req: any,
     res: Response,
     expectedWorkspaceId: string,
+    verifyAuthority = ctx.verifyWorkspaceRequestAuthority,
   ): Promise<WorkspaceProjectContext | null> {
-    if (!ctx.verifyWorkspaceRequestAuthority) {
+    if (!verifyAuthority) {
       const legacy = workspaceProjectContext(req, expectedWorkspaceId);
       if (!legacy) sendMissingWorkspaceContext(res);
       return legacy;
     }
-    const verified = await ctx.verifyWorkspaceRequestAuthority(req);
+    const verified = await verifyAuthority(req);
     if (!verified.ok) {
       sendApiError(res, verified.status, verified.code, verified.message);
       return null;
@@ -2776,6 +2781,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         req,
         res,
         req.params.workspaceId,
+        verifyWorkspaceProjectReadAuthority,
       );
       if (!authoritativeCtx) return;
       const assertedCtx = workspaceProjectContextFromRequest(req);
