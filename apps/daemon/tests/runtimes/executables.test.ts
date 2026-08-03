@@ -3,7 +3,10 @@ import { relative, resolve } from 'node:path';
 import {
   assert, chmodSync, claude, codex, deepseek, join, minimalAgentDef, mkdirSync, mkdtempSync, resolveAgentExecutable, rmSync, tmpdir, withEnvSnapshot, withPlatform, writeFileSync,
 } from './helpers/test-helpers.js';
-import { codexAppBundleCandidates } from '../../src/runtimes/executables.js';
+import {
+  codexAppBundleCandidates,
+  resolveAmrOpenCodeExecutable,
+} from '../../src/runtimes/executables.js';
 
 const fsTest = process.platform === 'win32' ? test.skip : test;
 
@@ -120,6 +123,52 @@ fsTest(
 
         assert.equal(resolved, null);
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+fsTest(
+  'resolveAmrOpenCodeExecutable prefers the selected Vela companion over a PATH wrapper',
+  () => {
+    const root = mkdtempSync(join(tmpdir(), 'od-amr-selected-vela-companion-'));
+    try {
+      return withEnvSnapshot(
+        ['PATH', 'OD_AGENT_HOME', 'OD_RESOURCE_ROOT', 'VELA_BIN', 'VELA_OPENCODE_BIN'],
+        () => {
+          const selectedBinDir = join(root, 'selected', 'bin');
+          const selectedVela = join(selectedBinDir, 'vela');
+          const selectedCompanion = join(
+            selectedBinDir,
+            'libexec',
+            'opencode',
+            'opencode',
+          );
+          const pathBin = join(root, 'path-bin');
+          const pathWrapper = join(pathBin, 'opencode');
+          mkdirSync(join(selectedBinDir, 'libexec', 'opencode'), {
+            recursive: true,
+          });
+          mkdirSync(pathBin, { recursive: true });
+          writeFileSync(selectedVela, '#!/bin/sh\nexit 0\n');
+          writeFileSync(selectedCompanion, '#!/bin/sh\nexit 0\n');
+          writeFileSync(pathWrapper, '#!/bin/sh\nexit 0\n');
+          chmodSync(selectedVela, 0o755);
+          chmodSync(selectedCompanion, 0o755);
+          chmodSync(pathWrapper, 0o755);
+          process.env.PATH = pathBin;
+          process.env.OD_AGENT_HOME = join(root, 'empty-home');
+          process.env.OD_RESOURCE_ROOT = '';
+          process.env.VELA_BIN = selectedVela;
+          delete process.env.VELA_OPENCODE_BIN;
+
+          assert.equal(
+            resolveAmrOpenCodeExecutable(process.env),
+            selectedCompanion,
+          );
+        },
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
