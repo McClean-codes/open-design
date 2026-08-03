@@ -891,6 +891,76 @@ describe('project comments — workspace mutation gate', () => {
       }),
     ]);
 
+    const teamEdit = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          id: teamComment.id,
+          target: COMMENT_TARGET,
+          note: 'edited from the active local conversation',
+        }),
+      },
+    );
+    expect(teamEdit.status).toBe(200);
+    expect((await teamEdit.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        note: 'edited from the active local conversation',
+      }),
+    });
+
+    const teamAnchor = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}/anchor`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          anchorState: 'reanchored',
+          anchoredVersion: 3,
+          lastGoodPosition: { x: 11, y: 22, width: 33, height: 44 },
+        }),
+      },
+    );
+    expect(teamAnchor.status).toBe(200);
+    expect((await teamAnchor.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        anchorState: 'reanchored',
+        anchoredVersion: 3,
+        lastGoodPosition: { x: 11, y: 22, width: 33, height: 44 },
+      }),
+    });
+
+    const teamReorder = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}/reorder`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({ sortKey: 77 }),
+      },
+    );
+    expect(teamReorder.status).toBe(200);
+    expect((await teamReorder.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        sortKey: 77,
+      }),
+    });
+
     const teamStatus = await fetch(
       `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}`,
       {
@@ -910,6 +980,32 @@ describe('project comments — workspace mutation gate', () => {
         status: 'resolved',
       }),
     });
+
+    const teamAfterUpdate = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      { headers: workspaceHeaders(OTHER_MEMBER_ID, 'member') },
+    );
+    expect(teamAfterUpdate.status).toBe(200);
+    expect((await teamAfterUpdate.json()) as { comments: unknown[] }).toEqual({
+      comments: [expect.objectContaining({ id: teamComment.id })],
+    });
+
+    const teamDelete = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}`,
+      {
+        method: 'DELETE',
+        headers: workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+      },
+    );
+    expect(teamDelete.status).toBe(200);
+    expect(await teamDelete.json()).toEqual({ ok: true });
+
+    const teamAfterDelete = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      { headers: workspaceHeaders(OTHER_MEMBER_ID, 'member') },
+    );
+    expect(teamAfterDelete.status).toBe(200);
+    expect(await teamAfterDelete.json()).toEqual({ comments: [] });
 
     const personalResponse = await fetch(
       `${baseUrl}/api/projects/${PERSONAL_PROJECT}/conversations/conv-personal-active/comments`,

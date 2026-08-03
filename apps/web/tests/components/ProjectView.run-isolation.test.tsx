@@ -1967,6 +1967,46 @@ describe('ProjectView conversation run isolation', () => {
     // local FK anchor is conv-a is intentionally accepted by the conv-b view.
     expect(previewComment.conversationId).toBe('conv-a');
   });
+
+  it('sends a project-scoped comment through the active chat when its local anchor belongs to another conversation', async () => {
+    renderProjectView();
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    fireEvent.click(screen.getByTestId('conversation-select-conv-b'));
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-b'));
+    if (!resolveConversationBMessages) throw new Error('Expected conv-b message load to be pending');
+    resolveConversationBMessages([]);
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fetchPreviewComments.mockClear();
+    fetchPreviewComments.mockResolvedValue([previewComment]);
+    const handleProjectEvent = useProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'comment-changed'; projectId: string }) => void)
+      | undefined;
+    await act(async () => {
+      handleProjectEvent?.({ type: 'comment-changed', projectId: project.id });
+    });
+    await waitFor(() => expect(fetchPreviewComments).toHaveBeenCalledWith(
+      project.id,
+      'conv-b',
+      expect.anything(),
+    ));
+
+    fireEvent.click(screen.getByTestId('attach-first-comment'));
+    await waitFor(() => expect(screen.getByTestId('attached-comment-count').textContent).toBe('1'));
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: project.id,
+      conversationId: 'conv-b',
+      commentAttachments: [expect.objectContaining({
+        id: previewComment.id,
+        comment: previewComment.note,
+      })],
+    })));
+    expect(previewComment.conversationId).toBe('conv-a');
+  });
+
   it('detaches saved comment attachments after queueing them for a busy conversation', async () => {
     fetchPreviewComments.mockResolvedValue([previewComment]);
 
