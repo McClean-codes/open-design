@@ -50,6 +50,7 @@ import {
   workspaceIdentityCacheKey,
 } from '../../src/collab/useWorkspaceContext';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+import { resetProjectDisplaySnapshots } from '../../src/state/project-display-cache';
 import type { AmrAuthRetryContinuation } from '../../src/runtime/amr-auth-retry-continuation';
 import type { VelaLoginStatus } from '../../src/providers/daemon';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
@@ -675,6 +676,7 @@ describe('App project creation routing', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
+    resetProjectDisplaySnapshots();
     workspaceInvalidationHarness.handlers.length = 0;
     window.history.replaceState(null, '', '/');
     mockedDaemonIsLive.mockResolvedValue(true);
@@ -746,6 +748,7 @@ describe('App project creation routing', () => {
     vi.clearAllMocks();
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
+    resetProjectDisplaySnapshots();
     resetCoalescedGet();
     workspaceInvalidationHarness.handlers.length = 0;
   });
@@ -1957,6 +1960,123 @@ describe('App project creation routing', () => {
         workspaceContext('ws-b', 'member-ws-b'),
       );
     });
+    expect(window.location.pathname).toBe('/');
+    expect(screen.queryByTestId('project-view')).toBeNull();
+  });
+
+  it('waits for exact current Workspace authority before opening a boot-visible bound project', async () => {
+    const directoryResponse = deferred<Response>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (pathname.endsWith('/workspace/directory')) return directoryResponse.promise;
+        return Promise.resolve({
+          ok: true,
+          json: async () => pathname.endsWith('/workspace/context')
+            ? workspaceContextPayload('ws-1', 'wm-1')
+            : {},
+        } as Response);
+      }),
+    );
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-1',
+    }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockedGetProject).not.toHaveBeenCalled();
+    expect(screen.getByTestId('workspace-tabs-active-project-workspace').textContent).toBe(
+      'unresolved',
+    );
+
+    await act(async () => {
+      directoryResponse.resolve({
+        ok: true,
+        json: async () => workspaceDirectoryFixture([
+          workspaceContext('ws-1', 'wm-1'),
+        ]),
+      } as Response);
+      await directoryResponse.promise;
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-tabs-active-project-workspace').textContent).toBe(
+        'ws-1',
+      );
+    });
+    expect(mockedGetProject).not.toHaveBeenCalled();
+  });
+
+  it('opens a known unbound local project without waiting for cloud Workspace discovery', async () => {
+    const directoryResponse = deferred<Response>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (pathname.endsWith('/workspace/directory')) return directoryResponse.promise;
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({}),
+        } as Response);
+      }),
+    );
+    mockedListProjects.mockResolvedValue([existingProject]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+
+    await screen.findByTestId('project-view');
+    expect(mockedGetProject).not.toHaveBeenCalled();
+    expect(screen.getByTestId('project-workspace-id').textContent).toBe('unbound');
+  });
+
+  it('cancels a pending boot-card open when the selected Workspace changes', async () => {
+    const directoryResponse = deferred<Response>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (pathname.endsWith('/workspace/directory')) return directoryResponse.promise;
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({}),
+        } as Response);
+      }),
+    );
+    mockedListProjects.mockResolvedValue([{
+      ...existingProject,
+      workspaceId: 'ws-a',
+    }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => {
+      notifyWorkspaceContextRefresh({
+        context: workspaceContext('ws-b', 'wm-b'),
+      });
+    });
+    await act(async () => {
+      directoryResponse.resolve({
+        ok: true,
+        json: async () => workspaceDirectoryFixture([
+          workspaceContext('ws-a', 'wm-a'),
+        ]),
+      } as Response);
+      await directoryResponse.promise;
+      await Promise.resolve();
+    });
+
+    expect(mockedGetProject).not.toHaveBeenCalled();
     expect(window.location.pathname).toBe('/');
     expect(screen.queryByTestId('project-view')).toBeNull();
   });

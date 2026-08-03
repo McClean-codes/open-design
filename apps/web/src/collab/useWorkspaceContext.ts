@@ -315,6 +315,48 @@ export async function resolveBoundProjectWorkspaceContext(
   return item ? workspaceContextFromDirectoryItem(item) : null;
 }
 
+export interface CurrentWorkspaceContextReadWitness {
+  context: WorkspaceCollabContext | null;
+  isStillCurrent: () => boolean;
+}
+
+/**
+ * Resolve the Workspace selected by this browser tab from the account
+ * directory, without waiting for the shell's richer `/workspace/context`
+ * projection to commit to React state.
+ *
+ * This is an authorization witness, not a display cache: the directory read
+ * verifies the exact Workspace/member pair and the returned lifetime closes
+ * over both the account/context generation and the tab-local selection. A
+ * concurrent sign-in or Workspace switch therefore invalidates an in-flight
+ * project action before it may commit.
+ */
+export async function resolveCurrentWorkspaceContextReadWitness(
+  options: { fresh?: boolean } = {},
+): Promise<CurrentWorkspaceContextReadWitness> {
+  const requestToken = workspaceContextRequestToken;
+  const accountGeneration = currentWorkspaceAccountGeneration();
+  const directory = await readWorkspaceDirectoryForCurrentGeneration(options);
+  const selected = chooseWorkspaceForTab(directory.items ?? []);
+  const context = selected ? workspaceContextFromDirectoryItem(selected) : null;
+  const selectedWorkspaceId = context?.workspaceId ?? null;
+  const selectedWorkspaceMemberId = context?.workspaceMemberId ?? null;
+  return {
+    context,
+    isStillCurrent: () => {
+      if (
+        workspaceContextRequestToken !== requestToken
+        || currentWorkspaceAccountGeneration() !== accountGeneration
+      ) return false;
+      const currentSelection = readWorkspaceSelection();
+      return context
+        ? currentSelection?.workspaceId === selectedWorkspaceId
+          && currentSelection.workspaceMemberId === selectedWorkspaceMemberId
+        : currentSelection === null;
+    },
+  };
+}
+
 // Last successfully-resolved workspace context, kept at module scope so it
 // survives a component unmount/remount. Returning to the home view remounts the
 // nav shell, and starting each remount from `null` flashed the signed-out state

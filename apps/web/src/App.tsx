@@ -104,6 +104,7 @@ import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
   resolveBoundProjectWorkspaceContext,
+  resolveCurrentWorkspaceContextReadWitness,
   useWorkspaceBilling,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
@@ -3183,8 +3184,39 @@ function AppInner() {
     const routeFileName = fileName ?? null;
     const hintedProjectName = projectTitleHint?.name.trim() || null;
     const requiresBoundCatalogProject = projectTitleHint?.authoritative === true;
-    const openingContext = workspaceContextRef.current;
     const openingAccountGeneration = currentWorkspaceAccountGeneration();
+    let openingContext = workspaceContextRef.current;
+    const knownUnboundLocalProject = !requiresBoundCatalogProject
+      && projectsRef.current.some((project) =>
+        project.id === id && !project.workspaceId?.trim()
+      );
+    let pendingContextWitness: Awaited<
+      ReturnType<typeof resolveCurrentWorkspaceContextReadWitness>
+    > | null = null;
+    if (
+      !knownUnboundLocalProject
+      && (
+        !openingContext
+        || workspaceContextStateRef.current.identityChangePending === true
+      )
+    ) {
+      try {
+        pendingContextWitness = await resolveCurrentWorkspaceContextReadWitness();
+      } catch {
+        pendingContextWitness = null;
+      }
+      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration) return false;
+      if (pendingContextWitness) {
+        if (!pendingContextWitness.isStillCurrent()) return false;
+        openingContext = pendingContextWitness.context;
+      } else {
+        // The richer hook may have settled while the directory read failed or
+        // was invalidated. Reuse it only when no identity change remains in
+        // flight; otherwise a cached pre-switch context is not authority.
+        const liveState = workspaceContextStateRef.current;
+        openingContext = liveState.identityChangePending ? null : liveState.context;
+      }
+    }
     const openingAuthorizationGeneration = projectAuthorizationGenerationRef.current;
     const openingScopeKey = projectListScopeKey(openingContext);
     const expectedWorkspaceId = openingContext?.workspaceId ?? null;
@@ -3205,9 +3237,22 @@ function AppInner() {
       id,
       openingContext,
     );
-    const openingScopeIsCurrent = () =>
-      projectAuthorizationGenerationRef.current === openingAuthorizationGeneration
-      && projectListScopeKey(workspaceContextRef.current) === openingScopeKey;
+    const openingScopeIsCurrent = () => {
+      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration) return false;
+      if (!pendingContextWitness) {
+        return projectAuthorizationGenerationRef.current === openingAuthorizationGeneration
+          && projectListScopeKey(workspaceContextRef.current) === openingScopeKey;
+      }
+      if (!pendingContextWitness.isStillCurrent()) return false;
+      const liveState = workspaceContextStateRef.current;
+      const liveContext = liveState.context ?? liveState.resourceReadIdentity?.context ?? null;
+      if (!openingContext) {
+        return liveContext === null && liveState.identityChangePending !== true;
+      }
+      return liveContext
+        ? workspaceIdentityCacheKey(liveContext) === workspaceIdentityCacheKey(openingContext)
+        : liveState.loading === true || liveState.identityChangePending === true;
+    };
     const canUseLocalProject = (project: Project) => {
       if (project.workspaceId) return project.workspaceId === expectedWorkspaceId;
       return !requiresBoundCatalogProject;
