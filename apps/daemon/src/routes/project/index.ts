@@ -1753,6 +1753,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       this.name = 'TeamProjectCatalogListError';
     }
   }
+  class TeamProjectSyncError extends Error {
+    constructor(readonly cause: unknown) {
+      super(String(cause));
+      this.name = 'TeamProjectSyncError';
+    }
+  }
   function normalizeWorkspaceProjectRow(row: any, ctx: WorkspaceProjectContext) {
     let metadata: unknown;
     try {
@@ -2924,7 +2930,33 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     return ids;
   }
 
-  function workspaceMoveAllowed(summary: any, targetVisibility: 'personal' | 'team'): boolean {
+  function workspaceMoveRetryAllowed(
+    summary: any,
+    ctx: WorkspaceProjectContext,
+    targetVisibility: 'personal' | 'team',
+  ): boolean {
+    // A failed publish has already crossed the local visibility boundary, so
+    // `canMoveToTeam` is deliberately false. Let only the exact member still
+    // recorded as this share's owner retry the SAME Team target. This repairs
+    // a transient hub failure without re-homing the resource through a later
+    // active/default Workspace or letting a Workspace admin take over someone
+    // else's single-writer project.
+    return targetVisibility === 'team'
+      && summary?.visibility === 'team'
+      && summary?.syncState === 'sync_failed'
+      && summary?.createdByWorkspaceMemberId === ctx.workspaceMemberId
+      && summary?.currentUserAccess?.canRename === true
+      && ctx.canShareProjects
+      && ctx.memberStatus === 'active'
+      && ctx.lifecycleState === 'active';
+  }
+
+  function workspaceMoveAllowed(
+    summary: any,
+    targetVisibility: 'personal' | 'team',
+    ctx: WorkspaceProjectContext,
+  ): boolean {
+    if (workspaceMoveRetryAllowed(summary, ctx, targetVisibility)) return true;
     if (targetVisibility === 'team') return summary.currentUserAccess.canMoveToTeam;
     return summary.currentUserAccess.canMoveToPersonal;
   }
@@ -3055,7 +3087,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       const row = listWorkspaceProjects(db, ctx.workspaceId).find((item: any) => item.id === project.id);
       if (!row || !wp) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       const summary = normalizeWorkspaceProjectRow(row, ctx);
-      if (!workspaceMoveAllowed(summary, visibility)) {
+      if (!workspaceMoveAllowed(summary, visibility, ctx)) {
         return sendApiError(res, 403, 'PROJECT_DELETE_FORBIDDEN', 'project move forbidden');
       }
       updateWorkspaceProject(db, ctx.workspaceId, project.id, workspaceProjectMovePatch(project.id, summary, ctx, visibility));
@@ -3063,13 +3095,22 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         await requestTeamVisibility([project.id], ctx, visibility);
       } catch (error) {
         restoreWorkspaceProjectRow(row);
-        throw error;
+        throw new TeamProjectSyncError(error);
       }
       const updatedRow = listWorkspaceProjects(db, ctx.workspaceId).find((item: any) => item.id === project.id);
       res.json({ project: normalizeWorkspaceProjectRow(updatedRow, ctx) });
     } catch (err: any) {
       if (isTeamProjectOwnerConflictError(err)) {
         return sendApiError(res, 409, 'TEAM_PROJECT_OWNER_CONFLICT', String(err));
+      }
+      if (err instanceof TeamProjectSyncError) {
+        return sendApiError(
+          res,
+          503,
+          'UPSTREAM_UNAVAILABLE',
+          'team project synchronization is temporarily unavailable; retry the operation',
+          { retryable: true },
+        );
       }
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }
@@ -3095,7 +3136,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return row ? normalizeWorkspaceProjectRow(row, ctx) : null;
       });
       if (summaries.some((item: any) => !item)) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
-      const forbidden = summaries.filter((item: any) => !workspaceMoveAllowed(item, visibility));
+      const forbidden = summaries.filter((item: any) => !workspaceMoveAllowed(item, visibility, ctx));
       if (forbidden.length > 0) {
         return sendApiError(res, 403, 'PROJECT_BATCH_CONTAINS_FORBIDDEN_ITEMS', 'batch contains forbidden projects');
       }
@@ -3114,7 +3155,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           for (const item of items) restoreWorkspaceProjectRow(item);
         });
         rollbackMany(previousRows.filter(Boolean));
-        throw error;
+        throw new TeamProjectSyncError(error);
       }
       const updatedRows = listWorkspaceProjects(db, ctx.workspaceId);
       const projects = projectIds.map((id: string) => normalizeWorkspaceProjectRow(updatedRows.find((row: any) => row.id === id), ctx));
@@ -3122,6 +3163,15 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     } catch (err: any) {
       if (isTeamProjectOwnerConflictError(err)) {
         return sendApiError(res, 409, 'TEAM_PROJECT_OWNER_CONFLICT', String(err));
+      }
+      if (err instanceof TeamProjectSyncError) {
+        return sendApiError(
+          res,
+          503,
+          'UPSTREAM_UNAVAILABLE',
+          'team project synchronization is temporarily unavailable; retry the operation',
+          { retryable: true },
+        );
       }
       sendApiError(res, 400, 'BAD_REQUEST', String(err));
     }

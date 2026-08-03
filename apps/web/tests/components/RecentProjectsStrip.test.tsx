@@ -1215,6 +1215,35 @@ describe('recvqaRqM0dv2x — per-card Duplicate menu item', () => {
   });
 });
 
+describe('team-shared project with unresolved owner identity', () => {
+  // The hub list can arrive before its owner directory/map (or the catalog
+  // read can transiently fail). Unknown is not proof that the viewer owns a
+  // shared project: treating it as self-owned exposes rename/delete/unshare
+  // actions that the daemon must reject, which is exactly the misleading
+  // "move out of team space failed" menu QA reported.
+  it('fails closed instead of offering owner-only mutations', () => {
+    const onRename = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <RecentProjectsStrip
+        projects={[project({ id: 'project-1', name: 'Shared project' })]}
+        onOpen={() => {}}
+        onRename={onRename}
+        onDelete={onDelete}
+        collaborationEnabled
+        isSharedProject={(projectId) => projectId === 'project-1'}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+
+    expect((screen.getByRole('menuitem', { name: 'Rename' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('menuitem', { name: /Move out of team space/i })).toBeNull();
+    expect((screen.getByRole('menuitem', { name: /In team space/i }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('menuitem', { name: 'Delete' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
 describe('recvqbh189zBY6 — single-card delete confirmation', () => {
   // commitDelete used to await onDelete and drop the result either way, so a
   // 403/network failure closed the confirm dialog exactly like a success —

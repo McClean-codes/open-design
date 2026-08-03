@@ -469,7 +469,7 @@ export function RecentProjectsStrip({
   // (off-team, or a member the daemon has not seen register), never an opaque id.
   const resolveCreator = (projectId: string): { name: string; initial: string; ownedBySelf: boolean } => {
     const ownerMemberId = projectOwnerMemberIds?.get(projectId) ?? null;
-    if (!ownerMemberId || ownerMemberId === selfMemberId) {
+    if (ownerMemberId === selfMemberId || (!ownerMemberId && !isShared(projectId))) {
       const name = t('recentProjects.selfCreator');
       const initial = Array.from(name.trim())[0]?.toUpperCase() ?? 'M';
       return { name, initial, ownedBySelf: true };

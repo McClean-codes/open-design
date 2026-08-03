@@ -2145,7 +2145,7 @@ describe('workspace project routes', () => {
         }),
         body: JSON.stringify({ visibility: 'team' }),
       });
-      expect(moveResp.status).toBe(400);
+      expect(moveResp.status).toBe(503);
       expect(requestTeamShare).toHaveBeenCalledWith(projectId, {
         memberId: 'member-share-rejected',
         teamId: workspaceId,
@@ -2173,7 +2173,7 @@ describe('workspace project routes', () => {
         }),
         body: JSON.stringify({ projectIds: [projectId], visibility: 'team' }),
       });
-      expect(batchResp.status).toBe(400);
+      expect(batchResp.status).toBe(503);
       expect(updateWorkspaceProject).toHaveBeenCalledTimes(2);
       expect(updateWorkspaceProject.mock.calls[0]?.[3]).toMatchObject({
         visibility: 'team',
@@ -2183,6 +2183,157 @@ describe('workspace project routes', () => {
         visibility: 'personal',
         syncState: 'local_only',
         resourceHubResourceId: null,
+      });
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('retries a failed Team publish only for the exact recorded owner and Workspace', async () => {
+    const projectId = `workspace-share-retry-${Date.now()}`;
+    const memberId = 'member-share-retry';
+    const requestTeamShare = vi.fn(async () => ({ version: 7 }));
+    const updateWorkspaceProject = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      collabSync: { requestTeamShare },
+      updateWorkspaceProject,
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        createdByWorkspaceMemberId: memberId,
+        updatedByWorkspaceMemberId: memberId,
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const retry = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: headers(memberId, {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'member',
+          'x-od-workspace-lifecycle-state': 'active',
+        }),
+        body: JSON.stringify({ visibility: 'team' }),
+      });
+
+      expect(retry.status).toBe(200);
+      expect(requestTeamShare).toHaveBeenCalledTimes(1);
+      expect(requestTeamShare).toHaveBeenCalledWith(projectId, {
+        memberId,
+        teamId: workspaceId,
+        role: 'member',
+        lifecycleState: 'active',
+      });
+      expect(updateWorkspaceProject).toHaveBeenCalledWith(
+        expect.anything(),
+        workspaceId,
+        projectId,
+        expect.objectContaining({
+          visibility: 'team',
+          createdByWorkspaceMemberId: memberId,
+          resourceHubResourceId: expect.any(String),
+          syncState: 'pending_upload',
+        }),
+      );
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('does not let another member retry a failed Team publish', async () => {
+    const projectId = `workspace-share-retry-foreign-${Date.now()}`;
+    const requestTeamShare = vi.fn(async () => ({ version: 7 }));
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      collabSync: { requestTeamShare },
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        createdByWorkspaceMemberId: 'member-recorded-owner',
+        updatedByWorkspaceMemberId: 'member-recorded-owner',
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const retry = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: headers('member-other', {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'admin',
+          'x-od-workspace-lifecycle-state': 'active',
+        }),
+        body: JSON.stringify({ visibility: 'team' }),
+      });
+
+      expect(retry.status).toBe(403);
+      expect(requestTeamShare).not.toHaveBeenCalled();
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('preserves the failed Team binding when an exact-owner retry is still unavailable', async () => {
+    const projectId = `workspace-share-retry-unavailable-${Date.now()}`;
+    const memberId = 'member-share-retry-unavailable';
+    const requestTeamShare = vi.fn(async () => {
+      throw new Error('TLS handshake timeout');
+    });
+    const updateWorkspaceProject = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      collabSync: { requestTeamShare },
+      updateWorkspaceProject,
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        createdByWorkspaceMemberId: memberId,
+        updatedByWorkspaceMemberId: memberId,
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const retry = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: headers(memberId, {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'member',
+          'x-od-workspace-lifecycle-state': 'active',
+        }),
+        body: JSON.stringify({ visibility: 'team' }),
+      });
+
+      expect(retry.status).toBe(503);
+      await expect(retry.json()).resolves.toMatchObject({
+        error: {
+          code: 'UPSTREAM_UNAVAILABLE',
+          retryable: true,
+        },
+      });
+      expect(updateWorkspaceProject).toHaveBeenCalledTimes(2);
+      expect(updateWorkspaceProject.mock.calls[1]?.[3]).toMatchObject({
+        visibility: 'team',
+        createdByWorkspaceMemberId: memberId,
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
       });
     } finally {
       await close(routeServer.server);
@@ -2344,8 +2495,8 @@ function workspaceProjectRouteDeps({
     design: {},
     http: {
       createSseResponse: noop,
-      sendApiError: (res: any, status: number, code: string, message: string) =>
-        res.status(status).json({ error: { code, message } }),
+      sendApiError: (res: any, status: number, code: string, message: string, init: Record<string, unknown> = {}) =>
+        res.status(status).json({ error: { code, message, ...init } }),
     },
     paths: {
       DESIGN_SYSTEMS_DIR: '',
