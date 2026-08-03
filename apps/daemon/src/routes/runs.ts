@@ -910,18 +910,48 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     reconcileAssistantMessageOnRunEnd,
   } = ctx.messages;
 
+  /** Authorize every bound run mutation before plugin or snapshot resolution. */
+  async function authorizeRunProjectBeforePluginResolution(
+    req: ApiRequest,
+    res: ApiResponse,
+    projectId: string,
+  ): Promise<{ ok: true; authorizedBoundMutation: boolean } | { ok: false }> {
+    if (!ctx.projectStore || !ctx.authorizeProjectRequest) {
+      return { ok: true, authorizedBoundMutation: false };
+    }
+    const binding = ctx.projectStore.getWorkspaceProjectByProjectId(db, projectId);
+    if (!binding) return { ok: true, authorizedBoundMutation: false };
+
+    const requestContext = workspaceResourceContextFromRequest(req);
+    const mustAuthorize = binding.visibility === 'team' || requestContext !== null;
+    if (!mustAuthorize) {
+      // Headerless local CLI/BYOK calls keep the legacy Personal-project path.
+      return { ok: true, authorizedBoundMutation: false };
+    }
+    if (!await ctx.authorizeProjectRequest(
+      req,
+      res,
+      projectId,
+      { mode: 'write', capability: 'writeFiles' },
+    )) {
+      return { ok: false };
+    }
+    return { ok: true, authorizedBoundMutation: true };
+  }
+
   /**
    * Pin a run to its persisted project binding. The sole adoption branch is a
    * signed-in AMR request for a truly unbound historical project: a freshly
-   * verified exact Personal identity may write the same ownerless projection
-   * that the Personal project-list migration writes. Every other runtime keeps
-   * its legacy local path and never reads Workspace authority here.
+   * verified exact Personal identity becomes the persisted creator witness.
+   * Every other runtime keeps its legacy local path and never reads Workspace
+   * authority here.
    */
   async function prepareRunWorkspaceScope(
     req: ApiRequest,
     res: ApiResponse,
     projectId: string,
     agentId: unknown,
+    authorizedBoundMutation = false,
   ): Promise<
     | { ok: true; workspaceScope: PinnedRunWorkspaceScope | null }
     | { ok: false }
@@ -933,11 +963,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       // A shared Team project is a single-writer resource. Billing still uses
       // the persisted Workspace binding below, but starting an agent can write
       // project files and conversation state, so the caller must separately
-      // prove project-owner mutation standing. Workspace owner/admin is not a
-      // substitute for the catalog's project owner. Personal and unshared
-      // bindings retain the legacy local-run behavior.
+      // prove project-owner mutation standing. Explicitly scoped Personal
+      // requests use the same exact creator gate before plugin/snapshot
+      // resolution; only headerless local Personal callers keep legacy access.
       if (
         binding.visibility === 'team'
+        && !authorizedBoundMutation
         && ctx.authorizeProjectRequest
         && !await ctx.authorizeProjectRequest(
           req,
@@ -1065,8 +1096,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         workspaceId: verified.context.workspaceId,
         visibility: 'personal',
         resourceState: 'active',
-        createdByWorkspaceMemberId: null,
-        updatedByWorkspaceMemberId: null,
+        createdByWorkspaceMemberId: verified.context.workspaceMemberId,
+        updatedByWorkspaceMemberId: verified.context.workspaceMemberId,
         syncState: 'local_only',
         resourceHubResourceId: null,
         cloudTombstonedAt: null,
@@ -1198,6 +1229,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         return sendApiError(res, 404, 'CONVERSATION_NOT_FOUND', 'conversation not found for project');
       }
     }
+    let authorizedBoundMutation = false;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      const authorization = await authorizeRunProjectBeforePluginResolution(
+        req,
+        res,
+        requestBody.projectId,
+      );
+      if (!authorization.ok) return;
+      authorizedBoundMutation = authorization.authorizedBoundMutation;
+    }
     let resolvedSnapshot = null;
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
       let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
@@ -1232,6 +1273,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           : null,
         registry: registryView,
         connectorProbe: buildConnectorProbe(connectorService),
+        requireSnapshotProjectMatch: true,
       });
       if (resolved && !resolved.ok) {
         if (!explicitPlugin) {
@@ -1309,7 +1351,13 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     if (typeof meta.projectId === 'string' && meta.projectId) {
       const preparedWorkspaceScope =
-        await prepareRunWorkspaceScope(req, res, meta.projectId, meta.agentId);
+        await prepareRunWorkspaceScope(
+          req,
+          res,
+          meta.projectId,
+          meta.agentId,
+          authorizedBoundMutation,
+        );
       if (!preparedWorkspaceScope.ok) return;
       meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
@@ -2723,6 +2771,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         return sendApiError(res, 404, 'CONVERSATION_NOT_FOUND', 'conversation not found for project');
       }
     }
+    let authorizedBoundMutation = false;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      const authorization = await authorizeRunProjectBeforePluginResolution(
+        req,
+        res,
+        requestBody.projectId,
+      );
+      if (!authorization.ok) return;
+      authorizedBoundMutation = authorization.authorizedBoundMutation;
+    }
     const byokInputError = await byokRunInputError(
       requestBody,
       ctx.byokCredentials,
@@ -2743,7 +2801,13 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     };
     if (typeof meta.projectId === 'string' && meta.projectId) {
       const preparedWorkspaceScope =
-        await prepareRunWorkspaceScope(req, res, meta.projectId, meta.agentId);
+        await prepareRunWorkspaceScope(
+          req,
+          res,
+          meta.projectId,
+          meta.agentId,
+          authorizedBoundMutation,
+        );
       if (!preparedWorkspaceScope.ok) return;
       meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
