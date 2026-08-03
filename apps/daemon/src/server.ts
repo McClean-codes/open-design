@@ -844,8 +844,11 @@ import {
   type LocalTeamProjectBinding,
 } from './collab/workspace-projects-reconciler.js';
 import {
+  createWorkspaceTeamResourceEventCoordinator,
   reconcileWorkspaceResourcesWithRemote,
   type LocalTeamResourceBinding,
+  type MaterializedTeamResourceRef,
+  type WorkspaceTeamResourceRefreshReason,
 } from './collab/workspace-resources-reconciler.js';
 import { createVelaCliCollabClientFromEnv } from './collab/vela-cli-collab-client.js';
 import {
@@ -4967,6 +4970,8 @@ export async function startServer({
           void reconcileTeamResourcesFromRemote(
             event.resourceKind,
             eventWorkspaceId,
+            'push',
+            event.resourceId,
           ).catch(() => undefined);
           break;
         }
@@ -4993,7 +4998,7 @@ export async function startServer({
       // reconciler: a missed 'team-resources-changed' push during the
       // disconnect window is closed by one full re-check across every kind
       // this daemon drives it for (no resourceKind => reconcile all).
-      void reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId)
+      void reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId, 'catch-up')
         .catch(() => undefined);
     },
     onSourceGap: ({ workspaceId, listenerEpoch }) => {
@@ -5011,7 +5016,7 @@ export async function startServer({
         .catch(() => undefined);
       workspaceBillingRuntime.reconnect(exactWorkspaceId);
       void collabCloud?.pollOnce().catch(() => undefined);
-      void reconcileTeamResourcesFromRemote(undefined, exactWorkspaceId)
+      void reconcileTeamResourcesFromRemote(undefined, exactWorkspaceId, 'catch-up')
         .catch(() => undefined);
     },
     onError: (error) => {
@@ -5780,11 +5785,6 @@ export async function startServer({
   //
   const RECONCILED_TEAM_RESOURCE_KINDS = ['design_system', 'plugin', 'skill'] as const;
   type ReconciledTeamResourceKind = (typeof RECONCILED_TEAM_RESOURCE_KINDS)[number];
-  const teamResourceShareByKind: Record<ReconciledTeamResourceKind, TeamResourceShareService> = {
-    design_system: designSystemsTeamShare,
-    plugin: pluginsTeamShare,
-    skill: skillsTeamShare,
-  };
   const adoptLegacyWorkspaceTeamPluginBindings = async (
     scope: TeamResourceRequestScope,
   ): Promise<void> => {
@@ -5910,6 +5910,7 @@ export async function startServer({
   const reconcileTeamResourceKind = async (
     resourceType: ReconciledTeamResourceKind,
     scope: TeamResourceRequestScope,
+    resources: readonly MaterializedTeamResourceRef[],
   ) => {
     if (resourceType === 'plugin') {
       await adoptLegacyWorkspaceTeamPluginBindings(scope);
@@ -5920,12 +5921,10 @@ export async function startServer({
     if (resourceType === 'skill') {
       await adoptLegacyWorkspaceTeamSkillBindings(scope);
     }
-    return reconcileWorkspaceResourcesWithRemote({
+    let reconciliationError: unknown;
+    const result = await reconcileWorkspaceResourcesWithRemote({
       getWorkspaceIdentity: async () => ({ workspaceId: scope.principal.teamId }),
-      listRemoteTeamResources: async () =>
-        (await teamResourceShareByKind[resourceType].sharedResources(scope)).map((resource) => ({
-          resourceId: resource.id,
-        })),
+      listRemoteTeamResources: async () => resources,
       listLocalActiveTeamRows: (workspaceId): LocalTeamResourceBinding[] =>
         listWorkspaceResources(db, resourceType, workspaceId)
           .filter((row: any) => row.visibility === 'team' && row.resourceState !== 'deleted')
@@ -5957,15 +5956,69 @@ export async function startServer({
           resourceState: 'deleted',
         });
       },
-      onError: (error) => console.warn(`[od] workspace-resources (${resourceType}) reconciliation error:`, error),
+      onError: (error) => {
+        reconciliationError ??= error;
+        console.warn(`[od] workspace-resources (${resourceType}) reconciliation error:`, error);
+      },
     });
+    if (reconciliationError) throw reconciliationError;
+    return result;
   };
+  const teamResourceMaterializationIsReady = (
+    resourceType: ReconciledTeamResourceKind,
+    resource: TeamResourceShareRecord,
+    scope: TeamResourceRequestScope,
+  ): boolean => {
+    if (resource.ownerMemberId === scope.principal.memberId) return true;
+    const workspaceId = scope.principal.teamId;
+    const bindingResourceId = resourceType === 'plugin'
+      ? workspaceTeamPluginBindingResourceId(workspaceId, resource.id)
+      : resourceType === 'design_system'
+        ? workspaceTeamDesignSystemBindingResourceId(workspaceId, resource.id)
+        : workspaceTeamSkillBindingResourceId(workspaceId, resource.id);
+    const binding = getWorkspaceResourceByResourceId(
+      db,
+      resourceType,
+      bindingResourceId,
+    );
+    if (
+      binding?.workspaceId !== workspaceId
+      || binding.visibility !== 'team'
+      || binding.resourceState !== 'active'
+    ) return false;
+    return !resource.versionId
+      || teamResourceVersions.get(workspaceId, resourceType, resource.id) === resource.versionId;
+  };
+  const teamResourceEventCoordinator = createWorkspaceTeamResourceEventCoordinator({
+    materializeAndList: async ({ resourceKind, scope }) => {
+      const listing = await teamResourceListByKind[resourceKind](scope);
+      const incomplete = listing.resources.find(
+        (resource) => !teamResourceMaterializationIsReady(resourceKind, resource, scope),
+      );
+      if (incomplete) {
+        throw new Error(
+          `team resource ${resourceKind}/${incomplete.id} was not materialized`,
+        );
+      }
+      return listing.resources.map((resource) => ({
+        resourceId: resource.id,
+        ...(resource.versionId ? { versionId: resource.versionId } : {}),
+      }));
+    },
+    reconcile: ({ resourceKind, scope, resources }) =>
+      reconcileTeamResourceKind(resourceKind, scope, resources),
+    emit: emitWorkspaceEvent,
+    onError: (error, resourceKind) =>
+      console.warn(`[od] workspace-resources (${resourceKind}) refresh error:`, error),
+  });
   // `resourceKind` scopes the pass to just the kind the event was about;
   // omitted (hub reconnect catch-up, the poll fallback) reconciles every
   // kind this daemon drives it for.
   const reconcileTeamResourcesFromRemote = async (
     resourceKind?: string,
     workspaceId?: string,
+    reason: WorkspaceTeamResourceRefreshReason = 'poll',
+    resourceId?: string,
   ): Promise<void> => {
     const requestedWorkspaceId = workspaceId?.trim();
     if (!requestedWorkspaceId) return;
@@ -5978,6 +6031,7 @@ export async function startServer({
     const kinds = resourceKind
       ? RECONCILED_TEAM_RESOURCE_KINDS.filter((kind) => kind === resourceKind)
       : RECONCILED_TEAM_RESOURCE_KINDS;
+    if (kinds.length === 0) return;
     // A Team listing has two SWR layers: the per-kind parsed/materialized
     // response and the raw shared command underneath it. Drop both before the
     // authoritative reconciliation pass so the next UI read cannot keep
@@ -5989,9 +6043,13 @@ export async function startServer({
       invalidateSharedCommand: (exactWorkspaceId) =>
         sharedTeamResourcesCommand.invalidate(exactWorkspaceId),
     });
-    await Promise.all(
-      kinds.map((kind) => reconcileTeamResourceKind(kind, scope)),
-    );
+    await teamResourceEventCoordinator.refresh({
+      workspaceId: requestedWorkspaceId,
+      scope,
+      ...(resourceKind ? { resourceKind } : {}),
+      ...(resourceId ? { resourceId } : {}),
+      reason,
+    });
   };
   const teamResourceBackgroundWorkspaceIds = (): string[] => {
     const ids = new Set<string>();
@@ -6017,13 +6075,12 @@ export async function startServer({
   // poller's deps: `workspaceInvalidationPoller` decides whether to emit by
   // diffing a cheap SIGNATURE against the previous one (see its
   // `emitIfChanged`), and there is no equivalent cheap "did the team-shared
-  // resource set change" digest to diff against (vela's own
-  // `/api/v1/collab/sync-digest` carries no resources token) — so this
-  // always just re-reads and re-diffs unconditionally on its own cadence
-  // instead of piggybacking on that poller's change-detection.
+  // resource set change" digest in Vela's `/api/v1/collab/sync-digest`, so
+  // this re-reads on its own cadence. The coordinator derives a stable
+  // id+version signature after materialization and suppresses unchanged emits.
   const teamResourcesPollTimer = setInterval(() => {
     for (const workspaceId of teamResourceBackgroundWorkspaceIds()) {
-      void reconcileTeamResourcesFromRemote(undefined, workspaceId).catch((error) =>
+      void reconcileTeamResourcesFromRemote(undefined, workspaceId, 'poll').catch((error) =>
         console.warn(
           `[od] workspace ${workspaceId} resources poll error:`,
           error,

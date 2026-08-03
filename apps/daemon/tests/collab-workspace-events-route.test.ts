@@ -109,6 +109,23 @@ describe('GET /api/workspace/events', () => {
     const framed = await readUntil(reader, (text) => text.includes('event: team-projects-changed'));
     expect(framed).toContain('"type":"team-projects-changed"');
 
+    emitWorkspaceEventToScope(
+      sinks,
+      'workspace-a',
+      {
+        type: 'team-resources-changed',
+        resourceKind: 'skill',
+        resourceId: 'skill-1',
+        at: 124,
+      },
+    );
+    const resourceFrame = await readUntil(
+      reader,
+      (text) => text.includes('event: team-resources-changed'),
+    );
+    expect(resourceFrame).toContain('"resourceKind":"skill"');
+    expect(resourceFrame).not.toContain('resourceStatus');
+
     // Disconnect → the route's res.on('close') cleanup drops the sink.
     controller.abort();
     await reader.cancel().catch(() => {});

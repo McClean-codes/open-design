@@ -356,7 +356,7 @@ describe('server.ts wiring (source boundary)', () => {
       'reconcileWorkspaceProjectsFromRemote(subscribedWorkspaceId)',
     );
     expect(reconnectBody).toContain(
-      'reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId)',
+      "reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId, 'catch-up')",
     );
     expect(sourceGapBody).toContain(
       'workspaceId ?? subscribedWorkspaceId',
@@ -392,7 +392,66 @@ describe('server.ts wiring (source boundary)', () => {
     expect(body).not.toContain('activeWorkspace.get()');
     expect(body).toContain('teamResourceBackgroundWorkspaceIds()');
     expect(body).toContain(
-      'reconcileTeamResourcesFromRemote(undefined, workspaceId)',
+      "reconcileTeamResourcesFromRemote(undefined, workspaceId, 'poll')",
+    );
+  });
+
+  it('materializes and reconciles Team resources before exact-scope invalidation', () => {
+    const coordinatorStart = source.indexOf(
+      'const teamResourceEventCoordinator = createWorkspaceTeamResourceEventCoordinator({',
+    );
+    const refreshStart = source.indexOf(
+      'const reconcileTeamResourcesFromRemote = async (',
+      coordinatorStart,
+    );
+    expect(coordinatorStart).toBeGreaterThan(-1);
+    expect(refreshStart).toBeGreaterThan(coordinatorStart);
+    const coordinatorBody = source.slice(coordinatorStart, refreshStart);
+    expect(coordinatorBody).toContain(
+      'const listing = await teamResourceListByKind[resourceKind](scope);',
+    );
+    expect(coordinatorBody).toContain(
+      '!teamResourceMaterializationIsReady(resourceKind, resource, scope)',
+    );
+    expect(coordinatorBody).toContain(
+      'was not materialized',
+    );
+    expect(coordinatorBody).toContain(
+      'reconcileTeamResourceKind(resourceKind, scope, resources)',
+    );
+    expect(coordinatorBody).toContain('emit: emitWorkspaceEvent');
+    const reconcileKindStart = source.indexOf(
+      'const reconcileTeamResourceKind = async (',
+    );
+    const readinessStart = source.indexOf(
+      'const teamResourceMaterializationIsReady = (',
+      reconcileKindStart,
+    );
+    expect(source.slice(reconcileKindStart, readinessStart)).toContain(
+      'if (reconciliationError) throw reconciliationError;',
+    );
+
+    const pollStart = source.indexOf(
+      'const teamResourceBackgroundWorkspaceIds = (): string[] => {',
+      refreshStart,
+    );
+    const refreshBody = source.slice(refreshStart, pollStart);
+    expect(refreshBody).toContain('if (kinds.length === 0) return;');
+    expect(refreshBody.indexOf('invalidateTeamResourceListingCaches({'))
+      .toBeLessThan(refreshBody.indexOf('teamResourceEventCoordinator.refresh({'));
+    expect(refreshBody).toContain('workspaceId: requestedWorkspaceId');
+
+    const hubSwitch = extractOnEventSwitchBody();
+    const resourceCase = hubSwitch
+      .split(/(?=case '[a-z-]+':)/g)
+      .find((chunk) => chunk.startsWith("case 'team-resources-changed':"));
+    expect(resourceCase).toContain("'push'");
+    expect(resourceCase).toContain('event.resourceId');
+    expect(source).toContain(
+      "reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId, 'catch-up')",
+    );
+    expect(source).toContain(
+      "reconcileTeamResourcesFromRemote(undefined, workspaceId, 'poll')",
     );
   });
 
