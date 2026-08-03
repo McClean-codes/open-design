@@ -103,6 +103,34 @@ function teamHeaders(input: {
   });
 }
 
+function verifiedTeamAuthority(input: {
+  workspaceId?: string;
+  memberId: string;
+  role: 'owner' | 'admin' | 'member';
+}) {
+  const workspaceId = input.workspaceId ?? TEAM_WORKSPACE_ID;
+  return async () => ({
+    ok: true as const,
+    context: {
+      workspaceId,
+      workspaceMemberId: input.memberId,
+      workspaceType: 'team' as const,
+      teamId: workspaceId,
+      workspaceName: 'Catalog-only rename team',
+      role: input.role,
+      memberStatus: 'active' as const,
+      lifecycleState: 'active' as const,
+      permissions: {
+        canManageBilling: input.role === 'owner',
+        canManageMembers: input.role !== 'member',
+        canInviteMembers: input.role !== 'member',
+        canShareProjects: true,
+        canWriteSyncedFiles: true,
+      },
+    },
+  });
+}
+
 async function listen(app: express.Express): Promise<{ server: http.Server; url: string }> {
   return new Promise((resolve) => {
     const server = app.listen(0, () => {
@@ -446,6 +474,232 @@ describe('project move to personal on an unbound (never-locally-shared) project'
         workspaceId: TEAM_WORKSPACE_ID,
         visibility: 'personal',
       });
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('materializes and renames an exact-owner Team catalog project on a fresh daemon', async () => {
+    const projectId = `catalog-only-owner-rename-${Date.now()}`;
+    const resourceId = `project-${projectId}`;
+    const teamProjectCatalog = {
+      list: vi.fn(async () => [{
+        id: `catalog-${projectId}`,
+        workspaceId: TEAM_WORKSPACE_ID,
+        projectId,
+        resourceId,
+        ownerMemberId: OWNER_MEMBER_ID,
+        displayName: 'Remote project before rename',
+        syncState: 'synced',
+        lastSyncedVersionId: 'version-1',
+        createdAt: new Date(10).toISOString(),
+        updatedAt: new Date(20).toISOString(),
+        access: { canView: true, canComment: true, canEdit: true, frozen: false },
+      }]),
+      upsert: vi.fn(),
+    };
+    const materializeTeamProject = vi.fn(async () => {
+      insertProject(db, {
+        id: projectId,
+        name: 'Remote project before rename',
+        skillId: null,
+        designSystemId: null,
+        pendingPrompt: null,
+        metadata: null,
+        customInstructions: null,
+        createdAt: 10,
+        updatedAt: 20,
+      });
+      ensureWorkspaceProject(db, {
+        projectId,
+        workspaceId: TEAM_WORKSPACE_ID,
+        visibility: 'team',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
+        updatedByWorkspaceMemberId: OWNER_MEMBER_ID,
+        resourceHubResourceId: resourceId,
+        cloudTombstonedAt: null,
+        syncState: 'synced',
+      });
+    });
+    const refreshTeamProjectMetadata = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, buildDeps({
+      teamProjectCatalog,
+      verifyWorkspaceRequestAuthority: verifiedTeamAuthority({
+        memberId: OWNER_MEMBER_ID,
+        role: 'owner',
+      }),
+      collabSync: {
+        requestTeamShare: vi.fn(),
+        requestTeamUnshare: vi.fn(),
+        materializeTeamProject,
+        refreshTeamProjectMetadata,
+        invalidateTeamProjectCatalog: vi.fn(),
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      // A second device knows this project only through Vela's Team catalog.
+      expect(getProject(db, projectId)).toBeNull();
+      expect(getWorkspaceProjectByProjectId(db, projectId)).toBeUndefined();
+
+      const response = await fetch(
+        `${routeServer.url}/api/projects/${projectId}`,
+        {
+          method: 'PATCH',
+          headers: ownerTeamHeaders(),
+          body: JSON.stringify({ name: 'Renamed from another device' }),
+        },
+      );
+
+      const body = await response.json() as any;
+      expect(response.status, JSON.stringify(body)).toBe(200);
+      expect(materializeTeamProject).toHaveBeenCalledWith(projectId, {
+        memberId: OWNER_MEMBER_ID,
+        teamId: TEAM_WORKSPACE_ID,
+        role: 'owner',
+        lifecycleState: 'active',
+      });
+      expect(refreshTeamProjectMetadata).toHaveBeenCalledWith(projectId);
+      expect(getProject(db, projectId)).toMatchObject({
+        id: projectId,
+        name: 'Renamed from another device',
+      });
+      expect(getWorkspaceProjectByProjectId(db, projectId)).toMatchObject({
+        workspaceId: TEAM_WORKSPACE_ID,
+        visibility: 'team',
+        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
+        resourceHubResourceId: resourceId,
+      });
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it.each(['owner', 'admin', 'member'] as const)(
+    'does not let a Workspace %s materialize or rename another member catalog-only project',
+    async (role) => {
+      const projectId = `catalog-only-other-owner-rename-${role}-${Date.now()}`;
+      const teamProjectCatalog = {
+        list: vi.fn(async () => [{
+          id: `catalog-${projectId}`,
+          workspaceId: TEAM_WORKSPACE_ID,
+          projectId,
+          resourceId: `project-${projectId}`,
+          ownerMemberId: 'actual-project-owner',
+          displayName: 'Another member project',
+          syncState: 'synced',
+          lastSyncedVersionId: 'version-1',
+          createdAt: new Date(10).toISOString(),
+          updatedAt: new Date(20).toISOString(),
+          access: { canView: true, canComment: true, canEdit: true, frozen: false },
+        }]),
+        upsert: vi.fn(),
+      };
+      const materializeTeamProject = vi.fn();
+      const refreshTeamProjectMetadata = vi.fn();
+      const app = express();
+      app.use(express.json());
+      registerProjectRoutes(app, buildDeps({
+        teamProjectCatalog,
+        verifyWorkspaceRequestAuthority: verifiedTeamAuthority({
+          memberId: OWNER_MEMBER_ID,
+          role,
+        }),
+        collabSync: {
+          requestTeamShare: vi.fn(),
+          requestTeamUnshare: vi.fn(),
+          materializeTeamProject,
+          refreshTeamProjectMetadata,
+          invalidateTeamProjectCatalog: vi.fn(),
+        },
+      }));
+      const routeServer = await listen(app);
+      try {
+        const response = await fetch(
+          `${routeServer.url}/api/projects/${projectId}`,
+          {
+            method: 'PATCH',
+            headers: teamHeaders({ memberId: OWNER_MEMBER_ID, role }),
+            body: JSON.stringify({ name: 'Illicit catalog-only rename' }),
+          },
+        );
+
+        expect(response.status).toBe(403);
+        expect(materializeTeamProject).not.toHaveBeenCalled();
+        expect(refreshTeamProjectMetadata).not.toHaveBeenCalled();
+        expect(getProject(db, projectId)).toBeNull();
+        expect(getWorkspaceProjectByProjectId(db, projectId)).toBeUndefined();
+      } finally {
+        await close(routeServer.server);
+      }
+    },
+  );
+
+  it('does not materialize or rename a catalog-only Team project through the wrong Workspace', async () => {
+    const projectId = `catalog-only-wrong-workspace-rename-${Date.now()}`;
+    const wrongWorkspaceId = `${TEAM_WORKSPACE_ID}-wrong`;
+    const teamProjectCatalog = {
+      list: vi.fn(async () => [{
+        id: `catalog-${projectId}`,
+        workspaceId: TEAM_WORKSPACE_ID,
+        projectId,
+        resourceId: `project-${projectId}`,
+        ownerMemberId: OWNER_MEMBER_ID,
+        displayName: 'Right project, wrong request Workspace',
+        syncState: 'synced',
+        lastSyncedVersionId: 'version-1',
+        createdAt: new Date(10).toISOString(),
+        updatedAt: new Date(20).toISOString(),
+        access: { canView: true, canComment: true, canEdit: true, frozen: false },
+      }]),
+      upsert: vi.fn(),
+    };
+    const materializeTeamProject = vi.fn();
+    const refreshTeamProjectMetadata = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, buildDeps({
+      teamProjectCatalog,
+      verifyWorkspaceRequestAuthority: verifiedTeamAuthority({
+        workspaceId: wrongWorkspaceId,
+        memberId: OWNER_MEMBER_ID,
+        role: 'owner',
+      }),
+      collabSync: {
+        requestTeamShare: vi.fn(),
+        requestTeamUnshare: vi.fn(),
+        materializeTeamProject,
+        refreshTeamProjectMetadata,
+        invalidateTeamProjectCatalog: vi.fn(),
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const response = await fetch(
+        `${routeServer.url}/api/projects/${projectId}`,
+        {
+          method: 'PATCH',
+          headers: ownerTeamHeaders({
+            'x-od-workspace-id': wrongWorkspaceId,
+          }),
+          body: JSON.stringify({ name: 'Wrong Workspace rename' }),
+        },
+      );
+
+      expect(response.status).toBe(404);
+      expect(teamProjectCatalog.list).toHaveBeenCalledWith({
+        memberId: OWNER_MEMBER_ID,
+        teamId: wrongWorkspaceId,
+        role: 'owner',
+        lifecycleState: 'active',
+      });
+      expect(materializeTeamProject).not.toHaveBeenCalled();
+      expect(refreshTeamProjectMetadata).not.toHaveBeenCalled();
+      expect(getProject(db, projectId)).toBeNull();
+      expect(getWorkspaceProjectByProjectId(db, projectId)).toBeUndefined();
     } finally {
       await close(routeServer.server);
     }

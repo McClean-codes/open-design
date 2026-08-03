@@ -1895,6 +1895,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     const project = {
       id: remote.projectId,
       name,
+      workspaceId: ctx.workspaceId,
       skillId: null,
       designSystemId: null,
       metadata,
@@ -2144,12 +2145,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
 
   /**
    * A catalog entry may be visible before this daemon has either the project
-   * row or its files. The creator must pull that content before unsharing;
-   * otherwise removing the hub copy would discard the only copy this daemon
-   * can preserve as Personal. The pull path performs its own fresh exact-scope
-   * authority/catalog checks and commits content + rows atomically.
+   * row or its files. Exact-owner mutations that require local state first
+   * pull that content: unshare must preserve a Personal copy, while rename
+   * must update the real project row before refreshing Vela metadata. The pull
+   * path performs its own fresh exact-scope authority/catalog checks and
+   * commits content + rows atomically.
    */
-  async function materializeCatalogOnlyOwnerProjectBeforeMove(
+  async function materializeCatalogOnlyOwnerProject(
     projectId: string,
     ctx: WorkspaceProjectContext,
   ): Promise<CatalogOnlyOwnerMaterialization> {
@@ -3068,7 +3070,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       let project = getProject(db, req.params.projectId);
       if (!project && visibility === 'personal' && ctx.workspaceType === 'team') {
-        const materialization = await materializeCatalogOnlyOwnerProjectBeforeMove(
+        const materialization = await materializeCatalogOnlyOwnerProject(
           req.params.projectId,
           ctx,
         );
@@ -4035,7 +4037,55 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   app.patch('/api/projects/:id', async (req, res) => {
     try {
       const patch = req.body || {};
-      const patchProject = getProject(db, req.params.id);
+      let patchProject = getProject(db, req.params.id);
+      if (
+        !patchProject
+        && typeof patch.name === 'string'
+        && patch.name.trim().length > 0
+      ) {
+        // A Team owner can open this project from Vela's catalog on a second
+        // device before the local daemon has pulled either its SQLite row or
+        // its files. The catalog summary correctly advertises `canRename`, so
+        // materialize that exact Team project before applying the rename.
+        //
+        // Never infer scope from active/default Workspace state: only a
+        // complete request assertion that passes the fresh authority verifier
+        // may select the catalog principal. The materializer then rechecks the
+        // exact Workspace, project, resource id, and recorded project owner.
+        const asserted = workspaceProjectContextFromRequest(req);
+        if (asserted && asserted !== 'missing') {
+          const renameCtx = await authoritativeWorkspaceProjectContext(
+            req,
+            res,
+            asserted.workspaceId,
+          );
+          if (!renameCtx) return;
+          const materialization = await materializeCatalogOnlyOwnerProject(
+            req.params.id,
+            renameCtx,
+          );
+          if (materialization === 'denied') {
+            return sendApiError(
+              res,
+              403,
+              'WORKSPACE_PROJECT_PERMISSION_DENIED',
+              'project rename forbidden',
+            );
+          }
+          if (materialization === 'unavailable') {
+            return sendApiError(
+              res,
+              503,
+              'UPSTREAM_UNAVAILABLE',
+              'team project content is temporarily unavailable',
+              { retryable: true },
+            );
+          }
+          if (materialization === 'materialized') {
+            patchProject = getProject(db, req.params.id);
+          }
+        }
+      }
       if (!patchProject) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }

@@ -1539,6 +1539,7 @@ describe('workspace project routes', () => {
         },
       });
       expect(body.projects[0].project.id).toBe(remoteProjectId);
+      expect(body.projects[0].project.workspaceId).toBe(workspaceId);
       expect(body.projects[0].project.metadata).toEqual({
         sharedProjectPlaceholderAt: 20,
       });
@@ -2504,6 +2505,21 @@ function workspaceProjectRouteDeps({
   return {
     db: {
       transaction: (fn: (ids: string[]) => void) => fn,
+      // Successful Team shares now preserve the comment foreign-key invariant
+      // by ensuring one local conversation after the visibility write. These
+      // route tests isolate share/catalog behavior behind a synthetic project
+      // store rather than a real SQLite database, so model the pre-existing
+      // anchor that is unrelated to their assertions. Keep the SQL surface
+      // deliberately narrow: an unexpected direct database query must still
+      // fail instead of being silently accepted by an all-purpose stub.
+      prepare: (sql: string) => {
+        if (/FROM conversations\b/.test(sql)) {
+          return {
+            get: () => ({ id: `comment-anchor-${projectId}` }),
+          };
+        }
+        throw new Error(`unexpected direct SQLite query in workspace route fixture: ${sql}`);
+      },
     },
     design: {},
     http: {

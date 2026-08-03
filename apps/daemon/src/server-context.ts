@@ -196,9 +196,9 @@ export interface ServerContext {
     requestTeamShare(projectId: string, share?: string | ResourceHubPrincipal): Promise<{ version: number | null }>;
     requestTeamUnshare(projectId: string, share?: string | ResourceHubPrincipal): Promise<void>;
     /**
-     * Pull and atomically register a catalog-only Team project before its
-     * creator removes the share. This prevents unpublishing the only durable
-     * copy before the current daemon has a Personal copy to keep.
+     * Pull and atomically register a catalog-only Team project before an
+     * exact-owner mutation needs local state. This preserves a Personal copy
+     * before unshare and gives a second-device rename a real row to update.
      */
     materializeTeamProject?(projectId: string, principal: ResourceHubPrincipal): Promise<void>;
     /**
