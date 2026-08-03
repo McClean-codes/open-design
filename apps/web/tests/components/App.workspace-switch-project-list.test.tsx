@@ -734,4 +734,78 @@ describe('App project list across a workspace switch', () => {
     expect(screen.queryByTestId(`entry-project-${boundProjectA.id}`)).toBeNull();
     expect(screen.getByTestId(`entry-project-${boundProjectB.id}`)).toBeTruthy();
   });
+
+  it('starts and mounts an exact deep-link bootstrap while health, directory, and project list stay pending', async () => {
+    const boundProjectA: Project = {
+      ...WORKSPACE_A_PROJECT,
+      workspaceId: 'ws-a',
+    };
+    const health = deferred<boolean>();
+    const directory = deferred<Response>();
+    let scopeReads = 0;
+    let detailReads = 0;
+    vi.mocked(daemonIsLive).mockReturnValue(health.promise);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname === '/api/workspace/directory') return directory.promise;
+      if (pathname === `/api/projects/${boundProjectA.id}/workspace-scope`) {
+        scopeReads += 1;
+        return new Response(JSON.stringify({
+          scope: {
+            kind: 'team',
+            projectId: boundProjectA.id,
+            workspaceId: 'ws-a',
+            visibility: 'team',
+            context: workspaceContext('ws-a'),
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname === `/api/projects/${boundProjectA.id}`) {
+        detailReads += 1;
+        const headers = new Headers(init?.headers);
+        expect(headers.get('x-od-workspace-id')).toBe('ws-a');
+        expect(headers.get('x-od-workspace-member-id')).toBe('member-ws-a');
+        return new Response(JSON.stringify({
+          project: boundProjectA,
+          resolvedDir: '/tmp/project-in-a',
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+    vi.mocked(listProjects).mockImplementation(() => new Promise<Project[]>(() => {}));
+    window.history.replaceState(null, '', `/projects/${boundProjectA.id}`);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(scopeReads).toBe(1);
+      expect(detailReads).toBe(1);
+      expect(screen.getByTestId('project-view')).toBeTruthy();
+    });
+    expect(vi.mocked(listProjects)).not.toHaveBeenCalled();
+    expect(projectViewLifecycle.renders.mock.lastCall?.[0]).toMatchObject({
+      project: boundProjectA,
+      workspaceContextOverride: {
+        workspaceId: 'ws-a',
+        workspaceMemberId: 'member-ws-a',
+      },
+      initialWorkspaceScope: {
+        projectId: boundProjectA.id,
+        workspaceId: 'ws-a',
+      },
+      initialProjectDetail: {
+        project: boundProjectA,
+        resolvedDir: '/tmp/project-in-a',
+      },
+    });
+  });
 });

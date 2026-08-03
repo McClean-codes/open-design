@@ -52,6 +52,34 @@ function teamContext(): WorkspaceCollabContext {
 }
 
 describe('useProjectDetail', () => {
+  it('uses an exact bootstrap detail without repeating the project read', () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    const project = {
+      id: 'p-bootstrap',
+      name: 'Bootstrapped',
+      skillId: null,
+      designSystemId: null,
+      createdAt: 1,
+      updatedAt: 1,
+      workspaceId: 'workspace-a',
+    };
+
+    const { result } = renderHook(() => useProjectDetail(
+      project.id,
+      teamContext(),
+      'workspace-a',
+      { project, resolvedDir: '/tmp/od/projects/p-bootstrap' },
+    ));
+
+    expect(result.current).toMatchObject({
+      project,
+      resolvedDir: '/tmp/od/projects/p-bootstrap',
+      loading: false,
+      error: null,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('surfaces resolvedDir when the daemon includes it in the response', async () => {
     mockFetchOnce({
       project: { id: 'p1', name: 'Acme', skillId: null, designSystemId: null, createdAt: 1, updatedAt: 1 },

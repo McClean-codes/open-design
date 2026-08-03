@@ -56,6 +56,7 @@ import {
   type AmrWalletSnapshot,
   type ByokMediaDefaults,
   type ByokChatProtocol,
+  type ProjectWorkspaceScope,
   type ResearchOptions,
 } from '@open-design/contracts';
 import {
@@ -297,7 +298,10 @@ import { beginFirstLoop, recordFirstLoopStep } from '../onboarding/first-loop';
 import { BrandReadyPrompt } from './BrandReadyPrompt';
 import { useDesignMdState } from '../hooks/useDesignMdState';
 import { useFinalizeProject } from '../hooks/useFinalizeProject';
-import { useProjectDetail } from '../hooks/useProjectDetail';
+import {
+  useProjectDetail,
+  type ProjectDetailSeed,
+} from '../hooks/useProjectDetail';
 import { useTerminalLaunch } from '../hooks/useTerminalLaunch';
 import { buildContinueInCliToast } from '../lib/build-continue-in-cli-toast';
 import { buildClipboardPrompt } from '../lib/build-clipboard-prompt';
@@ -503,6 +507,9 @@ interface Props {
    * and retain the existing provider behavior.
    */
   workspaceContextOverride?: WorkspaceCollabContext | null;
+  /** Fresh route-bootstrap witnesses, reused to avoid repeating scope/detail reads. */
+  initialWorkspaceScope?: ProjectWorkspaceScope | null;
+  initialProjectDetail?: ProjectDetailSeed | null;
   /** Workspace/member authorization lifetime for async title reads. */
   projectAuthorizationKey?: string;
   amrAuthRetryContinuation?: AmrAuthRetryContinuation | null;
@@ -1606,6 +1613,8 @@ export function reconcileProjectDetail(
 export function ProjectView({
   project,
   workspaceContextOverride,
+  initialWorkspaceScope,
+  initialProjectDetail,
   projectAuthorizationKey = project.id,
   amrAuthRetryContinuation = null,
   onArmAmrAuthRetryContinuation,
@@ -1674,6 +1683,7 @@ export function ProjectView({
     project.id,
     workspaceContext,
     project.workspaceId,
+    initialWorkspaceScope,
   );
   // The project's resolved scope when there is one. While that first read is
   // pending, the persisted project binding may witness the matching caller;
@@ -1863,6 +1873,7 @@ export function ProjectView({
     project.id,
     projectRunWorkspaceContext,
     project.workspaceId,
+    initialProjectDetail,
   );
   const detailedProject = projectDetail.project?.id === project.id ? projectDetail.project : null;
   const currentProject = reconcileProjectDetail(

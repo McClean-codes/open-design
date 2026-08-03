@@ -260,7 +260,12 @@ export async function getProject(
 }
 
 export type ProjectRouteBootstrapResult =
-  | { kind: 'found'; project: Project }
+  | {
+      kind: 'found';
+      project: Project;
+      scope: ProjectWorkspaceScopeResponse['scope'];
+      resolvedDir: string | null;
+    }
   | { kind: 'not-found' }
   | { kind: 'forbidden' }
   | { kind: 'unavailable' };
@@ -304,7 +309,10 @@ export async function bootstrapProjectRoute(
         if (projectResponse.status === 403) return { kind: 'forbidden' };
         return { kind: 'unavailable' };
       }
-      const projectBody = (await projectResponse.json()) as { project?: Project };
+      const projectBody = (await projectResponse.json()) as {
+        project?: Project;
+        resolvedDir?: unknown;
+      };
       if (!projectBody.project || projectBody.project.id !== projectId) {
         return { kind: 'unavailable' };
       }
@@ -319,7 +327,17 @@ export async function bootstrapProjectRoute(
       if (!context && projectBody.project.workspaceId) {
         return { kind: 'forbidden' };
       }
-      return { kind: 'found', project: projectBody.project };
+      return {
+        kind: 'found',
+        project: projectBody.project,
+        scope: body.scope,
+        resolvedDir:
+          typeof projectBody.resolvedDir === 'string'
+            ? projectBody.resolvedDir
+            : typeof projectBody.project.metadata?.baseDir === 'string'
+              ? projectBody.project.metadata.baseDir
+              : null,
+      };
     } catch {
       return { kind: 'unavailable' };
     }

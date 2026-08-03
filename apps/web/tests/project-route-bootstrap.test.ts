@@ -47,7 +47,18 @@ describe('bootstrapProjectRoute', () => {
 
     await expect(bootstrapProjectRoute(PROJECT_ID, {
       accountGeneration: 7,
-    })).resolves.toEqual({ kind: 'found', project: PROJECT_A });
+    })).resolves.toEqual({
+      kind: 'found',
+      project: PROJECT_A,
+      resolvedDir: null,
+      scope: {
+        kind: 'team',
+        projectId: PROJECT_ID,
+        workspaceId: CONTEXT_A.workspaceId,
+        visibility: 'team',
+        context: CONTEXT_A,
+      },
+    });
 
     expect(calls).toHaveLength(2);
     expect(new Headers(calls[0]?.init?.headers).has('x-od-workspace-id')).toBe(false);

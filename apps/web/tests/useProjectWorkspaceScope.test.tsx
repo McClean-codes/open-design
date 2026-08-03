@@ -141,6 +141,30 @@ describe('useProjectWorkspaceScope', () => {
     OpeningEventSource.instances = [];
   });
 
+  it('uses a fresh bootstrap scope without repeating the initial or connect-time read', async () => {
+    const response = teamScope('project-bootstrap', 'workspace-bootstrap', 'member-bootstrap');
+    const caller = response.scope.context as WorkspaceCollabContext;
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('EventSource', OpeningEventSource as unknown as typeof EventSource);
+
+    const hook = renderHook(() => useProjectWorkspaceScope(
+      'project-bootstrap',
+      caller,
+      caller.workspaceId,
+      response.scope,
+    ));
+
+    expect(hook.result.current).toMatchObject({
+      loading: false,
+      scope: response.scope,
+    });
+    await act(async () => {
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('keeps a settled scope subscribed while SSE catch-up revalidates it', async () => {
     let monotonicNow = 0;
     vi.spyOn(globalThis.performance, 'now').mockImplementation(() => monotonicNow);

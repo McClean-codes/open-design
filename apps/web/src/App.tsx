@@ -25,6 +25,7 @@ import type {
   RunContextSelection,
   TeamProject,
   WorkspaceCollabContext,
+  ProjectWorkspaceScope,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
 import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
@@ -3381,6 +3382,8 @@ function AppInner() {
     project: Project;
     accountGeneration: number;
     capturedAfterListGeneration: number;
+    workspaceScope?: ProjectWorkspaceScope;
+    resolvedDir?: string | null;
   } | null>(null);
   const [, setRouteProjectSnapshotRevision] = useState(0);
   const activeAccountGeneration = currentWorkspaceAccountGeneration();
@@ -3388,10 +3391,21 @@ function AppInner() {
   if (route.kind === 'project') {
     const listedProject = projects.find((project) => project.id === route.projectId);
     if (listedProject) {
+      const previous = routeProjectSnapshotRef.current;
+      const preservesBootstrapWitness =
+        previous?.project.id === listedProject.id
+        && previous.accountGeneration === activeAccountGeneration
+        && previous.project.workspaceId === listedProject.workspaceId;
       routeProjectSnapshotRef.current = {
         project: listedProject,
         accountGeneration: activeAccountGeneration,
         capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+        ...(preservesBootstrapWitness && previous.workspaceScope
+          ? { workspaceScope: previous.workspaceScope }
+          : {}),
+        ...(preservesBootstrapWitness && previous.resolvedDir !== undefined
+          ? { resolvedDir: previous.resolvedDir }
+          : {}),
       };
     } else if (
       routeProjectSnapshotRef.current?.project.id !== route.projectId
@@ -3422,6 +3436,9 @@ function AppInner() {
   const projectRouteWorkspaceContext = useProjectRouteWorkspaceContext(
     loadedActiveProject?.workspaceId,
     workspaceContextState,
+    routeProjectSnapshotRef.current?.project.id === loadedActiveProject?.id
+      ? routeProjectSnapshotRef.current?.workspaceScope?.context
+      : null,
   );
   // Never mount ProjectView around the synthetic "Untitled" placeholder. Its
   // effects immediately fan out project-owned reads, but before the project
@@ -3548,7 +3565,6 @@ function AppInner() {
   useEffect(() => {
     if (route.kind !== 'project') return;
     if (loadedActiveProject) return;
-    if (projectsLoading || !daemonLive) return;
     if (projects.some((p) => p.id === route.projectId)) return;
     let cancelled = false;
     const projectId = route.projectId;
@@ -3573,6 +3589,8 @@ function AppInner() {
           project: bootstrap.project,
           accountGeneration,
           capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+          workspaceScope: bootstrap.scope,
+          resolvedDir: bootstrap.resolvedDir,
         };
         setRouteProjectSnapshotRevision((current) => current + 1);
         return;
@@ -3582,12 +3600,19 @@ function AppInner() {
         return;
       }
       if (bootstrap.kind === 'unavailable') {
+        // The optimistic bootstrap races the daemon health/list boot on purpose.
+        // A transport miss before those settle is not terminal; the dependency
+        // change below retries the bootstrap through its evicted failure key.
+        if (projectsLoading || !daemonLive) return;
         setDeepLinkResolutionFailure({
           projectId,
           failure: 'materialization-failed',
         });
         return;
       }
+      // Preserve the existing shared-project recovery lane, but only after the
+      // ambient boot has settled enough to supply its exact catalog identity.
+      if (projectsLoading || !daemonLive) return;
       const resolution = await resolveDeepLinkedTeamSharedProject(projectId, {
         getProject: (id) => getProject(id, deepLinkContext),
         pullTeamSharedProjectIfAvailable: (id) =>
@@ -4158,6 +4183,20 @@ function AppInner() {
           workspaceContextOverride={
             activeProject.workspaceId
               ? activeProjectWorkspaceContext
+              : undefined
+          }
+          initialWorkspaceScope={
+            routeProjectSnapshotRef.current?.project.id === activeProject.id
+              ? routeProjectSnapshotRef.current.workspaceScope
+              : undefined
+          }
+          initialProjectDetail={
+            routeProjectSnapshotRef.current?.project.id === activeProject.id
+            && routeProjectSnapshotRef.current.resolvedDir !== undefined
+              ? {
+                  project: routeProjectSnapshotRef.current.project,
+                  resolvedDir: routeProjectSnapshotRef.current.resolvedDir,
+                }
               : undefined
           }
           projectAuthorizationKey={

@@ -40,6 +40,7 @@ export function projectResourceReadsCanStart(
 export function useProjectRouteWorkspaceContext(
   persistedWorkspaceId: string | null | undefined,
   ambientState: WorkspaceContextState,
+  bootstrapWorkspaceContext?: WorkspaceCollabContext | null,
 ): ProjectRouteWorkspaceContextState {
   const workspaceId = persistedWorkspaceId?.trim() ?? '';
   const [identityRefreshPending, setIdentityRefreshPending] = useState(false);
@@ -50,7 +51,17 @@ export function useProjectRouteWorkspaceContext(
       ? ambientState.context
       : null;
   const exactAmbientIdentity = workspaceIdentityCacheKey(exactAmbientContext);
+  const exactBootstrapContext =
+    bootstrapWorkspaceContext?.workspaceId === workspaceId
+    && bootstrapWorkspaceContext.workspaceMemberId.trim().length > 0
+    && bootstrapWorkspaceContext.memberStatus === 'active'
+    && bootstrapWorkspaceContext.lifecycleState !== 'deleted'
+      ? bootstrapWorkspaceContext
+      : null;
+  const exactBootstrapIdentity = workspaceIdentityCacheKey(exactBootstrapContext);
+  const initialExactContext = exactAmbientContext ?? exactBootstrapContext;
   const requestEpochRef = useRef(0);
+  const consumedBootstrapIdentityRef = useRef<string | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const retry = useCallback(() => {
     setRefreshRevision((current) => current + 1);
@@ -61,7 +72,7 @@ export function useProjectRouteWorkspaceContext(
   }>(() => ({
     workspaceId,
     state: workspaceId
-      ? { context: exactAmbientContext, loading: exactAmbientContext === null }
+      ? { context: initialExactContext, loading: initialExactContext === null }
       : { context: null, loading: false },
   }));
 
@@ -128,6 +139,19 @@ export function useProjectRouteWorkspaceContext(
       });
       return;
     }
+    if (
+      refreshRevision === 0
+      && exactBootstrapContext
+      && consumedBootstrapIdentityRef.current !== exactBootstrapIdentity
+    ) {
+      consumedBootstrapIdentityRef.current = exactBootstrapIdentity;
+      setIdentityRefreshPending(false);
+      setResolved({
+        workspaceId,
+        state: { context: exactBootstrapContext, loading: false },
+      });
+      return;
+    }
 
     setResolved((current) => current.workspaceId === workspaceId
       ? {
@@ -162,7 +186,12 @@ export function useProjectRouteWorkspaceContext(
         });
       },
     );
-  }, [workspaceId, exactAmbientIdentity, refreshRevision]);
+  }, [
+    workspaceId,
+    exactAmbientIdentity,
+    exactBootstrapIdentity,
+    refreshRevision,
+  ]);
 
   if (!workspaceId) return { context: null, loading: false, retry };
   if (exactAmbientContext) {
