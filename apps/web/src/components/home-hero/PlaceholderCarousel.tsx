@@ -86,7 +86,7 @@ export function PlaceholderCarousel({ scenarios, active, paused = false, onScena
   // state re-runs this effect, whose cleanup clears the prior timer — so the
   // chain self-sustains without overlapping timers (StrictMode-safe).
   useEffect(() => {
-    if (!active || scenarios.length === 0) return;
+    if (!active || paused || scenarios.length === 0) return;
     const scenario = scenarios[state.index % scenarios.length];
     const length = scenario?.text.length ?? 0;
     const { state: nextState, delayMs } = advanceTypewriter(
