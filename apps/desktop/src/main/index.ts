@@ -176,6 +176,8 @@ export type DesktopMainOptions = {
    * Node fetch can hit.
    */
   discoverDaemonUrl?: () => Promise<string | null>;
+  /** Stable installed launcher used for Windows opendesign:// registration. */
+  inviteProtocolClientPath?: string | null;
   preloadPath?: string;
   windowTitle?: string;
   onDesktopReady?: (controls: { show(): void }) => void;
@@ -1006,6 +1008,7 @@ export async function runDesktopMain(
   registerInviteDeeplink({
     resolveDaemonBaseUrl: resolveDaemonBaseUrl(runtime, options),
     focus: focusPrimaryWindow,
+    protocolClientPath: options.inviteProtocolClientPath,
   });
   const discoverUpdaterAppConfigBaseUrl = resolveDaemonBaseUrl(runtime, options);
   updateScheduler = createDesktopUpdaterScheduler(updater, {

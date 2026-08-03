@@ -92,6 +92,7 @@ import {
 import { CollabDemoView } from './collab/CollabDemoView';
 import { fetchTeamProjectsCatalog } from './collab/team-projects-catalog';
 import { workspaceProjectHeaders } from './collab/workspace-identity';
+import { useWorkspaceInvalidation } from './collab/workspace-events';
 import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
@@ -2047,6 +2048,23 @@ function AppInner() {
     });
     markSkillRegistryReady('functional');
   }, [markSkillRegistryReady]);
+
+  // Hub resource events are reconciled by the daemon first, then forwarded as
+  // a thin Workspace invalidation. Re-read only the affected catalog so an
+  // already-open Home picker converges without a route change or manual
+  // refresh. The shared Workspace EventSource is multiplexed with the other
+  // shell subscribers by useEventStream.
+  useWorkspaceInvalidation({
+    'team-resources-changed': ({ resourceKind }) => {
+      if (resourceKind === 'design_system') {
+        void refreshDesignSystems();
+      } else if (resourceKind === 'skill') {
+        void refreshSkills();
+      } else if (resourceKind === 'plugin') {
+        window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
+      }
+    },
+  }, { workspaceContext });
 
   // The skills catalog is workspace-scoped on the daemon exactly like the
   // design-system catalog above, and needs the same workspace-keyed refresh for

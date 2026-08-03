@@ -24,6 +24,7 @@ export function planPackagedPayloadDesktopDelegation(
   stamp: SidecarStamp,
   options: {
     currentPid?: number;
+    forwardedArgs?: readonly string[];
     timeoutMs?: number;
   } = {},
 ): PackagedPayloadDesktopLaunchPlan | null {
@@ -44,6 +45,13 @@ export function planPackagedPayloadDesktopDelegation(
       ...(runtime.selection.selected && runtime.selection.reason === "active"
         ? buildLauncherDelegatedArgs(runtime.selection.pointer)
         : []),
+      // The stable outer owns the OS protocol registration. On a cold start
+      // after a payload update, Electron delivers the invite URL to that outer
+      // process first; preserve only this explicit protocol argument when the
+      // outer delegates to the versioned payload.
+      ...(options.forwardedArgs ?? process.argv).filter((arg) =>
+        arg.startsWith("opendesign://")
+      ),
       ...createProcessStampArgs(stamp, OPEN_DESIGN_SIDECAR_CONTRACT),
     ],
     command: runtime.desktopExecutablePath,
@@ -56,6 +64,7 @@ export async function launchPackagedPayloadDesktop(
   stamp: SidecarStamp,
   options: {
     currentPid?: number;
+    forwardedArgs?: readonly string[];
     recordFailedAttempt?: (runtime: PackagedLauncherRuntime) => Promise<void>;
     spawn?: typeof spawn;
     timeoutMs?: number;

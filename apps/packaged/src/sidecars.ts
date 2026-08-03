@@ -39,6 +39,7 @@ import {
   resolveDaemonPrewarmTargets,
   resolveWebPrewarmTargets,
 } from "./prewarm.js";
+import { workspaceTeamTransportEnv } from "./workspace-team.js";
 
 const require = createRequire(import.meta.url);
 const PACKAGED_CHILD_ENV_ALLOWLIST = [
@@ -397,55 +398,6 @@ export function resolvePackagedChildBaseEnv(
   return includeSystemProxyEnv
     ? mergeProxyAwareEnv(process.platform, systemProxyEnv, forwardedEnv)
     : mergeProxyAwareEnv(process.platform, forwardedEnv);
-}
-
-/**
- * AMR profiles whose vela backend has the workspace-team feature deployed.
- *
- * A packaged build turns the vela-cli workspace transports on only when its
- * baked AMR profile appears here. Every other profile — `prod` above all —
- * leaves team projects / collab / resource sharing dormant, which is what keeps
- * an unreleased feature out of production builds. Add a profile here only once
- * its backend actually serves the workspace-team API.
- */
-const WORKSPACE_TEAM_AMR_PROFILES: ReadonlySet<string> = new Set(["feature-test", "test"]);
-
-/**
- * The workspace-team daemon env for this build, or nothing when the build must
- * leave the feature dormant.
- *
- * Both halves of the gate are required: an allowlisted AMR profile AND a vela
- * web origin that packaging actually injected. `prod` can never satisfy the
- * first half, so a stable build stays dormant no matter what origin it is
- * handed; a `feature-test` / `test` build whose CI secret was never configured
- * fails the second half and also stays dormant rather than pointing the
- * transports at an unknown backend.
- *
- * The origin is injected (tools/pack reads it from a per-profile CI secret and
- * bakes it into open-design-config.json) rather than checked in, because the
- * non-prod AMR environments are internal deployments and this repository is
- * public.
- *
- * The vela API/Link endpoints themselves are NOT set here: the daemon resolves
- * them from the AMR profile via the vela CLI. The web origin is the exception —
- * the daemon derives the workspace-settings / members / dashboard console links
- * (shown in the nav for owner/admin) from `OD_VELA_WEB_URL`, and without it
- * those entries stay hidden even for the owner.
- */
-function workspaceTeamTransportEnv(
-  amrProfile: string | null | undefined,
-  velaWebUrl: string | null | undefined,
-): Record<string, string> {
-  if (amrProfile == null || !WORKSPACE_TEAM_AMR_PROFILES.has(amrProfile)) return {};
-  const webOrigin = velaWebUrl?.trim().replace(/\/+$/, "") ?? "";
-  if (webOrigin.length === 0) return {};
-  return {
-    OD_WORKSPACE_CONTEXT_SOURCE: "vela",
-    OD_TEAM_PROJECTS_TRANSPORT: "vela-cli",
-    OD_COLLAB_TRANSPORT: "vela-cli",
-    OD_RESOURCE_TRANSPORT: "vela-cli",
-    OD_VELA_WEB_URL: webOrigin,
-  };
 }
 
 function createPackagedDaemonManagedPathEnv(

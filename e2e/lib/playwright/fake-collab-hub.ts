@@ -30,8 +30,11 @@ type TeamProjectRecord = {
 };
 
 type ResourceRecord = {
-  projectId: string;
+  projectId: string | null;
   resourceId: string;
+  kind: string;
+  ownerMemberId: string;
+  metadata: Record<string, unknown> | null;
   snapshotDir: string;
   version: number;
   versions: Map<number, string>;
@@ -42,6 +45,9 @@ type HubEvent = {
   workspaceId: string;
   workspaceMemberId?: string;
   projectId?: string;
+  resourceId?: string;
+  resourceKind?: string;
+  resourceStatus?: 'shared' | 'retracted';
   revision?: string;
   version?: number;
 };
@@ -75,6 +81,7 @@ export type FakeCollabHub = {
   setEventsAvailable: (memberId: string, available: boolean) => void;
   eventSubscriberCount: (memberId: string) => number;
   removeMember: (memberId: string) => void;
+  setMemberRole: (memberId: string, role: ClientIdentity['role']) => void;
   setWorkspaceBalance: (memberId: string, balanceUsd: string) => void;
   close: () => Promise<void>;
 };
@@ -84,6 +91,7 @@ export async function startFakeCollabHub(options: {
   workspaceId: string;
   workspaceName: string;
   clients: readonly ClientIdentity[];
+  includePersonalWorkspace?: boolean;
 }): Promise<FakeCollabHub> {
   const resourcesRoot = join(options.root, 'resources');
   await mkdir(resourcesRoot, { recursive: true });
@@ -96,6 +104,9 @@ export async function startFakeCollabHub(options: {
   const subscribers = new Set<Subscriber>();
   const blockedEventMembers = new Set<string>();
   const removedMembers = new Set<string>();
+  const memberRoles = new Map(
+    options.clients.map((client) => [client.memberId, client.role]),
+  );
   const workspaceBalances = new Map(
     options.clients.map((client) => [client.memberId, { balanceUsd: '0.00', revision: 1 }]),
   );
@@ -105,12 +116,24 @@ export async function startFakeCollabHub(options: {
   const server: Server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1');
-      const identity = identityFor(request.headers.authorization, identities);
+      const authenticatedIdentity = identityFor(request.headers.authorization, identities);
+      const identity = authenticatedIdentity
+        ? {
+            ...authenticatedIdentity,
+            role: memberRoles.get(authenticatedIdentity.memberId) ?? authenticatedIdentity.role,
+          }
+        : null;
       const workspaceId =
         headerValue(request.headers['x-vela-workspace-id']) || options.workspaceId;
 
       if (url.pathname === '/api/v1/workspaces/current' && request.method === 'GET') {
         if (!identity) return json(response, 401, { error: 'unauthorized' });
+        if (
+          options.includePersonalWorkspace
+          && workspaceId === personalWorkspaceId(identity.memberId)
+        ) {
+          return json(response, 200, personalWorkspaceContext(identity));
+        }
         if (removedMembers.has(identity.memberId)) {
           if (workspaceId === personalWorkspaceId(identity.memberId)) {
             return json(response, 200, personalWorkspaceContext(identity));
@@ -127,7 +150,12 @@ export async function startFakeCollabHub(options: {
           // receive their own one membership row.
           items: removedMembers.has(identity.memberId)
             ? [personalWorkspaceDirectoryItem(identity)]
-            : [workspaceDirectoryItem(options, identity)],
+            : options.includePersonalWorkspace
+              ? [
+                  personalWorkspaceDirectoryItem(identity),
+                  workspaceDirectoryItem(options, identity),
+                ]
+              : [workspaceDirectoryItem(options, identity)],
         });
       }
       if (url.pathname === '/api/v1/collab/events' && request.method === 'GET') {
@@ -172,6 +200,8 @@ export async function startFakeCollabHub(options: {
           comments,
           presence,
           workspaceBalances,
+          memberRoles,
+          removedMembers,
           emit,
         });
         return json(response, 200, { stdout });
@@ -239,6 +269,13 @@ export async function startFakeCollabHub(options: {
       }
       emit({ type: 'workspace-context-changed', workspaceId: options.workspaceId });
     },
+    setMemberRole: (memberId, role) => {
+      if (!identitiesByMemberId(options.clients).has(memberId)) {
+        throw new Error(`unknown fake collaboration member: ${memberId}`);
+      }
+      memberRoles.set(memberId, role);
+      emit({ type: 'workspace-context-changed', workspaceId: options.workspaceId });
+    },
     setWorkspaceBalance: (memberId, balanceUsd) => {
       const previous = workspaceBalances.get(memberId) ?? { balanceUsd: '0.00', revision: 0 };
       const revision = previous.revision + 1;
@@ -269,6 +306,8 @@ async function handleCommand(input: {
   comments: Map<string, Array<Record<string, unknown>>>;
   presence: Map<string, Map<string, Record<string, unknown>>>;
   workspaceBalances: Map<string, { balanceUsd: string; revision: number }>;
+  memberRoles: Map<string, ClientIdentity['role']>;
+  removedMembers: Set<string>;
   emit: (event: HubEvent) => void;
 }): Promise<string> {
   const { args } = input;
@@ -416,6 +455,7 @@ async function handleTeamProjectsCommand(input: {
 
 async function handleResourceCommand(input: {
   args: string[];
+  identity: ClientIdentity;
   workspaceId: string;
   projects: Map<string, TeamProjectRecord>;
   resources: Map<string, ResourceRecord>;
@@ -424,16 +464,17 @@ async function handleResourceCommand(input: {
 }): Promise<string> {
   const [, command] = input.args;
   if (command === 'push') {
+    const kind = input.args[2];
     const resourceId = input.args[3];
     const sourceDir = input.args[4];
-    if (!resourceId || !sourceDir) throw new Error('invalid resource push');
+    if (!kind || !resourceId || !sourceDir) throw new Error('invalid resource push');
     const metadata = parseJsonFlag(input.args, '--metadata-json');
     const projectId =
       typeof metadata?.projectId === 'string'
         ? metadata.projectId
         : [...input.projects.values()]
-            .find((project) => project.resourceId === resourceId)?.projectId;
-    if (!projectId) throw new Error('resource push missing project id');
+            .find((project) => project.resourceId === resourceId)?.projectId ?? null;
+    if (kind === 'project' && !projectId) throw new Error('resource push missing project id');
     const previous = input.resources.get(resourceId);
     const version = (previous?.version ?? 0) + 1;
     const resourceRoot = join(input.resourcesRoot, encodeURIComponent(resourceId));
@@ -445,16 +486,27 @@ async function handleResourceCommand(input: {
     input.resources.set(resourceId, {
       projectId,
       resourceId,
+      kind,
+      ownerMemberId: previous?.ownerMemberId ?? input.identity.memberId,
+      metadata,
       snapshotDir,
       version,
       versions,
     });
-    if (input.projects.has(projectId)) {
+    if (projectId && input.projects.has(projectId)) {
       input.emit({
         type: 'project-content-changed',
         workspaceId: input.workspaceId,
         projectId,
         version,
+      });
+    } else {
+      input.emit({
+        type: 'team-resources-changed',
+        workspaceId: input.workspaceId,
+        resourceId,
+        resourceKind: kind,
+        resourceStatus: 'shared',
       });
     }
     return jsonLine({ version, versionId: `v${version}` });
@@ -481,14 +533,38 @@ async function handleResourceCommand(input: {
   }
   if (command === 'remove') {
     const resourceId = input.args[2];
+    const resource = resourceId ? input.resources.get(resourceId) : null;
     if (resourceId) input.resources.delete(resourceId);
+    if (resource && resource.kind !== 'project') {
+      input.emit({
+        type: 'team-resources-changed',
+        workspaceId: input.workspaceId,
+        resourceId: resource.resourceId,
+        resourceKind: resource.kind,
+        resourceStatus: 'retracted',
+      });
+    }
     return jsonLine({ ok: true });
   }
   if (command === 'list') {
     return jsonLine({ resources: [] });
   }
   if (command === 'shared') {
-    return jsonLine({ resources: [] });
+    return jsonLine({
+      resources: [...input.resources.values()]
+        .filter((resource) => resource.kind !== 'project')
+        .map((resource) => ({
+          id: resource.resourceId,
+          kind: resource.kind,
+          deletedAt: null,
+          ownerMemberId: resource.ownerMemberId,
+          metadata: resource.metadata,
+          publishedVersion: {
+            id: `v${resource.version}`,
+            version: resource.version,
+          },
+        })),
+    });
   }
   throw new Error(`unsupported resource command: ${input.args.join(' ')}`);
 }
@@ -500,16 +576,20 @@ function handleCollabCommand(input: {
   options: { clients: readonly ClientIdentity[] };
   comments: Map<string, Array<Record<string, unknown>>>;
   presence: Map<string, Map<string, Record<string, unknown>>>;
+  memberRoles: Map<string, ClientIdentity['role']>;
+  removedMembers: Set<string>;
   emit: (event: HubEvent) => void;
 }): string {
   const [, domain, command, projectId] = input.args;
   if (domain === 'member' && command === 'list') {
     return jsonLine({
-      members: input.options.clients.map((client) => ({
-        memberId: client.memberId,
-        displayName: client.name,
-        role: client.role,
-      })),
+      members: input.options.clients
+        .filter((client) => !input.removedMembers.has(client.memberId))
+        .map((client) => ({
+          memberId: client.memberId,
+          displayName: client.name,
+          role: input.memberRoles.get(client.memberId) ?? client.role,
+        })),
     });
   }
   if (domain === 'member' && command === 'register') {
@@ -542,15 +622,18 @@ function handleCollabCommand(input: {
         });
       }
     } else if (command === 'leave') {
+      const explicitClientId = flag(input.args, '--client-id');
       let removed = roster.delete(clientId);
-      // The browser may rotate its process-local presence client id while the
-      // project stays open. This fake runs one browser client per identity, so
-      // leaving that project must also clear any older heartbeat key belonging
-      // to the same member.
-      for (const [key, entry] of roster) {
-        if (entry.memberId === input.identity.memberId) {
-          roster.delete(key);
-          removed = true;
+      // Preserve compatibility with a legacy leave that has no session lease:
+      // it means "this member left everywhere". Modern clients always send a
+      // client id, so closing one tab must not evict another tab for the same
+      // member.
+      if (!explicitClientId) {
+        for (const [key, entry] of roster) {
+          if (entry.memberId === input.identity.memberId) {
+            roster.delete(key);
+            removed = true;
+          }
         }
       }
       if (removed) {
@@ -699,6 +782,10 @@ function identityFor(
 ): ClientIdentity | null {
   const key = authorization?.replace(/^Bearer\s+/i, '').trim();
   return key ? identities.get(key) ?? null : null;
+}
+
+function identitiesByMemberId(clients: readonly ClientIdentity[]): Set<string> {
+  return new Set(clients.map((client) => client.memberId));
 }
 
 function headerValue(value: string | string[] | undefined): string {

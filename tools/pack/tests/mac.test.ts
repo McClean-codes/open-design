@@ -75,6 +75,12 @@ afterEach(() => {
 });
 
 describe("resolveSeededAppConfigPaths", () => {
+  it("declares the Workspace invite URL scheme in the packaged app metadata", async () => {
+    const source = await readFile(new URL("../src/mac/builder.ts", import.meta.url), "utf8");
+    expect(source).toContain("protocols: [");
+    expect(source).toContain('schemes: ["opendesign"]');
+  });
+
   it("uses workspace .od by default", () => {
     const config = makeConfig("/work");
     expect(resolveSeededAppConfigPaths(config)).toEqual({

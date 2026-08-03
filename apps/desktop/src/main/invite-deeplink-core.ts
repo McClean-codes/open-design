@@ -48,6 +48,12 @@ export interface InviteDeeplinkDeps {
   focus?: () => void;
   /** Fired with the resolved workspace context on success (e.g. to nudge the web). */
   onActivated?: (context: unknown) => void;
+  /**
+   * Stable installed executable used for OS protocol registration on Windows.
+   * Packaged payload executables are versioned and may be deleted after an
+   * update, so registering process.execPath would strand future deeplinks.
+   */
+  protocolClientPath?: string | null;
 }
 
 type ContinueInvite = (

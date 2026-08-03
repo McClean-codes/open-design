@@ -55,7 +55,11 @@ attachOpenUrlListenerWhenHosted();
  * holds). A cold start through the deeplink carries it in the initial argv.
  */
 export function registerInviteDeeplink(deps: InviteDeeplinkDeps): void {
-  app.setAsDefaultProtocolClient(INVITE_DEEPLINK_SCHEME);
+  if (process.platform === "win32" && deps.protocolClientPath) {
+    app.setAsDefaultProtocolClient(INVITE_DEEPLINK_SCHEME, deps.protocolClientPath);
+  } else {
+    app.setAsDefaultProtocolClient(INVITE_DEEPLINK_SCHEME);
+  }
   deeplinkDispatcher.setDeps(deps);
 
   if (!secondInstanceHandlerRegistered) {

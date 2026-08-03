@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { describe, expect, it, vi } from "vitest";
 import {
   continueInviteFromUrl,
@@ -94,5 +95,50 @@ describe("createInviteDeeplinkDispatcher", () => {
 
     expect(dispatcher.pendingCount()).toBe(0);
     expect(continueInvite).toHaveBeenCalledWith(VALID, deps);
+  });
+
+  it("drains a cold-start deeplink through the real daemon HTTP boundary and activates its membership", async () => {
+    let receivedNonce: string | null = null;
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on("data", (chunk: Buffer) => chunks.push(chunk));
+      request.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { nonce?: string };
+        receivedNonce = body.nonce ?? null;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ context: { workspaceMemberId: "wm-1" } }));
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("invite continuation server did not expose a TCP port");
+    }
+
+    try {
+      const focus = vi.fn();
+      let resolveActivated!: (value: { workspaceMemberId: string }) => void;
+      const activated = new Promise<{ workspaceMemberId: string }>((resolve) => {
+        resolveActivated = resolve;
+      });
+      const dispatcher = createInviteDeeplinkDispatcher(continueInviteFromUrl);
+
+      dispatcher.dispatch(VALID);
+      expect(dispatcher.pendingCount()).toBe(1);
+      dispatcher.setDeps({
+        resolveDaemonBaseUrl: async () => `http://127.0.0.1:${address.port}`,
+        focus,
+        onActivated: (context) => {
+          resolveActivated(context as { workspaceMemberId: string });
+        },
+      });
+
+      await expect(activated).resolves.toEqual({ workspaceMemberId: "wm-1" });
+      expect(receivedNonce).toBe("n-1");
+      expect(focus).toHaveBeenCalledTimes(1);
+      expect(dispatcher.pendingCount()).toBe(0);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

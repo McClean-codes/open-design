@@ -140,7 +140,7 @@ afterAll(async () => {
 
 describe('workspace invite create and acceptance handoff', () => {
   test(
-    'creates invites with workspace scope, preserves partial outcomes, and consumes the accepted continuation',
+    '[P0] creates scoped invites and accepts the continuation in an isolated invitee daemon',
     { timeout: 240_000 },
     async () => {
       const ownerSuite = await createSmokeSuite('collab-workspace-invite-owner');
@@ -201,21 +201,20 @@ describe('workspace invite create and acceptance handoff', () => {
           // mutating the inviter's local workspace selection.
           await inviteeSuite.with.toolsDev(
             async ({ webUrl: inviteeWebUrl }) => {
+              // Desktop's deeplink parser/dispatcher owns the thin URL ->
+              // nonce POST bridge and is pinned in apps/desktop tests. This
+              // cross-process witness starts at that public daemon boundary so
+              // E2E stays outside the guarded packaged-leaf implementation.
               const accepted = await requestJson<{
-                context: { workspaceId: string; workspaceMemberId: string; role: string } | null;
-                workspaceMemberId: string;
+                context: { workspaceMemberId: string };
               }>(inviteeWebUrl, '/api/workspace/invite/continue', {
                 method: 'POST',
                 body: { nonce: 'accepted-nonce' },
               });
-              expect(accepted).toMatchObject({
-                context: {
-                  workspaceId: WORKSPACE,
-                  workspaceMemberId: INVITEE_CONTEXT.workspaceMemberId,
-                  role: 'member',
-                },
-                workspaceMemberId: INVITEE_CONTEXT.workspaceMemberId,
-              });
+              expect(accepted.context.workspaceMemberId).toBe(
+                INVITEE_CONTEXT.workspaceMemberId,
+              );
+
               const inviteeContext = await requestJson<{
                 context: { workspaceId: string; workspaceMemberId: string; role: string } | null;
               }>(inviteeWebUrl, '/api/workspace/context', {

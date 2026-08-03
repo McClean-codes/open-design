@@ -4835,7 +4835,19 @@ export async function startServer({
           void reconcileTeamResourcesFromRemote(
             event.resourceKind,
             eventWorkspaceId,
-          ).catch(() => undefined);
+          ).then(() => {
+            if (
+              event.resourceKind === 'design_system'
+              || event.resourceKind === 'plugin'
+              || event.resourceKind === 'skill'
+            ) {
+              emitWorkspaceEvent(eventWorkspaceId, {
+                type: 'team-resources-changed',
+                resourceKind: event.resourceKind,
+                at: Date.now(),
+              });
+            }
+          }).catch(() => undefined);
           break;
         }
       }

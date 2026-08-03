@@ -137,6 +137,27 @@ describe('workspace project isolation', () => {
           await expectScope(webUrl, teamAProject.id, TEAM_A);
           await expectScope(webUrl, teamBProject.id, TEAM_B);
 
+          const teamAList = await requestJson<{
+            projects: Array<{ id: string }>;
+          }>(webUrl, `/api/workspaces/${TEAM_A.workspaceId}/projects?view=drafts`, {
+            headers: workspaceHeaders(TEAM_A),
+          });
+          expect(teamAList.projects.map(({ id }) => id)).toContain(teamAProject.id);
+          expect(teamAList.projects.map(({ id }) => id)).not.toContain(teamBProject.id);
+
+          // The route workspace and the asserted membership form one exact
+          // authority pair. A caller who belongs to both teams must not be able
+          // to combine Team A's headers with Team B's URL and read Team B as if
+          // the assertion had named it.
+          const crossScopedList = await fetch(
+            new URL(`/api/workspaces/${TEAM_B.workspaceId}/projects?view=drafts`, webUrl),
+            { headers: workspaceHeaders(TEAM_A) },
+          );
+          expect(crossScopedList.status).toBe(403);
+          expect(await crossScopedList.json()).toMatchObject({
+            error: { code: 'WORKSPACE_ACCESS_DENIED' },
+          });
+
           const rename = async (projectId: string, workspace: Workspace, name: string) => {
             const response = await fetch(new URL(`/api/projects/${projectId}`, webUrl), {
               method: 'PATCH',

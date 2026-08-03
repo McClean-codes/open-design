@@ -329,6 +329,8 @@ async function main(): Promise<void> {
       return sidecars.daemon.url;
     },
     windowTitle: resolvePackagedWindowTitle(activeConfig),
+    inviteProtocolClientPath:
+      process.platform === "win32" ? launcherRuntime.installedLaunchPath : null,
     async onExternalShow() {
       await retireObsoleteInstalledOuter();
     },

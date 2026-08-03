@@ -47,6 +47,8 @@ const updateFixturePort = resolveOptionalFixturePort(process.env.OD_PACKAGED_E2E
 const updateFixtureMode = resolveUpdateFixtureMode(process.env.OD_PACKAGED_E2E_WIN_UPDATE_MODE);
 const releaseChannel = process.env.OD_PACKAGED_E2E_RELEASE_CHANNEL;
 const releaseVersion = process.env.OD_PACKAGED_E2E_RELEASE_VERSION;
+const packagedInviteDeeplink =
+  'opendesign://workspace/invite/continue?workspace_id=packaged-smoke-workspace&member_id=packaged-smoke-member&invite_id=packaged-smoke-invite&nonce=packaged-smoke-nonce';
 const updateScenario = resolvePackagedUpdateScenario({ releaseChannel, releaseVersion });
 const installIdentity = resolvePackagedWinInstallIdentity({ namespace, releaseVersion });
 
@@ -574,6 +576,7 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(install.registryEntries.length).toBeGreaterThan(0);
       expect(JSON.stringify(install.registryEntries)).toContain(installIdentity.displayName);
       expect(JSON.stringify(install.registryEntries)).toContain(`Open Design-${installIdentity.namespaceToken}`);
+      await assertWindowsInviteProtocolRegistration(install.installDir);
       expect(install.installPayload.fileCount).toBeGreaterThan(0);
       expect(install.installPayload.totalBytes).toBeGreaterThan(0);
       expect(install.installPayload.topLevel.length).toBeGreaterThan(0);
@@ -663,6 +666,40 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(pty.cleanup.projectStatus).toBe(200);
       assertLauncherPointer(inspect.launcher.active, updateScenario.expectedCurrentVersion, 0, 'initial active');
       assertLauncherPointer(inspect.launcher.lastSuccessful, updateScenario.expectedCurrentVersion, 0, 'initial lastSuccessful');
+
+      // Runtime registration must preserve the stable installed outer path;
+      // pointing at a versioned payload would break the scheme after cleanup.
+      await assertWindowsInviteProtocolRegistration(install.installDir);
+      const protocolHotPid = inspect.status?.pid ?? start.pid;
+      await invokeWindowsInviteDeeplink();
+      const protocolHotInspect = await measureSmokeStep(
+        timings,
+        'invite protocol hot delivery',
+        async () => waitForHealthyDesktop(),
+      );
+      expect(protocolHotInspect.status?.pid).toBe(protocolHotPid);
+
+      if (verifyCoreOnly) {
+        const protocolStop = await measureSmokeStep(
+          timings,
+          'stop before invite protocol cold delivery',
+          async () => runToolsPackJson<WinStopResult>('stop'),
+        );
+        started = false;
+        expect(protocolStop.status).not.toBe('partial');
+        expect(protocolStop.remainingPids).toEqual([]);
+
+        await invokeWindowsInviteDeeplink();
+        started = true;
+        const protocolColdInspect = await measureSmokeStep(
+          timings,
+          'invite protocol cold delivery',
+          async () => waitForHealthyDesktop(),
+        );
+        expect(protocolColdInspect.status?.state).toBe('running');
+        expect(protocolColdInspect.status?.pid).not.toBe(protocolHotPid);
+        await assertWindowsInviteProtocolRegistration(install.installDir);
+      }
 
       if (!inspect.desktopIpcUnavailable) {
         await measureSmokeStep(timings, 'ensure main app shell', async () => ensureMainAppShell());
@@ -847,6 +884,7 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(uninstall.residueObservation?.uninstallerExists).toBe(false);
       expect(uninstall.residueObservation?.startMenuShortcutExists).toBe(false);
       expect(uninstall.residueObservation?.userDesktopShortcutExists).toBe(false);
+      await assertWindowsInviteProtocolRemoved();
       await report.saveSummary({
         health: value,
         install: {
@@ -2522,6 +2560,37 @@ function expectWindowsFallbackWebUrl(value: string | null | undefined): void {
 
 function expectWindowsDaemonUrl(value: string | null | undefined): void {
   expect(value).toEqual(expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/?$/));
+}
+
+async function assertWindowsInviteProtocolRegistration(installDir: string): Promise<void> {
+  const { stdout } = await execFileAsync('reg.exe', [
+    'query',
+    'HKCU\\Software\\Classes\\opendesign\\shell\\open\\command',
+    '/ve',
+  ]);
+  const normalized = stdout.toLowerCase();
+  expect(normalized).toContain(installDir.toLowerCase());
+  expect(normalized).toContain('%1');
+  expect(normalized).not.toContain('\\versions\\');
+}
+
+async function invokeWindowsInviteDeeplink(): Promise<void> {
+  const escaped = packagedInviteDeeplink.replaceAll("'", "''");
+  await execFileAsync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Start-Process -FilePath '${escaped}'`,
+  ]);
+}
+
+async function assertWindowsInviteProtocolRemoved(): Promise<void> {
+  await expect(
+    execFileAsync('reg.exe', [
+      'query',
+      'HKCU\\Software\\Classes\\opendesign',
+    ]),
+  ).rejects.toMatchObject({ code: 1 });
 }
 
 async function fileSizeBytes(filePath: string): Promise<number> {

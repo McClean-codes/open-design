@@ -571,8 +571,24 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       // share one directory on disk, so without this the systems authored in
       // one workspace also filled a brand-new one. Every other caller of
       // `listAllDesignSystems` resolves a system by id and stays unscoped.
-      const systems = await listAllDesignSystems({
-        workspaceId: (await resolveWorkspaceScope?.(req)) ?? null,
+      const workspaceId = (await resolveWorkspaceScope?.(req)) ?? null;
+      const systems = await listAllDesignSystems({ workspaceId });
+      // A retracted teammate copy intentionally remains on disk for recovery,
+      // with its generic workspace_resources envelope tombstoned. Metadata's
+      // workspaceId alone still matches the active Team, so filtering only by
+      // metadata would keep returning that stale materialization forever.
+      // Hide only tombstoned teamSynced copies: the sharer's original local
+      // design system is not teamSynced and must remain available after
+      // unsharing.
+      const visibleSystems = systems.filter((system) => {
+        if (!workspaceId || system.teamSynced !== true) return true;
+        const binding = getWorkspaceResource(
+          db,
+          'design_system',
+          workspaceId,
+          system.id,
+        );
+        return binding?.resourceState !== 'deleted';
       });
       // recvqb6mfyqXLD: decorate every teamSynced entry with the same
       // mutate verdict the PATCH/DELETE routes enforce, so any surface that
@@ -586,13 +602,13 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       // per-item disk/hub round trip it already knows the answer to.
       const designSystems = canMutateUserDesignSystem
         ? await Promise.all(
-            systems.map(async ({ body, ...rest }) => (
+            visibleSystems.map(async ({ body, ...rest }) => (
               rest.teamSynced
                 ? { ...rest, canMutate: await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, rest.id, req) }
                 : rest
             )),
           )
-        : systems.map(({ body, ...rest }) => rest);
+        : visibleSystems.map(({ body, ...rest }) => rest);
       res.json({ designSystems });
     } catch (err: any) {
       if (sendWorkspaceScopeError(res, err)) return;

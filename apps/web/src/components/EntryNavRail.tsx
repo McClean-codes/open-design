@@ -761,7 +761,9 @@ export function EntryNavRail({
     context?.workspaceName?.trim() ||
     context?.teamName?.trim() ||
     context?.teamId ||
-    (context?.workspaceType === 'personal' ? 'Personal workspace' : '');
+    (context?.workspaceType === 'personal' ? 'Personal workspace' : '') ||
+    context?.workspaceId ||
+    '';
   const workspaceInitial = workspaceName.charAt(0).toUpperCase() || 'W';
   const visibleWorkspaceItems =
     identityWorkspaceItems.length > 0
@@ -1221,7 +1223,11 @@ export function EntryNavRail({
                     >
                       {visibleWorkspaceItems.map((item) => {
                         const active = item.workspaceId === context.workspaceId;
-                        const initial = item.workspaceName.trim().charAt(0).toUpperCase() || 'W';
+                        // Older daemon directory payloads can omit workspaceName.
+                        // Keep those rows identifiable and actionable by falling
+                        // back to the stable workspace id instead of crashing.
+                        const itemName = item.workspaceName?.trim() || item.workspaceId;
+                        const initial = itemName.charAt(0).toUpperCase() || 'W';
                         return (
                           <button
                             key={item.workspaceId}
@@ -1242,7 +1248,7 @@ export function EntryNavRail({
                             {/* #5517's switcher rows are avatar + full name + ✓ only.
                                 The raw role word ate the name's width and truncated
                                 it; the role is already on 设置·工作区. */}
-                            <span className="entry-nav-rail__workspace-menu-name">{item.workspaceName}</span>
+                            <span className="entry-nav-rail__workspace-menu-name">{itemName}</span>
                             {active ? <Icon name="check" size={14} /> : null}
                           </button>
                         );

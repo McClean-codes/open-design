@@ -12,6 +12,7 @@ import {
   suppressWhatsNew,
   trackRunRequests,
 } from '@/playwright/mock-factory';
+import { ensureRailOpen } from '@/playwright/rail';
 import { T } from '@/timeouts';
 
 test.describe.configure({ timeout: T.xlong });
@@ -1516,6 +1517,58 @@ test('[P1] home template picker defers media settings for image, video, hyperfra
   await pickHomeTemplate(page, 'audio');
   await expect(page.getByTestId('home-hero-footer-option-audioType')).toHaveCount(0);
   await expect(page.getByTestId('home-hero-footer-option-duration')).toHaveCount(0);
+});
+
+test('[P1] expired plugin refresh keeps known Home creation types actionable after a real remount', async ({
+  page,
+}) => {
+  await gotoEntryHome(page);
+  const initialMenu = await openHomeTemplateMenu(page);
+  await expect(initialMenu.getByTestId('home-hero-template-wedge-prototype')).not.toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+  await page.keyboard.press('Escape');
+
+  // Age the module-level catalog past its 10-second TTL, then leave Home
+  // through an in-app route so HomeView really unmounts while the JS module and
+  // its last successful snapshot remain alive.
+  await page.evaluate(() => {
+    const expiredNow = Date.now() + 11_000;
+    Date.now = () => expiredNow;
+  });
+  let releaseRefresh!: () => void;
+  const refreshGate = new Promise<void>((resolve) => {
+    releaseRefresh = resolve;
+  });
+  let refreshRequests = 0;
+  await page.route('**/api/plugins', async (route) => {
+    refreshRequests += 1;
+    await refreshGate;
+    await route.fulfill({ json: { plugins: HOME_PLUGINS } });
+  });
+
+  try {
+    await ensureRailOpen(page);
+    await page.getByTestId('entry-settings-button').click();
+    await expect(page).toHaveURL(/\/settings$/);
+    await page.goBack();
+    await expect(page.getByTestId('home-hero')).toBeVisible();
+    await expect.poll(() => refreshRequests).toBeGreaterThan(0);
+
+    // The revalidation is deliberately unresolved. The latest successful
+    // catalog must seed the remount synchronously instead of greying every
+    // creation type until this request finishes.
+    const remountedMenu = await openHomeTemplateMenu(page);
+    await expect(
+      remountedMenu.getByTestId('home-hero-template-wedge-prototype'),
+    ).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(
+      remountedMenu.getByTestId('home-hero-template-wedge-deck'),
+    ).not.toHaveAttribute('aria-disabled', 'true');
+  } finally {
+    releaseRefresh();
+  }
 });
 
 test('[P1] home hero example presets update the composer input for prototype and live artifact', async ({ page }) => {
