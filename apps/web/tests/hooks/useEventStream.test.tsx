@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from '@testing-library/react';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useEventStream } from '../../src/hooks/useEventStream';
 
 // A controllable EventSource double. Tracks every instance so a test can assert
@@ -38,6 +38,8 @@ class MockEventSource {
 const Ctor = MockEventSource as unknown as typeof EventSource;
 
 afterEach(() => {
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   MockEventSource.instances = [];
   cleanup();
 });
@@ -95,6 +97,42 @@ describe('useEventStream', () => {
     expect(result.current.connected).toBe(true);
     act(() => es.onerror?.());
     expect(result.current.connected).toBe(false);
+  });
+
+  it('reopens a stream dropped for a long-hidden tab and catches up on visibility', async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = 'visible';
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    let activeCount = 0;
+    const { result } = renderHook(() =>
+      useEventStream('/api/workspace/events', {
+        events: { 'team-projects-changed': () => {} },
+        onActive: () => {
+          activeCount += 1;
+        },
+        EventSourceCtor: Ctor,
+      }),
+    );
+    const initial = MockEventSource.instances[0]!;
+    act(() => initial.open());
+    expect(result.current.connected).toBe(true);
+    expect(activeCount).toBe(1);
+
+    visibility = 'hidden';
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(30_000);
+    });
+    expect(initial.closed).toBe(true);
+    expect(result.current.connected).toBe(false);
+
+    visibility = 'visible';
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    expect(MockEventSource.instances).toHaveLength(2);
+    const reopened = MockEventSource.instances[1]!;
+    act(() => reopened.open());
+    expect(result.current.connected).toBe(true);
+    expect(activeCount).toBe(2);
   });
 
   it('stays poll-only (never connects) when disabled', () => {
