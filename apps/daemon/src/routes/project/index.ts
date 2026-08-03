@@ -184,7 +184,7 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
     projectId: string,
     context: WorkspaceCollabContext | null,
     resolveFreshWorkspaceContext: () => Promise<ProjectCommentWorkspaceContextResolution>,
-  ) => void;
+  ) => Promise<void> | void;
   /**
    * What the daemon has learned about each workspace's type, used to refuse a
    * team share aimed at a personal workspace even when the caller's headers say

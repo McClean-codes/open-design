@@ -3769,10 +3769,14 @@ export function ProjectView({
     && projectWorkspaceScopeReady(projectWorkspaceScopeState.scope);
   useProjectFileEvents(project.id, projectEventsEnabled, handleProjectEvent, {
     onConnectedChange: setProjectEventsSseConnected,
-    // A file can be created after the initial list snapshot but before SSE is
-    // listening. Reconcile once the exact-scoped stream is ready so that
-    // missed pre-handshake mutations cannot leave the workspace stale forever.
-    onReady: refreshFilesAndDesignMd,
+    // Files or comments can change after their initial snapshots but before
+    // SSE is listening. Reconcile both once the exact-scoped stream is ready:
+    // for comments this also redeems a daemon-side dirty mark left by a hub
+    // event that arrived in the pre-handshake gap.
+    onReady: () => {
+      refreshFilesAndDesignMd();
+      void refreshPreviewCommentsRef.current?.();
+    },
   }, projectRunWorkspaceContext);
 
   const activePromptContextSignature = useMemo(() => {

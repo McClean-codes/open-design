@@ -895,7 +895,7 @@ describe('a Home auto-send observes a project billing scope that settles after m
     await waitFor(() => expect(mockedStreamViaDaemon).toHaveBeenCalled());
   });
 
-  it('reconciles files with the exact Team scope when the project event stream becomes ready', async () => {
+  it('reconciles files and comments with the exact Team scope when the project event stream becomes ready', async () => {
     window.sessionStorage.removeItem(`od:auto-send-first:${PROJECT_ID}`);
     workspaceScopeMocks.projectScope = {
       loading: false,
@@ -923,6 +923,7 @@ describe('a Home auto-send observes a project billing scope that settles after m
 
     const options = mockedUseProjectFileEvents.mock.calls.at(-1)?.[3];
     mockedFetchProjectFiles.mockClear();
+    mockedFetchPreviewComments.mockClear();
     await act(async () => {
       options?.onReady?.();
     });
@@ -933,6 +934,13 @@ describe('a Home auto-send observes a project billing scope that settles after m
         requireAuthoritative: true,
         workspaceContext: CALLER_CONTEXT,
       });
+    });
+    await waitFor(() => {
+      expect(mockedFetchPreviewComments).toHaveBeenCalledWith(
+        PROJECT_ID,
+        `conv-${PROJECT_ID}`,
+        CALLER_CONTEXT,
+      );
     });
   });
 

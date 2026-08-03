@@ -117,14 +117,15 @@ export interface RegisterProjectCommentRoutesDeps extends RouteDeps<'db' | 'proj
   /**
    * Fired when the comment list is read. The hub push channel marks closed
    * projects comment-dirty instead of pulling eagerly; the first read after
-   * opening consumes that mark and triggers an immediate cloud pull, so an
-   * opened project catches up NOW instead of on the next poll tick.
+   * opening consumes that mark and awaits an immediate cloud pull before the
+   * list is serialized, so an opened project catches up in its first response
+   * instead of requiring a second read after the next poll tick.
    */
   onCommentsRead?: (
     projectId: string,
     context: WorkspaceCollabContext | null,
     resolveFreshWorkspaceContext: () => Promise<ProjectCommentWorkspaceContextResolution>,
-  ) => void;
+  ) => Promise<void> | void;
 }
 
 export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectCommentRoutesDeps): void {
@@ -366,7 +367,7 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
     if (!workspaceResolution.ok) {
       return sendWorkspaceResolutionError(res, workspaceResolution);
     }
-    ctx.onCommentsRead?.(
+    await ctx.onCommentsRead?.(
       req.params.id,
       workspaceResolution.context,
       () => resolveRequestWorkspaceContext(req, req.params.id),

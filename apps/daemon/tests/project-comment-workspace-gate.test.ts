@@ -210,6 +210,54 @@ async function startServer(
 }
 
 describe('project comments — workspace mutation gate', () => {
+  it('includes a dirty relay pull in the first comments response', async () => {
+    let releasePull!: () => void;
+    const pullGate = new Promise<void>((resolve) => {
+      releasePull = resolve;
+    });
+    const onCommentsRead = vi.fn(async () => {
+      await pullGate;
+      upsertPreviewComment(
+        database!,
+        TEAM_MIRROR_PROJECT,
+        'conv-team-mirror',
+        {
+          id: 'remote-comment-after-dirty-read',
+          target: COMMENT_TARGET,
+          note: 'remote comment merged by the dirty pull',
+          authorMemberId: OWNER_MEMBER_ID,
+        },
+      );
+    });
+    const baseUrl = await startServer({
+      resolveReadWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+      onCommentsRead,
+    });
+    const commentsUrl =
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-mirror/comments`;
+
+    const responsePromise = fetch(commentsUrl, {
+      headers: workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+    });
+    await vi.waitFor(() => expect(onCommentsRead).toHaveBeenCalledTimes(1));
+    releasePull();
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      comments: Array<{ id: string; note: string }>;
+    };
+    expect(payload.comments).toEqual([
+      expect.objectContaining({
+        id: 'remote-comment-after-dirty-read',
+        note: 'remote comment merged by the dirty pull',
+      }),
+    ]);
+  });
+
   it('leases directory authority only for GET while mutations stay fresh and revocation fails closed', async () => {
     let clock = 0;
     let directoryItems = [{

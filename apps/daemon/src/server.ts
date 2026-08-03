@@ -4584,6 +4584,23 @@ export async function startServer({
   // interest; reconnect/source-gap handlers run one exact-scope poller cycle
   // to close the disconnect gap.
   const dirtyCommentProjects = new Set<string>();
+  const restoreDirtyCommentProject = (projectId: string) => {
+    dirtyCommentProjects.add(projectId);
+    // The upstream hub event has already proved that this project changed.
+    // If the daemon's eager pull lost a transient race (for example a failed
+    // Vela CLI/TLS attempt), wake the open view once so its exact-scoped list
+    // read can redeem the retained dirty mark immediately. That read awaits
+    // its pull before serializing comments; a failed read deliberately does
+    // not signal again, avoiding a retry storm while the 30s poll remains the
+    // recovery floor.
+    if (activeProjectEventSinks.has(projectId)) {
+      emitProjectEvent(projectId, {
+        type: 'comment-changed',
+        projectId,
+        at: Date.now(),
+      });
+    }
+  };
   // One hub write can legitimately fan out as two thin events (a display-name
   // carrying catalog upsert emits team-projects-changed AND
   // project-metadata-changed, ~1ms apart). Both map to the same workspace
@@ -4727,9 +4744,9 @@ export async function startServer({
                   : false,
               )
               .then((pulled) => {
-                if (!pulled) dirtyCommentProjects.add(projectId);
+                if (!pulled) restoreDirtyCommentProject(projectId);
               })
-              .catch(() => dirtyCommentProjects.add(projectId));
+              .catch(() => restoreDirtyCommentProject(projectId));
           } else {
             // Closed project: just mark dirty. The open-project path pulls
             // immediately, and an unopened project costs zero requests.
@@ -6476,7 +6493,7 @@ export async function startServer({
     },
     ...(collabCloud
       ? {
-          onCommentsRead: (
+          onCommentsRead: async (
             projectId,
             leasedContext,
             resolveFreshWorkspaceContext,
@@ -6496,25 +6513,27 @@ export async function startServer({
                 dirtyCommentProjects.add(projectId);
                 return;
               }
-              void resolveFreshWorkspaceContext()
-                .then((freshResolution) => {
-                  if (!freshResolution.ok || !freshResolution.context) {
-                    return false;
-                  }
-                  const freshContext = freshResolution.context;
-                  if (
-                    freshContext.workspaceId !== leasedContext.workspaceId
-                    || freshContext.workspaceMemberId
-                      !== leasedContext.workspaceMemberId
-                  ) {
-                    return false;
-                  }
-                  return collabCloud.pullProject(projectId, freshContext);
-                })
-                .then((pulled) => {
-                  if (!pulled) dirtyCommentProjects.add(projectId);
-                })
-                .catch(() => dirtyCommentProjects.add(projectId));
+              try {
+                const freshResolution = await resolveFreshWorkspaceContext();
+                if (!freshResolution.ok || !freshResolution.context) {
+                  dirtyCommentProjects.add(projectId);
+                  return;
+                }
+                const freshContext = freshResolution.context;
+                if (
+                  freshContext.workspaceId !== leasedContext.workspaceId
+                  || freshContext.workspaceMemberId
+                    !== leasedContext.workspaceMemberId
+                ) {
+                  dirtyCommentProjects.add(projectId);
+                  return;
+                }
+                if (!await collabCloud.pullProject(projectId, freshContext)) {
+                  dirtyCommentProjects.add(projectId);
+                }
+              } catch {
+                dirtyCommentProjects.add(projectId);
+              }
             }
           },
           // The durable outbox also reconciles pin_seq (recvq5BVsolIxi): a genuinely
