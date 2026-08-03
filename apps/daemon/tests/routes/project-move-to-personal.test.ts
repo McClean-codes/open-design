@@ -689,7 +689,10 @@ describe('project move to personal on an unbound (never-locally-shared) project'
       );
 
       const failed = await move();
-      expect(failed.status).toBe(400);
+      expect(failed.status).toBe(503);
+      await expect(failed.json()).resolves.toMatchObject({
+        error: { code: 'UPSTREAM_UNAVAILABLE', retryable: true },
+      });
       expect(getWorkspaceProjectByProjectId(db, projectId)).toMatchObject({
         workspaceId: TEAM_WORKSPACE_ID,
         visibility: 'team',
