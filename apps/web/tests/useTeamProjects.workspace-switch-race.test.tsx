@@ -10,6 +10,7 @@ vi.mock('../src/collab/workspace-events', () => ({
 import { resetCoalescedGet } from '../src/lib/coalesced-get';
 import {
   lastResolvedTeamProjects,
+  notifyTeamProjectsChanged,
   notifyWorkspaceContextRefresh,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
@@ -36,9 +37,9 @@ const A_PROJECT = {
   name: 'Workspace A project',
 };
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { 'content-type': 'application/json' },
   });
 }
@@ -178,6 +179,61 @@ describe('useTeamProjects workspace-switch races', () => {
     });
     expect(second.result.current.loading).toBe(false);
     expect(second.result.current.projects).toEqual([A_PROJECT]);
+  });
+
+  it('keeps exact last-good rows across a typed catalog outage and converges after recovery', async () => {
+    let catalogReads = 0;
+    const RECOVERED_PROJECT = { ...A_PROJECT, name: 'Recovered catalog project' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])));
+        }
+        if (url.includes('/api/workspace/context')) {
+          return Promise.resolve(jsonResponse({ context: CONTEXTS.a }));
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          catalogReads += 1;
+          if (catalogReads === 1) {
+            return Promise.resolve(jsonResponse({ projects: [A_PROJECT] }));
+          }
+          if (catalogReads === 2) {
+            return Promise.resolve(jsonResponse({
+              error: {
+                code: 'UPSTREAM_UNAVAILABLE',
+                message: 'team project catalog is temporarily unavailable',
+                retryable: true,
+              },
+            }, 503));
+          }
+          return Promise.resolve(jsonResponse({ projects: [RECOVERED_PROJECT] }));
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const hook = renderHook(() => useTeamProjects());
+    await waitFor(() => {
+      expect(hook.result.current.loading).toBe(false);
+      expect(hook.result.current.projects).toEqual([A_PROJECT]);
+    });
+
+    act(() => notifyTeamProjectsChanged());
+    await waitFor(() => expect(catalogReads).toBe(2));
+    expect(hook.result.current.loading).toBe(false);
+    expect(hook.result.current.projects).toEqual([A_PROJECT]);
+    expect(lastResolvedTeamProjects(CONTEXTS.a)).toEqual([A_PROJECT]);
+
+    act(() => notifyTeamProjectsChanged());
+    await waitFor(() => {
+      expect(catalogReads).toBe(3);
+      expect(hook.result.current.projects).toEqual([RECOVERED_PROJECT]);
+    });
+    expect(hook.result.current.loading).toBe(false);
+    expect(lastResolvedTeamProjects(CONTEXTS.a)).toEqual([RECOVERED_PROJECT]);
   });
 
   it('does not reuse an exact-looking catalog across an account boundary', async () => {

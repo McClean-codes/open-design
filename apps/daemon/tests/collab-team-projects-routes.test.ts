@@ -176,6 +176,74 @@ describe('GET /api/workspace/projects/team', () => {
     expect(response.body).toEqual({ projects: PROJECTS });
   });
 
+  it('returns a retryable unavailable error when the team-project catalog throws', async () => {
+    const get = await startServer({
+      workspaceContext: teamContextProvider(),
+      listTeamProjects: async () => {
+        throw new Error('temporary Vela outage');
+      },
+      fetchWorkspaceDirectory: async () => ({
+        ok: true,
+        items: [
+          {
+            workspaceId: 'ws-1',
+            workspaceName: 'Workspace 1',
+            workspaceType: 'team',
+            workspaceMemberId: 'wm-1',
+            role: 'member',
+            memberStatus: 'active',
+            lifecycleState: 'active',
+          },
+        ],
+      }),
+    });
+
+    const response = await get({
+      'x-od-workspace-id': 'ws-1',
+      'x-od-workspace-member-id': 'wm-1',
+      'x-od-workspace-type': 'team',
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: {
+        code: 'UPSTREAM_UNAVAILABLE',
+        message: 'team project catalog is temporarily unavailable',
+        retryable: true,
+      },
+    });
+  });
+
+  it('preserves a successful empty team-project catalog as a valid response', async () => {
+    const get = await startServer({
+      workspaceContext: teamContextProvider(),
+      listTeamProjects: async () => [],
+      fetchWorkspaceDirectory: async () => ({
+        ok: true,
+        items: [
+          {
+            workspaceId: 'ws-1',
+            workspaceName: 'Workspace 1',
+            workspaceType: 'team',
+            workspaceMemberId: 'wm-1',
+            role: 'member',
+            memberStatus: 'active',
+            lifecycleState: 'active',
+          },
+        ],
+      }),
+    });
+
+    const response = await get({
+      'x-od-workspace-id': 'ws-1',
+      'x-od-workspace-member-id': 'wm-1',
+      'x-od-workspace-type': 'team',
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ projects: [] });
+  });
+
   it('returns an empty list off-team without invoking Vela', async () => {
     const workspaceContext = personalContextProvider();
     const listTeamProjects = createTeamProjectsLister({
