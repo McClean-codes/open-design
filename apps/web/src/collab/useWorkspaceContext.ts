@@ -505,8 +505,14 @@ export function useWorkspaceContext(): WorkspaceContextState {
    * directly) collapses that whole burst to a single real fetch instead of one
    * per mounted instance — see its doc for why the naive evict-then-fetch
    * pattern is unsafe here.
+   *
+   * `fresh` is reserved for authoritative server invalidations. It bypasses
+   * settled directory and context answers without marking the shell loading or
+   * declaring a new local identity generation.
    */
-  const loadContext = useCallback(async (options: { markLoading?: boolean } = {}) => {
+  const loadContext = useCallback(async (
+    options: { markLoading?: boolean; fresh?: boolean } = {},
+  ) => {
     const requestEpoch = ++requestEpochRef.current;
     const requestGeneration = workspaceContextRequestToken;
     if (options.markLoading && mountedRef.current) {
@@ -521,7 +527,8 @@ export function useWorkspaceContext(): WorkspaceContextState {
     }
     try {
       const requestedSelection = readWorkspaceSelection();
-      const directory = options.markLoading
+      const forceFresh = options.markLoading || options.fresh;
+      const directory = forceFresh
         ? await readWorkspaceDirectoryForCurrentGeneration({ fresh: true })
         : await readWorkspaceDirectoryForCurrentGeneration();
       if (
@@ -596,7 +603,7 @@ export function useWorkspaceContext(): WorkspaceContextState {
       // An explicit identity-change refresh forces a fresh read instead of
       // sharing a settled answer that predates the change.
       const coalesceKey = workspaceContextCoalesceKey();
-      const body = options.markLoading
+      const body = forceFresh
         ? await forceCoalescedGet(coalesceKey, fetchContext)
         : await coalescedGet(coalesceKey, fetchContext);
       if (
@@ -657,10 +664,12 @@ export function useWorkspaceContext(): WorkspaceContextState {
 
   // Collab realtime hop-2: subscribe to the workspace SSE and re-fetch on a
   // pushed `workspace-context-changed`. `connected` drives poll-as-floor below.
-  // `loadContext` is the coalesced no-arg reader (it keeps the last-known context
-  // on failure rather than clearing), so the SSE re-fetch just calls it.
+  // The re-fetch keeps the last-known context on failure rather than clearing it.
   const { connected: sseConnected } = useWorkspaceInvalidation(
-    { 'workspace-context-changed': () => void loadContext() },
+    // A pushed invalidation is authoritative new state. Reusing either settled
+    // one-second cache here can keep a revoked Team membership selected until
+    // the SSE-floor poll runs much later.
+    { 'workspace-context-changed': () => void loadContext({ fresh: true }) },
     {
       workspaceContext: state.context,
       onActive: () => void loadContext(),
