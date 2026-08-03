@@ -316,27 +316,17 @@ export function workspaceResourceAccess(
   const frozen = wp.resourceState === 'frozen' || wp.resourceState === 'deleted' || isWorkspaceResourceLocked(ctx);
   const selfCreated = wp.createdByWorkspaceMemberId != null && wp.createdByWorkspaceMemberId === ctx.workspaceMemberId;
   const privileged = ctx.role === 'owner' || ctx.role === 'admin';
-  const canMutate =
-    !frozen
-    && ctx.canWriteSyncedFiles
-    && ctx.memberStatus === 'active'
-    && (
-      wp.visibility === 'personal'
-        ? selfCreated
-        : privileged || selfCreated
-    );
-  // A bound Personal row must always have an exact creator witness; neither a
-  // privileged role nor a missing creator permits adoption. Truly unbound
-  // local resources use the separate no-binding compatibility lane and never
-  // reach this computation. Team rows retain the existing governance policy.
+  const canMutate = !frozen && ctx.canWriteSyncedFiles && ctx.memberStatus === 'active' && (privileged || selfCreated);
+  // Sharing is the one mutation that must ALSO work on an unattributed
+  // Project row: lazy projection never assigns ownership to the reader, yet a
+  // local project physically exists only on this user's disk and sharing it
+  // stamps the sharer as owner. Resource types whose Personal rows are stored
+  // in shared registries apply a stricter creator check below, where the
+  // resource type is available.
   const unattributed = wp.createdByWorkspaceMemberId == null;
   const canShareLocal =
     !frozen && ctx.canWriteSyncedFiles && ctx.memberStatus === 'active' &&
-    (
-      wp.visibility === 'personal'
-        ? selfCreated
-        : privileged || selfCreated || unattributed
-    );
+    (privileged || selfCreated || unattributed);
   const disabledReason: 'workspace_deleted' | 'workspace_locked' | 'permission_denied' | undefined = frozen
     ? ctx.lifecycleState === 'deleted' || wp.resourceState === 'deleted'
       ? 'workspace_deleted'
@@ -363,6 +353,14 @@ function workspaceResourceMutationAllowed(
 ): boolean {
   if (!row) return false;
   const access = workspaceResourceAccess(row, ctx);
+  const strictPersonalCreator =
+    row.visibility === 'personal'
+    && (
+      resourceType === 'plugin'
+      || resourceType === 'skill'
+      || resourceType === 'design_system'
+      || (resourceType === 'project' && row.createdByWorkspaceMemberId != null)
+    );
   // `comment` is the one capability the product grants MORE WIDELY than
   // resource ownership: sharing a resource into the team explicitly invites
   // every active member to comment (the member-facing read-only banner
@@ -384,6 +382,14 @@ function workspaceResourceMutationAllowed(
         ctx.memberStatus === 'active' &&
         row.visibility === 'team')
     );
+  }
+  // Plugin, Skill, and Design System bytes live in shared daemon registries.
+  // A same-Workspace owner/admin therefore must not mutate another member's
+  // Personal resource, and an unattributed row is not an adoption witness.
+  // Project is intentionally excluded: legacy local Projects rely on the
+  // existing unattributed share-adoption lane.
+  if (strictPersonalCreator) {
+    return access.canMutate && access.selfCreated;
   }
   // A shared Team project is a single-writer resource. Workspace governance
   // (`owner` / `admin`) may manage the Team, but it does not transfer the
@@ -637,11 +643,19 @@ export async function enforceVerifiedWorkspaceResourceRead(
   }
   const context = workspaceResourceContextFromVerified(verified.context);
   const row = getWorkspaceResource(db, context.workspaceId, resourceId);
+  const strictPersonalCreator =
+    row?.visibility === 'personal'
+    && (
+      resourceType === 'plugin'
+      || resourceType === 'skill'
+      || resourceType === 'design_system'
+      || (resourceType === 'project' && row.createdByWorkspaceMemberId != null)
+    );
   if (
     !row
     || context.memberStatus !== 'active'
     || (
-      row.visibility === 'personal'
+      strictPersonalCreator
       && row.createdByWorkspaceMemberId !== context.workspaceMemberId
     )
   ) {

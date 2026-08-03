@@ -17,10 +17,12 @@ import {
   deleteUserSkill,
   findSkillById,
   importUserSkill,
+  listSkills,
   listSkillFiles,
   splitDerivedSkillId,
   updateUserSkill,
 } from '../skills.js';
+import { parseFrontmatter } from '../design-systems/frontmatter.js';
 import {
   deleteWorkspaceResourceByResourceId,
   ensureWorkspaceResource,
@@ -171,6 +173,60 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       createdByWorkspaceMemberId: authority.workspaceMemberId,
       updatedByWorkspaceMemberId: authority.workspaceMemberId,
     });
+  };
+  const readSkillIdFromDirectory = (directory: string): string | null => {
+    try {
+      const raw = fs.readFileSync(path.join(directory, 'SKILL.md'), 'utf8');
+      const parsed = parseFrontmatter(raw) as { data?: { name?: unknown } };
+      return typeof parsed.data?.name === 'string' && parsed.data.name.trim()
+        ? parsed.data.name.trim()
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  const skillIdentityConflict = async (
+    authority: WorkspaceCollabContext | null,
+    skillId: string,
+    preexistingUserSkillIds?: ReadonlySet<string>,
+  ): Promise<boolean> => {
+    if (!authority) return false;
+    const binding = getWorkspaceResourceByResourceId(db, 'skill', skillId);
+    if (binding) {
+      return !(
+        binding.workspaceId === authority.workspaceId
+        && binding.visibility === 'personal'
+        && binding.resourceState !== 'deleted'
+        && binding.createdByWorkspaceMemberId === authority.workspaceMemberId
+      );
+    }
+    // An explicit Workspace may create a shadow of a bundled skill, but it
+    // must not adopt an existing unbound user skill from the shared daemon
+    // registry merely by installing another folder with the same manifest id.
+    return preexistingUserSkillIds
+      ? preexistingUserSkillIds.has(skillId)
+      : (await listSkills(USER_SKILLS_DIR)).some((skill) => skill.id === skillId);
+  };
+  const rejectSkillIdentityConflict = async (
+    res: Response,
+    authority: WorkspaceCollabContext | null,
+    skillId: string,
+  ): Promise<boolean> => {
+    if (!await skillIdentityConflict(authority, skillId)) return false;
+    sendApiError(
+      res,
+      409,
+      'WORKSPACE_RESOURCE_ID_CONFLICT',
+      'a Personal skill with this id belongs to another workspace member',
+    );
+    return true;
+  };
+  const removeFreshSkillInstall = (directory: string): void => {
+    try {
+      const stat = fs.lstatSync(directory);
+      if (stat.isSymbolicLink()) fs.unlinkSync(directory);
+      else fs.rmSync(directory, { recursive: true, force: true });
+    } catch {}
   };
   const requestWithNavigationScope = (req: any): any | 'conflict' => {
     const workspaceId = typeof req.query?.workspaceId === 'string'
@@ -472,6 +528,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     try {
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
+      const requestedSkillId = typeof req.body?.name === 'string'
+        ? req.body.name.trim()
+        : '';
+      if (requestedSkillId && await rejectSkillIdentityConflict(res, authority, requestedSkillId)) return;
       const result = await importUserSkill(USER_SKILLS_DIR, req.body || {});
       bindImportedSkillToWorkspace(authority, result.id);
       const skills = await listAllSkills({
@@ -981,14 +1041,25 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
       const body = req.body && typeof req.body === 'object' ? req.body : {};
+      const preexistingUserSkillIds = new Set(
+        (await listSkills(USER_SKILLS_DIR)).map((skill) => skill.id),
+      );
       const isLegacyTarget =
         (body.source === 'github' && typeof body.url === 'string') ||
         (body.source === 'local' && typeof body.path === 'string');
+      if (body.source === 'local' && typeof body.path === 'string') {
+        const localSkillId = readSkillIdFromDirectory(body.path);
+        if (localSkillId && await rejectSkillIdentityConflict(res, authority, localSkillId)) return;
+      }
       const result = isLegacyTarget
         ? await installFromTarget(body, USER_SKILLS_DIR, 'skill')
         : await installSkillFromRemoteSource(
             USER_SKILLS_DIR,
             typeof body.source === 'string' ? body.source : '',
+            {
+              allowInstallIdentity: async ({ id }) =>
+                !await skillIdentityConflict(authority, id),
+            },
           );
       if (!result.ok) {
         const statusByCode: Partial<Record<SkillInstallErrorCode, number>> = {
@@ -1006,6 +1077,29 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       }
       if (typeof result.dir !== 'string' || !result.dir) {
         return res.status(500).json({ error: 'skill install did not return an installation directory' });
+      }
+      const installedSkillId = 'id' in result && typeof result.id === 'string'
+        ? result.id
+        : readSkillIdFromDirectory(result.dir);
+      if (
+        installedSkillId
+        && await skillIdentityConflict(
+          authority,
+          installedSkillId,
+          preexistingUserSkillIds,
+        )
+      ) {
+        // Legacy GitHub installs only reveal their manifest identity after
+        // cloning. Compensate before binding so a same-id install cannot
+        // reassign another member's Personal skill; the original folder and
+        // binding are never touched.
+        removeFreshSkillInstall(result.dir);
+        return sendApiError(
+          res,
+          409,
+          'WORKSPACE_RESOURCE_ID_CONFLICT',
+          'a Personal skill with this id belongs to another workspace member',
+        );
       }
       const installedDir = fs.realpathSync.native(result.dir);
       const unscopedSkills = await listAllSkills();

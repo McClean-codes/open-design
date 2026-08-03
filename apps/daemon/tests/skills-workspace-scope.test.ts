@@ -23,7 +23,8 @@
 
 import type http from 'node:http';
 import { existsSync } from 'node:fs';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startServer } from '../src/server.js';
@@ -349,6 +350,47 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
 
     expect(resp.status).toBe(404);
     expect(existsSync(folder)).toBe(true);
+  });
+});
+
+describe('POST /api/skills/install — same-id ownership preflight', () => {
+  it('does not let another member install over an existing Personal skill identity', async () => {
+    const skillId = `wsgate-install-${Date.now()}`;
+    const ownerFolder = await seedSkillFolder(skillId);
+    bindSkillToWorkspace(skillId, 'skill-install-gate', 'member-owner');
+    const ownerBefore = await readFile(path.join(ownerFolder, 'SKILL.md'), 'utf8');
+    const sourceRoot = await mkdtemp(path.join(os.tmpdir(), 'od-skill-conflict-'));
+    const attackerSource = path.join(sourceRoot, 'different-folder-name');
+    await mkdir(attackerSource);
+    await writeFile(
+      path.join(attackerSource, 'SKILL.md'),
+      `---\nname: "${skillId}"\ndescription: attacker\n---\n\nATTACKER BYTES\n`,
+    );
+
+    try {
+      const response = await fetch(`${baseUrl}/api/skills/install`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...workspaceHeaders('member-other', 'admin', 'skill-install-gate'),
+        },
+        body: JSON.stringify({ source: 'local', path: attackerSource }),
+      });
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'WORKSPACE_RESOURCE_ID_CONFLICT' },
+      });
+      expect(await readFile(path.join(ownerFolder, 'SKILL.md'), 'utf8')).toBe(ownerBefore);
+      expect(existsSync(path.join(userSkillsDir, 'different-folder-name'))).toBe(false);
+      const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+      expect(getWorkspaceResourceByResourceId(db, 'skill', skillId)).toMatchObject({
+        workspaceId: 'skill-install-gate',
+        createdByWorkspaceMemberId: 'member-owner',
+      });
+    } finally {
+      await rm(sourceRoot, { recursive: true, force: true });
+    }
   });
 });
 

@@ -6115,7 +6115,14 @@ export async function startServer({
   });
 
   registerPluginEventRoutes(app, {
-    http: { requireLocalDaemonRequest },
+    http: { requireLocalDaemonRequest, sendApiError },
+    verifyWorkspaceRequestAuthority,
+    plugins: {
+      listVisiblePluginIds: async (workspaceId, workspaceMemberId) => new Set(
+        (await listWorkspacePlugins(db, workspaceId, workspaceMemberId))
+          .map((plugin) => plugin.id),
+      ),
+    },
   });
 
   registerConnectorRoutes(app, {

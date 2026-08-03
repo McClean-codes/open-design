@@ -1,4 +1,7 @@
 import type http from 'node:http';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startServer } from '../src/server.js';
 import { ensureWorkspaceProject, insertProject, openDatabase } from '../src/db.js';
@@ -7,8 +10,10 @@ import { createSnapshot } from '../src/plugins/snapshots.js';
 let server: http.Server;
 let baseUrl: string;
 let shutdown: (() => Promise<void> | void) | undefined;
+let exportRoot: string;
 
 beforeAll(async () => {
+  exportRoot = await mkdtemp(path.join(os.tmpdir(), 'od-plugin-export-scope-'));
   const started = await startServer({ port: 0, returnServer: true }) as {
     url: string;
     server: http.Server;
@@ -21,6 +26,7 @@ beforeAll(async () => {
   for (const [projectId, visibility] of [
     ['snapshot-personal-project', 'personal'],
     ['snapshot-team-project', 'team'],
+    ['snapshot-unbound-project', null],
   ] as const) {
     const now = Date.now();
     insertProject(db, {
@@ -29,23 +35,25 @@ beforeAll(async () => {
       createdAt: now,
       updatedAt: now,
     });
-    ensureWorkspaceProject(db, {
-      projectId,
-      workspaceId: 'snapshot-workspace',
-      visibility,
-      resourceState: 'active',
-      createdByWorkspaceMemberId: 'snapshot-owner',
-      updatedByWorkspaceMemberId: 'snapshot-owner',
-      createdAt: now,
-      updatedAt: now,
-    });
+    if (visibility) {
+      ensureWorkspaceProject(db, {
+        projectId,
+        workspaceId: 'snapshot-workspace',
+        visibility,
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'snapshot-owner',
+        updatedByWorkspaceMemberId: 'snapshot-owner',
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
     createSnapshot(db, {
       projectId,
       pluginId: 'snapshot-plugin',
       pluginVersion: '1.0.0',
       manifestSourceDigest: 'digest',
       taskKind: 'new-generation',
-      inputs: { secretPrompt: `${visibility}-private-input` },
+      inputs: { secretPrompt: `${visibility ?? 'unbound'}-private-input` },
       resolvedContext: { items: [] },
       capabilitiesGranted: [],
       capabilitiesRequired: [],
@@ -60,6 +68,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await Promise.resolve(shutdown?.());
   await new Promise<void>((resolve) => server.close(() => resolve()));
+  await rm(exportRoot, { recursive: true, force: true });
 });
 
 function headers(memberId: string, role: 'owner' | 'admin' | 'member' = 'member') {
@@ -117,6 +126,18 @@ describe('applied plugin snapshot workspace isolation', () => {
     expect(memberBody.snapshots[0]?.inputs.secretPrompt).toBe('team-private-input');
   });
 
+  it('keeps the headerless compatibility list limited to provably unbound projects', async () => {
+    const response = await fetch(`${baseUrl}/api/applied-plugins`);
+    expect(response.status).toBe(200);
+    const body = await response.json() as {
+      snapshots: Array<{ projectId: string; inputs: Record<string, string> }>;
+    };
+    expect(body.snapshots).toHaveLength(1);
+    expect(body.snapshots[0]?.inputs.secretPrompt).toBe('unbound-private-input');
+    expect(JSON.stringify(body)).not.toContain('personal-private-input');
+    expect(JSON.stringify(body)).not.toContain('team-private-input');
+  });
+
   it('computes inventory statistics from the caller-visible snapshots only', async () => {
     const owner = await fetch(`${baseUrl}/api/plugins/stats`, {
       headers: headers('snapshot-owner'),
@@ -130,6 +151,12 @@ describe('applied plugin snapshot workspace isolation', () => {
     await expect(member.json()).resolves.toMatchObject({ snapshots: { total: 1 } });
   });
 
+  it('does not count Workspace-bound snapshots in headerless statistics', async () => {
+    const response = await fetch(`${baseUrl}/api/plugins/stats`);
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({ snapshots: { total: 1 } });
+  });
+
   it('authorizes snapshot export before reading or materializing private bytes', async () => {
     const response = await fetch(`${baseUrl}/api/applied-plugins/export`, {
       method: 'POST',
@@ -140,7 +167,7 @@ describe('applied plugin snapshot workspace isolation', () => {
       body: JSON.stringify({
         snapshotId: snapshotId('snapshot-personal-project'),
         target: 'agent-skill',
-        outDir: process.cwd(),
+        outDir: exportRoot,
       }),
     });
     expect(response.status).toBe(403);
@@ -154,7 +181,7 @@ describe('applied plugin snapshot workspace isolation', () => {
         'content-type': 'application/json',
         ...headers('snapshot-owner', 'owner'),
       },
-      body: JSON.stringify({ target: 'agent-skill', outDir: process.cwd() }),
+      body: JSON.stringify({ target: 'agent-skill', outDir: exportRoot }),
     });
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
