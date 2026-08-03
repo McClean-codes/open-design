@@ -57,6 +57,7 @@ import {
   pluginContractError,
   resolvePluginGenerationSloWindowMs,
   validateExternalPluginContext,
+  validatePluginRequestId,
   validatePluginWorkflowId,
 } from './mcp-observability.js';
 
@@ -67,7 +68,7 @@ const OPEN_DESIGN_BRIEF_APP_RESOURCE =
   'ui://open-design/artifact-card-v6.html';
 
 export const MCP_SERVER_INSTRUCTIONS = [
-  'Use only these product names in user-facing replies: Open Design Cloud, Local Codex, and Secure BYOK.',
+  'Use only these product names in user-facing replies: Open Design Cloud and Local Codex.',
   'Tool names, runtime ids, endpoints, and correlation values are machine protocol. Never repeat them as product copy.',
 ].join('\n');
 
@@ -84,7 +85,7 @@ interface ProjectPayload { project?: ProjectSummary; id?: string; name?: string;
 interface ActiveContext { active?: boolean; projectId?: string; projectName?: string | null; fileName?: string | null; ageMs?: number | null }
 type ResolvedProject = { id: string; name: string; source: 'uuid' | 'id' | 'exact' | 'slug' | 'substring' };
 interface ProjectListCache { baseUrl: string; t: number; list: ProjectSummary[] }
-interface McpArgs extends JsonObject { project?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; byokProfile?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
+interface McpArgs extends JsonObject { project?: unknown; entry?: unknown; include?: unknown; maxBytes?: unknown; path?: unknown; offset?: unknown; limit?: unknown; since?: unknown; query?: unknown; pattern?: unknown; max?: unknown; name?: unknown; content?: unknown; encoding?: unknown; artifactManifest?: unknown; confirm?: unknown; prompt?: unknown; plugin?: unknown; inputs?: unknown; agent?: unknown; model?: unknown; serviceTier?: unknown; apiKey?: unknown; requestId?: unknown; resume?: unknown; runId?: unknown; id?: unknown; designSystem?: unknown; skill?: unknown; includeUnavailable?: unknown; artifactType?: unknown; projectTitle?: unknown; locale?: unknown; knownAnswers?: unknown; skip?: unknown; briefDraftId?: unknown; nonce?: unknown; answers?: unknown; externalPluginContext?: unknown; pluginWorkflowId?: unknown }
 interface ProjectFileBundleEntry { name: string; mime: string; size: number | null; content: string | null; binary: boolean }
 interface BundleInput { project: ProjectPayload | ProjectSummary; entry: string; files: ProjectFileBundleEntry[]; truncated: boolean; skippedFileCount?: number; active: ActiveContext | null; resolved?: ResolvedProject | null }
 interface ErrorWithCode { message?: string; code?: string; cause?: { code?: string } }
@@ -617,17 +618,6 @@ export const TOOL_DEFS = [
     annotations: { ...READ_ANNOTATIONS, title: 'List Open Design plugins' },
   },
   {
-    name: 'list_byok_profiles',
-    description:
-      'List secure local BYOK profile references available to start_run.byokProfile. Returns only non-secret metadata; API keys never cross MCP.',
-    inputSchema: {
-      type: 'object',
-      properties: { pluginWorkflowId: PLUGIN_WORKFLOW_ID_ARG },
-      additionalProperties: false,
-    },
-    annotations: { ...READ_ANNOTATIONS, title: 'List secure BYOK profiles' },
-  },
-  {
     name: 'start_vela_login',
     description:
       'Start Open Design Cloud browser sign-in through the local Open Design daemon. Returns the activation URL and user code when manual browser completion is needed. The tool name is an internal compatibility identifier and must not be repeated to the user.',
@@ -695,15 +685,10 @@ export const TOOL_DEFS = [
           type: 'string',
           description: "Service tier override for the selected model, e.g. 'priority' for Codex Fast. Optional.",
         },
-        byokProfile: {
-          type: 'string',
-          description:
-            'Secure profile id from list_byok_profiles. Selects the local BYOK OpenCode runtime; raw API keys are never accepted by MCP.',
-        },
         requestId: {
           type: 'string',
           description:
-            'Stable id for this confirmed generation action. Generate it once before calling start_run and reuse it verbatim if the tool response is lost or retried; a different payload with the same id is rejected.',
+            'Stable canonical UUID or ULID for this confirmed generation action. Generate it once before calling start_run and reuse it verbatim if the tool response is lost or retried; a different payload with the same id is rejected.',
         },
         resume: {
           type: 'boolean',
@@ -849,7 +834,7 @@ export function localMcpResourceDefinitions() {
       name: 'Open Design brief',
       title: 'Choose the artifact direction',
       description:
-        'Interactive local Open Design brief card shared by Open Design Cloud, Local Codex, and Secure BYOK modes.',
+        'Interactive local Open Design brief card shared by Open Design Cloud and Local Codex modes.',
       mimeType: 'text/html;profile=mcp-app',
       _meta: {
         ui: {
@@ -1271,7 +1256,7 @@ function mcpFailureFacts(
   const failureStage =
     name === 'collect_brief' || name === 'confirm_brief'
       ? 'brief'
-      : name.includes('vela_login') || name === 'list_byok_profiles'
+      : name.includes('vela_login')
         ? 'auth'
         : name.includes('project')
           ? 'project'
@@ -1622,12 +1607,9 @@ export async function runMcpStdio({ daemonUrl }: RunMcpOptions): Promise<void> {
         ' - collect_brief first for a new artifact unless the user explicitly',
         '    asks to skip questions. Let the user complete the rendered card;',
         '    confirm_brief returns the readable brief to reuse with Open Design',
-        '    Cloud, Local Codex, or Secure BYOK. Never print or ask the user to copy',
+        '    Cloud or Local Codex. Never print or ask the user to copy',
         '    briefDraftId, nonce, or any other internal correlation value.',
         ' - list_skills / list_plugins to see what you can ask OD to make.',
-        ' - list_byok_profiles returns secure local credential references when',
-        '    the user explicitly chooses Secure BYOK. Never request or pass a',
-        '    raw API key through MCP; pass only start_run.byokProfile.',
         ' - for Open Design Cloud, call the Cloud login-status tool first.',
         '    If signed out, call the Cloud sign-in tool once, show its activation',
         '    URL/code when present, and poll login status until loggedIn:true.',
@@ -1639,8 +1621,9 @@ export async function runMcpStdio({ daemonUrl }: RunMcpOptions): Promise<void> {
         '    generate into; start_run requires an existing project.',
         ' - start_run(prompt, requestId, [skill], [plugin], [inputs]) kicks off',
         '    generation in the active or named project and returns a runId.',
-        '    Generate requestId once per confirmed user action and reuse the',
-        '    exact same value after a timeout/lost response. Do not call',
+        '    Generate a canonical UUID or ULID requestId once per confirmed',
+        '    user action and reuse the exact same value after a timeout/lost',
+        '    response. Do not call',
         '    start_run again while get_run reports the original run in flight.',
         '    If get_run returns failureAction:"recharge", show rechargeUrl;',
         '    after the user confirms top-up, call the exact original start_run',
@@ -2037,8 +2020,6 @@ async function handleMcpToolCall(
         return ok(await getJson<SkillsPayload>(`${baseUrl}/api/skills`));
       case 'list_plugins':
         return ok(await listPlugins(baseUrl));
-      case 'list_byok_profiles':
-        return ok(await listByokProfiles(baseUrl));
       case 'list_agents':
         return ok(await listAgents(baseUrl, args.includeUnavailable === true));
       case 'start_vela_login': {
@@ -2263,58 +2244,6 @@ async function listAgents(baseUrl: string, includeUnavailable: boolean): Promise
   return { agents };
 }
 
-async function listByokProfiles(baseUrl: string): Promise<JsonObject> {
-  const payload = await getJson<JsonObject>(`${baseUrl}/api/byok/profiles`);
-  const rawProfiles = Array.isArray(payload.profiles) ? payload.profiles : [];
-  const profiles = rawProfiles.flatMap((value) => {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
-    const profile = value as JsonObject;
-    if (
-      typeof profile.id !== 'string'
-      || typeof profile.label !== 'string'
-      || typeof profile.protocol !== 'string'
-      || typeof profile.baseUrl !== 'string'
-      || typeof profile.model !== 'string'
-    ) {
-      return [];
-    }
-    try {
-      const parsed = new URL(profile.baseUrl);
-      if (
-        !['http:', 'https:'].includes(parsed.protocol)
-        || parsed.username.length > 0
-        || parsed.password.length > 0
-        || parsed.search.length > 0
-        || parsed.hash.length > 0
-      ) {
-        return [];
-      }
-    } catch {
-      return [];
-    }
-    return [{
-      id: profile.id,
-      label: profile.label,
-      protocol: profile.protocol,
-      baseUrl: profile.baseUrl,
-      model: profile.model,
-      ...(typeof profile.apiVersion === 'string'
-        ? { apiVersion: profile.apiVersion }
-        : {}),
-      requiresApiKey: profile.requiresApiKey === true,
-      configured: profile.configured === true,
-      ...(typeof profile.keyTail === 'string' ? { keyTail: profile.keyTail } : {}),
-      ...(typeof profile.createdAt === 'number' ? { createdAt: profile.createdAt } : {}),
-      ...(typeof profile.updatedAt === 'number' ? { updatedAt: profile.updatedAt } : {}),
-    }];
-  });
-  return {
-    available: payload.available === true,
-    backend: typeof payload.backend === 'string' ? payload.backend : 'unknown',
-    profiles,
-  };
-}
-
 // Derive a valid project id ([A-Za-z0-9._-], <=128) from a display name,
 // with a short random suffix so repeated creates with the same name
 // don't collide on the daemon's primary key.
@@ -2341,7 +2270,7 @@ async function startRun(
     || containsMcpCredentialField(args.inputs)
   ) {
     throw new Error(
-      'raw API keys are not accepted by Open Design MCP. Save the key through the Open Design UI or `od byok save --api-key-stdin`, then pass only byokProfile.',
+      'raw API keys are not accepted by Open Design MCP. Configure Local BYOK in the Open Design UI and start that run from the local product instead.',
     );
   }
   const { id, resolved, active } = await resolveProjectArg(baseUrl, args.project);
@@ -2360,7 +2289,7 @@ async function startRun(
       : randomUUID();
   const body: JsonObject = { projectId: id, clientRequestId: requestId };
   if (options.pluginAttribution) {
-    validatePluginWorkflowId(requestId);
+    validatePluginRequestId(requestId);
     const logical = logicalPluginRequestDigest(requestId);
     body.analyticsHints = {
       entrySurface: 'external_mcp',
@@ -2396,18 +2325,6 @@ async function startRun(
   if (typeof args.model === 'string' && args.model.length > 0) body.model = args.model;
   if (typeof args.serviceTier === 'string' && args.serviceTier.length > 0) {
     body.serviceTier = args.serviceTier;
-  }
-  if (args.byokProfile !== undefined) {
-    requireString(args.byokProfile, 'byokProfile');
-    if (
-      typeof args.agent === 'string'
-      && args.agent.length > 0
-      && args.agent !== 'byok-opencode'
-    ) {
-      throw new Error('byokProfile can only be used with the byok-opencode agent.');
-    }
-    body.agentId = 'byok-opencode';
-    body.byokProfileId = args.byokProfile;
   }
   if (args.inputs !== undefined) {
     if (args.inputs === null || typeof args.inputs !== 'object' || Array.isArray(args.inputs)) {
