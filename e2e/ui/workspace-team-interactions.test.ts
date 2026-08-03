@@ -668,8 +668,12 @@ test('[P0] an already-open move flow fails closed when the workspace locks befor
     window.dispatchEvent(new Event('od:workspace-context-refresh'));
   });
   await expect(page.getByTestId('workspace-switcher')).toContainText('Locked Atlas Team');
-  await expect(card.getByRole('button', { name: 'More actions' })).toHaveCount(0);
-  await expect(card.getByRole('menu')).toHaveCount(0);
+  // Locking revokes Team move/share authority, but this is still the caller's
+  // own local project: rename, duplicate and delete remain reachable from the
+  // same menu. Pin the capability that must disappear instead of treating the
+  // entire owner-actions surface as Team-only.
+  await openProjectMenu(card);
+  await expect(card.getByRole('menuitem', { name: 'Move to team space' })).toHaveCount(0);
 });
 
 test('[P1] visible workspace allowance refreshes in place without reloading the shell', async ({
