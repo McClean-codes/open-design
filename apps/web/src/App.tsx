@@ -1060,16 +1060,20 @@ function AppInner() {
     [],
   );
   const pendingLocalProjectIdsRef = useRef<Set<string>>(new Set());
-  const pendingLocalProjectScopeRef = useRef(projectListScopeKey(workspaceContext));
   const currentProjectListScope = projectListScopeKey(workspaceContext);
+  const currentPendingLocalProjectScope = [
+    currentWorkspaceAccountGeneration(),
+    currentProjectListScope,
+  ].join(':');
+  const pendingLocalProjectScopeRef = useRef(currentPendingLocalProjectScope);
   const projectAuthorizationScopeRef = useRef(currentProjectListScope);
   const projectAuthorizationGenerationRef = useRef(0);
   if (projectAuthorizationScopeRef.current !== currentProjectListScope) {
     projectAuthorizationScopeRef.current = currentProjectListScope;
     projectAuthorizationGenerationRef.current += 1;
   }
-  if (pendingLocalProjectScopeRef.current !== currentProjectListScope) {
-    pendingLocalProjectScopeRef.current = currentProjectListScope;
+  if (pendingLocalProjectScopeRef.current !== currentPendingLocalProjectScope) {
+    pendingLocalProjectScopeRef.current = currentPendingLocalProjectScope;
     pendingLocalProjectIdsRef.current.clear();
   }
   const locallyDeletedProjectIdsRef = useRef<Map<string, number>>(new Map());
@@ -1172,13 +1176,32 @@ function AppInner() {
     const leftAResolvedWorkspace =
       projectListScopeRef.current !== UNRESOLVED_PROJECT_LIST_SCOPE;
     const snapshot = readProjectDisplaySnapshot(currentProjectDisplayKey);
+    // A create/import is immediately projected into `projects`, but opening
+    // that project changes the list projection from Home's `recent` to `all`.
+    // An older exact-scope `all` snapshot must not erase the pending local row:
+    // ProjectView can keep rendering from its route snapshot, while later
+    // rename callbacks then have no list row to update and Back restores the
+    // stale Home cards. Personal creates belong to recent/all/drafts; Team is
+    // intentionally excluded until the share mutation is authoritative.
+    const pendingProjects = effectiveWorkspaceProjectView === 'team'
+      ? []
+      : projects.filter((project) =>
+          pendingLocalProjectScopeRef.current === currentPendingLocalProjectScope
+          && pendingLocalProjectIdsRef.current.has(project.id)
+          && (
+            workspaceContext === null
+              ? project.workspaceId == null
+              : project.workspaceId === workspaceContext.workspaceId
+          ));
     projectListScopeRef.current = currentProjectListScope;
     projectDisplayKeyRef.current = currentProjectDisplayKey;
     if (snapshot) {
-      setProjects(snapshot.projects);
+      const snapshotIds = new Set(snapshot.projects.map((project) => project.id));
+      const preserved = pendingProjects.filter((project) => !snapshotIds.has(project.id));
+      setProjects(preserved.length > 0 ? [...preserved, ...snapshot.projects] : snapshot.projects);
       setProjectsLoading(false);
     } else if (leftAResolvedWorkspace) {
-      setProjects([]);
+      setProjects(pendingProjects);
       setProjectsLoading(true);
     }
   }
