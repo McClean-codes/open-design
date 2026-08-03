@@ -622,7 +622,11 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     try {
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
       const workspaceId = headerValue(req, 'x-od-workspace-id');
-      const systems = await listAllDesignSystems({ workspaceId });
+      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const systems = await listAllDesignSystems({
+        workspaceId,
+        workspaceMemberId,
+      });
       const summary = systems.find((s) => s.id === req.params.id);
       const projectBody = await readDesignSystemWorkspaceTextFile(db, summary, 'DESIGN.md');
       const body = projectBody ?? await readAvailableDesignSystem(req.params.id, { workspaceId });

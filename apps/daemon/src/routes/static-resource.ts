@@ -753,7 +753,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const workspaceId = workspaceContext?.workspaceId
         ?? (ctx.verifyWorkspaceRequestAuthority ? null : (await resolveWorkspaceScope?.(req)) ?? null);
       const workspaceMemberId = workspaceContext?.workspaceMemberId ?? null;
-      const catalog = await listAllDesignSystems({ workspaceId });
+      const catalog = await listAllDesignSystems({
+        workspaceId,
+        workspaceMemberId,
+      });
       const systems = workspaceId && workspaceMemberId
         ? catalog.filter((system) => {
             if (system.source !== 'user') return true;
