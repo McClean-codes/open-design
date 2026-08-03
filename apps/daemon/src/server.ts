@@ -6547,6 +6547,15 @@ export async function startServer({
     fetchWorkspaceDirectory,
     fetchProjectCreationWorkspaceDirectory,
     createWorkspaceOwnedDesignSystem: createWorkspaceOwnedDesignSystemForContext,
+    pluginScope: {
+      loadRegistry: loadPluginRegistryView,
+      getPlugin: (id, options) => getWorkspacePluginForRequest(
+        db,
+        id,
+        options.workspaceId,
+        options.workspaceMemberId,
+      ),
+    },
     events: projectEventDeps,
     ids: idDeps,
     telemetry: { reportFinalizedMessage },
@@ -7212,7 +7221,10 @@ export async function startServer({
       listAllSkills(options),
       listAllDesignSystems(
         options.workspaceId !== undefined
-          ? { workspaceId: options.workspaceId }
+          ? {
+              workspaceId: options.workspaceId,
+              workspaceMemberId: options.workspaceMemberId ?? null,
+            }
           : {},
       ),
     ]);

@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
+import { getWorkspaceResourceByResourceId } from '../db.js';
 
 type JsonRecord = Record<string, unknown>;
 type SkillEntry = { id: string } & JsonRecord;
@@ -12,6 +13,8 @@ type DesignSystemSummary = {
   title?: string;
   updatedAt?: string;
   projectId?: string;
+  teamSynced?: boolean;
+  workspaceId?: string;
 } & JsonRecord;
 
 type DesignSystemStaticFile = {
@@ -225,7 +228,10 @@ export function createDesignSystemServerServices({
    * from it (spec 04 §10) instead of silently landing in the unscoped branch a
    * plain `options.workspaceId ? … : …` truthiness check would take.
    */
-  async function listAllDesignSystems(options: { workspaceId?: string | null } = {}) {
+  async function listAllDesignSystems(options: {
+    workspaceId?: string | null;
+    workspaceMemberId?: string | null;
+  } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
       ...s,
       source: 'built-in',
@@ -267,13 +273,33 @@ export function createDesignSystemServerServices({
       }
     }
     const seen = new Set(builtIn.map((s) => s.id));
-    return [
+    const catalog = [
       ...installed
         .filter((s) => s.source === 'user')
         .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')),
       ...builtIn,
       ...installed.filter((s) => s.source !== 'user' && !seen.has(s.id)),
     ];
+    if (options.workspaceId === undefined) return catalog;
+    const exactWorkspaceId = options.workspaceId?.trim() ?? '';
+    const exactMemberId = options.workspaceMemberId?.trim() ?? '';
+    const db = getDb?.();
+    return catalog.filter((system) => {
+      if (system.source !== 'user') return true;
+      if (system.teamSynced === true) {
+        return Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId;
+      }
+      if (!db || !exactWorkspaceId || !exactMemberId) return false;
+      const binding = getWorkspaceResourceByResourceId(
+        db,
+        'design_system',
+        system.id,
+      );
+      return binding?.workspaceId === exactWorkspaceId
+        && binding.visibility === 'personal'
+        && binding.resourceState !== 'deleted'
+        && binding.createdByWorkspaceMemberId === exactMemberId;
+    });
   }
 
   async function readAvailableDesignSystem(
@@ -359,7 +385,10 @@ export function createDesignSystemServerServices({
 
   async function validateProjectDesignSystemId(
     id: unknown,
-    options: { workspaceId?: string | null } = {},
+    options: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    } = {},
   ) {
     if (id === undefined || id === null || id === '') return { ok: true, id: null };
     if (typeof id !== 'string') {

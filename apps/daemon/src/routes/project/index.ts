@@ -110,6 +110,16 @@ import type { WorkspaceDirectoryFetchResult } from '../../collab/vela-workspace-
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
 
 export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'projectFiles' | 'conversations' | 'templates' | 'status' | 'events' | 'ids' | 'telemetry' | 'appConfig' | 'agents' | 'validation' | 'collabSync'> {
+  pluginScope?: {
+    loadRegistry: (options: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    }) => Promise<Parameters<typeof resolvePluginSnapshot>[0]['registry']>;
+    getPlugin: (
+      id: string,
+      options: { workspaceId: string | null; workspaceMemberId: string | null },
+    ) => Promise<unknown | null>;
+  };
   teamProjectCatalog?: VelaTeamProjectCatalogClient;
   /** Bounded authoritative verifier for idempotent Workspace project reads. */
   verifyWorkspaceReadAuthority?: VerifyWorkspaceRequestAuthority;
@@ -2511,9 +2521,22 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       ensureWorkspaceProjection(project, ctx, 'personal');
     }
   }
-  async function loadPluginRegistryView() {
+  async function loadPluginRegistryView(options: {
+    workspaceId?: string | null;
+    workspaceMemberId?: string | null;
+  } = {}) {
+    if (ctx.pluginScope) return ctx.pluginScope.loadRegistry(options);
     const [skills, designSystems] = await Promise.all([
-      listSkills(SKILLS_DIR),
+      listSkills(
+        SKILLS_DIR,
+        options.workspaceId !== undefined
+          ? {
+              db,
+              workspaceId: options.workspaceId,
+              workspaceMemberId: options.workspaceMemberId ?? null,
+            }
+          : undefined,
+      ),
       listDesignSystems(DESIGN_SYSTEMS_DIR),
     ]);
     return {
@@ -3339,6 +3362,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       const creationWorkspaceScope = {
         workspaceId: createWorkspace.context?.workspaceId ?? null,
+        workspaceMemberId: createWorkspace.context?.workspaceMemberId ?? null,
       };
       const designSystemValidation = await validateProjectDesignSystemId(
         designSystemId,
@@ -3361,6 +3385,18 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return sendApiError(res, 400, skillValidation.code, skillValidation.message);
       }
       const normalizedSkillId = skillValidation.id;
+      const requestedPluginId =
+        typeof req.body?.pluginId === 'string' && req.body.pluginId.trim().length > 0
+          ? req.body.pluginId.trim()
+          : null;
+      if (requestedPluginId) {
+        const visiblePlugin = ctx.pluginScope
+          ? await ctx.pluginScope.getPlugin(requestedPluginId, creationWorkspaceScope)
+          : getInstalledPlugin(db, requestedPluginId);
+        if (!visiblePlugin) {
+          return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+        }
+      }
       const selectedLocationId = await resolveCreateProjectLocationId(projectLocationId);
       let externalProjectDir: string | null = null;
       if (selectedLocationId !== BUILT_IN_PROJECT_LOCATION_ID) {
@@ -3500,7 +3536,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       let resolvedSnapshot = null;
       if (resolveBody) {
-        const registry = await loadPluginRegistryView();
+        const registry = await loadPluginRegistryView(creationWorkspaceScope);
         const resolved = resolvePluginSnapshot({
           db,
           body: resolveBody,
@@ -4118,11 +4154,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         return sendApiError(res, 400, 'BAD_REQUEST', 'customInstructions exceeds 5 000 character limit');
       }
       if (Object.prototype.hasOwnProperty.call(patch, 'designSystemId')) {
-        const projectWorkspaceId =
-          getWorkspaceProjectByProjectId(db, req.params.id)?.workspaceId ?? null;
+        const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
         const designSystemValidation = await validateProjectDesignSystemId(
           patch.designSystemId,
-          { workspaceId: projectWorkspaceId },
+          {
+            workspaceId: projectBinding?.workspaceId ?? null,
+            workspaceMemberId: projectBinding?.createdByWorkspaceMemberId ?? null,
+          },
         );
         if (!designSystemValidation.ok) {
           return sendApiError(
@@ -4135,11 +4173,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         patch.designSystemId = designSystemValidation.id;
       }
       if (Object.prototype.hasOwnProperty.call(patch, 'skillId')) {
-        const projectWorkspaceId =
-          getWorkspaceProjectByProjectId(db, req.params.id)?.workspaceId ?? null;
+        const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
         const skillValidation = await validateProjectSkillId(
           patch.skillId,
-          { workspaceId: projectWorkspaceId },
+          {
+            workspaceId: projectBinding?.workspaceId ?? null,
+            workspaceMemberId: projectBinding?.createdByWorkspaceMemberId ?? null,
+          },
         );
         if (!skillValidation.ok) {
           return sendApiError(res, 400, skillValidation.code, skillValidation.message);

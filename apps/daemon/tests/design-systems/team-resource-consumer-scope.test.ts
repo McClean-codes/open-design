@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { closeDatabase, openDatabase } from '../../src/db.js';
+import { closeDatabase, ensureWorkspaceResource, openDatabase } from '../../src/db.js';
 import * as designSystems from '../../src/design-systems/index.js';
 import { createDesignSystemServerServices } from '../../src/design-systems/server-services.js';
 import * as skills from '../../src/skills.js';
@@ -50,7 +50,7 @@ async function createFixture() {
     designSystems: designSystems as never,
     projects: {} as never,
   });
-  return { root, userSkills, userDesignSystems, services };
+  return { root, userSkills, userDesignSystems, db, services };
 }
 
 async function writeSkill(dir: string, content: string) {
@@ -64,7 +64,7 @@ async function writeDesignSystem(dir: string, workspaceId: string, content: stri
   await writeFile(path.join(dir, 'DESIGN.md'), `# Same design system\n\n${content}\n`);
   await writeFile(
     path.join(dir, 'metadata.json'),
-    `${JSON.stringify({ workspaceId, teamSynced: true })}\n`,
+    `${JSON.stringify({ workspaceId, teamSynced: true, status: 'published' })}\n`,
   );
 }
 
@@ -157,5 +157,48 @@ describe('Team resource consumers use explicit Workspace scope', () => {
         { workspaceId: 'workspace-b' },
       ),
     ).resolves.toEqual({ ok: true, id: 'user:same-design-system' });
+  });
+
+  it('lets only the exact Personal creator validate a same-Workspace design system', async () => {
+    const fixture = await createFixture();
+    const personalDesignSystemDir = path.join(
+      fixture.userDesignSystems,
+      'member-private-design-system',
+    );
+    await mkdir(personalDesignSystemDir, { recursive: true });
+    await writeDesignSystem(
+      personalDesignSystemDir,
+      'personal-workspace',
+      'member-private-design-system',
+    );
+    await writeFile(
+      path.join(personalDesignSystemDir, 'metadata.json'),
+      `${JSON.stringify({ workspaceId: 'personal-workspace', status: 'published' })}\n`,
+    );
+    ensureWorkspaceResource(
+      fixture.db,
+      'design_system',
+      'personal-workspace',
+      'user:member-private-design-system',
+      {
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'member-a',
+        updatedByWorkspaceMemberId: 'member-a',
+      },
+    );
+
+    await expect(
+      fixture.services.validateProjectDesignSystemId(
+        'user:member-private-design-system',
+        { workspaceId: 'personal-workspace', workspaceMemberId: 'member-a' },
+      ),
+    ).resolves.toEqual({ ok: true, id: 'user:member-private-design-system' });
+    await expect(
+      fixture.services.validateProjectDesignSystemId(
+        'user:member-private-design-system',
+        { workspaceId: 'personal-workspace', workspaceMemberId: 'member-b' },
+      ),
+    ).resolves.toMatchObject({ ok: false, code: 'DESIGN_SYSTEM_NOT_FOUND' });
   });
 });
