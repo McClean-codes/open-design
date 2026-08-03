@@ -496,6 +496,71 @@ describe('HomeView prompt handoff', () => {
     window.sessionStorage.clear();
   });
 
+  it('keeps creation types actionable while an expired plugin cache refreshes after a project round trip', async () => {
+    let resolveRefresh: (response: Response) => void = () => undefined;
+    const refreshResponse = new Promise<Response>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    let pluginListReads = 0;
+    const pluginResponse = () => new Response(
+      JSON.stringify({ plugins: [WEB_PROTOTYPE_PLUGIN] }),
+      {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      },
+    );
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (typeof url === 'string' && url === '/api/plugins') {
+        pluginListReads += 1;
+        return pluginListReads === 1 ? pluginResponse() : refreshResponse;
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    stubAnimationFrame();
+
+    const firstHome = render(
+      <HomeView
+        projects={[]}
+        onSubmit={() => undefined}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+    const firstTrigger = await screen.findByTestId('home-hero-template-trigger');
+    await waitFor(() => expect((firstTrigger as HTMLButtonElement).disabled).toBe(false));
+    firstHome.unmount();
+
+    // Project pages commonly stay open longer than the plugin cache TTL. Model
+    // that route round trip without a real sleep, then hold the background
+    // refresh open so actionability cannot accidentally depend on network time.
+    const now = Date.now();
+    const dateNow = vi.spyOn(Date, 'now').mockReturnValue(now + 10_001);
+    try {
+      const returnedHome = render(
+        <HomeView
+          projects={[]}
+          onSubmit={() => undefined}
+          onOpenProject={() => undefined}
+          onViewAllProjects={() => undefined}
+        />,
+      );
+
+      expect(pluginListReads).toBe(2);
+      expect(
+        (screen.getByTestId('home-hero-template-trigger') as HTMLButtonElement).disabled,
+      ).toBe(false);
+
+      await act(async () => {
+        resolveRefresh(pluginResponse());
+        await refreshResponse;
+      });
+      returnedHome.unmount();
+    } finally {
+      dateNow.mockRestore();
+    }
+  });
+
   it('consumes a plugin authoring handoff once and focuses the textarea', async () => {
     let resolveApply: (response: Response) => void = () => undefined;
     const applyResponse = new Promise<Response>((resolve) => {

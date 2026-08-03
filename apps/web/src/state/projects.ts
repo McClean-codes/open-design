@@ -1308,6 +1308,18 @@ export async function listPluginsFresh(): Promise<InstalledPluginRecord[]> {
   return listPlugins();
 }
 
+/**
+ * Return the last successful unscoped plugin catalog regardless of its refresh
+ * age. Frequently remounted surfaces use this snapshot for their first render
+ * while `listPluginsFresh()` revalidates an expired catalog in the background.
+ * A null result is the only state that still requires the cold-start loading
+ * guard: once a catalog has loaded, network latency must not make known plugin
+ * actions temporarily unactionable again.
+ */
+export function readCachedVisiblePlugins(): InstalledPluginRecord[] | null {
+  return cachedVisiblePlugins;
+}
+
 // Test-only: drop the warm visible-plugins cache so each case starts cold. The
 // module-level cache intentionally survives Home remounts in the app, but that
 // same persistence leaks across test cases in a worker (a case's mocked
