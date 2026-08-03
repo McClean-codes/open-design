@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { SkillSummary, WorkspaceCollabContext } from '@open-design/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,29 @@ const workspace = vi.hoisted(() => ({
   identityChangePending: false,
   failure: undefined as 'unsupported' | 'unavailable' | undefined,
   generation: 0,
+}));
+
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+  onActive: [] as Array<() => void>,
+  autoActivate: true,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((
+    handlers: Record<string, (payload: any) => void>,
+    options?: { onActive?: () => void; enabled?: boolean; workspaceContext?: unknown },
+  ) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    if (options?.onActive) workspaceInvalidationHarness.onActive.push(options.onActive);
+    const identity = JSON.stringify(options?.workspaceContext ?? null);
+    React.useEffect(() => {
+      if (workspaceInvalidationHarness.autoActivate && options?.enabled !== false && options?.workspaceContext) {
+        options.onActive?.();
+      }
+    }, [identity, options?.enabled]);
+    return { connected: false };
+  }),
 }));
 
 vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
@@ -121,6 +145,8 @@ describe('SkillsSection Workspace identity partition', () => {
     workspace.identityChangePending = false;
     workspace.failure = undefined;
     workspace.generation = 0;
+    workspaceInvalidationHarness.handlers.length = 0;
+    workspaceInvalidationHarness.onActive.length = 0;
     vi.mocked(fetchSkills).mockResolvedValue([]);
     vi.mocked(fetchSkill).mockResolvedValue(null);
     vi.mocked(fetchSkillFiles).mockResolvedValue([]);
@@ -132,6 +158,60 @@ describe('SkillsSection Workspace identity partition', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    workspaceInvalidationHarness.handlers.length = 0;
+    workspaceInvalidationHarness.onActive.length = 0;
+  });
+
+  it('performs exactly one skill read for one active-surface reconnect', async () => {
+    renderSection();
+    await waitFor(() => expect(fetchSkills).toHaveBeenCalledTimes(1));
+    vi.mocked(fetchSkills).mockClear();
+
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    act(() => onActive?.());
+
+    await waitFor(() => expect(fetchSkills).toHaveBeenCalledTimes(1));
+  });
+
+  it('loads Personal immediately and ignores the disabled Team lifecycle callback', async () => {
+    workspace.context = {
+      ...context('workspace-personal', 'member-personal'),
+      workspaceType: 'personal',
+      teamId: undefined,
+    };
+
+    renderSection();
+    await waitFor(() => expect(fetchSkills).toHaveBeenCalledTimes(1));
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    act(() => onActive?.());
+    await act(async () => Promise.resolve());
+    expect(fetchSkills).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes an already-open catalog after a remote Team Skill invalidation', async () => {
+    let reads = 0;
+    vi.mocked(fetchSkills).mockImplementation(async () => [
+      skill(reads++ === 0 ? 'before-remote' : 'after-remote'),
+    ]);
+
+    renderSection();
+    expect(await screen.findByTestId('skill-row-before-remote')).toBeTruthy();
+    const resourceHandler = [...workspaceInvalidationHarness.handlers]
+      .reverse()
+      .find((handlers) => handlers['team-resources-changed'])?.['team-resources-changed'];
+    expect(resourceHandler).toBeTypeOf('function');
+
+    act(() => resourceHandler?.({
+      type: 'team-resources-changed',
+      resourceKind: 'skill',
+      resourceId: 'after-remote',
+    }));
+
+    expect(await screen.findByTestId('skill-row-after-remote')).toBeTruthy();
+    expect(screen.queryByTestId('skill-row-before-remote')).toBeNull();
+    expect(fetchSkills).toHaveBeenCalledTimes(2);
   });
 
   it('discards a slow A catalog after B resolves', async () => {

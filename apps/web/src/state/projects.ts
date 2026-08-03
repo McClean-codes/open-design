@@ -217,7 +217,13 @@ export async function listProjects(options?: {
     });
     const seenProjectIds = new Set<string>();
     return summaries.flatMap((summary) => {
-      const project = summary.project as Project;
+      // Workspace list responses carry the authoritative scope on the summary
+      // wrapper. Remote catalog projects can omit it from the nested project,
+      // and a stale nested value must not leak another Workspace into a card.
+      const project: Project = {
+        ...summary.project,
+        workspaceId: summary.workspaceId,
+      };
       // Workspace summaries have resource-level identities, so the same
       // logical project can legitimately appear more than once when local and
       // remote catalog records overlap. Project cards are opened by project.id;
@@ -1403,6 +1409,14 @@ interface CachedVisiblePlugins {
 // the wire. A display cache is never an authorization witness: callers still
 // pass the verified context to mutations independently.
 const cachedVisiblePlugins = new Map<string, CachedVisiblePlugins>();
+// Every request start and explicit invalidation advances the exact partition's
+// generation. Deleting the settled value alone is insufficient: an older
+// `listPlugins()` can resolve after a replacement read and otherwise put its
+// stale snapshot back into this cache. Latest-started-wins also covers ordinary
+// same-key request races that do not pass through invalidation. Generations use
+// the same account + Workspace key as the values, so activity in A cannot
+// suppress a concurrent B (or next-account) response.
+const pluginCatalogCacheGenerations = new Map<string, number>();
 const PLUGINS_CACHE_TTL_MS = 10_000;
 const MAX_PLUGIN_CATALOG_CACHE_ENTRIES = 24;
 
@@ -1432,6 +1446,8 @@ export async function listPlugins(
   options: ListPluginsOptions = {},
 ): Promise<InstalledPluginRecord[]> {
   const cacheKey = pluginCatalogCacheKey(options);
+  const requestGeneration = (pluginCatalogCacheGenerations.get(cacheKey) ?? 0) + 1;
+  pluginCatalogCacheGenerations.set(cacheKey, requestGeneration);
   try {
     const resp = await fetch(
       '/api/plugins',
@@ -1441,7 +1457,9 @@ export async function listPlugins(
     const json = (await resp.json()) as { plugins?: InstalledPluginRecord[] };
     const plugins = json.plugins ?? [];
     const visible = plugins.filter(isVisiblePlugin);
-    cacheVisiblePlugins(cacheKey, visible);
+    if (pluginCatalogCacheGenerations.get(cacheKey) === requestGeneration) {
+      cacheVisiblePlugins(cacheKey, visible);
+    }
     return options.includeHidden ? plugins : visible;
   } catch {
     return [];
@@ -1476,6 +1494,23 @@ export function readCachedVisiblePlugins(
   return cachedVisiblePlugins.get(pluginCatalogCacheKey(options))?.plugins ?? null;
 }
 
+/**
+ * Evict one authenticated plugin-catalog partition after a thin Workspace
+ * invalidation. Both account generation and the complete Workspace/member
+ * identity are required so an event for A cannot discard B's warm catalog.
+ */
+export function invalidatePluginCatalogCache(options: {
+  workspaceContext: WorkspaceCollabContext | null;
+  accountGeneration: number;
+}): void {
+  const cacheKey = pluginCatalogCacheKey(options);
+  cachedVisiblePlugins.delete(cacheKey);
+  pluginCatalogCacheGenerations.set(
+    cacheKey,
+    (pluginCatalogCacheGenerations.get(cacheKey) ?? 0) + 1,
+  );
+}
+
 // Test-only: drop the warm visible-plugins cache so each case starts cold. The
 // module-level cache intentionally survives Home remounts in the app, but that
 // same persistence leaks across test cases in a worker (a case's mocked
@@ -1483,6 +1518,7 @@ export function readCachedVisiblePlugins(
 // The web vitest setup calls this in a global `afterEach`.
 export function resetPluginsCache(): void {
   cachedVisiblePlugins.clear();
+  pluginCatalogCacheGenerations.clear();
 }
 
 export function isVisiblePlugin(plugin: InstalledPluginRecord): boolean {

@@ -98,6 +98,8 @@ import {
   useTeamProjects,
   useWorkspaceContext,
 } from '../collab/useWorkspaceContext';
+import { useWorkspaceInvalidation } from '../collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
 import {
   buildHomeMediaComposer,
   homeMediaSurfaceForChipId,
@@ -716,6 +718,19 @@ export function HomeView({
   const pendingPromptFocusEndRef = useRef(false);
   const activePluginApplyRequestRef = useRef(0);
   const pluginCatalogRequestGenerationRef = useRef(0);
+  const pluginCatalogReloadRef = useRef<(
+    force?: boolean,
+    supersede?: boolean,
+  ) => Promise<void>>(
+    async () => {},
+  );
+  const pluginCatalogReloadInFlightRef = useRef<{
+    key: string;
+    promise: Promise<void>;
+  } | null>(null);
+  const pluginCatalogStaleRef = useRef(false);
+  const homeActiveRef = useRef(isActive);
+  homeActiveRef.current = isActive;
   const desiredPluginCatalogKeyRef = useRef(desiredPluginCatalogKey);
   desiredPluginCatalogKeyRef.current = desiredPluginCatalogKey;
   const scrollHomeToTop = useCallback(() => {
@@ -731,9 +746,11 @@ export function HomeView({
     const issuedCatalogKey = desiredPluginCatalogKey;
     // On mount use the cache-aware loader (skips the network when warm); an
     // explicit plugins-changed event forces a fresh fetch.
-    const load = (force = false) => {
+    const load = (force = false, supersede = false): Promise<void> => {
+      const current = pluginCatalogReloadInFlightRef.current;
+      if (!supersede && current?.key === issuedCatalogKey) return current.promise;
       const requestGeneration = ++pluginCatalogRequestGenerationRef.current;
-      void (force
+      const promise = (force
         ? listPlugins(pluginCatalogOptions)
         : listPluginsFresh(pluginCatalogOptions)).then((rows) => {
         if (
@@ -744,16 +761,59 @@ export function HomeView({
         setPluginCatalogKey(issuedCatalogKey);
         setPlugins(rows);
         setPluginsLoading(false);
+      }).finally(() => {
+        if (pluginCatalogReloadInFlightRef.current?.promise === promise) {
+          pluginCatalogReloadInFlightRef.current = null;
+        }
       });
+      pluginCatalogReloadInFlightRef.current = { key: issuedCatalogKey, promise };
+      return promise;
     };
-    load();
-    const onChanged = () => load(true);
+    pluginCatalogReloadRef.current = load;
+    if (homeActiveRef.current && workspaceContext?.workspaceType !== 'team') load();
+    else pluginCatalogStaleRef.current = true;
+    const onChanged = () => {
+      // A mutation event is newer than any pending snapshot and must supersede
+      // it; only lifecycle catch-up joins the initial read.
+      if (homeActiveRef.current) load(true, true);
+      else pluginCatalogStaleRef.current = true;
+    };
     window.addEventListener('open-design:plugins-changed', onChanged);
     return () => {
       cancelled = true;
+      if (pluginCatalogReloadRef.current === load) {
+        pluginCatalogReloadRef.current = async () => {};
+      }
       window.removeEventListener('open-design:plugins-changed', onChanged);
     };
-  }, [desiredPluginCatalogKey]);
+  }, [desiredPluginCatalogKey, workspaceContext?.workspaceType]);
+
+  useEffect(() => {
+    if (!isActive || !desiredPluginCatalogKey || !pluginCatalogStaleRef.current) return;
+    if (workspaceContext?.workspaceType === 'team') return;
+    pluginCatalogStaleRef.current = false;
+    pluginCatalogReloadRef.current(true);
+  }, [desiredPluginCatalogKey, isActive, workspaceContext?.workspaceType]);
+
+  const handlePluginStreamActive = useWorkspaceSnapshotActivation({
+    enabled: isActive && workspaceContext?.workspaceType === 'team',
+    identity: desiredPluginCatalogKey ?? 'no-plugin-catalog',
+    refresh: () => { void pluginCatalogReloadRef.current(true, true); },
+  });
+
+  useWorkspaceInvalidation({}, {
+    workspaceContext:
+      isActive && workspaceContext?.workspaceType === 'team'
+        ? workspaceContext
+        : null,
+    enabled: isActive && workspaceContext?.workspaceType === 'team',
+    // App owns the global Skill/Design System catch-up. Home only refreshes
+    // its plugin projection.
+    onActive: () => {
+      pluginCatalogStaleRef.current = false;
+      handlePluginStreamActive();
+    },
+  });
 
   useEffect(() => {
     let cancelled = false;

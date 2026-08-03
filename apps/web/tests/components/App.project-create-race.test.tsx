@@ -41,6 +41,7 @@ import {
   deleteProject,
   duplicateProject,
   getProject,
+  invalidatePluginCatalogCache,
   listProjects,
   listTemplates,
   patchProject,
@@ -66,6 +67,12 @@ import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
 const workspaceInvalidationHarness = vi.hoisted(() => ({
   handlers: [] as Array<Record<string, (payload: any) => void>>,
+  onActive: [] as Array<() => void>,
+}));
+
+const iframePoolHarness = vi.hoisted(() => ({
+  evictMatching: vi.fn(),
+  evictProject: vi.fn(),
 }));
 
 const projectViewRenameFenceHarness = vi.hoisted(() => ({
@@ -73,9 +80,26 @@ const projectViewRenameFenceHarness = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/collab/workspace-events', () => ({
-  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+  useWorkspaceInvalidation: vi.fn((
+    handlers: Record<string, (payload: any) => void>,
+    options?: { onActive?: () => void },
+  ) => {
     workspaceInvalidationHarness.handlers.push(handlers);
+    if (options?.onActive) workspaceInvalidationHarness.onActive.push(options.onActive);
     return { connected: false };
+  }),
+}));
+
+vi.mock('../../src/components/IframeKeepAlivePool', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/components/IframeKeepAlivePool')>()),
+  useIframeKeepAlivePool: () => ({
+    attach: vi.fn(),
+    release: vi.fn(),
+    evict: vi.fn(),
+    evictProject: iframePoolHarness.evictProject,
+    evictMatching: iframePoolHarness.evictMatching,
+    subscribe: vi.fn(() => () => {}),
+    revision: vi.fn(() => 0),
   }),
 }));
 
@@ -575,6 +599,7 @@ vi.mock('../../src/state/projects', async () => {
     deleteProject: vi.fn(),
     duplicateProject: vi.fn(),
     getProject: vi.fn(),
+    invalidatePluginCatalogCache: vi.fn(actual.invalidatePluginCatalogCache),
     listProjects: vi.fn(),
     listTemplates: vi.fn(),
     patchProject: vi.fn(),
@@ -612,6 +637,7 @@ const mockedCreatePluginShareProject = vi.mocked(createPluginShareProject);
 const mockedDeleteProject = vi.mocked(deleteProject);
 const mockedDuplicateProject = vi.mocked(duplicateProject);
 const mockedGetProject = vi.mocked(getProject);
+const mockedInvalidatePluginCatalogCache = vi.mocked(invalidatePluginCatalogCache);
 const mockedListProjects = vi.mocked(listProjects);
 const mockedListTemplates = vi.mocked(listTemplates);
 const mockedPatchProject = vi.mocked(patchProject);
@@ -735,6 +761,7 @@ describe('App project creation routing', () => {
     resetTeamProjectsCache();
     resetProjectDisplaySnapshots();
     workspaceInvalidationHarness.handlers.length = 0;
+    workspaceInvalidationHarness.onActive.length = 0;
     projectViewRenameFenceHarness.token = null;
     window.history.replaceState(null, '', '/');
     mockedDaemonIsLive.mockResolvedValue(true);
@@ -809,6 +836,126 @@ describe('App project creation routing', () => {
     resetProjectDisplaySnapshots();
     resetCoalescedGet();
     workspaceInvalidationHarness.handlers.length = 0;
+    workspaceInvalidationHarness.onActive.length = 0;
+  });
+
+  it('routes mutations and limits global focus catch-up to Skills and Design Systems', async () => {
+    const context = workspaceContext('ws-resources', 'wm-resources');
+    stubWorkspaceContext(context.workspaceId, context.workspaceMemberId);
+    mockedListProjects.mockResolvedValue([]);
+    const pluginChanged = vi.fn();
+    window.addEventListener('open-design:plugins-changed', pluginChanged);
+
+    render(<App />);
+    await waitFor(() => {
+      expect(mockedFetchSkills).toHaveBeenCalled();
+      expect(mockedFetchDesignSystems).toHaveBeenCalled();
+    });
+    mockedFetchSkills.mockClear();
+    mockedFetchDesignTemplates.mockClear();
+    mockedFetchDesignSystems.mockClear();
+    mockedInvalidatePluginCatalogCache.mockClear();
+
+    const currentHandlers = () => [...workspaceInvalidationHarness.handlers]
+      .reverse()
+      .find((handlers) => handlers['team-resources-changed'])!;
+
+    act(() => currentHandlers()['team-resources-changed']?.({
+      type: 'team-resources-changed',
+      resourceKind: 'skill',
+      resourceId: 'skill-1',
+    }));
+    await waitFor(() => expect(mockedFetchSkills).toHaveBeenCalledTimes(1));
+    expect(mockedFetchDesignTemplates).toHaveBeenCalledTimes(1);
+    expect(mockedFetchDesignSystems).not.toHaveBeenCalled();
+    expect(mockedInvalidatePluginCatalogCache).not.toHaveBeenCalled();
+
+    act(() => currentHandlers()['team-resources-changed']?.({
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+      resourceId: 'system-1',
+    }));
+    await waitFor(() => expect(mockedFetchDesignSystems).toHaveBeenCalledTimes(1));
+    expect(mockedFetchDesignSystems).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        workspaceId: context.workspaceId,
+        workspaceMemberId: context.workspaceMemberId,
+      }),
+      { forceTeamMaterialization: true },
+    );
+    expect(mockedFetchSkills).toHaveBeenCalledTimes(1);
+
+    act(() => currentHandlers()['team-resources-changed']?.({
+      type: 'team-resources-changed',
+      resourceKind: 'plugin',
+      resourceId: 'plugin-1',
+    }));
+    expect(mockedInvalidatePluginCatalogCache).toHaveBeenCalledWith({
+      workspaceContext: expect.objectContaining({
+        workspaceId: context.workspaceId,
+        workspaceMemberId: context.workspaceMemberId,
+      }),
+      accountGeneration: currentWorkspaceAccountGeneration(),
+    });
+    expect(pluginChanged).toHaveBeenCalledTimes(1);
+
+    // The shell closes missed-event gaps for its two global registries. It must
+    // not broadcast a fake plugin mutation or evict project previews.
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    mockedFetchSkills.mockClear();
+    mockedFetchDesignSystems.mockClear();
+    mockedInvalidatePluginCatalogCache.mockClear();
+    pluginChanged.mockClear();
+    iframePoolHarness.evictMatching.mockClear();
+    act(() => onActive?.());
+    await waitFor(() => {
+      expect(mockedFetchSkills).toHaveBeenCalledTimes(1);
+      expect(mockedFetchDesignSystems).toHaveBeenCalledTimes(1);
+    });
+    expect(mockedInvalidatePluginCatalogCache).not.toHaveBeenCalled();
+    expect(pluginChanged).not.toHaveBeenCalled();
+    expect(iframePoolHarness.evictMatching).not.toHaveBeenCalled();
+    window.removeEventListener('open-design:plugins-changed', pluginChanged);
+  });
+
+  it('supersedes the Team fallback snapshot when SSE opens, then refreshes once on later focus', async () => {
+    const context = workspaceContext('ws-initial-catch-up', 'wm-initial-catch-up');
+    stubWorkspaceContext(context.workspaceId, context.workspaceMemberId);
+    mockedListProjects.mockResolvedValue([]);
+    const skillsFirst = deferred<Awaited<ReturnType<typeof fetchSkills>>>();
+    const systemsFirst = deferred<Awaited<ReturnType<typeof fetchDesignSystems>>>();
+    mockedFetchSkills.mockImplementationOnce(() => skillsFirst.promise);
+    mockedFetchDesignSystems.mockImplementation((issuedContext) => {
+      if (issuedContext?.workspaceId === context.workspaceId) return systemsFirst.promise;
+      return Promise.resolve([]);
+    });
+
+    render(<App />);
+    await waitFor(() => {
+      expect(mockedFetchSkills).toHaveBeenCalledTimes(1);
+      expect(mockedFetchDesignSystems.mock.calls.filter(
+        ([issued]) => issued?.workspaceId === context.workspaceId,
+      )).toHaveLength(1);
+    });
+
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    act(() => onActive?.());
+    await waitFor(() => expect(mockedFetchSkills).toHaveBeenCalledTimes(2));
+    expect(mockedFetchDesignSystems.mock.calls.filter(
+      ([issued]) => issued?.workspaceId === context.workspaceId,
+    )).toHaveLength(2);
+
+    skillsFirst.resolve([]);
+    systemsFirst.resolve([]);
+    await act(async () => Promise.all([skillsFirst.promise, systemsFirst.promise]));
+    mockedFetchSkills.mockResolvedValue([]);
+    mockedFetchDesignSystems.mockResolvedValue([]);
+    act(() => onActive?.());
+    await waitFor(() => expect(mockedFetchSkills).toHaveBeenCalledTimes(3));
+    expect(mockedFetchDesignSystems.mock.calls.filter(
+      ([issued]) => issued?.workspaceId === context.workspaceId,
+    )).toHaveLength(3);
   });
 
   it('auto-picks the first available agent in registry order after streamed probes settle', async () => {

@@ -18,6 +18,27 @@ const workspaceMock = vi.hoisted(() => ({
   },
 }));
 
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  onActive: [] as Array<() => void>,
+  autoActivate: true,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((
+    _handlers: Record<string, (payload: any) => void>,
+    options?: { onActive?: () => void; enabled?: boolean; workspaceContext?: WorkspaceCollabContext | null },
+  ) => {
+    if (options?.onActive) workspaceInvalidationHarness.onActive.push(options.onActive);
+    const identity = JSON.stringify(options?.workspaceContext ?? null);
+    React.useEffect(() => {
+      if (workspaceInvalidationHarness.autoActivate && options?.enabled !== false && options?.workspaceContext) {
+        options.onActive?.();
+      }
+    }, [identity, options?.enabled]);
+    return { connected: false };
+  }),
+}));
+
 vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>();
   return {
@@ -117,6 +138,63 @@ describe('HomeView workspace-scoped plugin catalog', () => {
       identityChangePending: false,
       failure: undefined,
     };
+    workspaceInvalidationHarness.onActive.length = 0;
+    workspaceInvalidationHarness.autoActivate = true;
+  });
+
+  it('parks hidden plugin invalidations and performs one bounded catch-up when Home activates', async () => {
+    let pluginReads = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === '/api/plugins') {
+        pluginReads += 1;
+        return new Response(JSON.stringify({ plugins: [plugin(`plugin-${pluginReads}`)] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    workspaceMock.state = {
+      context: teamContext('workspace-focus', 'member-focus'),
+      loading: false,
+      identityChangePending: false,
+      failure: undefined,
+    };
+    const view = render(
+      <HomeView
+        isActive={false}
+        projects={[]}
+        onSubmit={() => undefined}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+
+    await act(async () => Promise.resolve());
+    expect(pluginReads).toBe(0);
+    act(() => window.dispatchEvent(new CustomEvent('open-design:plugins-changed')));
+    await act(async () => Promise.resolve());
+    expect(pluginReads).toBe(0);
+
+    view.rerender(
+      <HomeView
+        isActive
+        projects={[]}
+        onSubmit={() => undefined}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+    await waitFor(() => expect(pluginReads).toBe(1));
+    await waitFor(() => {
+      expect(screen.getByTestId('plugin-catalog').textContent).toBe('plugin-1');
+    });
+
+    pluginReads = 0;
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    act(() => onActive?.());
+    await waitFor(() => expect(pluginReads).toBe(1));
   });
 
   it('masks A immediately, fetches B with exact headers, and ignores A resolving late', async () => {

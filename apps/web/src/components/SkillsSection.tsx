@@ -24,6 +24,8 @@ import {
   useWorkspaceContext,
   workspaceIdentityCacheKey,
 } from '../collab/useWorkspaceContext';
+import { useWorkspaceInvalidation } from '../collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
 
 // Functional skills only — design templates render in EntryView's
 // Templates tab and are managed under their own daemon registry. See
@@ -114,6 +116,7 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
   ]);
   const workspaceCatalogIdentityRef = useRef(workspaceCatalogIdentity);
   workspaceCatalogIdentityRef.current = workspaceCatalogIdentity;
+  const skillsRequestGenerationRef = useRef(0);
   const workspaceWriteBlocked = workspaceReadMode === 'pending' || workspaceReadMode === 'blocked';
 
   const [skillsCatalog, setSkillsCatalog] = useState<{
@@ -188,12 +191,14 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
 
   const refresh = useCallback(async () => {
     if (workspaceReadMode === 'pending' || workspaceReadMode === 'blocked') return [];
+    const requestGeneration = ++skillsRequestGenerationRef.current;
     const issuedGeneration = currentWorkspaceAccountGeneration();
     const issuedIdentity = workspaceCatalogIdentity;
     const read = beginWorkspaceScopedRead(workspaceContext);
     const list = await fetchSkills(read.context);
     if (
-      currentWorkspaceAccountGeneration() !== issuedGeneration
+      skillsRequestGenerationRef.current !== requestGeneration
+      || currentWorkspaceAccountGeneration() !== issuedGeneration
       || workspaceCatalogIdentityRef.current !== issuedIdentity
       || !read.isStillCurrent(workspaceContextRef.current)
     ) return [];
@@ -202,8 +207,28 @@ export function SkillsSection({ cfg, setCfg, onSkillsRefresh, onSkillsChanged }:
   }, [workspaceCatalogIdentity, workspaceContext, workspaceReadMode]);
 
   useEffect(() => {
+    if (workspaceContext?.workspaceType === 'team') return;
     void refresh();
-  }, [refresh]);
+  }, [refresh, workspaceContext?.workspaceType]);
+
+  const handleSkillStreamActive = useWorkspaceSnapshotActivation({
+    enabled: workspaceReadMode === 'scoped' && workspaceContext?.workspaceType === 'team',
+    identity: workspaceCatalogIdentity,
+    refresh: () => { void refresh(); },
+  });
+
+  useWorkspaceInvalidation(
+    {
+      'team-resources-changed': (payload) => {
+        if (payload.resourceKind === 'skill') void refresh();
+      },
+    },
+    {
+      workspaceContext: workspaceReadMode === 'scoped' ? workspaceContext : null,
+      enabled: workspaceReadMode === 'scoped',
+      onActive: handleSkillStreamActive,
+    },
+  );
 
   const disabledSkills = useMemo(
     () => new Set(cfg.disabledSkills ?? []),

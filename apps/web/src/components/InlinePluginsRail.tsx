@@ -6,7 +6,7 @@
 // ApplyResult upstream; the parent decides what to do with it
 // (hydrate the brief, show the input form, etc.).
 
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ApplyResult,
   InstalledPluginRecord,
@@ -22,6 +22,8 @@ import {
   useWorkspaceContext,
   workspaceIdentityCacheKey,
 } from '../collab/useWorkspaceContext';
+import { useWorkspaceInvalidation } from '../collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
 import { useI18n } from '../i18n';
 import { localizePluginDescription, localizePluginTitle } from './plugins-home/localization';
 
@@ -72,6 +74,7 @@ export function InlinePluginsRail(props: Props) {
   ]);
   const workspaceIdentityRef = useRef(workspaceIdentity);
   workspaceIdentityRef.current = workspaceIdentity;
+  const pluginCatalogRequestGenerationRef = useRef(0);
   const [pluginCatalog, setPluginCatalog] = useState<{
     identity: string | null;
     items: InstalledPluginRecord[];
@@ -87,20 +90,19 @@ export function InlinePluginsRail(props: Props) {
     setError(null);
   }, [workspaceIdentity]);
 
-  useEffect(() => {
+  const refresh = useCallback(async () => {
     if (workspaceContextUnavailable) return;
-    let cancelled = false;
+    const requestGeneration = ++pluginCatalogRequestGenerationRef.current;
     const issuedIdentity = workspaceIdentity;
-    void listPlugins({ workspaceContext }).then((rows) => {
-      if (cancelled || workspaceIdentityRef.current !== issuedIdentity) return;
-      setPluginCatalog({
-        identity: issuedIdentity,
-        items: filterPlugins(rows, props.filter),
-      });
+    const rows = await listPlugins({ workspaceContext });
+    if (
+      requestGeneration !== pluginCatalogRequestGenerationRef.current
+      || workspaceIdentityRef.current !== issuedIdentity
+    ) return;
+    setPluginCatalog({
+      identity: issuedIdentity,
+      items: filterPlugins(rows, props.filter),
     });
-    return () => {
-      cancelled = true;
-    };
   }, [
     props.filter?.taskKind,
     props.filter?.mode,
@@ -109,6 +111,39 @@ export function InlinePluginsRail(props: Props) {
     workspaceIdentity,
     workspaceContextUnavailable,
   ]);
+
+  useEffect(() => {
+    if (workspaceContext?.workspaceType === 'team') return;
+    void refresh();
+    return () => {
+      // Prevent an in-flight read from committing after unmount or after a
+      // successor identity/filter effect has taken ownership.
+      pluginCatalogRequestGenerationRef.current += 1;
+    };
+  }, [refresh, workspaceContext?.workspaceType]);
+
+  const handlePluginStreamActive = useWorkspaceSnapshotActivation({
+    enabled: !workspaceContextUnavailable && workspaceContext?.workspaceType === 'team',
+    identity: workspaceIdentity,
+    refresh: () => { void refresh(); },
+  });
+
+  useWorkspaceInvalidation(
+    {
+      'team-resources-changed': (payload) => {
+        if (payload.resourceKind === 'plugin') void refresh();
+      },
+    },
+    {
+      workspaceContext:
+        !workspaceContextUnavailable && workspaceContext?.workspaceType === 'team'
+          ? workspaceContext
+          : null,
+      enabled:
+        !workspaceContextUnavailable && workspaceContext?.workspaceType === 'team',
+      onActive: handlePluginStreamActive,
+    },
+  );
 
   const onClick = async (record: InstalledPluginRecord) => {
     const issuedIdentity = workspaceIdentity;

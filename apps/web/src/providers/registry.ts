@@ -83,7 +83,6 @@ import {
 import {
   coalescedGet,
   evictCoalescedGet,
-  forceCoalescedGet,
 } from '../lib/coalesced-get';
 import {
   evictSharedCancellableGet,
@@ -549,7 +548,11 @@ export type DesignSystemsResult =
   | { ok: false };
 
 export interface FetchDesignSystemsOptions {
-  /** Bypass a Team index snapshot invalidated by a realtime resource event. */
+  /**
+   * A realtime mutation invalidated the Team index. Every forced call starts
+   * its own authoritative read; distinct mutations must never join an older
+   * in-flight snapshot merely because they arrived inside one burst window.
+   */
   forceTeamMaterialization?: boolean;
 }
 
@@ -588,9 +591,8 @@ async function materializeTeamDesignSystems(
           : [],
       );
     };
-    return await (options?.forceTeamMaterialization
-      ? forceCoalescedGet(cacheKey, readTeamIndex)
-      : coalescedGet(cacheKey, readTeamIndex));
+    if (options?.forceTeamMaterialization) evictCoalescedGet(cacheKey);
+    return await coalescedGet(cacheKey, readTeamIndex);
   } catch {
     // Keep personal/built-in systems usable while the remote team index is
     // temporarily unavailable. The scoped catalog request below remains the

@@ -102,6 +102,7 @@ import {
   fetchTeamProjectsCatalog,
 } from './collab/team-projects-catalog';
 import { useWorkspaceInvalidation } from './collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from './collab/workspace-snapshot-activation';
 import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
@@ -165,6 +166,7 @@ import {
   getProject,
   importClaudeDesignZip,
   importFolderProject,
+  invalidatePluginCatalogCache,
   invalidateWorkspaceProjectLists,
   listWorkspaceProjectSummaries,
   listProjects,
@@ -952,6 +954,8 @@ function AppInner() {
   const designSystems = workspaceDesignSystems.identity === currentWorkspaceCatalogIdentity
     ? workspaceDesignSystems.items
     : [];
+  const skillsRequestGenerationRef = useRef<Map<string, number>>(new Map());
+  const designSystemsRequestGenerationRef = useRef<Map<string, number>>(new Map());
   const [pendingDesignSystemRevisionJobs, setPendingDesignSystemRevisionJobs] = useState<
     Record<string, DesignSystemGenerationJob>
   >({});
@@ -1051,6 +1055,31 @@ function AppInner() {
     }
   }, []);
   const refreshProjectCatalogRef = useRef<() => void>(() => {});
+  const teamResourceRefreshRefs = useRef<{
+    skill: (resourceId?: string) => void;
+    designSystem: (resourceId?: string) => void;
+    plugin: (
+      context: WorkspaceCollabContext | null,
+      accountGeneration: number,
+    ) => void;
+    catchUp: () => void;
+  }>({
+    skill: () => {},
+    designSystem: () => {},
+    plugin: () => {},
+    catchUp: () => {},
+  });
+  const invalidationWorkspaceContext = workspaceContext;
+  const invalidationAccountGeneration = workspaceAccountGeneration;
+  const resourceStreamIdentity = JSON.stringify([
+    invalidationAccountGeneration,
+    workspaceIdentityCacheKey(invalidationWorkspaceContext),
+  ]);
+  const handleTeamResourceStreamActive = useWorkspaceSnapshotActivation({
+    enabled: invalidationWorkspaceContext?.workspaceType === 'team',
+    identity: resourceStreamIdentity,
+    refresh: () => teamResourceRefreshRefs.current.catchUp(),
+  });
   useWorkspaceInvalidation({
     'team-projects-changed': (payload) => {
       if (payload.kind === 'metadata' && payload.projectId) {
@@ -1059,7 +1088,24 @@ function AppInner() {
       }
       refreshProjectCatalogRef.current();
     },
-  }, { workspaceContext });
+    'team-resources-changed': (payload) => {
+      if (payload.resourceKind === 'skill') {
+        teamResourceRefreshRefs.current.skill(payload.resourceId);
+        return;
+      }
+      if (payload.resourceKind === 'design_system') {
+        teamResourceRefreshRefs.current.designSystem(payload.resourceId);
+        return;
+      }
+      teamResourceRefreshRefs.current.plugin(
+        invalidationWorkspaceContext,
+        invalidationAccountGeneration,
+      );
+    },
+  }, {
+    workspaceContext,
+    onActive: handleTeamResourceStreamActive,
+  });
   const [petTaskCenter, setPetTaskCenter] = useState<PetTaskCenter>({
     running: [],
     queued: [],
@@ -1914,27 +1960,40 @@ function AppInner() {
       });
 
       const designSystemsContext = workspaceContextRef.current;
-      const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(designSystemsContext);
-      const designSystemsAccountGeneration = currentWorkspaceAccountGeneration();
-      const designSystemsCatalogIdentity = JSON.stringify([
-        'workspace-account',
-        designSystemsAccountGeneration,
-        designSystemsWorkspaceIdentity,
-      ]);
-      void fetchDesignSystems(designSystemsContext).then((list) => {
-        if (
-          cancelled ||
-          workspaceContextStateRef.current.identityChangePending ||
-          currentWorkspaceAccountGeneration() !== designSystemsAccountGeneration ||
-          workspaceIdentityCacheKey(workspaceContextRef.current)
-            !== designSystemsWorkspaceIdentity
-        ) return;
-        setWorkspaceDesignSystems({
-          identity: designSystemsCatalogIdentity,
-          items: list,
+      // A cached Team identity already has an SSE lifecycle owner below. Do
+      // not race an eager bootstrap snapshot against its first onActive; the
+      // 250ms fallback covers shells where the stream never opens.
+      if (designSystemsContext?.workspaceType !== 'team') {
+        const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(designSystemsContext);
+        const designSystemsAccountGeneration = currentWorkspaceAccountGeneration();
+        const designSystemsCatalogIdentity = JSON.stringify([
+          'workspace-account',
+          designSystemsAccountGeneration,
+          designSystemsWorkspaceIdentity,
+        ]);
+        const designSystemsRequestGeneration =
+          (designSystemsRequestGenerationRef.current.get(designSystemsCatalogIdentity) ?? 0) + 1;
+        designSystemsRequestGenerationRef.current.set(
+          designSystemsCatalogIdentity,
+          designSystemsRequestGeneration,
+        );
+        void fetchDesignSystems(designSystemsContext).then((list) => {
+          if (
+            cancelled ||
+            workspaceContextStateRef.current.identityChangePending ||
+            designSystemsRequestGenerationRef.current.get(designSystemsCatalogIdentity)
+              !== designSystemsRequestGeneration ||
+            currentWorkspaceAccountGeneration() !== designSystemsAccountGeneration ||
+            workspaceIdentityCacheKey(workspaceContextRef.current)
+              !== designSystemsWorkspaceIdentity
+          ) return;
+          setWorkspaceDesignSystems({
+            identity: designSystemsCatalogIdentity,
+            items: list,
+          });
+          setDsLoading(false);
         });
-        setDsLoading(false);
-      });
+      }
 
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects({
@@ -2247,7 +2306,9 @@ function AppInner() {
     reconcileFetchedProjects,
   ]);
 
-  const refreshDesignSystems = useCallback(async () => {
+  const refreshDesignSystems = useCallback(async (options?: {
+    forceTeamMaterialization?: boolean;
+  }) => {
     // Carry the captured Workspace/member identity on the request. The daemon
     // verifies that exact membership instead of consulting mutable ambient
     // Workspace state, and the same identity key prevents an A response from
@@ -2261,9 +2322,14 @@ function AppInner() {
       issuedAccountGeneration,
       issuedIdentity,
     ]);
-    const list = await fetchDesignSystems(issuedContext);
+    const requestGeneration =
+      (designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
+    designSystemsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
+    const list = await fetchDesignSystems(issuedContext, options);
     if (
       workspaceContextStateRef.current.identityChangePending
+      || designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity)
+        !== requestGeneration
       || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
       || workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity
     ) return;
@@ -2280,10 +2346,12 @@ function AppInner() {
   // reuse the Workspace id while changing the authoritative membership.
   useEffect(() => {
     if (workspaceContextState.identityChangePending) return;
+    if (workspaceContext?.workspaceType === 'team') return;
     void refreshDesignSystems();
   }, [
     currentWorkspaceCatalogIdentity,
     refreshDesignSystems,
+    workspaceContext?.workspaceType,
     workspaceContextState.identityChangePending,
   ]);
 
@@ -2301,6 +2369,9 @@ function AppInner() {
       issuedAccountGeneration,
       workspaceIdentityCacheKey(read.context),
     ]);
+    const requestGeneration =
+      (skillsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
+    skillsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
     const list = await fetchSkills(read.context);
     // A read for the workspace the user has since LEFT must not restore that
     // workspace's catalog over the current one — see `beginWorkspaceScopedRead`.
@@ -2308,6 +2379,7 @@ function AppInner() {
     // the current identity, and the newer read that replaced it will mark it.
     if (
       workspaceContextStateRef.current.identityChangePending
+      || skillsRequestGenerationRef.current.get(issuedCatalogIdentity) !== requestGeneration
       || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
       || !read.isStillCurrent(workspaceContextRef.current)
     ) return;
@@ -2347,12 +2419,14 @@ function AppInner() {
     if (workspaceContextLoading || workspaceContextState.identityChangePending) return;
     if (skillsReadIdentityRef.current === skillsReadIdentity) return;
     skillsReadIdentityRef.current = skillsReadIdentity;
+    if (workspaceContext?.workspaceType === 'team') return;
     void refreshSkills();
   }, [
     workspaceContextLoading,
     workspaceContextState.identityChangePending,
     skillsReadIdentity,
     refreshSkills,
+    workspaceContext?.workspaceType,
   ]);
 
   const refreshTemplates = useCallback(async () => {
@@ -3873,28 +3947,7 @@ function AppInner() {
 
   const handleSkillsChanged = useCallback(
     (affectedSkillId?: string) => {
-      // Scoped AND guarded on commit, like every other app-level skills read —
-      // see `refreshSkills` and `beginWorkspaceScopedRead`.
-      if (!workspaceContextStateRef.current.identityChangePending) {
-        const issuedAccountGeneration = currentWorkspaceAccountGeneration();
-        const skillsRead = beginWorkspaceScopedRead(workspaceContextRef.current);
-        const issuedCatalogIdentity = JSON.stringify([
-          'workspace-account',
-          issuedAccountGeneration,
-          workspaceIdentityCacheKey(skillsRead.context),
-        ]);
-        void fetchSkills(skillsRead.context).then((list) => {
-          if (
-            workspaceContextStateRef.current.identityChangePending
-            || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
-            || !skillsRead.isStillCurrent(workspaceContextRef.current)
-          ) return;
-          setWorkspaceSkills({
-            identity: issuedCatalogIdentity,
-            items: list,
-          });
-        });
-      }
+      void refreshSkills();
       void fetchDesignTemplates().then((list) => setDesignTemplates(list));
       iframeKeepAlivePool.evictMatching(
         (entry) => {
@@ -3906,12 +3959,12 @@ function AppInner() {
         { includeActive: true },
       );
     },
-    [iframeKeepAlivePool],
+    [iframeKeepAlivePool, refreshSkills],
   );
 
   const handleDesignSystemsChanged = useCallback(
     (affectedDesignSystemId?: string) => {
-      void refreshDesignSystems();
+      void refreshDesignSystems({ forceTeamMaterialization: true });
       iframeKeepAlivePool.evictMatching(
         (entry) => {
           const proj = projectsRef.current.find((p) => p.id === entry.projectId);
@@ -3926,6 +3979,24 @@ function AppInner() {
     },
     [iframeKeepAlivePool, refreshDesignSystems],
   );
+
+  const handlePluginsChanged = useCallback((
+    context: WorkspaceCollabContext | null,
+    accountGeneration: number,
+  ) => {
+    invalidatePluginCatalogCache({ workspaceContext: context, accountGeneration });
+    window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
+  }, []);
+
+  teamResourceRefreshRefs.current.skill = handleSkillsChanged;
+  teamResourceRefreshRefs.current.designSystem = handleDesignSystemsChanged;
+  teamResourceRefreshRefs.current.plugin = handlePluginsChanged;
+  teamResourceRefreshRefs.current.catchUp = () => {
+    // Focus/reconnect is snapshot catch-up, not a mutation. Keep project
+    // previews intact and never fan out the plugin mutation CustomEvent.
+    void refreshSkills();
+    void refreshDesignSystems({ forceTeamMaterialization: true });
+  };
   const handleDesignSystemImportRebuildJob = useCallback(
     (designSystemId: string, job: DesignSystemGenerationJob) => {
       setPendingDesignSystemRevisionJobs((current) => ({
@@ -4440,8 +4511,8 @@ function AppInner() {
   useEffect(() => {
     if (route.kind !== 'home') return;
     void refreshTemplates();
-    void refreshDesignSystems();
-  }, [route.kind, refreshTemplates, refreshDesignSystems]);
+    if (workspaceContext?.workspaceType !== 'team') void refreshDesignSystems();
+  }, [route.kind, refreshTemplates, refreshDesignSystems, workspaceContext?.workspaceType]);
 
   // Existing card grids (DesignsTab, ProjectView), pickers (NewProjectPanel,
   // ChatComposer mention) all look skills up by id without caring whether

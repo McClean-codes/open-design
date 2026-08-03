@@ -88,6 +88,7 @@ import {
 import {
   useWorkspaceInvalidation,
 } from '../collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
 
 type PluginsTab = 'installed' | 'available' | 'sources' | 'team';
 
@@ -977,6 +978,8 @@ interface MarketCard {
 }
 
 interface ExtensionsMarketplaceProps {
+  /** EntryShell keeps this surface mounted while another nav view is visible. */
+  isActive?: boolean;
   onCreatePlugin?: (goal?: string) => void;
   onUsePlugin?: (record: InstalledPluginRecord, action: PluginUseAction) => void;
   /**
@@ -988,6 +991,7 @@ interface ExtensionsMarketplaceProps {
 }
 
 export function ExtensionsMarketplace({
+  isActive = true,
   onCreatePlugin,
   onUsePlugin,
   onUseSkill,
@@ -1006,6 +1010,10 @@ export function ExtensionsMarketplace({
   // identity the read was issued for against itself and never fires.
   const emContextRef = useRef(workspaceContext);
   emContextRef.current = workspaceContext;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const catalogStaleRef = useRef(false);
+  const sharedResourcesStaleRef = useRef(false);
   const myMemberId = workspaceContext?.workspaceMemberId ?? null;
   // The 团队 scope is a team-workspace surface backed by the resource hub: it
   // lists the resources shared into the team and offers a share-to-team action.
@@ -1019,10 +1027,11 @@ export function ExtensionsMarketplace({
   const hasTeamWorkspace = workspaceContextHasTeamIdentity(workspaceContext);
   const pageViewFiredRef = useRef(false);
   useEffect(() => {
+    if (!isActive) return;
     if (pageViewFiredRef.current) return;
     pageViewFiredRef.current = true;
     trackPageView(analytics.track, { page_name: 'plugins' });
-  }, [analytics.track]);
+  }, [analytics.track, isActive]);
 
   const [mode, setMode] = useState<MarketMode>('plugins');
   // #5517 lands on the official catalog first — a new workspace's personal
@@ -1282,7 +1291,8 @@ export function ExtensionsMarketplace({
   marketplaceReadModeRef.current = marketplaceReadMode;
   useEffect(() => {
     const onPluginsChanged = () => {
-      void refresh();
+      if (isActiveRef.current) void refresh();
+      else catalogStaleRef.current = true;
     };
     window.addEventListener('open-design:plugins-changed', onPluginsChanged);
     return () => window.removeEventListener('open-design:plugins-changed', onPluginsChanged);
@@ -1302,8 +1312,14 @@ export function ExtensionsMarketplace({
   // later workspace switch spends exactly one more.
   const refreshedIdentityRef = useRef<string | null>(null);
   useEffect(() => {
+    if (!isActive) return;
     if (workspaceContextLoading) return;
-    if (refreshedIdentityRef.current === marketplaceIdentity) return;
+    if (hasTeamWorkspace) return;
+    if (
+      refreshedIdentityRef.current === marketplaceIdentity
+      && !catalogStaleRef.current
+    ) return;
+    catalogStaleRef.current = false;
     refreshedIdentityRef.current = marketplaceIdentity;
     if (marketplaceReadMode === 'blocked') {
       setPlugins([]);
@@ -1316,7 +1332,7 @@ export function ExtensionsMarketplace({
     }
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceContextLoading, marketplaceIdentity, marketplaceReadMode]);
+  }, [hasTeamWorkspace, isActive, workspaceContextLoading, marketplaceIdentity, marketplaceReadMode]);
 
   const refreshSharedResources = useCallback(async () => {
     const requestGeneration = ++sharedResourcesRequestGenerationRef.current;
@@ -1400,9 +1416,26 @@ export function ExtensionsMarketplace({
     setLoadedSharedIdentity(issuedIdentity);
   }, []);
 
+  const handleMarketplaceStreamActive = useWorkspaceSnapshotActivation({
+    enabled: isActive && hasTeamWorkspace,
+    identity: marketplaceIdentity,
+    refresh: () => {
+      void refresh();
+      void refreshSharedResources();
+    },
+  });
+
   useWorkspaceInvalidation(
     {
       'team-resources-changed': (payload) => {
+        if (!isActiveRef.current) {
+          if (payload.resourceKind === 'plugin') sharedResourcesStaleRef.current = true;
+          if (payload.resourceKind === 'skill') {
+            catalogStaleRef.current = true;
+            sharedResourcesStaleRef.current = true;
+          }
+          return;
+        }
         if (payload.resourceKind === 'plugin') {
           void refreshSharedResources();
           return;
@@ -1415,6 +1448,16 @@ export function ExtensionsMarketplace({
     {
       workspaceContext: hasTeamWorkspace ? workspaceContext : null,
       enabled: hasTeamWorkspace,
+      onActive: () => {
+        if (!isActiveRef.current) {
+          catalogStaleRef.current = true;
+          sharedResourcesStaleRef.current = true;
+          return;
+        }
+        catalogStaleRef.current = false;
+        sharedResourcesStaleRef.current = false;
+        handleMarketplaceStreamActive();
+      },
     },
   );
 
@@ -1422,21 +1465,18 @@ export function ExtensionsMarketplace({
   // the 团队 scope shows a clean empty state instead of erroring. Re-read while
   // the page is visible so owner/admin unshares in another client converge.
   useEffect(() => {
-    void refreshSharedResources();
-    const refreshVisible = () => {
+    if (!isActive) return;
+    if (!hasTeamWorkspace) {
+      sharedResourcesStaleRef.current = false;
+      void refreshSharedResources();
+    }
+    const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refreshSharedResources();
-    };
-    const interval = window.setInterval(refreshVisible, 10_000);
-    window.addEventListener('focus', refreshVisible);
-    window.addEventListener('pageshow', refreshVisible);
-    document.addEventListener('visibilitychange', refreshVisible);
+    }, 10_000);
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener('focus', refreshVisible);
-      window.removeEventListener('pageshow', refreshVisible);
-      document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [refreshSharedResources, marketplaceIdentity]);
+  }, [hasTeamWorkspace, isActive, refreshSharedResources, marketplaceIdentity]);
 
   const userPlugins = useMemo(
     () => plugins.filter(isPersonalPluginRecord),

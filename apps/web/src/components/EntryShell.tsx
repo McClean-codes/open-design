@@ -978,10 +978,6 @@ export function EntryShell({
       resolve: (decision: AmrLowBalanceDecision) => void;
     } | null
   >(null);
-  useEffect(() => {
-    if (view !== 'design-systems') return;
-    void onDesignSystemsRefresh?.();
-  }, [onDesignSystemsRefresh, view]);
   // The entry nav rail is collapsed by default (Manus-style) so the entry
   // view opens clean and full-width; the panel toggle in the topbar opens it
   // as an overlay that dismisses on selection / backdrop click / Escape.
@@ -1628,6 +1624,7 @@ export function EntryShell({
             </div>
             <div data-testid="entry-view-plugins" data-active={view === 'plugins' ? 'true' : 'false'} {...inactiveViewProps(view === 'plugins')}>
               <ExtensionsMarketplace
+                isActive={view === 'plugins'}
                 onCreatePlugin={startPluginAuthoring}
                 onUsePlugin={usePluginFromLibrary}
                 onUseSkill={useSkillFromLibrary}
@@ -1637,6 +1634,7 @@ export function EntryShell({
               {designSystemsLoading ? (
                 <div className="entry-section">
                   <DesignSystemsTab
+                    isActive={view === 'design-systems'}
                     loading
                     systems={[]}
                     templates={templates}
@@ -1650,6 +1648,7 @@ export function EntryShell({
               ) : (
                 <div className="entry-section">
                   <DesignSystemsTab
+                    isActive={view === 'design-systems'}
                     systems={designSystems}
                     templates={templates}
                     selectedId={defaultDesignSystemId}

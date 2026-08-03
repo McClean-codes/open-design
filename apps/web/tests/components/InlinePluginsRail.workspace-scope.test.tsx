@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { InstalledPluginRecord, WorkspaceCollabContext } from '@open-design/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +11,29 @@ const workspace = vi.hoisted(() => ({
   identityChangePending: false,
   failure: undefined as 'unsupported' | 'unavailable' | undefined,
   generation: 0,
+}));
+
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+  onActive: [] as Array<() => void>,
+  autoActivate: true,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((
+    handlers: Record<string, (payload: any) => void>,
+    options?: { onActive?: () => void; enabled?: boolean; workspaceContext?: unknown },
+  ) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    if (options?.onActive) workspaceInvalidationHarness.onActive.push(options.onActive);
+    const identity = JSON.stringify(options?.workspaceContext ?? null);
+    React.useEffect(() => {
+      if (workspaceInvalidationHarness.autoActivate && options?.enabled !== false && options?.workspaceContext) {
+        options.onActive?.();
+      }
+    }, [identity, options?.enabled]);
+    return { connected: false };
+  }),
 }));
 
 vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
@@ -97,6 +121,8 @@ describe('InlinePluginsRail Workspace identity partition', () => {
     workspace.identityChangePending = false;
     workspace.failure = undefined;
     workspace.generation = 0;
+    workspaceInvalidationHarness.handlers.length = 0;
+    workspaceInvalidationHarness.onActive.length = 0;
     vi.mocked(listPlugins).mockResolvedValue([]);
     vi.mocked(applyPlugin).mockResolvedValue(null);
   });
@@ -104,6 +130,44 @@ describe('InlinePluginsRail Workspace identity partition', () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    workspaceInvalidationHarness.handlers.length = 0;
+    workspaceInvalidationHarness.onActive.length = 0;
+  });
+
+  it('performs exactly one plugin read for one active-surface reconnect', async () => {
+    render(<InlinePluginsRail onApplied={vi.fn()} />);
+    await waitFor(() => expect(listPlugins).toHaveBeenCalledTimes(1));
+    vi.mocked(listPlugins).mockClear();
+
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    act(() => onActive?.());
+
+    await waitFor(() => expect(listPlugins).toHaveBeenCalledTimes(1));
+  });
+
+  it('refreshes a mounted rail after a remote Team Plugin invalidation', async () => {
+    let reads = 0;
+    vi.mocked(listPlugins).mockImplementation(async () => [
+      plugin(reads++ === 0 ? 'Plugin before remote' : 'Plugin after remote'),
+    ]);
+
+    render(<InlinePluginsRail onApplied={vi.fn()} />);
+    expect(await screen.findByTitle('Plugin before remote')).toBeTruthy();
+    const resourceHandler = [...workspaceInvalidationHarness.handlers]
+      .reverse()
+      .find((handlers) => handlers['team-resources-changed'])?.['team-resources-changed'];
+    expect(resourceHandler).toBeTypeOf('function');
+
+    act(() => resourceHandler?.({
+      type: 'team-resources-changed',
+      resourceKind: 'plugin',
+      resourceId: 'same-plugin',
+    }));
+
+    expect(await screen.findByTitle('Plugin after remote')).toBeTruthy();
+    expect(screen.queryByTitle('Plugin before remote')).toBeNull();
+    expect(listPlugins).toHaveBeenCalledTimes(2);
   });
 
   it('hides A synchronously while the next identity is pending', async () => {

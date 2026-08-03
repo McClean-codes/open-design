@@ -135,6 +135,37 @@ describe('useEventStream', () => {
     expect(activeCount).toBe(2);
   });
 
+  it('coalesces one visible+focus browser transition without swallowing a later focus', async () => {
+    vi.useFakeTimers();
+    let visibility: DocumentVisibilityState = 'visible';
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => visibility);
+    let activeCount = 0;
+    renderHook(() =>
+      useEventStream('/api/workspace/events', {
+        events: {},
+        onActive: () => { activeCount += 1; },
+        EventSourceCtor: Ctor,
+      }),
+    );
+    act(() => MockEventSource.instances[0]!.open());
+    expect(activeCount).toBe(1);
+
+    visibility = 'hidden';
+    act(() => document.dispatchEvent(new Event('visibilitychange')));
+    visibility = 'visible';
+    act(() => {
+      document.dispatchEvent(new Event('visibilitychange'));
+      window.dispatchEvent(new Event('focus'));
+    });
+    expect(activeCount).toBe(2);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(51);
+    });
+    act(() => window.dispatchEvent(new Event('focus')));
+    expect(activeCount).toBe(3);
+  });
+
   it('stays poll-only (never connects) when disabled', () => {
     const { result } = renderHook(() =>
       useEventStream('/api/workspace/events', {

@@ -17,6 +17,7 @@ import {
   installGeneratedPluginFolder,
   listPlugins,
   listPluginsFresh,
+  invalidatePluginCatalogCache,
   listProjects,
   listWorkspaceProjectSummaries,
   loadTabs,
@@ -308,6 +309,92 @@ describe('listProjects', () => {
       workspaceView: 'recent',
       throwOnError: true,
     })).resolves.toEqual([localProject]);
+  });
+
+  it('restores the exact wrapper Workspace onto project card models', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+      const requestedWorkspaceId = new URL(String(input), 'http://localhost').pathname.split('/')[3]!;
+      return Response.json({
+        projects: [
+          {
+            id: 'summary-first',
+            workspaceId: requestedWorkspaceId,
+            project: {
+              id: 'project-shared',
+              name: `First catalog row in ${requestedWorkspaceId}`,
+              createdAt: 1,
+              updatedAt: 3,
+            },
+          },
+          {
+            id: 'summary-duplicate',
+            workspaceId: requestedWorkspaceId,
+            project: {
+              id: 'project-shared',
+              name: 'Duplicate catalog row',
+              createdAt: 1,
+              updatedAt: 2,
+            },
+          },
+          {
+            id: 'summary-second',
+            workspaceId: requestedWorkspaceId,
+            project: {
+              id: 'project-second',
+              name: 'Second project',
+              createdAt: 1,
+              updatedAt: 1,
+            },
+          },
+        ],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const workspaceA = teamWorkspaceContext({
+      workspaceId: 'workspace-wrapper-a',
+      workspaceMemberId: 'member-a',
+    });
+    const workspaceB = teamWorkspaceContext({
+      workspaceId: 'workspace-wrapper-b',
+      workspaceMemberId: 'member-b',
+    });
+
+    const workspaceAProjects = await listProjects({
+      workspaceContext: workspaceA,
+      workspaceView: 'recent',
+      throwOnError: true,
+    });
+    const workspaceBProjects = await listProjects({
+      workspaceContext: workspaceB,
+      workspaceView: 'recent',
+      throwOnError: true,
+    });
+
+    expect(workspaceAProjects).toEqual([
+      expect.objectContaining({
+        id: 'project-shared',
+        name: 'First catalog row in workspace-wrapper-a',
+        workspaceId: 'workspace-wrapper-a',
+      }),
+      expect.objectContaining({
+        id: 'project-second',
+        name: 'Second project',
+        workspaceId: 'workspace-wrapper-a',
+      }),
+    ]);
+    expect(workspaceBProjects).toEqual([
+      expect.objectContaining({
+        id: 'project-shared',
+        name: 'First catalog row in workspace-wrapper-b',
+        workspaceId: 'workspace-wrapper-b',
+      }),
+      expect.objectContaining({
+        id: 'project-second',
+        name: 'Second project',
+        workspaceId: 'workspace-wrapper-b',
+      }),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('does not coalesce workspace snapshots across different members', async () => {
@@ -794,6 +881,127 @@ describe('listPlugins', () => {
         'x-od-workspace-member-id': 'member-shared',
       }),
     ]);
+  });
+
+  it('evicts only the exact account generation and Workspace plugin catalog', async () => {
+    let fetchSequence = 0;
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      fetchSequence += 1;
+      const headers = new Headers(init?.headers);
+      const workspaceId = headers.get('x-od-workspace-id');
+      const memberId = headers.get('x-od-workspace-member-id');
+      return new Response(JSON.stringify({
+        plugins: [{
+          id: `${workspaceId}:${memberId}:fetch-${fetchSequence}`,
+          manifest: {},
+        }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const workspaceA = teamWorkspaceContext({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+    });
+    const workspaceB = teamWorkspaceContext({
+      workspaceId: 'workspace-b',
+      workspaceMemberId: 'member-b',
+    });
+
+    const account7A = await listPluginsFresh({ workspaceContext: workspaceA, accountGeneration: 7 });
+    const account7B = await listPluginsFresh({ workspaceContext: workspaceB, accountGeneration: 7 });
+    const account8A = await listPluginsFresh({ workspaceContext: workspaceA, accountGeneration: 8 });
+    invalidatePluginCatalogCache({ workspaceContext: workspaceA, accountGeneration: 7 });
+
+    const refreshed7A = await listPluginsFresh({
+      workspaceContext: workspaceA,
+      accountGeneration: 7,
+    });
+    const cached7B = await listPluginsFresh({
+      workspaceContext: workspaceB,
+      accountGeneration: 7,
+    });
+    const cached8A = await listPluginsFresh({
+      workspaceContext: workspaceA,
+      accountGeneration: 8,
+    });
+
+    expect(refreshed7A).not.toEqual(account7A);
+    expect(cached7B).toEqual(account7B);
+    expect(cached8A).toEqual(account8A);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not let an invalidated in-flight plugin read overwrite the fresh exact-scope cache', async () => {
+    let resolveStaleA7!: (response: Response) => void;
+    let resolveB7!: (response: Response) => void;
+    let resolveA8!: (response: Response) => void;
+    const staleA7 = new Promise<Response>((resolve) => { resolveStaleA7 = resolve; });
+    const pendingB7 = new Promise<Response>((resolve) => { resolveB7 = resolve; });
+    const pendingA8 = new Promise<Response>((resolve) => { resolveA8 = resolve; });
+    const fetchMock = vi.fn<typeof fetch>();
+    fetchMock
+      .mockReturnValueOnce(staleA7)
+      .mockReturnValueOnce(pendingB7)
+      .mockReturnValueOnce(pendingA8)
+      .mockResolvedValueOnce(Response.json({
+        plugins: [{ id: 'fresh-a7', manifest: {} }],
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    const workspaceA = teamWorkspaceContext({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+    });
+    const workspaceB = teamWorkspaceContext({
+      workspaceId: 'workspace-b',
+      workspaceMemberId: 'member-b',
+    });
+    const a7Options = { workspaceContext: workspaceA, accountGeneration: 7 };
+    const b7Options = { workspaceContext: workspaceB, accountGeneration: 7 };
+    const a8Options = { workspaceContext: workspaceA, accountGeneration: 8 };
+
+    const oldA7Read = listPlugins(a7Options);
+    const b7Read = listPlugins(b7Options);
+    const a8Read = listPlugins(a8Options);
+    invalidatePluginCatalogCache(a7Options);
+    const freshA7 = await listPluginsFresh(a7Options);
+
+    resolveB7(Response.json({ plugins: [{ id: 'workspace-b-account-7', manifest: {} }] }));
+    resolveA8(Response.json({ plugins: [{ id: 'workspace-a-account-8', manifest: {} }] }));
+    resolveStaleA7(Response.json({ plugins: [{ id: 'stale-a7', manifest: {} }] }));
+    await Promise.all([oldA7Read, b7Read, a8Read]);
+
+    expect(await listPluginsFresh(a7Options)).toEqual(freshA7);
+    expect((await listPluginsFresh(b7Options))[0]?.id).toBe('workspace-b-account-7');
+    expect((await listPluginsFresh(a8Options))[0]?.id).toBe('workspace-a-account-8');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps the latest-started same-scope plugin read cached when responses finish in reverse order', async () => {
+    let resolveOlder!: (response: Response) => void;
+    let resolveNewer!: (response: Response) => void;
+    const olderResponse = new Promise<Response>((resolve) => { resolveOlder = resolve; });
+    const newerResponse = new Promise<Response>((resolve) => { resolveNewer = resolve; });
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockReturnValueOnce(olderResponse)
+      .mockReturnValueOnce(newerResponse);
+    vi.stubGlobal('fetch', fetchMock);
+    const options = {
+      workspaceContext: teamWorkspaceContext({
+        workspaceId: 'workspace-latest',
+        workspaceMemberId: 'member-latest',
+      }),
+      accountGeneration: 9,
+    };
+
+    const olderRead = listPlugins(options);
+    const newerRead = listPlugins(options);
+    resolveNewer(Response.json({ plugins: [{ id: 'newer-snapshot', manifest: {} }] }));
+    const newerRows = await newerRead;
+    resolveOlder(Response.json({ plugins: [{ id: 'older-snapshot', manifest: {} }] }));
+    await olderRead;
+
+    expect(await listPluginsFresh(options)).toEqual(newerRows);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

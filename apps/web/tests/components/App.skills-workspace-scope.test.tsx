@@ -46,6 +46,17 @@ import {
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    return { connected: false };
+  }),
+}));
+
 vi.mock('../../src/components/EntryView', () => ({
   EntryView: ({
     skills,
@@ -217,6 +228,7 @@ describe('App skills list — workspace scope', () => {
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
     resetCoalescedGet();
+    workspaceInvalidationHarness.handlers.length = 0;
     window.history.replaceState(null, '', '/');
     vi.mocked(daemonIsLive).mockResolvedValue(true);
     vi.mocked(fetchAgentsStream).mockResolvedValue([]);
@@ -238,6 +250,7 @@ describe('App skills list — workspace scope', () => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     resetWorkspaceContextCache();
+    workspaceInvalidationHarness.handlers.length = 0;
     resetTeamProjectsCache();
     resetCoalescedGet();
   });
@@ -561,5 +574,54 @@ describe('App skills list — workspace scope', () => {
       expect(screen.getByTestId('entry-skill-skill-from-account-b')).toBeTruthy(),
     );
     expect(screen.queryByTestId('entry-skill-skill-from-account-a')).toBeNull();
+  });
+
+  it('keeps the newest same-identity skill refresh when an older request finishes last', async () => {
+    const context = workspaceContext('ws-same-identity');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([context])
+              : pathname.endsWith('/workspace/context')
+                ? { context }
+                : {},
+        } as Response;
+      }),
+    );
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    render(<App />);
+    await waitFor(() => expect(vi.mocked(fetchSkills)).toHaveBeenCalled());
+
+    const older = deferred<SkillSummary[]>();
+    const newer = deferred<SkillSummary[]>();
+    vi.mocked(fetchSkills)
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+    const resourceHandler = [...workspaceInvalidationHarness.handlers]
+      .reverse()
+      .find((handlers) => handlers['team-resources-changed'])?.['team-resources-changed'];
+    expect(resourceHandler).toBeTypeOf('function');
+
+    act(() => resourceHandler?.({ type: 'team-resources-changed', resourceKind: 'skill' }));
+    act(() => resourceHandler?.({ type: 'team-resources-changed', resourceKind: 'skill' }));
+    await waitFor(() => expect(vi.mocked(fetchSkills).mock.calls.length).toBeGreaterThanOrEqual(3));
+
+    await act(async () => {
+      newer.resolve([skill('newer-skill')]);
+      await newer.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('entry-skill-newer-skill')).toBeTruthy());
+
+    await act(async () => {
+      older.resolve([skill('older-skill')]);
+      await older.promise;
+    });
+    expect(screen.getByTestId('entry-skill-newer-skill')).toBeTruthy();
+    expect(screen.queryByTestId('entry-skill-older-skill')).toBeNull();
   });
 });

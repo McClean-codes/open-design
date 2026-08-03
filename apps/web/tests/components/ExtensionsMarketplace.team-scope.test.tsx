@@ -12,6 +12,7 @@
 // `workspaceContextHasTeamIdentity`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { InstalledPluginRecord, SkillSummary } from '@open-design/contracts';
 
@@ -21,11 +22,23 @@ import { fetchSkills } from '../../src/providers/registry';
 
 const workspaceInvalidationHarness = vi.hoisted(() => ({
   handlers: [] as Array<Record<string, (payload: any) => void>>,
+  onActive: [] as Array<() => void>,
+  autoActivate: true,
 }));
 
 vi.mock('../../src/collab/workspace-events', () => ({
-  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+  useWorkspaceInvalidation: vi.fn((
+    handlers: Record<string, (payload: any) => void>,
+    options?: { onActive?: () => void; enabled?: boolean; workspaceContext?: unknown },
+  ) => {
     workspaceInvalidationHarness.handlers.push(handlers);
+    if (options?.onActive) workspaceInvalidationHarness.onActive.push(options.onActive);
+    const identity = JSON.stringify(options?.workspaceContext ?? null);
+    React.useEffect(() => {
+      if (workspaceInvalidationHarness.autoActivate && options?.enabled !== false && options?.workspaceContext) {
+        options.onActive?.();
+      }
+    }, [identity, options?.enabled]);
     return { connected: false };
   }),
 }));
@@ -118,6 +131,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 beforeEach(() => {
   vi.clearAllMocks();
   workspaceInvalidationHarness.handlers.length = 0;
+  workspaceInvalidationHarness.onActive.length = 0;
   vi.mocked(fetchSkills).mockResolvedValue([]);
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
@@ -138,10 +152,14 @@ afterEach(() => {
   workspaceAccountGeneration = 0;
 });
 
-function renderMarketplace() {
+function renderMarketplace(isActive = true) {
   return render(
     <I18nProvider initial="en">
-      <ExtensionsMarketplace onCreatePlugin={vi.fn()} onUsePlugin={vi.fn()} />
+      <ExtensionsMarketplace
+        isActive={isActive}
+        onCreatePlugin={vi.fn()}
+        onUsePlugin={vi.fn()}
+      />
     </I18nProvider>,
   );
 }
@@ -189,6 +207,46 @@ function deferred<T>() {
 }
 
 describe('ExtensionsMarketplace 团队 scope visibility', () => {
+  it('does not refresh while hidden and performs one bounded active-surface catch-up', async () => {
+    const view = renderMarketplace(false);
+    await act(async () => Promise.resolve());
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+    expect(fetchSkills).not.toHaveBeenCalled();
+
+    const resourceHandler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(resourceHandler).toBeTypeOf('function');
+    act(() => resourceHandler?.({
+      type: 'team-resources-changed',
+      resourceKind: 'skill',
+      resourceId: 'remote-skill',
+    }));
+    await act(async () => Promise.resolve());
+    expect(vi.mocked(globalThis.fetch)).not.toHaveBeenCalled();
+
+    view.rerender(
+      <I18nProvider initial="en">
+        <ExtensionsMarketplace isActive onCreatePlugin={vi.fn()} onUsePlugin={vi.fn()} />
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(fetchSkills).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(5));
+    vi.mocked(globalThis.fetch).mockClear();
+    vi.mocked(fetchSkills).mockClear();
+
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    act(() => onActive?.());
+    await waitFor(() => expect(fetchSkills).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(vi.mocked(globalThis.fetch)).toHaveBeenCalledTimes(5));
+    const urls = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => String(input));
+    expect(urls.filter((url) => url === '/api/plugins')).toHaveLength(2);
+    expect(urls.filter((url) => url === '/api/marketplaces')).toHaveLength(1);
+    expect(urls.filter((url) => url.endsWith('/plugins/team'))).toHaveLength(1);
+    expect(urls.filter((url) => url.endsWith('/skills/team'))).toHaveLength(1);
+  });
+
   it('offers the Team scope for a real team workspace even on a free tier', async () => {
     const { container } = renderMarketplace();
     await waitFor(() => {
