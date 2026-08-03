@@ -286,6 +286,18 @@ export function createDesignSystemServerServices({
     const db = getDb?.();
     return catalog.filter((system) => {
       if (system.source !== 'user') return true;
+      // A fully headerless request is the signed-out/local compatibility
+      // lane. It may see resources that have never been claimed by any
+      // Workspace, but a persisted binding is positive evidence that the
+      // resource is not local-public and must stay hidden without authority.
+      if (!exactWorkspaceId && !exactMemberId) {
+        if (!db) return false;
+        return !getWorkspaceResourceByResourceId(
+          db,
+          'design_system',
+          system.id,
+        );
+      }
       if (system.teamSynced === true) {
         return Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId;
       }

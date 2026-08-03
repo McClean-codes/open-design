@@ -383,7 +383,10 @@ describe('design-system explicit Workspace request scope', () => {
   });
 
   it('passes the list request into scope resolution and lists only that Workspace', async () => {
-    const listAllDesignSystems = vi.fn(async (options?: { workspaceId?: string | null }) =>
+    const listAllDesignSystems = vi.fn(async (options?: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    }) =>
       options?.workspaceId === 'workspace-a' ? [summary] : []);
     const baseUrl = await startListRoute({
       resolveWorkspaceScope: async (req) =>
@@ -399,7 +402,10 @@ describe('design-system explicit Workspace request scope', () => {
     expect(await response.json()).toMatchObject({
       designSystems: [expect.objectContaining({ id: summary.id })],
     });
-    expect(listAllDesignSystems).toHaveBeenCalledWith({ workspaceId: 'workspace-a' });
+    expect(listAllDesignSystems).toHaveBeenCalledWith({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: null,
+    });
   });
 
   it.each([400, 403, 503] as const)(
