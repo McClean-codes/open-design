@@ -2309,6 +2309,22 @@ describe('FileViewer SVG artifacts', () => {
       expect(message?.id).toBeTruthy();
       return message!;
     });
+    // The URL preview can become interactive one task before its injected
+    // runtime-state bridge installs the message listener. A single capture
+    // post is therefore lossy: reproduce that ordering by ignoring the first
+    // request and require the host to retry the same id before we answer.
+    const retriedCaptureRequest = await waitFor(() => {
+      const messages = urlPostSpy.mock.calls
+        .map(([value]) => value)
+        .filter((value): value is { type: string; id: string } => (
+          typeof value === 'object'
+          && value !== null
+          && (value as { type?: unknown }).type === 'od:preview-runtime-state-capture'
+        ));
+      expect(messages.length).toBeGreaterThanOrEqual(2);
+      expect(messages.at(-1)?.id).toBe(captureRequest.id);
+      return messages.at(-1)!;
+    });
     const capturedState = {
       version: 1 as const,
       hash: '',
@@ -2328,7 +2344,7 @@ describe('FileViewer SVG artifacts', () => {
         source: urlFrame.contentWindow,
         data: {
           type: 'od:preview-runtime-state-captured',
-          id: captureRequest.id,
+          id: retriedCaptureRequest.id,
           state: capturedState,
         },
       }));

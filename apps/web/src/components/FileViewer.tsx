@@ -8011,10 +8011,12 @@ function HtmlViewer({
     const id = `runtime-state-${Date.now()}-${previewRuntimeStateRequestSequenceRef.current}`;
     return new Promise<PreviewRuntimeState | null>((resolve) => {
       let settled = false;
+      let retryTimer: number | null = null;
       const finish = (state: PreviewRuntimeState | null) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeout);
+        if (retryTimer != null) window.clearInterval(retryTimer);
         window.removeEventListener('message', onMessage);
         resolve(state);
       };
@@ -8031,7 +8033,15 @@ function HtmlViewer({
       };
       const timeout = window.setTimeout(() => finish(null), 500);
       window.addEventListener('message', onMessage);
-      source.postMessage({ type: 'od:preview-runtime-state-capture', id }, '*');
+      const requestCapture = () => {
+        source.postMessage({ type: 'od:preview-runtime-state-capture', id }, '*');
+      };
+      requestCapture();
+      // The URL document can paint and accept interaction just before its
+      // injected bridge installs the message listener. Retrying the same
+      // request id makes that short bootstrap window lossless without
+      // extending the existing 500 ms handoff budget.
+      retryTimer = window.setInterval(requestCapture, 50);
     });
   }, [workspaceActive]);
   const postAndConsumePreviewRuntimeState = useCallback((target: HTMLIFrameElement | null) => {

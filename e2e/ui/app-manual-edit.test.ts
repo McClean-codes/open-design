@@ -158,6 +158,7 @@ test('[P0] manual edit mode preserves the current page in a multi-page mobile ap
   await expect(page.getByRole('tab', { name: 'Preview', exact: true })).toHaveAttribute('aria-selected', 'true');
   const prewarmedSrcDoc = page.frameLocator('iframe[data-testid="artifact-preview-frame-srcdoc"]');
   await expect(prewarmedSrcDoc.getByTestId('mobile-page-home')).toBeAttached();
+  await waitForUrlPreviewRefreshToSettle(page);
 
   await preview.getByRole('button', { name: 'Profile' }).click();
   await expect(preview.getByTestId('mobile-page-profile')).toBeVisible();
@@ -221,6 +222,7 @@ test('[P0] manual edit mode preserves a runtime-rendered mobile app page', async
   await page.getByRole('tab', { name: 'Preview', exact: true }).click();
   await expect(page.frameLocator('iframe[data-testid="artifact-preview-frame-srcdoc"]')
     .getByTestId('mobile-page-today')).toBeAttached();
+  await waitForUrlPreviewRefreshToSettle(page);
 
   await preview.getByRole('button', { name: 'Profile' }).click();
   await expect(preview.getByTestId('mobile-page-profile')).toBeVisible();
@@ -303,6 +305,26 @@ test('[P0] srcDoc page navigation keeps manual edit hover guides across files an
   await preview.locator('[data-od-id="profile-screen"]').hover();
   await expect(preview.locator('[data-od-edit-guides-layer] > *')).not.toHaveCount(0);
 });
+
+async function waitForUrlPreviewRefreshToSettle(page: Page) {
+  const frame = page.locator(
+    'iframe[data-od-render-mode="url-load"][data-od-active="true"]',
+  );
+  let observedSrc: string | null = null;
+  let unchangedSince = Date.now();
+  await expect.poll(async () => {
+    const currentSrc = await frame.getAttribute('data-od-loaded-src');
+    if (!currentSrc || currentSrc === 'about:blank') return 0;
+    if (currentSrc !== observedSrc) {
+      observedSrc = currentSrc;
+      unchangedSince = Date.now();
+    }
+    return Date.now() - unchangedSince;
+  }, {
+    message: 'URL preview should stop reloading before the runtime-state interaction',
+    timeout: 5_000,
+  }).toBeGreaterThanOrEqual(400);
+}
 
 async function selectPreviewElementThroughBridge(
   page: Page,
