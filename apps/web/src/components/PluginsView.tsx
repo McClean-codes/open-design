@@ -87,6 +87,7 @@ import {
 } from '../collab/useWorkspaceContext';
 
 type PluginsTab = 'installed' | 'available' | 'sources' | 'team';
+type PluginWorkspaceReadMode = 'scoped' | 'headerless' | 'pending' | 'blocked';
 
 const USER_SOURCE_KINDS = new Set<PluginSourceKind>([
   'user',
@@ -225,10 +226,32 @@ export function PluginsView({
   // coalesced read shared across the nav shell, so calling it again here does
   // not fan out an extra fetch.
   const pluginsWorkspaceContextState = useWorkspaceContext();
-  const { context: pluginsWorkspaceContext } = pluginsWorkspaceContextState;
+  const {
+    context: pluginsWorkspaceContext,
+    loading: pluginsWorkspaceContextLoading,
+    identityChangePending: pluginsIdentityChangePending,
+    failure: pluginsWorkspaceContextFailure,
+  } = pluginsWorkspaceContextState;
   const pluginsContextRef = useRef(pluginsWorkspaceContext);
   pluginsContextRef.current = pluginsWorkspaceContext;
-  const pluginsIdentity = workspaceIdentityCacheKey(pluginsWorkspaceContext);
+  const pluginsAccountGeneration = currentWorkspaceAccountGeneration();
+  const pluginsReadMode: PluginWorkspaceReadMode = pluginsIdentityChangePending
+    || (!pluginsWorkspaceContext && pluginsWorkspaceContextLoading)
+    ? 'pending'
+    : pluginsWorkspaceContext
+      ? 'scoped'
+      : pluginsWorkspaceContextFailure === 'unavailable'
+        ? 'blocked'
+        : 'headerless';
+  const pluginsIdentity = JSON.stringify([
+    pluginsAccountGeneration,
+    workspaceIdentityCacheKey(pluginsWorkspaceContext),
+    pluginsReadMode,
+  ]);
+  const pluginsIdentityRef = useRef(pluginsIdentity);
+  pluginsIdentityRef.current = pluginsIdentity;
+  const pluginsReadModeRef = useRef(pluginsReadMode);
+  pluginsReadModeRef.current = pluginsReadMode;
   const pluginsPageViewFiredRef = useRef(false);
   useEffect(() => {
     if (pluginsPageViewFiredRef.current) return;
@@ -239,6 +262,7 @@ export function PluginsView({
   const [allInstalledPlugins, setAllInstalledPlugins] = useState<InstalledPluginRecord[]>([]);
   const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedIdentity, setLoadedIdentity] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<PluginsTab>('installed');
   const [importOpen, setImportOpen] = useState(false);
   const [pendingApplyId, setPendingApplyId] = useState<string | null>(null);
@@ -263,18 +287,45 @@ export function PluginsView({
   const [notice, setNotice] = useState<PluginInstallOutcome | { ok: boolean; message: string } | null>(null);
 
   async function refresh() {
+    const issuedIdentity = pluginsIdentityRef.current;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    const issuedReadMode = pluginsReadModeRef.current;
+    const isStillCurrent = () =>
+      currentWorkspaceAccountGeneration() === issuedAccountGeneration
+      && pluginsIdentityRef.current === issuedIdentity;
+    if (issuedReadMode === 'pending' || issuedReadMode === 'blocked') {
+      if (!isStillCurrent()) return;
+      setPlugins([]);
+      setAllInstalledPlugins([]);
+      setMarketplaces([]);
+      setLoadedIdentity(issuedIdentity);
+      setLoading(issuedReadMode === 'pending');
+      return;
+    }
     const read = beginWorkspaceScopedRead(pluginsContextRef.current);
     setLoading(true);
-    const [rows, allRows, catalogs] = await Promise.all([
-      listPlugins({ workspaceContext: read.context }),
-      listPlugins({ includeHidden: true, workspaceContext: read.context }),
-      listPluginMarketplaces(),
-    ]);
-    if (!read.isStillCurrent(pluginsContextRef.current)) return;
-    setPlugins(rows);
-    setAllInstalledPlugins(allRows);
-    setMarketplaces(catalogs);
-    setLoading(false);
+    try {
+      const [rows, allRows, catalogs] = await Promise.all([
+        listPlugins({ workspaceContext: read.context }),
+        listPlugins({ includeHidden: true, workspaceContext: read.context }),
+        listPluginMarketplaces(),
+      ]);
+      if (!isStillCurrent() || !read.isStillCurrent(pluginsContextRef.current)) return;
+      setPlugins(rows);
+      setAllInstalledPlugins(allRows);
+      setMarketplaces(catalogs);
+      setLoadedIdentity(issuedIdentity);
+      setLoading(false);
+    } catch {
+      if (!isStillCurrent() || !read.isStillCurrent(pluginsContextRef.current)) return;
+      // A failed read for a new identity has no authority to keep rendering the
+      // previous identity's installed catalog.
+      setPlugins([]);
+      setAllInstalledPlugins([]);
+      setMarketplaces([]);
+      setLoadedIdentity(issuedIdentity);
+      setLoading(false);
+    }
   }
 
   useEffect(() => {
@@ -286,13 +337,18 @@ export function PluginsView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pluginsIdentity]);
 
+  const catalogMatchesIdentity = loadedIdentity === pluginsIdentity;
+  const visiblePlugins = catalogMatchesIdentity ? plugins : [];
+  const visibleInstalledPlugins = catalogMatchesIdentity ? allInstalledPlugins : [];
+  const visibleMarketplaces = catalogMatchesIdentity ? marketplaces : [];
+  const visibleLoading = loading || !catalogMatchesIdentity;
   const userPlugins = useMemo(
-    () => plugins.filter(isPersonalPluginRecord),
-    [plugins],
+    () => visiblePlugins.filter(isPersonalPluginRecord),
+    [visiblePlugins],
   );
   const availablePlugins = useMemo(
-    () => buildAvailablePlugins(marketplaces, allInstalledPlugins),
-    [marketplaces, allInstalledPlugins],
+    () => buildAvailablePlugins(visibleMarketplaces, visibleInstalledPlugins),
+    [visibleMarketplaces, visibleInstalledPlugins],
   );
 
   async function finishImport(
@@ -515,9 +571,9 @@ export function PluginsView({
       {notice ? <Notice outcome={notice} /> : null}
 
       <div className="plugins-view__gallery">
-        {loading ? <div className="plugins-view__empty">{t('pluginsView.loading')}</div> : null}
+        {visibleLoading ? <div className="plugins-view__empty">{t('pluginsView.loading')}</div> : null}
 
-        {!loading && activeTab === 'installed' ? (
+        {!visibleLoading && activeTab === 'installed' ? (
           <PluginsHomeSection
             plugins={userPlugins}
             workspaceContext={pluginsWorkspaceContext}
@@ -581,7 +637,7 @@ export function PluginsView({
           />
         ) : null}
 
-        {!loading && activeTab === 'available' ? (
+        {!visibleLoading && activeTab === 'available' ? (
           <AvailablePluginsPanel
             plugins={availablePlugins}
             pendingKey={pendingInstallEntry}
@@ -633,9 +689,9 @@ export function PluginsView({
           />
         ) : null}
 
-        {!loading && activeTab === 'sources' ? (
+        {!visibleLoading && activeTab === 'sources' ? (
           <SourcesPanel
-            marketplaces={marketplaces}
+            marketplaces={visibleMarketplaces}
             pendingAction={pendingSourceAction}
             onAdd={(url, trust) => {
               trackPluginsSourcesTabClick(analytics.track, {
@@ -686,6 +742,8 @@ export function PluginsView({
             t={t}
             plugins={userPlugins}
             workspaceContext={pluginsWorkspaceContext}
+            workspaceIdentity={pluginsIdentity}
+            workspaceReadMode={pluginsReadMode}
           />
         ) : null}
       </div>
@@ -3875,6 +3933,8 @@ function TeamPanel({
   t,
   plugins,
   workspaceContext,
+  workspaceIdentity,
+  workspaceReadMode,
 }: {
   t: ReturnType<typeof useI18n>['t'];
   plugins: InstalledPluginRecord[];
@@ -3882,6 +3942,9 @@ function TeamPanel({
    *  it) rather than read again here, so this panel and the plugin list it sits
    *  beside can never disagree about who is asking. */
   workspaceContext: WorkspaceCollabContext | null;
+  /** Account generation + complete Workspace identity + settlement mode. */
+  workspaceIdentity: string;
+  workspaceReadMode: PluginWorkspaceReadMode;
 }) {
   const { locale } = useI18n();
   // The LATEST context, for async work to compare against. `refreshTeamPanelShared`
@@ -3891,58 +3954,72 @@ function TeamPanel({
   // compare that stale value against itself and pass unconditionally.
   const contextRef = useRef(workspaceContext);
   contextRef.current = workspaceContext;
-  const workspaceIdentityKey = workspaceIdentityCacheKey(workspaceContext);
+  const workspaceIdentityRef = useRef(workspaceIdentity);
+  workspaceIdentityRef.current = workspaceIdentity;
+  const workspaceReadModeRef = useRef(workspaceReadMode);
+  workspaceReadModeRef.current = workspaceReadMode;
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [sharedPluginIds, setSharedPluginIds] = useState<ReadonlySet<string>>(() => new Set());
   const [sharedSkillIds, setSharedSkillIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [loadedIdentity, setLoadedIdentity] = useState<string | null>(null);
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
 
   const refreshTeamPanelShared = useCallback(async (cancelled: () => boolean = () => false) => {
+    const issuedIdentity = workspaceIdentityRef.current;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const read = beginWorkspaceScopedRead(contextRef.current);
-    if (!read.context || !workspaceContextHasTeamIdentity(read.context)) {
+    const readIsStillCurrent = () =>
+      !cancelled()
+      && currentWorkspaceAccountGeneration() === issuedAccountGeneration
+      && workspaceIdentityRef.current === issuedIdentity
+      && read.isStillCurrent(contextRef.current);
+    if (
+      workspaceReadModeRef.current !== 'scoped'
+      || !read.context
+      || !workspaceContextHasTeamIdentity(read.context)
+    ) {
+      if (!readIsStillCurrent()) return;
       setSkills([]);
       setSharedPluginIds(new Set());
       setSharedSkillIds(new Set());
+      setLoadedIdentity(issuedIdentity);
       return;
     }
     const context = read.context;
-    const loadShared = async (
-      basePath: string,
-      setter: (ids: ReadonlySet<string>) => void,
-    ) => {
-      try {
-        const res = await fetch(`/api/workspace/${basePath}/team`, {
-          cache: 'no-store',
-          headers: workspaceProjectHeaders(context),
-        });
-        if (!res.ok) return;
-        const body = (await res.json()) as { ids?: unknown };
-        if (
-          !cancelled()
-          && read.isStillCurrent(contextRef.current)
-          && Array.isArray(body.ids)
-        ) {
-          setter(new Set(body.ids.filter((id): id is string => typeof id === 'string')));
-        }
-      } catch {
-        // Off-team / offline → leave the collection empty.
-      }
+    const loadShared = async (basePath: string): Promise<ReadonlySet<string>> => {
+      const res = await fetch(`/api/workspace/${basePath}/team`, {
+        cache: 'no-store',
+        headers: workspaceProjectHeaders(context),
+      });
+      if (!res.ok) throw new Error(`${basePath} team catalog ${res.status}`);
+      const body = (await res.json()) as { ids?: unknown };
+      return new Set(
+        Array.isArray(body.ids)
+          ? body.ids.filter((id): id is string => typeof id === 'string')
+          : [],
+      );
     };
-    // Scoped: this list drives which of MY skills can be shared to the team, so
-    // reading it without workspace headers made the daemon answer fail-closed —
-    // `GET /api/skills` hides every workspace-claimed skill from a headerless
-    // reader (`skills.ts`: `if (!scopeId) return !ownerId;`), including skills
-    // claimed by the very workspace being shared into.
-    const userSkills = (await fetchSkills(read.context)).filter((s) => s.source === 'user');
-    // `cancelled()` covers the identity-keyed effect cleanup, but a manual share
-    // refresh uses the default predicate and overlapping refreshes can still
-    // outlive the identity they were issued for.
-    if (!cancelled() && read.isStillCurrent(contextRef.current)) setSkills(userSkills);
-    await Promise.all([
-      loadShared('plugins', setSharedPluginIds),
-      loadShared('skills', setSharedSkillIds),
-    ]);
+    try {
+      // Commit the three collections atomically. If one successor read fails,
+      // none of the previous identity's skill rows or shared badges survive.
+      const [userSkills, pluginIds, skillIds] = await Promise.all([
+        fetchSkills(read.context).then((rows) => rows.filter((s) => s.source === 'user')),
+        loadShared('plugins'),
+        loadShared('skills'),
+      ]);
+      if (!readIsStillCurrent()) return;
+      setSkills(userSkills);
+      setSharedPluginIds(pluginIds);
+      setSharedSkillIds(skillIds);
+      setLoadedIdentity(issuedIdentity);
+    } catch {
+      if (!readIsStillCurrent()) return;
+      setSkills([]);
+      setSharedPluginIds(new Set());
+      setSharedSkillIds(new Set());
+      setLoadedIdentity(issuedIdentity);
+    }
   }, []);
 
   useEffect(() => {
@@ -3962,7 +4039,7 @@ function TeamPanel({
       window.removeEventListener('pageshow', refreshVisible);
       document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [refreshTeamPanelShared, workspaceIdentityKey]);
+  }, [refreshTeamPanelShared, workspaceIdentity]);
 
   async function share(
     basePath: string,
@@ -3970,7 +4047,13 @@ function TeamPanel({
   ) {
     if (sharingId) return;
     const context = contextRef.current;
-    if (!context || !workspaceContextHasTeamIdentity(context)) {
+    const issuedIdentity = workspaceIdentityRef.current;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    if (
+      workspaceReadModeRef.current !== 'scoped'
+      || !context
+      || !workspaceContextHasTeamIdentity(context)
+    ) {
       setFailed(true);
       return;
     }
@@ -3982,17 +4065,33 @@ function TeamPanel({
         headers: workspaceProjectHeaders(context),
       });
       const body = (await res.json().catch(() => ({}))) as { shared?: boolean };
-      if (res.ok && body.shared) {
+      if (
+        res.ok
+        && body.shared
+        && currentWorkspaceAccountGeneration() === issuedAccountGeneration
+        && workspaceIdentityRef.current === issuedIdentity
+      ) {
         await refreshTeamPanelShared();
-      } else {
+      } else if (
+        currentWorkspaceAccountGeneration() === issuedAccountGeneration
+        && workspaceIdentityRef.current === issuedIdentity
+      ) {
         setFailed(true);
       }
     } catch {
-      setFailed(true);
+      if (
+        currentWorkspaceAccountGeneration() === issuedAccountGeneration
+        && workspaceIdentityRef.current === issuedIdentity
+      ) setFailed(true);
     } finally {
       setSharingId(null);
     }
   }
+
+  const collectionsMatchIdentity = loadedIdentity === workspaceIdentity;
+  const visibleSkills = collectionsMatchIdentity ? skills : [];
+  const visibleSharedPluginIds = collectionsMatchIdentity ? sharedPluginIds : new Set<string>();
+  const visibleSharedSkillIds = collectionsMatchIdentity ? sharedSkillIds : new Set<string>();
 
   const renderRow = (id: string, title: string, shared: boolean, onShare: () => void) => (
     <article key={id} className="plugins-view__available-card">
@@ -4032,19 +4131,19 @@ function TeamPanel({
           <h3 className="plugins-view__team-section-title">{t('entry.navPlugins')}</h3>
           <div className="plugins-view__available-list">
             {plugins.map((record) =>
-              renderRow(record.id, record.title, sharedPluginIds.has(record.id), () =>
+              renderRow(record.id, record.title, visibleSharedPluginIds.has(record.id), () =>
                 void share('plugins', record.id),
               ),
             )}
           </div>
         </div>
       ) : null}
-      {skills.length > 0 ? (
+      {visibleSkills.length > 0 ? (
         <div>
           <h3 className="plugins-view__team-section-title">{t('homeHero.skills')}</h3>
           <div className="plugins-view__available-list">
-            {skills.map((skill) =>
-              renderRow(skill.id, localizeSkillName(locale, skill), sharedSkillIds.has(skill.id), () =>
+            {visibleSkills.map((skill) =>
+              renderRow(skill.id, localizeSkillName(locale, skill), visibleSharedSkillIds.has(skill.id), () =>
                 void share('skills', skill.id),
               ),
             )}

@@ -22,6 +22,17 @@ vi.mock('../../src/router', () => ({
   navigate: vi.fn(),
 }));
 
+// PluginsView behavior is exercised against a settled signed-out/legacy
+// identity here. Workspace transition behavior has its own focused suite.
+vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>()),
+  useWorkspaceContext: () => ({
+    context: null,
+    loading: false,
+    refresh: vi.fn(),
+  }),
+}));
+
 vi.mock('../../src/state/projects', () => ({
   addPluginMarketplace: vi.fn(),
   applyPlugin: vi.fn(),

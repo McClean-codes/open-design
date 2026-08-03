@@ -9,6 +9,10 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginsView } from '../../src/components/PluginsView';
+import {
+  notifyWorkspaceContextRefresh,
+  resetWorkspaceContextCache,
+} from '../../src/collab/useWorkspaceContext';
 import { I18nProvider } from '../../src/i18n';
 import { fetchSkills } from '../../src/providers/registry';
 import { listPluginMarketplaces, listPlugins } from '../../src/state/projects';
@@ -22,7 +26,9 @@ vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>()),
   useWorkspaceContext: () => ({
     context: currentWorkspaceContext,
-    loading: false,
+    loading: currentWorkspaceLoading,
+    identityChangePending: currentIdentityChangePending,
+    failure: currentWorkspaceFailure,
     refresh: vi.fn(),
   }),
 }));
@@ -106,7 +112,10 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
-let currentWorkspaceContext = workspaceContext('ws-a');
+let currentWorkspaceContext: WorkspaceCollabContext | null = workspaceContext('ws-a');
+let currentWorkspaceLoading = false;
+let currentIdentityChangePending = false;
+let currentWorkspaceFailure: 'unsupported' | 'unavailable' | undefined;
 
 function renderPluginsView() {
   return render(
@@ -118,7 +127,11 @@ function renderPluginsView() {
 
 describe('PluginsView Team panel workspace scope', () => {
   beforeEach(() => {
+    resetWorkspaceContextCache();
     currentWorkspaceContext = workspaceContext('ws-a');
+    currentWorkspaceLoading = false;
+    currentIdentityChangePending = false;
+    currentWorkspaceFailure = undefined;
     vi.mocked(listPlugins).mockResolvedValue([]);
     vi.mocked(listPluginMarketplaces).mockResolvedValue([]);
     vi.stubGlobal(
@@ -129,6 +142,105 @@ describe('PluginsView Team panel workspace scope', () => {
         return jsonResponse({});
       }),
     );
+  });
+
+  it('hides installed rows across an account boundary and does not query with the retired identity while pending', async () => {
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    let successorReadsFail = false;
+    vi.mocked(listPlugins).mockImplementation(async (options = {}) => {
+      if (successorReadsFail) throw new Error('successor account plugin catalog unavailable');
+      if (options.workspaceContext?.workspaceId === 'ws-a') return [plugin('plugin-from-account-a')];
+      return [];
+    });
+
+    const view = renderPluginsView();
+    expect((await screen.findAllByText('plugin-from-account-a')).length).toBeGreaterThan(0);
+    expect(vi.mocked(listPlugins)).toHaveBeenCalledTimes(2);
+
+    act(() => {
+      notifyWorkspaceContextRefresh();
+      currentWorkspaceLoading = true;
+      currentIdentityChangePending = true;
+      view.rerender(
+        <I18nProvider initial="en">
+          <PluginsView />
+        </I18nProvider>,
+      );
+    });
+
+    expect(screen.queryAllByText('plugin-from-account-a')).toHaveLength(0);
+    await act(async () => Promise.resolve());
+    expect(vi.mocked(listPlugins)).toHaveBeenCalledTimes(2);
+
+    // The successor account can legitimately expose the same Workspace/member
+    // field values. Account generation, not those reusable strings, is the
+    // boundary. Its failed read must still produce a safe empty catalog.
+    successorReadsFail = true;
+    currentWorkspaceLoading = false;
+    currentIdentityChangePending = false;
+    view.rerender(
+      <I18nProvider initial="en">
+        <PluginsView />
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(vi.mocked(listPlugins)).toHaveBeenCalledTimes(4));
+    expect(screen.queryAllByText('plugin-from-account-a')).toHaveLength(0);
+
+    currentWorkspaceContext = null;
+    currentWorkspaceFailure = 'unavailable';
+    view.rerender(
+      <I18nProvider initial="en">
+        <PluginsView />
+      </I18nProvider>,
+    );
+
+    expect(screen.queryAllByText('plugin-from-account-a')).toHaveLength(0);
+    await act(async () => Promise.resolve());
+    expect(vi.mocked(listPlugins)).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not retain another workspace skill or shared badge when the successor reads fail', async () => {
+    vi.mocked(fetchSkills).mockImplementation(async (context) => {
+      if (context?.workspaceId === 'ws-b') throw new Error('workspace B skills unavailable');
+      return [skill('skill-from-a')];
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const headers = new Headers(init?.headers);
+        const workspaceId = headers.get('x-od-workspace-id');
+        if (url.endsWith('/plugins/team')) {
+          if (workspaceId === 'ws-b') throw new Error('workspace B hub unavailable');
+          return jsonResponse({ ids: [] });
+        }
+        if (url.endsWith('/skills/team')) {
+          if (workspaceId === 'ws-b') throw new Error('workspace B hub unavailable');
+          return jsonResponse({ ids: ['skill-from-a'] });
+        }
+        return jsonResponse({});
+      }),
+    );
+
+    const view = renderPluginsView();
+    fireEvent.click(await screen.findByTestId('plugins-tab-team'));
+    const skillFromA = await screen.findByText('skill-from-a');
+    expect(within(skillFromA.closest('article')!).getByText('Team')).toBeTruthy();
+
+    currentWorkspaceContext = workspaceContext('ws-b');
+    view.rerender(
+      <I18nProvider initial="en">
+        <PluginsView />
+      </I18nProvider>,
+    );
+
+    expect(screen.queryByText('skill-from-a')).toBeNull();
+    await waitFor(() =>
+      expect(
+        vi.mocked(fetchSkills).mock.calls.some(([context]) => context?.workspaceId === 'ws-b'),
+      ).toBe(true),
+    );
+    expect(screen.queryByText('skill-from-a')).toBeNull();
   });
 
   afterEach(() => {
