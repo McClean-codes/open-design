@@ -266,30 +266,149 @@ export function createRestartPolicy(
 }
 
 /**
- * One policy-gated respawn attempt.
- *
- * Split out from the child's `exit` handler so the decision logic is
- * unit-testable without spawning a real sidecar. Returns the new web
- * runtime URL, or null when the restart was refused by the policy or
- * the spawn itself failed — in which case the caller keeps serving the
- * previous URL and the renderer sees ordinary 502s instead of the app
- * hanging or crashing.
+ * Owns the packaged web sidecar across initial boot, bounded crash recovery,
+ * and shutdown. Dependencies are injected so lifecycle races can be exercised
+ * deterministically without spawning real Electron children in unit tests.
  */
-export async function resolveWebRestart(options: {
-  policy: RestartPolicy;
-  nowMs: number;
-  restart: () => Promise<string>;
-}): Promise<string | null> {
-  if (!options.policy.allow(options.nowMs)) {
-    console.error("packaged web sidecar restart budget exhausted; not respawning");
-    return null;
+export function createWebSidecarSupervisor<
+  TChild,
+  TStatus extends { url: string | null },
+>(options: {
+  closeChild: (child: TChild) => Promise<void>;
+  hasExited: (child: TChild) => boolean;
+  now?: () => number;
+  onExit: (child: TChild, listener: () => void) => void;
+  policy?: RestartPolicy;
+  registerUrl: (url: string) => Promise<void>;
+  spawn: () => Promise<TChild>;
+  waitUntilReady: (child: TChild) => Promise<TStatus>;
+}): {
+  close(): Promise<void>;
+  currentUrl(): string;
+  start(): Promise<TStatus>;
+} {
+  const policy = options.policy ?? createRestartPolicy();
+  const now = options.now ?? Date.now;
+  const children = new Set<TChild>();
+  const closedChildren = new Set<TChild>();
+  let closing = false;
+  let closeTask: Promise<void> | null = null;
+  let currentUrl = "";
+  let pendingExitedChild: TChild | null = null;
+  let restartTask: Promise<void> | null = null;
+
+  const closeChildOnce = async (child: TChild): Promise<void> => {
+    if (closedChildren.has(child)) return;
+    closedChildren.add(child);
+    children.delete(child);
+    await options.closeChild(child);
+  };
+
+  const spawnAndPromote = async (): Promise<TStatus> => {
+    const child = await options.spawn();
+    children.add(child);
+    let promoted = false;
+    let exited = options.hasExited(child);
+
+    // Install supervision before readiness. A replacement that exits during
+    // boot is retried by restartUntilReady below; a promoted child schedules a
+    // fresh restart cycle when it later exits.
+    options.onExit(child, () => {
+      exited = true;
+      if (promoted && !closing) scheduleRestart(child);
+    });
+
+    try {
+      if (closing) throw new Error("packaged web sidecar supervisor is closing");
+      const status = await options.waitUntilReady(child);
+      if (status.url == null) throw new Error("web did not report a URL");
+      if (closing) throw new Error("packaged web sidecar supervisor is closing");
+      if (exited || options.hasExited(child)) {
+        throw new Error("web exited before its ready status could be promoted");
+      }
+
+      await options.registerUrl(status.url);
+      if (closing) throw new Error("packaged web sidecar supervisor is closing");
+      if (exited || options.hasExited(child)) {
+        throw new Error("web exited while its ready status was being registered");
+      }
+
+      // These assignments are synchronous: once promoted is true, any later
+      // exit event schedules another restart instead of being mistaken for a
+      // boot failure owned by the current restart loop.
+      promoted = true;
+      currentUrl = status.url;
+      return status;
+    } catch (error) {
+      await closeChildOnce(child).catch(() => undefined);
+      throw error;
+    }
+  };
+
+  const restartUntilReady = async (): Promise<void> => {
+    while (!closing) {
+      if (!policy.allow(now())) {
+        console.error("packaged web sidecar restart budget exhausted; not respawning");
+        return;
+      }
+      try {
+        await spawnAndPromote();
+        return;
+      } catch (error: unknown) {
+        if (closing) return;
+        console.error("failed to restart packaged web sidecar", error);
+      }
+    }
+  };
+
+  function scheduleRestart(exitedChild: TChild): void {
+    pendingExitedChild = exitedChild;
+    if (restartTask != null || closing) return;
+
+    const task = (async () => {
+      while (!closing && pendingExitedChild != null) {
+        const childToClose = pendingExitedChild;
+        pendingExitedChild = null;
+        await closeChildOnce(childToClose).catch((error: unknown) => {
+          console.error("failed to close exited packaged web sidecar", error);
+        });
+        await restartUntilReady();
+      }
+    })();
+    restartTask = task;
+    void task
+      .finally(() => {
+        if (restartTask === task) restartTask = null;
+        if (!closing && pendingExitedChild != null) scheduleRestart(pendingExitedChild);
+      })
+      .catch((error: unknown) => {
+        console.error("packaged web sidecar supervisor failed", error);
+      });
   }
-  try {
-    return await options.restart();
-  } catch (error: unknown) {
-    console.error("failed to restart packaged web sidecar", error);
-    return null;
-  }
+
+  return {
+    async close(): Promise<void> {
+      if (closeTask != null) return await closeTask;
+      closing = true;
+      pendingExitedChild = null;
+      closeTask = (async () => {
+        // Close children already known to the supervisor first. Then await an
+        // in-flight deferred spawn: spawnAndPromote re-checks closing as soon as
+        // it resolves and closes that late child before returning. The final
+        // pass covers a child added between the first snapshot and the await.
+        for (const child of [...children].reverse()) {
+          await closeChildOnce(child).catch(() => undefined);
+        }
+        await restartTask?.catch(() => undefined);
+        for (const child of [...children].reverse()) {
+          await closeChildOnce(child).catch(() => undefined);
+        }
+      })();
+      return await closeTask;
+    },
+    currentUrl: () => currentUrl,
+    start: spawnAndPromote,
+  };
 }
 
 export function resolveDaemonStatusTimeoutMs(
@@ -738,6 +857,7 @@ export async function startPackagedSidecars(
   await mkdir(paths.electronSessionDataRoot, { recursive: true });
 
   const children: ManagedSidecarChild[] = [];
+  let webSupervisor: { close(): Promise<void> } | null = null;
 
   const daemonSidecarEntry =
     options.daemonSidecarEntry ?? resolveSidecarEntry("@open-design/daemon", "sidecar");
@@ -821,12 +941,12 @@ export async function startPackagedSidecars(
     // property narrowing inside a closure that could run later.
     const daemonPort = extractPort(daemonStatus.url);
 
-    const webRestartPolicy = createRestartPolicy();
-    let closing = false;
-    let currentWebUrl = "";
-
-    const spawnWeb = async (): Promise<WebStatusSnapshot> => {
-      const web = await spawnSidecarChild({
+    const supervisor = createWebSidecarSupervisor<ManagedSidecarChild, WebStatusSnapshot>({
+      closeChild: closeManagedChild,
+      hasExited: (web) => web.child.exitCode !== null || web.child.signalCode !== null,
+      onExit: (web, listener) => web.child.once("exit", listener),
+      registerUrl: async (url) => await registerPackagedWebUrl(daemon.ipcPath, url),
+      spawn: async () => await spawnSidecarChild({
         app: APP_KEYS.WEB,
         entryPath: webSidecarEntry,
         env: {
@@ -840,9 +960,8 @@ export async function startPackagedSidecars(
         nodeCommand: options.nodeCommand,
         paths,
         runtime,
-      });
-      children.push(web);
-      const status = await waitForStatus<WebStatusSnapshot>(
+      }),
+      waitUntilReady: async (web) => await waitForStatus<WebStatusSnapshot>(
         web.ipcPath,
         (candidate) => candidate.url != null,
         // Web has no legacy-migration path, so it uses the plain platform
@@ -850,46 +969,23 @@ export async function startPackagedSidecars(
         // web sidecar's first bind) rather than resolveDaemonStatusTimeoutMs.
         baseStatusTimeoutMs(),
         { child: web.child, logPath: logPathFor(paths, APP_KEYS.WEB) },
-      );
-      if (status.url == null) throw new Error("web did not report a URL");
-      await registerPackagedWebUrl(daemon.ipcPath, status.url);
-      currentWebUrl = status.url;
-
-      // Supervise the child. The web sidecar can die on its own — an
-      // unhandled rejection inside Next, an OOM kill, or an update
-      // handoff reaping the previous generation's processes. Nothing
-      // used to notice: `od://` stayed pinned to the dead port and the
-      // whole UI 502'd until the user quit and relaunched the app.
-      web.child.once("exit", () => {
-        if (closing) return;
-        void resolveWebRestart({
-          policy: webRestartPolicy,
-          nowMs: Date.now(),
-          restart: async () => {
-            const next = await spawnWeb();
-            return next.url as string;
-          },
-        });
-      });
-      return status;
-    };
+      ),
+    });
+    webSupervisor = supervisor;
 
     // Phase callbacks drive the splash screen, so they stay on the
     // first-boot path only: a mid-session respawn must not rewind the
     // user's splash back to "web-spawning".
     options.onPhase?.("web-spawning");
-    const webStatus = await spawnWeb();
+    const webStatus = await supervisor.start();
     options.onPhase?.("web-ready");
 
     return {
       daemon: daemonStatus,
       web: webStatus,
-      currentWebUrl: () => currentWebUrl,
+      currentWebUrl: supervisor.currentUrl,
       async close() {
-        // Set before tearing children down so the exit handler above
-        // does not read an intentional shutdown as a crash and respawn
-        // a sidecar mid-quit.
-        closing = true;
+        await supervisor.close();
         for (const child of [...children].reverse()) {
           await closeManagedChild(child).catch((error: unknown) => {
             console.error(`failed to close packaged ${child.app} sidecar`, error);
@@ -898,6 +994,7 @@ export async function startPackagedSidecars(
       },
     };
   } catch (error) {
+    await webSupervisor?.close().catch(() => undefined);
     for (const child of [...children].reverse()) {
       await closeManagedChild(child).catch(() => undefined);
     }

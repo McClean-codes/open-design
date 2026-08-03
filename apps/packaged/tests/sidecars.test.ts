@@ -28,12 +28,12 @@ import {
   buildPackagedDaemonSpawnEnv,
   createPackagedSidecarSpawnOptions,
   createRestartPolicy,
+  createWebSidecarSupervisor,
   registerPackagedWebUrl,
   resolveDaemonStatusTimeoutMs,
   resolvePackagedChildBaseEnv,
   resolvePackagedElectronNodeCommand,
   resolvePackagedPathEnv,
-  resolveWebRestart,
   waitForStatus,
 } from '../src/sidecars.js';
 import type { PackagedNamespacePaths } from '../src/paths.js';
@@ -752,53 +752,166 @@ describe('createRestartPolicy', () => {
   });
 });
 
-describe('resolveWebRestart', () => {
-  it('returns the next URL when the policy allows a restart', async () => {
-    const policy = createRestartPolicy({ maxRestarts: 2, windowMs: 60_000 });
-    const started: string[] = [];
-    const restart = async () => {
-      started.push('start');
-      return 'http://127.0.0.1:59530';
+describe('createWebSidecarSupervisor', () => {
+  type SupervisorChild = {
+    exit(): void;
+    exited: boolean;
+    exitListeners: Array<() => void>;
+    name: string;
+  };
+
+  const child = (name: string): SupervisorChild => {
+    const value: SupervisorChild = {
+      exit() {
+        value.exited = true;
+        for (const listener of value.exitListeners.splice(0)) listener();
+      },
+      exited: false,
+      exitListeners: [],
+      name,
     };
+    return value;
+  };
 
-    await expect(
-      resolveWebRestart({ policy, nowMs: 1_000, restart }),
-    ).resolves.toBe('http://127.0.0.1:59530');
-    expect(started).toHaveLength(1);
-  });
+  it('keeps retrying when a replacement exits before readiness', async () => {
+    const initial = child('initial');
+    const failedReplacement = child('failed-replacement');
+    const recovered = child('recovered');
+    const spawnQueue = [initial, failedReplacement, recovered];
+    const closed: string[] = [];
+    const registered: string[] = [];
 
-  it('returns null and does not restart once the policy refuses', async () => {
-    const policy = createRestartPolicy({ maxRestarts: 1, windowMs: 60_000 });
-    await resolveWebRestart({
-      policy,
-      nowMs: 1_000,
-      restart: async () => 'http://127.0.0.1:1',
+    const supervisor = createWebSidecarSupervisor<SupervisorChild, { url: string | null }>({
+      closeChild: async (value) => {
+        closed.push(value.name);
+      },
+      hasExited: (value) => value.exited,
+      onExit: (value, listener) => value.exitListeners.push(listener),
+      policy: createRestartPolicy({ maxRestarts: 5, windowMs: 60_000 }),
+      registerUrl: async (url) => {
+        registered.push(url);
+      },
+      spawn: async () => {
+        const value = spawnQueue.shift();
+        if (value == null) throw new Error('unexpected extra spawn');
+        return value;
+      },
+      waitUntilReady: async (value) => {
+        if (value === failedReplacement) {
+          value.exit();
+          throw new Error('replacement exited during boot');
+        }
+        return {
+          url: value === initial
+            ? 'http://127.0.0.1:61001'
+            : 'http://127.0.0.1:61003',
+        };
+      },
     });
 
-    const started: string[] = [];
-    await expect(
-      resolveWebRestart({
-        policy,
-        nowMs: 2_000,
-        restart: async () => {
-          started.push('start');
-          return 'http://127.0.0.1:2';
-        },
-      }),
-    ).resolves.toBeNull();
-    expect(started).toHaveLength(0);
+    await expect(supervisor.start()).resolves.toEqual({ url: 'http://127.0.0.1:61001' });
+    initial.exit();
+
+    await vi.waitFor(() => {
+      expect(supervisor.currentUrl()).toBe('http://127.0.0.1:61003');
+    });
+    expect(registered).toEqual([
+      'http://127.0.0.1:61001',
+      'http://127.0.0.1:61003',
+    ]);
+    expect(closed).toEqual(['initial', 'failed-replacement']);
+    expect(spawnQueue).toHaveLength(0);
+
+    await supervisor.close();
+    expect(closed).toEqual(['initial', 'failed-replacement', 'recovered']);
   });
 
-  it('returns null when the restart itself throws', async () => {
-    const policy = createRestartPolicy({ maxRestarts: 3, windowMs: 60_000 });
-    await expect(
-      resolveWebRestart({
-        policy,
-        nowMs: 1_000,
-        restart: async () => {
-          throw new Error('spawn failed');
-        },
+  it('stops retrying when boot failures exhaust the restart budget', async () => {
+    const initial = child('initial');
+    const failedOne = child('failed-one');
+    const failedTwo = child('failed-two');
+    const spawnQueue = [initial, failedOne, failedTwo];
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const supervisor = createWebSidecarSupervisor<SupervisorChild, { url: string | null }>({
+      closeChild: async () => undefined,
+      hasExited: (value) => value.exited,
+      onExit: (value, listener) => value.exitListeners.push(listener),
+      policy: createRestartPolicy({ maxRestarts: 2, windowMs: 60_000 }),
+      registerUrl: async () => undefined,
+      spawn: async () => {
+        const value = spawnQueue.shift();
+        if (value == null) throw new Error('unexpected extra spawn');
+        return value;
+      },
+      waitUntilReady: async (value) => {
+        if (value !== initial) {
+          value.exit();
+          throw new Error('replacement exited during boot');
+        }
+        return { url: 'http://127.0.0.1:61501' };
+      },
+    });
+
+    try {
+      await supervisor.start();
+      initial.exit();
+
+      await vi.waitFor(() => {
+        expect(errorLog).toHaveBeenCalledWith(
+          'packaged web sidecar restart budget exhausted; not respawning',
+        );
+      });
+      expect(spawnQueue).toHaveLength(0);
+      expect(supervisor.currentUrl()).toBe('http://127.0.0.1:61501');
+    } finally {
+      await supervisor.close();
+      errorLog.mockRestore();
+    }
+  });
+
+  it('closes a replacement whose deferred spawn resolves after shutdown starts', async () => {
+    const initial = child('initial');
+    const lateReplacement = child('late-replacement');
+    let resolveLateSpawn!: (value: SupervisorChild) => void;
+    const lateSpawn = new Promise<SupervisorChild>((resolve) => {
+      resolveLateSpawn = resolve;
+    });
+    const closed: string[] = [];
+    const registered: string[] = [];
+    let spawnCount = 0;
+
+    const supervisor = createWebSidecarSupervisor<SupervisorChild, { url: string | null }>({
+      closeChild: async (value) => {
+        closed.push(value.name);
+      },
+      hasExited: (value) => value.exited,
+      onExit: (value, listener) => value.exitListeners.push(listener),
+      registerUrl: async (url) => {
+        registered.push(url);
+      },
+      spawn: async () => {
+        spawnCount += 1;
+        return spawnCount === 1 ? initial : await lateSpawn;
+      },
+      waitUntilReady: async (value) => ({
+        url: value === initial
+          ? 'http://127.0.0.1:62001'
+          : 'http://127.0.0.1:62002',
       }),
-    ).resolves.toBeNull();
+    });
+
+    await supervisor.start();
+    initial.exit();
+    await vi.waitFor(() => expect(spawnCount).toBe(2));
+
+    const closePromise = supervisor.close();
+    resolveLateSpawn(lateReplacement);
+    await closePromise;
+
+    expect(registered).toEqual(['http://127.0.0.1:62001']);
+    expect(closed).toEqual(['initial', 'late-replacement']);
+    expect(lateReplacement.exitListeners).toHaveLength(1);
+    expect(supervisor.currentUrl()).toBe('http://127.0.0.1:62001');
   });
 });
