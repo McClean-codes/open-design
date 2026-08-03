@@ -37,6 +37,7 @@ import {
   linkUserDesignSystemProject,
   listDesignSystems,
   propagateWorkspaceProjectRename,
+  resolveWorkspaceProjectDesignSystemRoot,
   type DesignSystemSummary,
   type UserDesignSystemInput,
 } from '../../design-systems/index.js';
@@ -4198,8 +4199,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           // patch shallowly over the row), so a PATCH that also rebinds
           // or detaches the design system only ever renames the system
           // the project remains bound to after this request.
+          const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id);
           const propagation = await propagateWorkspaceProjectRename(
-            USER_DESIGN_SYSTEMS_DIR,
+            resolveWorkspaceProjectDesignSystemRoot(
+              USER_DESIGN_SYSTEMS_DIR,
+              projectBinding,
+            ),
             { ...existing, ...patch },
             patch.name,
           );

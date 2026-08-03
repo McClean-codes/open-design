@@ -21,7 +21,14 @@ import express from 'express';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { registerDesignSystemRoutes } from '../../src/routes/design-systems.js';
 import type { DesignSystemSummary } from '../../src/design-systems/index.js';
-import { closeDatabase, openDatabase } from '../../src/db.js';
+import {
+  closeDatabase,
+  ensureWorkspaceResource,
+  getWorkspaceResource,
+  getWorkspaceResourceByResourceId,
+  openDatabase,
+} from '../../src/db.js';
+import { workspaceContextFromDirectoryItem } from '../../src/collab/vela-workspace-context.js';
 
 let server: http.Server | null = null;
 let tempDir: string | null = null;
@@ -63,6 +70,11 @@ const designSystemSummary: DesignSystemSummary = {
 function registerRoutes(app: express.Express, canMutate: (root: string, id: string, req: any) => Promise<boolean>) {
   tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-ds-mutation-guard-'));
   const db = openDatabase(tempDir, { dataDir: tempDir });
+  ensureWorkspaceResource(db, 'design_system', 'ws-locked', 'user:mine', {
+    visibility: 'personal',
+    resourceState: 'active',
+    createdByWorkspaceMemberId: 'member-1',
+  });
   const updateUserDesignSystem = vi.fn(async () => ({ ...designSystemSummary, status: 'published' as const }));
   const deleteUserDesignSystem = vi.fn(async () => true);
   const updateUserDesignSystemRevisionStatus = vi.fn(async (_root: string, _id: string, revisionId: string, status: 'accepted' | 'rejected') => ({
@@ -83,12 +95,21 @@ function registerRoutes(app: express.Express, canMutate: (root: string, id: stri
     } as never,
     projectFiles: {} as never,
     projectStore: {} as never,
-    verifyWorkspaceRequestAuthority: async () => {
-      throw new Error('unbound fixture must not verify Workspace authority');
-    },
+    verifyWorkspaceRequestAuthority: async (req: any) => ({
+      ok: true as const,
+      context: workspaceContextFromDirectoryItem({
+        workspaceId: req.get('x-od-workspace-id'),
+        workspaceName: 'Locked fixture workspace',
+        workspaceType: 'team',
+        workspaceMemberId: req.get('x-od-workspace-member-id'),
+        role: 'owner',
+        memberStatus: 'active',
+        lifecycleState: req.get('x-od-workspace-lifecycle-state') ?? 'active',
+      }),
+    }),
     workspaceResources: {
-      getWorkspaceResource: () => undefined,
-      getWorkspaceResourceByResourceId: () => undefined,
+      getWorkspaceResource,
+      getWorkspaceResourceByResourceId,
     },
     designSystems: {
       buildUserDesignSystemArchive: async () => null,
@@ -177,7 +198,14 @@ describe('design system PATCH/DELETE team-share mutation guard', () => {
     const { deleteUserDesignSystem } = registerRoutes(app, async () => true);
     const baseUrl = await listen(app);
 
-    const res = await fetch(`${baseUrl}/api/design-systems/user:mine`, { method: 'DELETE' });
+    const res = await fetch(`${baseUrl}/api/design-systems/user:mine`, {
+      method: 'DELETE',
+      headers: {
+        'x-od-workspace-id': 'ws-locked',
+        'x-od-workspace-member-id': 'member-1',
+        'x-od-workspace-lifecycle-state': 'active',
+      },
+    });
 
     expect(res.status).toBe(204);
     expect(deleteUserDesignSystem).toHaveBeenCalledOnce();

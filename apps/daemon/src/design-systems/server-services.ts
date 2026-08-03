@@ -64,6 +64,8 @@ type DesignSystemListOptions = {
 type DesignSystemWorkspaceOptions = {
   workspaceId?: string | null;
   workspaceMemberId?: string | null;
+  /** A verified Team binding forbids same-id Personal fallback. */
+  exactTeam?: boolean;
 };
 
 export type DesignSystemAssetSyncOutcome =
@@ -241,6 +243,7 @@ export function createDesignSystemServerServices({
   async function listAllDesignSystems(options: {
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
+    exactTeam?: boolean;
   } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
       ...s,
@@ -274,10 +277,13 @@ export function createDesignSystemServerServices({
           },
         );
         const teamIds = new Set(team.map((system) => system.id));
-        installed = [
-          ...team.map((system) => ({ ...system, teamSynced: true })),
-          ...installed.filter((system) => !teamIds.has(system.id)),
-        ];
+        const teamSystems = team.map((system) => ({ ...system, teamSynced: true }));
+        installed = options.exactTeam
+          ? teamSystems
+          : [
+              ...teamSystems,
+              ...installed.filter((system) => !teamIds.has(system.id)),
+            ];
       } catch {
         // A workspace with no pulled Team systems has no scoped directory.
       }
@@ -326,7 +332,7 @@ export function createDesignSystemServerServices({
 
   async function readAvailableDesignSystem(
     id: string,
-    options: { workspaceId?: string | null } = {},
+    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -336,6 +342,7 @@ export function createDesignSystemServerServices({
         { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
+      if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
       return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, {
@@ -351,7 +358,7 @@ export function createDesignSystemServerServices({
 
   async function readAvailableDesignSystemPackageInfo(
     id: string,
-    options: { workspaceId?: string | null } = {},
+    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -361,6 +368,7 @@ export function createDesignSystemServerServices({
         { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
+      if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
       return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, {
@@ -377,7 +385,7 @@ export function createDesignSystemServerServices({
   async function readAvailableDesignSystemStaticFile(
     id: string,
     filePath: string,
-    options: { workspaceId?: string | null } = {},
+    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -388,6 +396,7 @@ export function createDesignSystemServerServices({
         { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
+      if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
       return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, {
@@ -525,7 +534,13 @@ export function createDesignSystemServerServices({
     if (isScoped && (!workspaceId || !workspaceMemberId)) return null;
 
     const systems = await listAllDesignSystems(
-      isScoped ? { workspaceId, workspaceMemberId } : {},
+      isScoped
+        ? {
+            workspaceId,
+            workspaceMemberId,
+            ...(options.exactTeam !== undefined ? { exactTeam: options.exactTeam } : {}),
+          }
+        : {},
     );
     const summary = systems.find((s) => s.id === id && s.source === 'user');
     if (!summary) return null;

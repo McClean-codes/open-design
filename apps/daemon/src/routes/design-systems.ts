@@ -12,6 +12,7 @@ import type {
 } from '../design-systems/index.js';
 import type { DesignTokenContractRebuildPreparation } from '../design-systems/token-contract-rebuild.js';
 import { workspaceTeamDesignSystemBindingResourceId } from '../design-systems/workspace-team-binding.js';
+import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
 import type {
   DesignSystemGenerationJob,
   DesignSystemRevisionInput,
@@ -90,27 +91,32 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     ensureUserDesignSystemWorkspaceProject: (
       db: DbHandle,
       id: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null },
+      options?: {
+        workspaceId?: string | null;
+        workspaceMemberId?: string | null;
+        exactTeam?: boolean;
+      },
     ) => Promise<DesignSystemWorkspaceProject | null>;
     listAllDesignSystems: (options?: {
       workspaceId?: string | null;
       workspaceMemberId?: string | null;
+      exactTeam?: boolean;
     }) => Promise<AvailableDesignSystemSummary[]>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<DesignSystemFileSummary[] | null>;
     listUserDesignSystemRevisions: (root: string, id: string) => Promise<DesignSystemRevision[] | null>;
     prepareDesignTokenContractRebuild: (root: string, id: string, options?: { force?: boolean }) => Promise<DesignTokenContractRebuildPreparation>;
     readAvailableDesignSystem: (
       id: string,
-      options?: { workspaceId?: string | null },
+      options?: { workspaceId?: string | null; exactTeam?: boolean },
     ) => Promise<string | null>;
     readAvailableDesignSystemPackageInfo: (
       id: string,
-      options?: { workspaceId?: string | null },
+      options?: { workspaceId?: string | null; exactTeam?: boolean },
     ) => Promise<DesignSystemPackageInfo | null>;
     readAvailableDesignSystemStaticFile: (
       id: string,
       filePath: string,
-      options?: { workspaceId?: string | null },
+      options?: { workspaceId?: string | null; exactTeam?: boolean },
     ) => Promise<{
       bytes: Buffer;
       contentType: string;
@@ -131,7 +137,11 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     syncUserDesignSystemAssetsFromWorkspace: (
       db: DbHandle,
       id: string,
-      options?: { workspaceId?: string | null; workspaceMemberId?: string | null },
+      options?: {
+        workspaceId?: string | null;
+        workspaceMemberId?: string | null;
+        exactTeam?: boolean;
+      },
     ) => Promise<{ ok: true; synced: string[] } | { ok: false; reason: 'not-found' | 'no-workspace-project' }>;
     updateUserDesignSystem: (root: string, id: string, input: UserDesignSystemInput) => Promise<DesignSystemSummary | null>;
     updateUserDesignSystemRevisionStatus: (root: string, id: string, revisionId: string, status: 'accepted' | 'rejected') => Promise<DesignSystemRevision | null>;
@@ -223,6 +233,35 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     'design_system',
     resourceId,
   );
+
+  function resolveDesignSystemStorage(
+    req: any,
+    id: string,
+    allowNavigationQuery = false,
+  ): { root: string; bindingResourceId: string; exactTeam: boolean } {
+    const workspaceId = (
+      headerValue(req, 'x-od-workspace-id')
+      ?? (allowNavigationQuery
+        ? designSystemNavigationWorkspaceQuery(req)?.workspaceId
+        : null)
+      ?? ''
+    ).trim();
+    if (!workspaceId) {
+      return { root: USER_DESIGN_SYSTEMS_DIR, bindingResourceId: id, exactTeam: false };
+    }
+    const teamBindingResourceId = workspaceTeamDesignSystemBindingResourceId(
+      workspaceId,
+      id,
+    );
+    const teamBinding = getBoundDesignSystem(db, workspaceId, teamBindingResourceId);
+    return teamBinding?.visibility === 'team'
+      ? {
+          root: teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, workspaceId),
+          bindingResourceId: teamBindingResourceId,
+          exactTeam: true,
+        }
+      : { root: USER_DESIGN_SYSTEMS_DIR, bindingResourceId: id, exactTeam: false };
+  }
 
   async function authorizeDesignSystemRead(
     req: any,
@@ -530,9 +569,11 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (!(await authorizeDesignSystemMutation(req, res, req.params.id))) return;
       const scope = await resolveGenerationJobScope(req, res);
       if (scope === 'denied') return;
+      const storage = resolveDesignSystemStorage(req, req.params.id);
       const feedback = typeof req.body?.feedback === 'string' ? req.body.feedback : '';
       if (!feedback.trim()) return res.status(400).json({ error: 'feedback is required' });
       const job = designSystemGenerationJobs.revise({
+        root: storage.root,
         designSystemId: req.params.id,
         feedback,
         sectionTitle: typeof req.body?.sectionTitle === 'string' ? req.body.sectionTitle : undefined,
@@ -550,8 +591,9 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (!(await authorizeDesignSystemMutation(req, res, req.params.id))) return;
       const scope = await resolveGenerationJobScope(req, res);
       if (scope === 'denied') return;
+      const storage = resolveDesignSystemStorage(req, req.params.id);
       const preparation = await prepareDesignTokenContractRebuild(
-        USER_DESIGN_SYSTEMS_DIR,
+        storage.root,
         req.params.id,
         { force: req.body?.force === true },
       );
@@ -562,6 +604,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         return res.status(200).json({ decision: preparation.decision });
       }
       const job = designSystemGenerationJobs.rebuildTokenContract({
+        root: storage.root,
         designSystemId: req.params.id,
         decision: preparation.decision,
         ...preparation.revision,
@@ -576,8 +619,9 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
   app.get('/api/design-systems/:id/revisions', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
+      const storage = resolveDesignSystemStorage(req, req.params.id);
       const revisions = await listUserDesignSystemRevisions(
-        USER_DESIGN_SYSTEMS_DIR,
+        storage.root,
         req.params.id,
       );
       if (!revisions) {
@@ -602,7 +646,8 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (isRequestWorkspaceLocked(req)) {
         return res.status(403).json({ error: 'WORKSPACE_LOCKED' });
       }
-      if (!(await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id, req))) {
+      const storage = resolveDesignSystemStorage(req, req.params.id);
+      if (!(await canMutateUserDesignSystem(storage.root, req.params.id, req))) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
       }
       const status = typeof req.body?.status === 'string' ? req.body.status : '';
@@ -610,7 +655,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         return res.status(400).json({ error: 'status must be accepted or rejected' });
       }
       const revision = await updateUserDesignSystemRevisionStatus(
-        USER_DESIGN_SYSTEMS_DIR,
+        storage.root,
         req.params.id,
         req.params.revisionId,
         status,
@@ -629,17 +674,25 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
       const workspaceId = headerValue(req, 'x-od-workspace-id');
       const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const storage = resolveDesignSystemStorage(req, req.params.id);
       const systems = await listAllDesignSystems({
         workspaceId,
         workspaceMemberId,
+        exactTeam: storage.exactTeam,
       });
       const summary = systems.find((s) => s.id === req.params.id);
       const projectBody = await readDesignSystemWorkspaceTextFile(db, summary, 'DESIGN.md');
-      const body = projectBody ?? await readAvailableDesignSystem(req.params.id, { workspaceId });
+      const body = projectBody ?? await readAvailableDesignSystem(req.params.id, {
+        workspaceId,
+        exactTeam: storage.exactTeam,
+      });
       if (body === null || !summary) {
         return res.status(404).json({ error: 'design system not found' });
       }
-      const packageInfo = await readAvailableDesignSystemPackageInfo(req.params.id, { workspaceId });
+      const packageInfo = await readAvailableDesignSystemPackageInfo(req.params.id, {
+        workspaceId,
+        exactTeam: storage.exactTeam,
+      });
       // recvqb6mfyqXLD: mirror the exact PATCH/DELETE verdict onto the read
       // path too. `DesignSystemsTab` already re-derives an equivalent verdict
       // from the separate `/team` share listing for its own list+detail pane,
@@ -653,7 +706,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       // Publish toggle and Save button on the same authority the backend
       // enforces, instead of each surface re-deriving (or forgetting to
       // derive) its own verdict.
-      const canMutate = await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id, req);
+      const canMutate = await canMutateUserDesignSystem(storage.root, req.params.id, req);
       const detail = { ...summary, body, canMutate, ...(packageInfo ? { packageInfo } : {}) };
       res.json({ ...detail, designSystem: detail });
     } catch (err) {
@@ -668,7 +721,11 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         headerValue(req, 'x-od-workspace-id')
         ?? designSystemNavigationWorkspaceQuery(req)?.workspaceId
         ?? null;
-      const body = await readAvailableDesignSystem(req.params.id, { workspaceId });
+      const storage = resolveDesignSystemStorage(req, req.params.id, true);
+      const body = await readAvailableDesignSystem(req.params.id, {
+        workspaceId,
+        exactTeam: storage.exactTeam,
+      });
       if (body === null) return res.status(404).type('text/plain').send('not found');
       const html = renderDesignSystemPreview(req.params.id, body);
       res.type('text/html').send(html);
@@ -684,10 +741,11 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         headerValue(req, 'x-od-workspace-id')
         ?? designSystemNavigationWorkspaceQuery(req)?.workspaceId
         ?? null;
+      const storage = resolveDesignSystemStorage(req, req.params.id, true);
       const packaged = await readAvailableDesignSystemStaticFile(
         req.params.id,
         PACKAGED_SHOWCASE_PATH,
-        { workspaceId },
+        { workspaceId, exactTeam: storage.exactTeam },
       );
       if (packaged?.contentType.startsWith('text/html')) {
         const workspaceQuery = designSystemNavigationWorkspaceQuery(req);
@@ -702,7 +760,10 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
           ),
         );
       }
-      const body = await readAvailableDesignSystem(req.params.id, { workspaceId });
+      const body = await readAvailableDesignSystem(req.params.id, {
+        workspaceId,
+        exactTeam: storage.exactTeam,
+      });
       if (body === null) return res.status(404).type('text/plain').send('not found');
       const html = renderDesignSystemShowcase(req.params.id, body);
       res.type('text/html').send(html);
@@ -718,11 +779,12 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         headerValue(req, 'x-od-workspace-id')
         ?? designSystemNavigationWorkspaceQuery(req)?.workspaceId
         ?? null;
+      const storage = resolveDesignSystemStorage(req, req.params.id, true);
       const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
       const file = await readAvailableDesignSystemStaticFile(
         req.params.id,
         requestedPath,
-        { workspaceId },
+        { workspaceId, exactTeam: storage.exactTeam },
       );
       if (!file) return res.status(404).type('text/plain').send('not found');
       res.setHeader('Cache-Control', 'no-store');
@@ -738,11 +800,12 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (!(await authorizeDesignSystemMutation(req, res, req.params.id))) return;
       const workspaceId = headerValue(req, 'x-od-workspace-id');
       const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const storage = resolveDesignSystemStorage(req, req.params.id);
       const workspace = await ensureUserDesignSystemWorkspaceProject(
         db,
         req.params.id,
         workspaceId || workspaceMemberId
-          ? { workspaceId, workspaceMemberId }
+          ? { workspaceId, workspaceMemberId, exactTeam: storage.exactTeam }
           : undefined,
       );
       if (!workspace) {
@@ -757,7 +820,8 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
   app.get('/api/design-systems/:id/files', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemRead(req, res, req.params.id))) return;
-      const files = await listUserDesignSystemFiles(USER_DESIGN_SYSTEMS_DIR, req.params.id);
+      const storage = resolveDesignSystemStorage(req, req.params.id);
+      const files = await listUserDesignSystemFiles(storage.root, req.params.id);
       if (!files) {
         return res.status(404).json({ error: 'editable design system not found' });
       }
@@ -770,9 +834,10 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
   app.get('/api/design-systems/:id/file', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemRead(req, res, req.params.id, true))) return;
+      const storage = resolveDesignSystemStorage(req, req.params.id, true);
       const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
       const file = await readUserDesignSystemFile(
-        USER_DESIGN_SYSTEMS_DIR,
+        storage.root,
         req.params.id,
         requestedPath,
       );
@@ -791,7 +856,8 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
   app.get('/api/design-systems/:id/archive', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemRead(req, res, req.params.id, true))) return;
-      const archive = await buildUserDesignSystemArchive(USER_DESIGN_SYSTEMS_DIR, req.params.id);
+      const storage = resolveDesignSystemStorage(req, req.params.id, true);
+      const archive = await buildUserDesignSystemArchive(storage.root, req.params.id);
       if (!archive) {
         return res.status(404).json({ error: 'downloadable design system not found' });
       }
@@ -818,11 +884,12 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (isRequestWorkspaceLocked(req)) {
         return res.status(403).json({ error: 'WORKSPACE_LOCKED' });
       }
-      if (!(await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id, req))) {
+      const storage = resolveDesignSystemStorage(req, req.params.id);
+      if (!(await canMutateUserDesignSystem(storage.root, req.params.id, req))) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
       }
       const updated = await updateUserDesignSystem(
-        USER_DESIGN_SYSTEMS_DIR,
+        storage.root,
         req.params.id,
         req.body || {},
       );
@@ -850,7 +917,8 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (isRequestWorkspaceLocked(req)) {
         return res.status(403).json({ error: 'WORKSPACE_LOCKED' });
       }
-      if (!(await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id, req))) {
+      const storage = resolveDesignSystemStorage(req, req.params.id);
+      if (!(await canMutateUserDesignSystem(storage.root, req.params.id, req))) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
       }
       const workspaceId = headerValue(req, 'x-od-workspace-id');
@@ -859,7 +927,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         db,
         req.params.id,
         workspaceId || workspaceMemberId
-          ? { workspaceId, workspaceMemberId }
+          ? { workspaceId, workspaceMemberId, exactTeam: storage.exactTeam }
           : undefined,
       );
       if (!outcome.ok) {
@@ -883,7 +951,8 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (isRequestWorkspaceLocked(req)) {
         return res.status(403).json({ error: 'WORKSPACE_LOCKED' });
       }
-      if (!(await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id, req))) {
+      const storage = resolveDesignSystemStorage(req, req.params.id);
+      if (!(await canMutateUserDesignSystem(storage.root, req.params.id, req))) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
       }
       // spec 04 §11: drop the hub-side share BEFORE the local delete, so a
@@ -896,7 +965,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       // aborts before `deleteUserDesignSystem` runs, matching "unshare must
       // succeed before the local delete proceeds".
       await unshareTeamDesignSystemIfShared(req.params.id, req);
-      const ok = await deleteUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id);
+      const ok = await deleteUserDesignSystem(storage.root, req.params.id);
       if (!ok) {
         return res.status(404).json({ error: 'editable design system not found' });
       }
@@ -905,7 +974,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       // and plugin uninstall (plugins/installer.ts) — the generic table has
       // no ON DELETE CASCADE, so skipping this leaves an orphan row pointing
       // at a design system that no longer exists on disk.
-      deleteWorkspaceResourceByResourceId(db, 'design_system', req.params.id);
+      deleteWorkspaceResourceByResourceId(db, 'design_system', storage.bindingResourceId);
       res.status(204).end();
     } catch (err) {
       if (sendWorkspaceScopeError(res, err)) return;

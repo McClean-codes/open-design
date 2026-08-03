@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -200,5 +200,94 @@ describe('Team resource consumers use explicit Workspace scope', () => {
         { workspaceId: 'personal-workspace', workspaceMemberId: 'member-b' },
       ),
     ).resolves.toMatchObject({ ok: false, code: 'DESIGN_SYSTEM_NOT_FOUND' });
+  });
+
+  it('fails closed instead of falling back to same-id Personal when exact Team materialization is missing', async () => {
+    const fixture = await createFixture();
+    const personal = await designSystems.createUserDesignSystem(
+      fixture.userDesignSystems,
+      {
+        title: 'Missing Team Copy',
+        summary: 'Personal canonical must not leak into Team reads.',
+        status: 'published',
+      },
+    );
+    const personalDir = path.join(fixture.userDesignSystems, 'missing-team-copy');
+    const personalMetadataPath = path.join(personalDir, 'metadata.json');
+    const personalMetadata = JSON.parse(
+      await readFile(personalMetadataPath, 'utf8'),
+    ) as Record<string, unknown>;
+    await writeFile(
+      personalMetadataPath,
+      `${JSON.stringify({ ...personalMetadata, workspaceId: 'workspace-a' })}\n`,
+    );
+    ensureWorkspaceResource(
+      fixture.db,
+      'design_system',
+      'workspace-a',
+      personal.id,
+      {
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'member-a',
+      },
+    );
+    await mkdir(path.join(personalDir, 'system'), { recursive: true });
+    await writeFile(
+      path.join(personalDir, 'system', 'index.html'),
+      '<!doctype html><title>Personal only</title>',
+    );
+
+    await expect(
+      fixture.services.readAvailableDesignSystem(personal.id),
+    ).resolves.toContain('Missing Team Copy');
+    await expect(
+      fixture.services.readAvailableDesignSystem(personal.id, {
+        workspaceId: 'workspace-a',
+        exactTeam: true,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      fixture.services.readAvailableDesignSystemPackageInfo(personal.id, {
+        workspaceId: 'workspace-a',
+        exactTeam: true,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      fixture.services.readAvailableDesignSystemStaticFile(
+        personal.id,
+        'system/index.html',
+        { workspaceId: 'workspace-a', exactTeam: true },
+      ),
+    ).resolves.toBeNull();
+
+    const exactCatalog = await fixture.services.listAllDesignSystems({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      exactTeam: true,
+    });
+    expect(exactCatalog.some((system) => system.id === personal.id)).toBe(false);
+    await expect(
+      fixture.services.ensureUserDesignSystemWorkspaceProject(
+        fixture.db,
+        personal.id,
+        {
+          workspaceId: 'workspace-a',
+          workspaceMemberId: 'member-a',
+          exactTeam: true,
+        },
+      ),
+    ).resolves.toBeNull();
+    await expect(
+      fixture.services.syncUserDesignSystemAssetsFromWorkspace(
+        fixture.db,
+        personal.id,
+        {
+          workspaceId: 'workspace-a',
+          workspaceMemberId: 'member-a',
+          exactTeam: true,
+        },
+      ),
+    ).resolves.toEqual({ ok: false, reason: 'not-found' });
   });
 });
