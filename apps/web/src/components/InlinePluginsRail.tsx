@@ -6,7 +6,7 @@
 // ApplyResult upstream; the parent decides what to do with it
 // (hydrate the brief, show the input form, etc.).
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type {
   ApplyResult,
   InstalledPluginRecord,
@@ -18,6 +18,7 @@ import {
 } from '../state/projects';
 import { useProjectCollabContext } from '../collab/collab-context';
 import {
+  currentWorkspaceAccountGeneration,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
 } from '../collab/useWorkspaceContext';
@@ -65,19 +66,37 @@ export function InlinePluginsRail(props: Props) {
     : shellWorkspace.loading
       || shellWorkspace.identityChangePending === true
       || shellWorkspace.failure === 'unavailable';
-  const workspaceIdentity = workspaceContextUnavailable
-    ? 'workspace-unavailable'
-    : workspaceIdentityCacheKey(workspaceContext);
-  const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
+  const workspaceIdentity = JSON.stringify([
+    currentWorkspaceAccountGeneration(),
+    workspaceContextUnavailable ? 'workspace-unavailable' : workspaceIdentityCacheKey(workspaceContext),
+  ]);
+  const workspaceIdentityRef = useRef(workspaceIdentity);
+  workspaceIdentityRef.current = workspaceIdentity;
+  const [pluginCatalog, setPluginCatalog] = useState<{
+    identity: string | null;
+    items: InstalledPluginRecord[];
+  }>({ identity: null, items: [] });
+  const plugins = pluginCatalog.identity === workspaceIdentity
+    ? pluginCatalog.items
+    : [];
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    setPendingId(null);
+    setError(null);
+  }, [workspaceIdentity]);
+
+  useEffect(() => {
     if (workspaceContextUnavailable) return;
     let cancelled = false;
+    const issuedIdentity = workspaceIdentity;
     void listPlugins({ workspaceContext }).then((rows) => {
-      if (cancelled) return;
-      setPlugins(filterPlugins(rows, props.filter));
+      if (cancelled || workspaceIdentityRef.current !== issuedIdentity) return;
+      setPluginCatalog({
+        identity: issuedIdentity,
+        items: filterPlugins(rows, props.filter),
+      });
     });
     return () => {
       cancelled = true;
@@ -92,7 +111,11 @@ export function InlinePluginsRail(props: Props) {
   ]);
 
   const onClick = async (record: InstalledPluginRecord) => {
-    if (workspaceContextUnavailable) {
+    const issuedIdentity = workspaceIdentity;
+    if (
+      workspaceContextUnavailable
+      || pluginCatalog.identity !== issuedIdentity
+    ) {
       setError(
         'Workspace context is unavailable. Try again when workspace sync finishes.',
       );
@@ -116,6 +139,7 @@ export function InlinePluginsRail(props: Props) {
       locale,
       workspaceContext: writeWorkspaceContext,
     });
+    if (workspaceIdentityRef.current !== issuedIdentity) return;
     setPendingId(null);
     if (!result) {
       setError(
