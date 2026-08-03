@@ -68,6 +68,36 @@ function BreakText({ text }: { text: string }) {
   );
 }
 
+function HighlightedBreakText({
+  text,
+  highlight,
+}: {
+  text: string;
+  highlight?: string;
+}) {
+  return (
+    <>
+      {text.split('\n').map((line, index) => {
+        const highlightIndex = highlight ? line.indexOf(highlight) : -1;
+        return (
+          <span key={`${line}-${index}`}>
+            {index > 0 ? <br /> : null}
+            {highlightIndex >= 0 && highlight ? (
+              <>
+                {line.slice(0, highlightIndex)}
+                <strong className='hero-sub-highlight'>{highlight}</strong>
+                {line.slice(highlightIndex + highlight.length)}
+              </>
+            ) : (
+              line
+            )}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
 /**
  * Static SSR port of React Bits' `<BlurText />` "blur-in" reveal. The page is
  * rendered with `renderToStaticMarkup` (no client React / no `motion` runtime),
@@ -102,6 +132,52 @@ function BlurText({
           {by === 'words' && i < parts.length - 1 ? NBSP : ''}
         </span>
       ))}
+    </>
+  );
+}
+
+function blurTextTokenCount(text: string, by: 'words' | 'letters') {
+  return by === 'words' ? text.split(' ').length : Array.from(text).length;
+}
+
+/** Keeps the reveal stagger intact while giving one semantic phrase a marker. */
+function EmphasizedBlurText({
+  text,
+  emphasis,
+  by,
+  start,
+}: {
+  text: string;
+  emphasis?: string;
+  by: 'words' | 'letters';
+  start: number;
+}) {
+  const emphasisStart = emphasis ? text.indexOf(emphasis) : -1;
+  if (!emphasis || emphasisStart < 0) {
+    return <BlurText text={text} by={by} start={start} />;
+  }
+
+  const segments = [
+    { key: 'before', text: text.slice(0, emphasisStart), emphasized: false },
+    { key: 'emphasis', text: emphasis, emphasized: true },
+    { key: 'after', text: text.slice(emphasisStart + emphasis.length), emphasized: false },
+  ].filter((segment) => segment.text.length > 0);
+  let segmentStart = start;
+
+  return (
+    <>
+      {segments.map((segment) => {
+        const currentStart = segmentStart;
+        segmentStart += blurTextTokenCount(segment.text, by);
+        const content = <BlurText text={segment.text} by={by} start={currentStart} />;
+        return segment.emphasized ? (
+          <span className='hero-task-emphasis' key={segment.key}>
+            {content}
+          </span>
+        ) : (
+          <span key={segment.key}>{content}</span>
+        );
+      })}
     </>
   );
 }
@@ -312,6 +388,12 @@ export default function Page({
   const t = getHomeExtra(locale);
   const cta = getHomeCta(locale);
   const cjk = locale === 'zh' || locale === 'zh-tw' || locale === 'ja' || locale === 'ko';
+  const heroTaskBy = cjk ? 'letters' : 'words';
+  const heroTaskLines = t.heroTaskLines ?? [
+    t.heroTaskTitle ??
+      'One design system. Brand-consistent web, slides, prototypes, dashboards, images, and video',
+  ];
+  let heroTaskStart = 2;
   // Short inline labels still fall back to English for non-Chinese locales.
   const tt = (zh: string, en: string) => (locale === 'zh' ? zh : en);
   const skills = fmt(counts.skills);
@@ -442,11 +524,9 @@ export default function Page({
           />
           <div className='container hero-grid'>
             <div className='hero-copy'>
-              {/* Eyebrow = the competitor entry word ("Open Source Claude
-                  Design Alternative", localized per locale). Kept as real,
-                  crawlable HTML text above the title so it carries the SEO
-                  entry term while the H1 stays focused on the brand name and
-                  the product's own one-line positioning. */}
+              {/* Product proof, not competitor framing: the reference homepage
+                  leads with a compact capability line before naming the
+                  product. Keep this crawlable and localized. */}
               <p className='hero-lead' data-reveal>
                 {t.heroTitleSub}
               </p>
@@ -458,11 +538,32 @@ export default function Page({
                 <span className='hero-title-brand'>
                   <BlurText text='Open Design' by='words' start={0} />
                 </span>
-                {/* One-line category positioning (the product's own umbrella
-                    term). Kept as the canonical English category label across
-                    every locale — the narrative anchor, not translated. */}
+                {/* Two-layer message: canonical category, then the strongest
+                    localized design-system and output claim. The agent value
+                    promise lives once in the supporting paragraph below. */}
+                <span className='hero-title-position'>
+                  <BlurText
+                    text={t.heroPositionTitle ?? 'Vibe Design Workspace'}
+                    by='words'
+                    start={1}
+                  />
+                </span>
                 <span className='hero-title-main'>
-                  <BlurText text='The Vibe Design Workspace' by='words' start={1} />
+                  {heroTaskLines.map((line) => {
+                    const start = heroTaskStart;
+                    heroTaskStart +=
+                      blurTextTokenCount(line, heroTaskBy);
+                    return (
+                      <span className='hero-title-main-line' key={line}>
+                        <EmphasizedBlurText
+                          text={line}
+                          emphasis={t.heroTaskEmphasis}
+                          by={heroTaskBy}
+                          start={start}
+                        />
+                      </span>
+                    );
+                  })}
                 </span>
               </h1>
               <div className='hero-actions' data-reveal>
@@ -474,9 +575,10 @@ export default function Page({
                     rate-limited) it falls back to the /download/ page (the
                     per-platform picker) rather than the GitHub releases list. */}
                 <a
-                  className='btn btn-primary'
+                  className='btn btn-primary hero-download-attention'
                   href={href('/download/')}
                   data-download-cta
+                  data-direct-download
                   data-download-chip-target
                   data-download-placement='hero'
                 >
@@ -497,7 +599,10 @@ export default function Page({
                   getCatalogCounts() total (same source as the meta description
                   and stat cards) so the design-systems count never drifts. */}
               <p className='hero-sub' data-reveal>
-                <BreakText text={t.heroSub.replace('{systems}', systems)} />
+                <HighlightedBreakText
+                  text={t.heroSub.replace('{systems}', systems)}
+                  highlight={t.heroSubHighlight}
+                />
               </p>
               {/* Product shot sits just under the hero copy. fetchPriority=low
                   lets the full-bleed hero-bg (the LCP element, fetchpriority

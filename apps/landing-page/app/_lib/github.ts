@@ -131,6 +131,66 @@ const EMPTY_MATRIX: ReleaseMatrix = {
   linux: null,
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object';
+}
+
+function stableArtifact(value: unknown): ReleaseAsset | null {
+  if (!isRecord(value) || typeof value.name !== 'string' || typeof value.url !== 'string') {
+    return null;
+  }
+
+  return {
+    name: value.name,
+    url: value.url,
+    size: typeof value.size === 'number' && Number.isFinite(value.size) ? value.size : 0,
+    sha256Url: typeof value.sha256Url === 'string' ? value.sha256Url : null,
+  };
+}
+
+function stablePlatformArtifact(
+  metadata: unknown,
+  platformKey: string,
+  artifactKey: string,
+): ReleaseAsset | null {
+  if (!isRecord(metadata) || !isRecord(metadata.platforms)) return null;
+  const platform = metadata.platforms[platformKey];
+  if (!isRecord(platform) || !isRecord(platform.artifacts)) return null;
+  return stableArtifact(platform.artifacts[artifactKey]);
+}
+
+/**
+ * Parse the canonical stable-release manifest served from releases.open-design.ai.
+ * Unlike the unauthenticated GitHub API, this endpoint is not constrained by the
+ * shared 60-request rate limit, so high-intent download links stay direct even
+ * when GitHub metadata cannot be resolved during a build.
+ */
+export function buildMatrixFromStableMetadata(metadata: unknown): ReleaseMatrix {
+  return {
+    macArm64Dmg: stablePlatformArtifact(metadata, 'mac', 'dmg'),
+    macArm64Zip: stablePlatformArtifact(metadata, 'mac', 'zip'),
+    macX64Dmg: stablePlatformArtifact(metadata, 'macIntel', 'dmg'),
+    macX64Zip: stablePlatformArtifact(metadata, 'macIntel', 'zip'),
+    winSetup: stablePlatformArtifact(metadata, 'win', 'installer'),
+    winPortable: stablePlatformArtifact(metadata, 'win', 'portableZip'),
+    linux:
+      stablePlatformArtifact(metadata, 'linux', 'appImage') ??
+      stablePlatformArtifact(metadata, 'linux', 'appimage'),
+  };
+}
+
+function mergeMatrices(preferred: ReleaseMatrix, fallback: ReleaseMatrix): ReleaseMatrix {
+  return {
+    macArm64Dmg: preferred.macArm64Dmg ?? fallback.macArm64Dmg,
+    macArm64Zip: preferred.macArm64Zip ?? fallback.macArm64Zip,
+    macX64Dmg: preferred.macX64Dmg ?? fallback.macX64Dmg,
+    macX64Zip: preferred.macX64Zip ?? fallback.macX64Zip,
+    winSetup: preferred.winSetup ?? fallback.winSetup,
+    winPortable: preferred.winPortable ?? fallback.winPortable,
+    linux: preferred.linux ?? fallback.linux,
+  };
+}
+
 function cleanVersion(versionLabel: string): string {
   return versionLabel.replace(/^v/, '');
 }
@@ -172,12 +232,13 @@ let latestReleasePromise: Promise<LatestRelease> | null = null;
 
 export function getLatestRelease(): Promise<LatestRelease> {
   latestReleasePromise ??= (async () => {
-    let release: unknown = null;
-    try {
-      release = await fetchJson(`${REPO_API}/releases/latest`);
-    } catch {
-      release = null;
-    }
+    const [releaseResult, stableMetadataResult] = await Promise.allSettled([
+      fetchJson(`${REPO_API}/releases/latest`, { Accept: 'application/vnd.github+json' }),
+      fetchJson(RELEASE_METADATA_UPSTREAM_URL, { Accept: 'application/json' }),
+    ]);
+    const release = releaseResult.status === 'fulfilled' ? releaseResult.value : null;
+    const stableMetadata =
+      stableMetadataResult.status === 'fulfilled' ? stableMetadataResult.value : null;
 
     const rec = (release && typeof release === 'object' ? release : {}) as {
       tag_name?: unknown;
@@ -186,17 +247,39 @@ export function getLatestRelease(): Promise<LatestRelease> {
       assets?: unknown;
     };
 
-    const versionLabel = formatVersion(release) ?? FALLBACK_META.versionLabel;
+    const stableRec = isRecord(stableMetadata) ? stableMetadata : {};
+    const versionLabel =
+      formatVersion(release) ??
+      formatStableReleaseVersion(stableMetadata) ??
+      FALLBACK_META.versionLabel;
     const rawAssets = Array.isArray(rec.assets) ? (rec.assets as RawAsset[]) : [];
-    const matrix = release ? buildMatrix(rawAssets) : EMPTY_MATRIX;
-    const resolved = Boolean(release) && Object.values(matrix).some((a) => a !== null);
+    const githubMatrix = release ? buildMatrix(rawAssets) : EMPTY_MATRIX;
+    const stableMatrix = buildMatrixFromStableMetadata(stableMetadata);
+    const matrix = mergeMatrices(stableMatrix, githubMatrix);
+    const resolved = Object.values(matrix).some((asset) => asset !== null);
+    const tagName =
+      typeof rec.tag_name === 'string'
+        ? rec.tag_name
+        : typeof stableRec.versionTag === 'string'
+          ? stableRec.versionTag
+          : null;
 
     return {
       version: cleanVersion(versionLabel),
       versionLabel,
-      tagName: typeof rec.tag_name === 'string' ? rec.tag_name : null,
-      publishedAt: typeof rec.published_at === 'string' ? rec.published_at : null,
-      releaseUrl: typeof rec.html_url === 'string' ? rec.html_url : REPO_RELEASES,
+      tagName,
+      publishedAt:
+        typeof rec.published_at === 'string'
+          ? rec.published_at
+          : typeof stableRec.generatedAt === 'string'
+            ? stableRec.generatedAt
+            : null,
+      releaseUrl:
+        typeof rec.html_url === 'string'
+          ? rec.html_url
+          : tagName
+            ? `${REPO_RELEASES}/tag/${encodeURIComponent(tagName)}`
+            : REPO_RELEASES,
       matrix,
       resolved,
     };
