@@ -12,6 +12,7 @@ import {
 } from '../src/state/project-display-cache';
 import {
   currentWorkspaceAccountGeneration,
+  notifyTeamProjectsChanged,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
   TEAM_PROJECTS_CHANGED_EVENT,
@@ -247,5 +248,105 @@ describe('useTeamProjects targeted metadata refresh', () => {
     expect(
       readProjectDisplaySnapshot(projectDisplaySnapshotKey(displayScope))?.projects[0]?.name,
     ).toBe('Newest rename');
+  });
+
+  it('keeps adjacent broad catalog events distinct while sharing each event across consumers', async () => {
+    const olderCatalogRefresh = deferred<Response>();
+    const newerCatalogRefresh = deferred<Response>();
+    let catalogReads = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/api/workspace/directory')) {
+        return Promise.resolve(jsonResponse(workspaceDirectoryFixture([CONTEXT])));
+      }
+      if (url.includes('/api/workspace/context')) {
+        return Promise.resolve(jsonResponse({ context: CONTEXT }));
+      }
+      if (url.includes('/api/workspace/projects/team')) {
+        catalogReads += 1;
+        if (catalogReads === 1) {
+          return Promise.resolve(jsonResponse({ projects: INITIAL_PROJECTS }));
+        }
+        return catalogReads === 2
+          ? olderCatalogRefresh.promise
+          : newerCatalogRefresh.promise;
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    const hooks = [
+      renderHook(() => useTeamProjects()),
+      renderHook(() => useTeamProjects()),
+    ];
+    await waitFor(() => {
+      for (const hook of hooks) {
+        expect(hook.result.current.loading).toBe(false);
+        expect(hook.result.current.projects).toEqual(INITIAL_PROJECTS);
+      }
+    });
+    expect(catalogReads).toBe(1);
+
+    const displayScope = {
+      accountGeneration: currentWorkspaceAccountGeneration(),
+      context: CONTEXT,
+      view: 'team' as const,
+    };
+    writeProjectDisplaySnapshot(displayScope, [{
+      id: 'project-renamed',
+      name: 'Before rename',
+      skillId: null,
+      designSystemId: null,
+      workspaceId: CONTEXT.workspaceId,
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+
+    act(() => notifyTeamProjectsChanged());
+    await waitFor(() => expect(catalogReads).toBe(2));
+
+    // This is a distinct catalog change, not another consumer reacting to E1.
+    // It must start req3 even though it arrives inside forceCoalescedGet's
+    // 250ms burst window; both mounted consumers must still share that req3.
+    act(() => notifyTeamProjectsChanged());
+    await waitFor(() => expect(catalogReads).toBe(3));
+
+    newerCatalogRefresh.resolve(jsonResponse({
+      projects: [{
+        projectId: 'project-renamed',
+        ownerMemberId: 'member-owner',
+        name: 'Newest catalog name',
+        updatedAt: 3,
+      }, INITIAL_PROJECTS[1]],
+    }));
+    await waitFor(() => {
+      for (const hook of hooks) {
+        expect(hook.result.current.projects[0]?.name).toBe('Newest catalog name');
+      }
+      expect(
+        readProjectDisplaySnapshot(projectDisplaySnapshotKey(displayScope))?.projects[0]?.name,
+      ).toBe('Newest catalog name');
+    });
+
+    olderCatalogRefresh.resolve(jsonResponse({
+      projects: [{
+        projectId: 'project-renamed',
+        ownerMemberId: 'member-owner',
+        name: 'Older catalog name',
+        updatedAt: 2,
+      }, INITIAL_PROJECTS[1]],
+    }));
+    await act(async () => {
+      await olderCatalogRefresh.promise;
+      await Promise.resolve();
+    });
+
+    expect(catalogReads).toBe(3);
+    for (const hook of hooks) {
+      expect(hook.result.current.projects[0]?.name).toBe('Newest catalog name');
+      expect(hook.result.current.loading).toBe(false);
+    }
+    expect(
+      readProjectDisplaySnapshot(projectDisplaySnapshotKey(displayScope))?.projects[0]?.name,
+    ).toBe('Newest catalog name');
   });
 });

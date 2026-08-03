@@ -35,10 +35,82 @@ import {
   workspaceProjectHeaders,
 } from './workspace-identity';
 
-let metadataEventSequence = 0;
-let metadataEventTokens = new WeakMap<object, number>();
+let refreshEventSequence = 0;
+let refreshEventTokens = new WeakMap<object, number>();
 const latestMetadataEventByProjectScope = new Map<string, number>();
+// Every event advances this map so an older full-catalog response cannot
+// overwrite a newer targeted metadata projection.
+const latestCatalogEventByScope = new Map<string, number>();
+// Only broad events advance this map. A later broad reconciliation supersedes
+// an older targeted response, while metadata events for different projects do
+// not unnecessarily cancel one another.
+const latestBroadCatalogEventByScope = new Map<string, number>();
 const MAX_TRACKED_METADATA_PROJECT_SCOPES = 256;
+const MAX_TRACKED_CATALOG_SCOPES = 64;
+
+function refreshEventGeneration(event: object): number {
+  let eventGeneration = refreshEventTokens.get(event);
+  if (eventGeneration === undefined) {
+    eventGeneration = ++refreshEventSequence;
+    refreshEventTokens.set(event, eventGeneration);
+  }
+  return eventGeneration;
+}
+
+function trackLatestRefresh(
+  latestByScope: Map<string, number>,
+  scopeKey: string,
+  eventGeneration: number,
+  maxScopes: number,
+): void {
+  const latestGeneration = latestByScope.get(scopeKey) ?? 0;
+  if (eventGeneration <= latestGeneration) return;
+  latestByScope.delete(scopeKey);
+  latestByScope.set(scopeKey, eventGeneration);
+  while (latestByScope.size > maxScopes) {
+    const oldest = latestByScope.keys().next().value as string | undefined;
+    if (!oldest) break;
+    // Removing an old key is fail-closed for a response still in flight: its
+    // `isLatest` closure observes `undefined`, never a reused generation.
+    latestByScope.delete(oldest);
+  }
+}
+
+/**
+ * Give one broad catalog invalidation a stable semantic generation shared by
+ * every mounted consumer. Distinct invalidations stay distinct even when they
+ * arrive inside `forceCoalescedGet`'s time-based burst window.
+ */
+export function beginTeamProjectCatalogRefresh(options: {
+  accountGeneration: number;
+  context: WorkspaceCollabContext;
+  event: object;
+}): {
+  cacheDiscriminator: string;
+  isLatest: () => boolean;
+} {
+  const eventGeneration = refreshEventGeneration(options.event);
+  const scopeKey = JSON.stringify([
+    options.accountGeneration,
+    workspaceIdentityCacheKey(options.context),
+  ]);
+  trackLatestRefresh(
+    latestCatalogEventByScope,
+    scopeKey,
+    eventGeneration,
+    MAX_TRACKED_CATALOG_SCOPES,
+  );
+  trackLatestRefresh(
+    latestBroadCatalogEventByScope,
+    scopeKey,
+    eventGeneration,
+    MAX_TRACKED_CATALOG_SCOPES,
+  );
+  return {
+    cacheDiscriminator: `catalog-event:${eventGeneration}`,
+    isLatest: () => latestCatalogEventByScope.get(scopeKey) === eventGeneration,
+  };
+}
 
 /**
  * Give one thin metadata event a stable semantic generation shared by every
@@ -56,43 +128,42 @@ export function beginTeamProjectMetadataRefresh(options: {
   cacheDiscriminator: string;
   isLatest: () => boolean;
 } {
-  let eventGeneration = metadataEventTokens.get(options.event);
-  if (eventGeneration === undefined) {
-    eventGeneration = ++metadataEventSequence;
-    metadataEventTokens.set(options.event, eventGeneration);
-  }
+  const eventGeneration = refreshEventGeneration(options.event);
   const scopeProjectKey = JSON.stringify([
     options.accountGeneration,
     workspaceIdentityCacheKey(options.context),
     options.projectId,
   ]);
-  const latestGeneration = latestMetadataEventByProjectScope.get(scopeProjectKey) ?? 0;
-  if (eventGeneration > latestGeneration) {
-    latestMetadataEventByProjectScope.delete(scopeProjectKey);
-    latestMetadataEventByProjectScope.set(scopeProjectKey, eventGeneration);
-    while (
-      latestMetadataEventByProjectScope.size > MAX_TRACKED_METADATA_PROJECT_SCOPES
-    ) {
-      const oldest = latestMetadataEventByProjectScope.keys().next().value as
-        | string
-        | undefined;
-      if (!oldest) break;
-      // Removing an old key is fail-closed for any response still in flight:
-      // its `isLatest` closure observes `undefined`, never a reused generation.
-      latestMetadataEventByProjectScope.delete(oldest);
-    }
-  }
+  const catalogScopeKey = JSON.stringify([
+    options.accountGeneration,
+    workspaceIdentityCacheKey(options.context),
+  ]);
+  trackLatestRefresh(
+    latestCatalogEventByScope,
+    catalogScopeKey,
+    eventGeneration,
+    MAX_TRACKED_CATALOG_SCOPES,
+  );
+  trackLatestRefresh(
+    latestMetadataEventByProjectScope,
+    scopeProjectKey,
+    eventGeneration,
+    MAX_TRACKED_METADATA_PROJECT_SCOPES,
+  );
   return {
     cacheDiscriminator: `metadata-event:${eventGeneration}`,
     isLatest: () =>
-      latestMetadataEventByProjectScope.get(scopeProjectKey) === eventGeneration,
+      latestMetadataEventByProjectScope.get(scopeProjectKey) === eventGeneration
+      && (latestBroadCatalogEventByScope.get(catalogScopeKey) ?? 0) <= eventGeneration,
   };
 }
 
 export function resetTeamProjectMetadataRefreshOrdering(): void {
-  metadataEventSequence = 0;
-  metadataEventTokens = new WeakMap<object, number>();
+  refreshEventSequence = 0;
+  refreshEventTokens = new WeakMap<object, number>();
   latestMetadataEventByProjectScope.clear();
+  latestCatalogEventByScope.clear();
+  latestBroadCatalogEventByScope.clear();
 }
 
 /**

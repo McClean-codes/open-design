@@ -22,6 +22,7 @@ import {
 } from '../state/project-display-cache';
 import { isTeamPlanTier } from './team-plan';
 import {
+  beginTeamProjectCatalogRefresh,
   beginTeamProjectMetadataRefresh,
   fetchTeamProjectCatalogEntry,
   fetchTeamProjectsCatalog,
@@ -1593,6 +1594,7 @@ const TEAM_PROJECTS_POLL_MS = 15_000;
 const TEAM_PROJECTS_SSE_FLOOR_MS = 60_000;
 export const TEAM_PROJECTS_CHANGED_EVENT = 'od:team-projects-changed';
 const TEAM_PROJECTS_CHANGED_STORAGE_KEY = 'od.teamProjects.changedAt';
+let teamProjectsChangedNotificationSequence = 0;
 
 export function notifyTeamProjectsChanged(
   detail?: Pick<
@@ -1601,13 +1603,21 @@ export function notifyTeamProjectsChanged(
   >,
 ): void {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(detail
-    ? new CustomEvent(TEAM_PROJECTS_CHANGED_EVENT, {
-        detail: { type: 'team-projects-changed', ...detail },
-      })
-    : new Event(TEAM_PROJECTS_CHANGED_EVENT));
+  // Always fan out one shared detail object. Every mounted consumer receives
+  // this same semantic event token and therefore shares one catalog request;
+  // the next call creates another token and cannot be collapsed into this one
+  // merely because it happens inside forceCoalescedGet's 250ms burst window.
+  const sharedDetail = { type: 'team-projects-changed' as const, ...detail };
+  window.dispatchEvent(new CustomEvent(TEAM_PROJECTS_CHANGED_EVENT, {
+    detail: sharedDetail,
+  }));
   try {
-    window.localStorage.setItem(TEAM_PROJECTS_CHANGED_STORAGE_KEY, String(Date.now()));
+    // Include a monotonic suffix so two genuine mutations in the same
+    // millisecond still change the storage value and both reach other tabs.
+    window.localStorage.setItem(
+      TEAM_PROJECTS_CHANGED_STORAGE_KEY,
+      `${Date.now()}:${++teamProjectsChangedNotificationSequence}`,
+    );
   } catch {
     // localStorage can be unavailable in restricted contexts; the in-window event
     // already refreshed the current client.
@@ -1682,15 +1692,23 @@ export function useTeamProjects(): TeamProjectsState {
   // `onTeamProjectsChanged` below) via `forceCoalescedGet`, which also
   // collapses the case where every mounted `useTeamProjects()` instance reacts
   // to that same change in one synchronous burst into a single fetch.
-  const loadFull = useCallback(async (force = false) => {
+  const loadFull = useCallback(async (force = false, event?: object) => {
     const issuedIdentity = resourceReadIdentityRef.current;
     const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const read = beginWorkspaceScopedRead(issuedIdentity?.context);
+    const catalogRefresh = event && read.context
+      ? beginTeamProjectCatalogRefresh({
+          accountGeneration: issuedAccountGeneration,
+          context: read.context,
+          event,
+        })
+      : null;
     const isStillCurrent = () => {
       const current = resourceReadIdentityRef.current;
       return currentWorkspaceAccountGeneration() === issuedAccountGeneration
         && current?.generation === issuedIdentity?.generation
-        && read.isStillCurrent(current?.context);
+        && read.isStillCurrent(current?.context)
+        && (catalogRefresh?.isLatest() ?? true);
     };
     if (!read.context) {
       if (mountedRef.current) {
@@ -1707,10 +1725,31 @@ export function useTeamProjects(): TeamProjectsState {
         context: read.context,
         force,
         requestGeneration: issuedIdentity?.generation,
+        cacheDiscriminator: catalogRefresh?.cacheDiscriminator,
       });
       if (!isStillCurrent()) return;
       const identity = teamProjectsIdentity(read.context, issuedAccountGeneration);
       if (identity) cacheTeamProjects(identity, projects);
+      if (catalogRefresh) {
+        const projectsById = new Map(projects.map((project) => [project.projectId, project]));
+        patchProjectDisplaySnapshots({
+          accountGeneration: issuedAccountGeneration,
+          context: read.context,
+          patch: (displayProjects) => displayProjects.map((candidate) => {
+            if (candidate.workspaceId !== read.context?.workspaceId) return candidate;
+            const catalogProject = projectsById.get(candidate.id);
+            if (!catalogProject) return candidate;
+            return {
+              ...candidate,
+              ...(catalogProject.name ? { name: catalogProject.name } : {}),
+              ...(catalogProject.metadata ? { metadata: catalogProject.metadata } : {}),
+              ...(catalogProject.updatedAt !== undefined
+                ? { updatedAt: catalogProject.updatedAt }
+                : {}),
+            };
+          }),
+        });
+      }
       if (mountedRef.current) {
         setCatalog({ identity: catalogScopeKey, projects });
         setLoading(false);
@@ -1766,14 +1805,14 @@ export function useTeamProjects(): TeamProjectsState {
       if (!project) {
         // A metadata signal should name an existing row. Absence means it
         // raced a share/unshare, so fall back to authoritative reconciliation.
-        void loadFull(true);
+        void loadFull(true, payload);
         return;
       }
       const identity = teamProjectsIdentity(read.context, issuedAccountGeneration);
       const cached = identity ? cachedTeamProjects.get(identity) ?? null : null;
       const base = cached ?? (catalog.identity === catalogScopeKey ? catalog.projects : []);
       if (!base.some((candidate) => candidate.projectId === projectId)) {
-        void loadFull(true);
+        void loadFull(true, payload);
         return;
       }
       const patched = base.map((candidate) =>
@@ -1812,12 +1851,16 @@ export function useTeamProjects(): TeamProjectsState {
 
   const handleTeamProjectsChanged = useCallback((
     payload?: Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
+    event?: object,
   ) => {
     if (payload?.kind === 'metadata' && payload.projectId) {
       void loadProjectMetadata(payload);
       return;
     }
-    void loadFull(true);
+    // Production broad invalidations always supply the shared SSE payload,
+    // CustomEvent detail, or StorageEvent. A defensive direct dispatch of a
+    // plain Event still uses that Event object, never a per-listener token.
+    if (event) void loadFull(true, event);
   }, [loadFull, loadProjectMetadata]);
 
   // Initial load + manual reload (nonce bump).
@@ -1857,7 +1900,7 @@ export function useTeamProjects(): TeamProjectsState {
             context: workspaceContext,
           });
         }
-        handleTeamProjectsChanged(payload);
+        handleTeamProjectsChanged(payload, payload);
       },
     },
     {
@@ -1910,10 +1953,10 @@ export function useTeamProjects(): TeamProjectsState {
             { type: 'team-projects-changed' }
           > | undefined
         : undefined;
-      handleTeamProjectsChanged(detail);
+      handleTeamProjectsChanged(detail, detail ?? event);
     };
     const onStorage = (event: StorageEvent) => {
-      if (event.key === TEAM_PROJECTS_CHANGED_STORAGE_KEY) void loadFull();
+      if (event.key === TEAM_PROJECTS_CHANGED_STORAGE_KEY) void loadFull(true, event);
     };
     window.addEventListener('focus', onFocus);
     window.addEventListener(TEAM_PROJECTS_CHANGED_EVENT, onTeamProjectsChanged);
