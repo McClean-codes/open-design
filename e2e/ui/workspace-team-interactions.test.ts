@@ -1381,13 +1381,14 @@ async function wireWorkspaceProjectMocks(
   options: { ownerConflict?: boolean } = {},
 ): Promise<{ moves: WorkspaceProjectMove[] }> {
   const moves: WorkspaceProjectMove[] = [];
+  let visibility: 'personal' | 'team' = 'personal';
 
   await page.route(`**/api/workspaces/${TEAM_OWNER.workspaceId}/projects**`, async (route) => {
     const request = route.request();
     const { pathname } = new URL(request.url());
     if (request.method() === 'GET' && pathname.endsWith('/projects')) {
       await route.fulfill({
-        json: { projects: [workspaceProjectSummary('personal')] },
+        json: { projects: [workspaceProjectSummary(visibility)] },
       });
       return;
     }
@@ -1410,14 +1411,36 @@ async function wireWorkspaceProjectMocks(
         });
         return;
       }
+      visibility = body.visibility === 'team' ? 'team' : 'personal';
       await route.fulfill({
         json: {
-          project: workspaceProjectSummary(body.visibility === 'team' ? 'team' : 'personal'),
+          project: workspaceProjectSummary(visibility),
         },
       });
       return;
     }
     await route.fallback();
+  });
+
+  await page.route('**/api/workspace/projects/team', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        projects:
+          visibility === 'team'
+            ? [
+                teamProject(
+                  LOCAL_TEAM_DRAFT.id,
+                  LOCAL_TEAM_DRAFT.name,
+                  TEAM_OWNER.workspaceMemberId,
+                ),
+              ]
+            : [],
+      },
+    });
   });
 
   await page.route(`**/api/projects/${LOCAL_TEAM_DRAFT.id}/files**`, async (route) => {

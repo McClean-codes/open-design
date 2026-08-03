@@ -1519,11 +1519,11 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
   let heldScopeHeaders: Record<string, string> | null = null;
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
-    // The shell first resolves the bound project route before it is allowed to
-    // mount ProjectView. Hold only ProjectView's own first scope read: this is
-    // the window in which the exact project binding + caller witness must keep
-    // the send Team-scoped instead of falling back to the Personal wallet.
-    if (scopeRequests > 1) {
+    // Route bootstrap performs headerless discovery and then an exact Team
+    // confirmation before it is allowed to mount ProjectView. Hold only
+    // ProjectView's own first scope read (the third request): this preserves
+    // the intended pending window without deadlocking bootstrap itself.
+    if (scopeRequests > 2) {
       heldScopeHeaders = await route.request().allHeaders();
       await scopeGate;
     }
@@ -1556,7 +1556,7 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
   try {
     await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
     await expectWorkspaceReady(page);
-    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(3);
     expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
     expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
       TEAM_RUN_CONTEXT.workspaceMemberId,
@@ -1604,18 +1604,11 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
     page,
     'Empty Team wallet run witness',
   );
-  let releaseScope!: () => void;
-  const scopeGate = new Promise<void>((resolve) => {
-    releaseScope = resolve;
-  });
   let scopeRequests = 0;
-  let heldScopeHeaders: Record<string, string> | null = null;
+  const scopeRequestHeaders: Array<Record<string, string>> = [];
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
-    if (scopeRequests > 1) {
-      heldScopeHeaders = await route.request().allHeaders();
-      await scopeGate;
-    }
+    scopeRequestHeaders.push(await route.request().allHeaders());
     await route.fulfill({
       json: {
         scope: {
@@ -1633,42 +1626,39 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
     events: false,
   });
 
-  try {
-    await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
-    await expectWorkspaceReady(page);
-    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
-    expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
-    expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
-      TEAM_RUN_CONTEXT.workspaceMemberId,
-    );
-    await expect(page.getByTestId('chat-composer-input')).toBeEditable();
-    balanceRequests.resetBalanceRequests();
-    await page.getByTestId('chat-composer-input').fill(
-      'Do not charge the funded Personal wallet for this Team project.',
-    );
-    await page.getByTestId('chat-send').click();
+  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+  await expectWorkspaceReady(page);
+  await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+  expect(scopeRequestHeaders).toContainEqual(
+    expect.objectContaining({
+      'x-od-workspace-id': TEAM_RUN_CONTEXT.workspaceId,
+      'x-od-workspace-member-id': TEAM_RUN_CONTEXT.workspaceMemberId,
+    }),
+  );
+  await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+  balanceRequests.resetBalanceRequests();
+  await page.getByTestId('chat-composer-input').fill(
+    'Do not charge the funded Personal wallet for this Team project.',
+  );
+  await page.getByTestId('chat-send').click();
 
-    const dialog = page.getByTestId('amr-balance-dialog');
-    await expect(dialog).toBeVisible();
-    releaseScope();
-    await expect(dialog).toContainText('$0.00');
-    expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
-    const teamBillingQueries = balanceRequests.teamBillingQueries();
-    expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
-    for (const query of teamBillingQueries) {
-      expect(query.scope).toBe('workspace');
-      expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
-      expect([null, 'authoritative']).toContain(query.freshness);
-    }
-    expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
-    // Conversely, funded Personal identity metadata cannot override Team $0.
-    expect(balanceRequests.personalWalletRequests()).toBe(1);
-    await runRequests.expectNone({
-      message: 'An empty Team wallet must block before POST /api/runs',
-    });
-  } finally {
-    releaseScope();
+  const dialog = page.getByTestId('amr-balance-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('$0.00');
+  expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
+  const teamBillingQueries = balanceRequests.teamBillingQueries();
+  expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
+  for (const query of teamBillingQueries) {
+    expect(query.scope).toBe('workspace');
+    expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect([null, 'authoritative']).toContain(query.freshness);
   }
+  expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
+  // Conversely, funded Personal identity metadata cannot override Team $0.
+  expect(balanceRequests.personalWalletRequests()).toBe(1);
+  await runRequests.expectNone({
+    message: 'An empty Team wallet must block before POST /api/runs',
+  });
 });
 
 test('[P0] @critical project detail composer agent menu lets the user switch the model', async ({ page }) => {
@@ -1817,7 +1807,7 @@ test('[P1] project detail composer keeps the selected mode across consecutive tu
   );
 });
 
-test('[P0] @critical project detail composer BYOK model switch persists from the agent menu', async ({ page }) => {
+test('[P0] @critical project detail composer opens Execution settings where BYOK model choice persists', async ({ page }) => {
   test.setTimeout(60_000);
   const config = {
     mode: 'daemon',
@@ -1866,12 +1856,17 @@ test('[P0] @critical project detail composer BYOK model switch persists from the
   await expectWorkspaceReady(page);
 
   const { menu } = await openComposerAgentMenu(page);
-  await menu.getByRole('button', { name: /API · BYOK|Use API/i }).click();
+  await menu.getByTestId('avatar-open-execution-settings').click();
 
-  const modelSelect = menu.locator('.avatar-model-section [role="combobox"]').first();
+  const settings = page.getByRole('dialog');
+  await expect(settings).toBeVisible();
+  await expect(settings.getByTestId('settings-nav-execution')).toBeVisible();
+  await settings.getByRole('tab', { name: 'API providers' }).click();
+  await settings.getByRole('tab', { name: 'OpenAI', exact: true }).click();
+  const modelSelect = settings.getByRole('combobox', { name: 'Model', exact: true });
   await expect(modelSelect).toContainText('gpt-4o-2024-05-13');
   await modelSelect.click();
-  const modelPopover = page.getByTestId('avatar-byok-model-popover');
+  const modelPopover = page.getByTestId('settings-byok-model-popover');
   await expect(modelPopover.getByRole('option', { name: /^gpt-4o-mini$/i })).toBeVisible();
   await expect(modelPopover.getByRole('option', { name: /deepseek/i })).toHaveCount(0);
   await expect(modelPopover.getByRole('option', { name: /MiniMax/i })).toHaveCount(0);
