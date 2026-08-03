@@ -526,7 +526,9 @@ export function useWorkspaceContext(): WorkspaceContextState {
         // (including plugin context defaults) remain compatible. This is display
         // metadata only: authority still comes from the explicit ids above, and
         // no daemon/backend "active workspace" state is consulted or written.
-        const workspaceName = selected.workspaceName.trim();
+        const workspaceName = typeof selected.workspaceName === 'string'
+          ? selected.workspaceName.trim()
+          : '';
         return workspaceName
           ? { context: { ...body.context, workspaceName } }
           : body;

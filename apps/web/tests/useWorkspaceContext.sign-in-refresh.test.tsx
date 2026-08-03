@@ -29,6 +29,7 @@ const SIGNED_IN = workspaceContextFixture({
   workspaceId: 'ws-1',
   workspaceMemberId: 'member-1',
   teamName: 'Acme',
+  workspaceName: 'Acme',
 });
 
 /** A fetch whose every call resolves only when the test says so. */

@@ -588,6 +588,7 @@ function workspaceContext(
 ) {
   return {
     workspaceId,
+    workspaceName: workspaceId,
     workspaceType: 'team' as const,
     workspaceMemberId,
     role: 'member' as const,
