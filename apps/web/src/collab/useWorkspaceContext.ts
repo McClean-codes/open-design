@@ -989,20 +989,15 @@ export function useWorkspaceBillingResponse(
     : ambient.loading;
   const workspaceId = context?.workspaceId?.trim() ?? '';
   const workspaceMemberId = context?.workspaceMemberId?.trim() ?? '';
+  const hasExactWorkspaceScope = Boolean(context && workspaceId && workspaceMemberId);
   const billingScopeKey =
-    contextLoading
+    contextLoading || !hasExactWorkspaceScope
       ? null
-      : context?.workspaceType === 'team'
-        ? workspaceId && workspaceMemberId
-          ? `workspace-billing:workspace:${workspaceId}:member:${workspaceMemberId}`
-          : null
-        : `workspace-billing:account:${workspaceId || 'anonymous'}:${workspaceMemberId || 'anonymous'}`;
+      : `workspace-billing:workspace:${workspaceId}:member:${workspaceMemberId}`;
   const billingUrl =
-    billingScopeKey && context?.workspaceType !== 'team'
-      ? '/api/workspace/billing?scope=account'
-      : billingScopeKey
-        ? `/api/workspace/billing?scope=workspace&workspaceId=${encodeURIComponent(workspaceId)}`
-        : null;
+    billingScopeKey
+      ? `/api/workspace/billing?scope=workspace&workspaceId=${encodeURIComponent(workspaceId)}`
+      : null;
   // The same workspace can be left and selected again while an earlier read is
   // still in flight. The context revision makes A→B→A a new request identity.
   const billingRequestKey = billingScopeKey
@@ -1428,10 +1423,12 @@ export function useWorkspaceBilling(): WorkspaceBillingSummary | null {
 /**
  * Return the money that belongs to the currently selected workspace.
  *
- * Team money is valid only when Vela's v2 response proves both the requested
- * workspace and the acting member. It must never fall back to account money:
+ * Workspace money is valid only when Vela's v2 response proves both the
+ * requested workspace and the acting member. Personal and Team scopes obey the
+ * same rule and must never fall back to account money:
  * one local daemon may serve multiple windows whose URL-selected workspaces
- * differ. Personal workspaces keep the account-scoped summary by definition.
+ * differ. A headerless legacy client is handled by Vela's canonical Default
+ * Workspace fallback; this modern client always carries the selected id.
  */
 export function workspaceBillingBalanceUsd(
   response: WorkspaceBillingResponse | null | undefined,
@@ -1448,10 +1445,6 @@ export function workspaceBillingBalanceUsd(
     )
   ) {
     return null;
-  }
-  if (context.workspaceType !== 'team') {
-    const accountBalance = response.summary?.balanceUsd?.trim();
-    return accountBalance || null;
   }
   const workspaceBalance = response.workspaceBalance;
   if (
