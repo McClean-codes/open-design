@@ -26,6 +26,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { teamResourceWorkspaceRoot } from '../src/collab/team-resource-materialization.js';
 import { startServer } from '../src/server.js';
 import {
   ensureWorkspaceResource,
@@ -265,6 +266,33 @@ describe('GET /api/skills — teamSynced projection', () => {
     const skill = body.skills.find((s) => s.id === skillId);
 
     expect(skill?.teamSynced).toBe(true);
+  });
+
+  it('hides a tombstoned Team mirror while retaining its recovery copy and attribution', async () => {
+    const workspaceId = 'ws-teamsynced-tombstone';
+    const skillId = `wsteamsynced-tombstone-${Date.now()}`;
+    const teamSkillsDir = teamResourceWorkspaceRoot(userSkillsDir, workspaceId);
+    const folder = path.join(teamSkillsDir, skillId);
+    await mkdir(folder, { recursive: true });
+    await writeFile(
+      path.join(folder, 'SKILL.md'),
+      `---\nname: "${skillId}"\ndescription: "Test Team skill ${skillId}."\n---\n\nBody for ${skillId}.\n`,
+    );
+    bindSkillToWorkspace(skillId, workspaceId, 'member-owner');
+    const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+    updateWorkspaceResource(db, 'skill', workspaceId, skillId, { visibility: 'team' });
+
+    expect(await fetchSkillIds(workspaceId)).toContain(skillId);
+
+    updateWorkspaceResource(db, 'skill', workspaceId, skillId, { resourceState: 'deleted' });
+
+    expect(await fetchSkillIds(workspaceId)).not.toContain(skillId);
+    expect(existsSync(folder)).toBe(true);
+    expect(getWorkspaceResourceByResourceId(db, 'skill', skillId)).toMatchObject({
+      workspaceId,
+      visibility: 'team',
+      resourceState: 'deleted',
+    });
   });
 
   it('omits teamSynced for a personal-visibility bound skill (the sharer\'s own copy)', async () => {

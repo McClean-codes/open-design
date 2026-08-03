@@ -167,9 +167,10 @@ export function createDesignSystemServerServices({
     });
     const workspaceId = options.workspaceId?.trim();
     if (!workspaceId || !roots.SKILL_ROOTS[0]) return personalAndBuiltIn;
-    const team = await skills.listSkills([
-      teamResourceWorkspaceRoot(roots.SKILL_ROOTS[0], workspaceId),
-    ]);
+    const team = await skills.listSkills(
+      [teamResourceWorkspaceRoot(roots.SKILL_ROOTS[0], workspaceId)],
+      { db, workspaceId },
+    );
     const teamIds = new Set(team.map((entry) => entry.id));
     return [
       ...team.map((entry) => ({ ...entry, teamSynced: true })),

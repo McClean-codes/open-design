@@ -25,18 +25,16 @@
 // continuous-sync effort, priority 2) was written to fix. Instead this marks
 // `resourceState: 'deleted'` on the EXISTING `workspace_resources` row and
 // leaves `visibility: 'team'` untouched — a tombstone, not a reclassification:
-//   - `visibility` staying `'team'` means every existing `teamSynced` /
-//     "is this a team-pulled copy" read (skills.ts's `listSkills`,
-//     design-systems' `isTeamSyncedUserDesignSystem`-style checks) keeps
-//     answering the same way it always has, with ZERO code changes needed on
-//     that side — a retired resource stays excluded from "Personal" exactly
-//     like an actively-shared one already was.
+//   - `visibility` staying `'team'` preserves every `teamSynced` / "is this a
+//     team-pulled copy" attribution read. Scoped catalogs additionally gate
+//     these mirrors on `resourceState`, so a retired resource is hidden while
+//     remaining distinguishable from caller-authored Personal content.
 //   - `resourceState: 'deleted'` is this reconciler's own bookkeeping: it is
 //     what makes a second reconciliation pass a no-op instead of re-writing
 //     the same row every ~15s poll tick, and it is the auditable "this used
 //     to be team-shared, then wasn't anymore" fact a future "make this mine"
-//     reclaim action would key off. Nothing reads it as an exclusion signal
-//     today because nothing needs to: `visibility` already carries that.
+//     reclaim action would key off. Scoped Team catalogs read it as the
+//     exclusion signal without erasing that attribution.
 //   - The local FILE on disk is never touched. Retraction is a binding-table
 //     state change only — this module does not delete, move, or rewrite
 //     anything under `USER_SKILLS_DIR` / `USER_DESIGN_SYSTEMS_DIR`.
