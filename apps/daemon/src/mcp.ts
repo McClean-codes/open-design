@@ -57,6 +57,7 @@ import {
   pluginContractError,
   resolvePluginGenerationSloWindowMs,
   validateExternalPluginContext,
+  validatePluginRequestId,
   validatePluginWorkflowId,
 } from './mcp-observability.js';
 
@@ -687,7 +688,7 @@ export const TOOL_DEFS = [
         requestId: {
           type: 'string',
           description:
-            'Stable id for this confirmed generation action. Generate it once before calling start_run and reuse it verbatim if the tool response is lost or retried; a different payload with the same id is rejected.',
+            'Stable canonical UUID or ULID for this confirmed generation action. Generate it once before calling start_run and reuse it verbatim if the tool response is lost or retried; a different payload with the same id is rejected.',
         },
         resume: {
           type: 'boolean',
@@ -1620,8 +1621,9 @@ export async function runMcpStdio({ daemonUrl }: RunMcpOptions): Promise<void> {
         '    generate into; start_run requires an existing project.',
         ' - start_run(prompt, requestId, [skill], [plugin], [inputs]) kicks off',
         '    generation in the active or named project and returns a runId.',
-        '    Generate requestId once per confirmed user action and reuse the',
-        '    exact same value after a timeout/lost response. Do not call',
+        '    Generate a canonical UUID or ULID requestId once per confirmed',
+        '    user action and reuse the exact same value after a timeout/lost',
+        '    response. Do not call',
         '    start_run again while get_run reports the original run in flight.',
         '    If get_run returns failureAction:"recharge", show rechargeUrl;',
         '    after the user confirms top-up, call the exact original start_run',
@@ -2287,7 +2289,7 @@ async function startRun(
       : randomUUID();
   const body: JsonObject = { projectId: id, clientRequestId: requestId };
   if (options.pluginAttribution) {
-    validatePluginWorkflowId(requestId);
+    validatePluginRequestId(requestId);
     const logical = logicalPluginRequestDigest(requestId);
     body.analyticsHints = {
       entrySurface: 'external_mcp',
