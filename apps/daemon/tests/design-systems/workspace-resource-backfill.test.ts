@@ -23,6 +23,7 @@ import {
   backfillDesignSystemWorkspaceResources,
   listDesignSystems,
 } from '../../src/design-systems/index.js';
+import { workspaceTeamDesignSystemBindingResourceId } from '../../src/design-systems/workspace-team-binding.js';
 import {
   closeDatabase,
   ensureWorkspaceProject,
@@ -74,13 +75,23 @@ describe('backfillDesignSystemWorkspaceResources', () => {
 
   it('backfills a team-synced system as visibility: team', async () => {
     seedSystem('legacy-team', { title: 'Legacy Team', workspaceId: WORKSPACE_B, teamSynced: true });
+    ensureWorkspaceResource(db, 'design_system', WORKSPACE_B, 'user:legacy-team', {
+      visibility: 'team',
+      resourceState: 'active',
+    });
 
     const backfilled = await backfillDesignSystemWorkspaceResources(db, root);
 
     expect(backfilled).toBe(1);
-    const row = getWorkspaceResourceByResourceId(db, 'design_system', 'user:legacy-team');
+    const row = getWorkspaceResourceByResourceId(
+      db,
+      'design_system',
+      workspaceTeamDesignSystemBindingResourceId(WORKSPACE_B, 'user:legacy-team'),
+    );
     expect(row?.workspaceId).toBe(WORKSPACE_B);
     expect(row?.visibility).toBe('team');
+    expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:legacy-team'))
+      .toMatchObject({ workspaceId: WORKSPACE_B, visibility: 'team' });
   });
 
   it('skips an unclaimed (no workspaceId) system', async () => {
@@ -275,7 +286,11 @@ describe('backfillDesignSystemWorkspaceResources', () => {
 
     expect(backfilled).toBe(2);
     expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:from-a')?.visibility).toBe('personal');
-    expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:from-b')?.visibility).toBe('team');
+    expect(getWorkspaceResourceByResourceId(
+      db,
+      'design_system',
+      workspaceTeamDesignSystemBindingResourceId(WORKSPACE_B, 'user:from-b'),
+    )?.visibility).toBe('team');
     expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:legacy')).toBeUndefined();
   });
 

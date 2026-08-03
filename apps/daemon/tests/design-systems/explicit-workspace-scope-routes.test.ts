@@ -14,12 +14,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   closeDatabase,
   ensureWorkspaceResource,
+  getWorkspaceResourceByResourceId,
   openDatabase,
 } from '../../src/db.js';
 import { workspaceContextFromDirectoryItem } from '../../src/collab/vela-workspace-context.js';
 import { registerDesignSystemRoutes } from '../../src/routes/design-systems.js';
 import { registerStaticResourceRoutes } from '../../src/routes/static-resource.js';
 import type { DesignSystemSummary } from '../../src/design-systems/index.js';
+import * as designSystems from '../../src/design-systems/index.js';
 
 let server: http.Server | null = null;
 let tempDir: string | null = null;
@@ -119,13 +121,19 @@ async function startListRoute(input: {
       resourceState: 'active',
       createdByWorkspaceMemberId: 'member-a',
     });
-    ensureWorkspaceResource(db, 'design_system', 'workspace-a', 'user:team-system', {
+    ensureWorkspaceResource(db, 'design_system', 'workspace-a', 'team-mirror:workspace-a:user%3Ateam-system', {
       visibility: 'team',
       resourceState: 'active',
       createdByWorkspaceMemberId: 'member-a',
     });
+    ensureWorkspaceResource(db, 'design_system', 'workspace-b', 'team-mirror:workspace-b:user%3Ateam-system', {
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-b',
+    });
   }
   const app = express();
+  app.use(express.json());
   registerStaticResourceRoutes(app, {
     db,
     ...(input.exactMemberCatalog
@@ -228,8 +236,8 @@ describe('design-system explicit Workspace request scope', () => {
     mkdirSync(source, { recursive: true });
     writeFileSync(path.join(source, 'DESIGN.md'), '# Original\n', 'utf8');
     const db = openDatabase(tempDir, { dataDir: tempDir });
-    ensureWorkspaceResource(db, 'design_system', 'workspace-a', 'user:owned-system', {
-      visibility: 'personal',
+    ensureWorkspaceResource(db, 'design_system', 'workspace-a', 'team-mirror:workspace-a:user%3Aowned-system', {
+      visibility: 'team',
       resourceState: 'active',
       createdByWorkspaceMemberId: 'member-a',
     });
@@ -284,6 +292,17 @@ describe('design-system explicit Workspace request scope', () => {
     expect(response.status).toBe(409);
     expect(readFileSync(path.join(source, 'DESIGN.md'), 'utf8')).toBe('# Original\n');
     expect(existsSync(path.join(routePaths.USER_DESIGN_SYSTEMS_DIR, 'owned-system'))).toBe(false);
+    expect(getWorkspaceResourceByResourceId(
+      db,
+      'design_system',
+      'team-mirror:workspace-a:user%3Aowned-system',
+    )).toMatchObject({
+      workspaceId: 'workspace-a',
+      visibility: 'team',
+      createdByWorkspaceMemberId: 'member-a',
+    });
+    expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:owned-system'))
+      .toBeUndefined();
   });
 
   it('hides another member Personal system but keeps the exact Team catalog visible', async () => {
@@ -303,6 +322,64 @@ describe('design-system explicit Workspace request scope', () => {
     const body = await response.json() as { designSystems: Array<{ id: string }> };
     expect(body.designSystems.map((item) => item.id))
       .toEqual(['user:team-system']);
+
+    const workspaceB = await fetch(`${baseUrl}/api/design-systems`, {
+      headers: {
+        ...workspaceHeaders(),
+        'x-od-workspace-id': 'workspace-b',
+        'x-od-workspace-member-id': 'member-b',
+      },
+    });
+    expect(workspaceB.status).toBe(200);
+    const bodyB = await workspaceB.json() as { designSystems: Array<{ id: string }> };
+    expect(bodyB.designSystems.map((item) => item.id)).toEqual(['user:team-system']);
+  });
+
+  it('allocates a new Personal import id when a Team mirror owns the raw slug', async () => {
+    const baseUrl = await startListRoute({
+      resolveWorkspaceScope: async () => 'workspace-a',
+      exactMemberCatalog: true,
+      listAllDesignSystems: async (options?: { workspaceId?: string | null }) =>
+        designSystems.listDesignSystems(path.join(tempDir!, 'user-design-systems'), {
+          idPrefix: 'user:',
+          source: 'user',
+          isEditable: true,
+          defaultStatus: 'draft',
+          ...(options?.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+        }),
+    });
+    const source = path.join(tempDir!, 'import-source');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(
+      path.join(source, 'package.json'),
+      JSON.stringify({ name: 'team-system' }),
+      'utf8',
+    );
+    writeFileSync(path.join(source, 'README.md'), '# Team system\n', 'utf8');
+
+    const response = await fetch(`${baseUrl}/api/design-systems/import/local`, {
+      method: 'POST',
+      headers: { ...workspaceHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ path: source }),
+    });
+    expect(response.status).toBe(201);
+    const body = await response.json() as { designSystem: { id: string } };
+    expect(body.designSystem.id).toBe('user:team-system-2');
+    expect(existsSync(path.join(tempDir!, 'user-design-systems', 'team-system'))).toBe(false);
+    const db = openDatabase(tempDir!, { dataDir: tempDir! });
+    expect(getWorkspaceResourceByResourceId(
+      db,
+      'design_system',
+      'team-mirror:workspace-a:user%3Ateam-system',
+    )).toMatchObject({ workspaceId: 'workspace-a', visibility: 'team' });
+    expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:team-system'))
+      .toBeUndefined();
+    expect(getWorkspaceResourceByResourceId(db, 'design_system', 'user:team-system-2'))
+      .toMatchObject({
+        workspaceId: 'workspace-a',
+        visibility: 'personal',
+        createdByWorkspaceMemberId: 'member-a',
+      });
   });
 
   it('passes the list request into scope resolution and lists only that Workspace', async () => {

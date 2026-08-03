@@ -24,6 +24,7 @@ import {
 import { parseFrontmatter } from './frontmatter.js';
 import type { FrontmatterObject, FrontmatterValue } from './frontmatter.js';
 import { extractSwiftColors } from './swift-colors.js';
+import { workspaceTeamDesignSystemBindingResourceId } from './workspace-team-binding.js';
 import {
   ensureWorkspaceResource,
   getWorkspaceResourceByResourceId,
@@ -276,6 +277,8 @@ export type UserDesignSystemInput = {
    * existing system just because the caller happened to be elsewhere.
    */
   workspaceId?: string;
+  /** Internal write-fence: logical ids already claimed in workspace_resources. */
+  reservedResourceIds?: Iterable<string>;
 };
 
 export type UserDesignSystemRevisionInput = {
@@ -1257,7 +1260,11 @@ export async function createUserDesignSystem(
   input: UserDesignSystemInput,
 ): Promise<DesignSystemSummary> {
   const title = normalizeTitle(input.title);
-  const { dirId, dir } = await reserveUniqueSlugDirectory(root, slugify(title));
+  const { dirId, dir } = await reserveUniqueSlugDirectory(
+    root,
+    slugify(title),
+    input.reservedResourceIds,
+  );
   const now = new Date().toISOString();
   const provenance = normalizeProvenance(input.provenance, {
     ...(input.summary ? { companyBlurb: input.summary } : {}),
@@ -1595,9 +1602,11 @@ export async function isTeamSyncedUserDesignSystem(root: string, id: string): Pr
  * exactly one persisted project binding. The current/active workspace is never
  * consulted; an absent or ambiguous binding leaves the resource quarantined.
  *
- * Idempotent by construction: a directory whose id already has a binding row
- * is skipped, so re-running this on every daemon start costs one readdir plus
- * a lookup per system and never writes a duplicate.
+ * Idempotent by construction: a directory whose exact Personal or
+ * Workspace-qualified Team binding already exists is skipped, so re-running
+ * this on every daemon start costs one readdir plus a lookup per system and
+ * never writes a duplicate. Legacy raw Team rows are retained; the qualified
+ * binding is added alongside them so no historical data is deleted.
  *
  * `visibility` mirrors the claim `markTeamSynced` writes going forward —
  * `teamSynced: true` backfills as `'team'`, everything else as `'personal'`.
@@ -1643,7 +1652,14 @@ export async function backfillDesignSystemWorkspaceResources(
         }
       }
     }
-    const existing = getWorkspaceResourceByResourceId(db, 'design_system', id);
+    const bindingResourceId = metadata.teamSynced === true && workspaceId
+      ? workspaceTeamDesignSystemBindingResourceId(workspaceId, id)
+      : id;
+    const existing = getWorkspaceResourceByResourceId(
+      db,
+      'design_system',
+      bindingResourceId,
+    );
     if (existing) {
       const bindingMatchesInference = inferredWorkspaceId === existing.workspaceId;
       if (!metadata.workspaceId && bindingMatchesInference) {
@@ -1655,7 +1671,7 @@ export async function backfillDesignSystemWorkspaceResources(
         && bindingMatchesInference
         && createdByWorkspaceMemberId
       ) {
-        updateWorkspaceResource(db, 'design_system', existing.workspaceId, id, {
+        updateWorkspaceResource(db, 'design_system', existing.workspaceId, bindingResourceId, {
           createdByWorkspaceMemberId,
           updatedByWorkspaceMemberId: createdByWorkspaceMemberId,
           updatedAt: existing.updatedAt,
@@ -1668,7 +1684,7 @@ export async function backfillDesignSystemWorkspaceResources(
     if (!metadata.workspaceId && inferredWorkspaceId === workspaceId) {
       await writeUserDesignSystemWorkspaceClaim(root, dirId, workspaceId);
     }
-    ensureWorkspaceResource(db, 'design_system', workspaceId, id, {
+    ensureWorkspaceResource(db, 'design_system', workspaceId, bindingResourceId, {
       visibility: metadata.teamSynced === true ? 'team' : 'personal',
       resourceState: 'active',
       ...(createdByWorkspaceMemberId
@@ -3221,11 +3237,23 @@ async function uniqueSlug(root: string, base: string): Promise<string> {
   }
 }
 
-async function reserveUniqueSlugDirectory(root: string, base: string): Promise<{ dirId: string; dir: string }> {
+async function reserveUniqueSlugDirectory(
+  root: string,
+  base: string,
+  reservedResourceIds: Iterable<string> = [],
+): Promise<{ dirId: string; dir: string }> {
   await mkdir(root, { recursive: true });
+  const reservedDirIds = new Set(
+    [...reservedResourceIds].map((resourceId) =>
+      resourceId.startsWith('user:') ? resourceId.slice('user:'.length) : resourceId),
+  );
   let candidate = base || 'design-system';
   let index = 2;
   for (;;) {
+    if (reservedDirIds.has(candidate)) {
+      candidate = `${base || 'design-system'}-${index++}`;
+      continue;
+    }
     const dir = path.join(root, candidate);
     try {
       await mkdir(dir);

@@ -39,6 +39,10 @@ import {
   writeUserDesignSystemWorkspaceClaim,
 } from '../design-systems/index.js';
 import {
+  designSystemLogicalResourceId,
+  workspaceTeamDesignSystemBindingResourceId,
+} from '../design-systems/workspace-team-binding.js';
+import {
   LocalDesignSystemImportError,
   importLocalDesignSystemProject,
 } from '../design-systems/import.js';
@@ -272,26 +276,49 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   ): Promise<void> => {
     if (!context) return;
     const resourceId = userDesignSystemCatalogId(dirId);
-    if (getWorkspaceResourceByResourceId(db, 'design_system', resourceId)) {
-      throw Object.assign(new Error('a design system with this id already belongs to a Workspace'), {
-        status: 409,
-        code: 'DESIGN_SYSTEM_ID_CONFLICT',
-      });
-    }
-    await writeUserDesignSystemWorkspaceClaim(
-      USER_DESIGN_SYSTEMS_DIR,
-      dirId,
-      context.workspaceId,
+    const conflict = () => Object.assign(
+      new Error('a design system with this id already belongs to a Workspace'),
+      { status: 409, code: 'DESIGN_SYSTEM_ID_CONFLICT' },
     );
-    ensureWorkspaceResource(db, 'design_system', context.workspaceId, resourceId, {
-      visibility: 'personal',
-      resourceState: 'active',
-      createdByWorkspaceMemberId: context.workspaceMemberId,
-      updatedByWorkspaceMemberId: context.workspaceMemberId,
-    });
+    try {
+      if (reservedDesignSystemResourceIds().has(resourceId)) throw conflict();
+      await writeUserDesignSystemWorkspaceClaim(
+        USER_DESIGN_SYSTEMS_DIR,
+        dirId,
+        context.workspaceId,
+      );
+      // Re-check after the async metadata write. Another request may have
+      // claimed the logical id while this import was materializing bytes.
+      if (reservedDesignSystemResourceIds().has(resourceId)) throw conflict();
+      const binding = ensureWorkspaceResource(
+        db,
+        'design_system',
+        context.workspaceId,
+        resourceId,
+        {
+          visibility: 'personal',
+          resourceState: 'active',
+          createdByWorkspaceMemberId: context.workspaceMemberId,
+          updatedByWorkspaceMemberId: context.workspaceMemberId,
+        },
+      );
+      if (
+        binding?.workspaceId !== context.workspaceId
+        || binding.visibility === 'team'
+        || binding.createdByWorkspaceMemberId !== context.workspaceMemberId
+      ) {
+        throw conflict();
+      }
+    } catch (error) {
+      await fs.promises.rm(path.join(USER_DESIGN_SYSTEMS_DIR, dirId), {
+        recursive: true,
+        force: true,
+      });
+      throw error;
+    }
   };
-  const reservedDesignSystemDirIds = (systems: Array<{ id: string }>): string[] => {
-    const ids = new Set(designSystemDirIdsFromCatalog(systems));
+  const reservedDesignSystemResourceIds = (): Set<string> => {
+    const ids = new Set<string>();
     const bindings = db.prepare(
       `SELECT resource_id AS resourceId
          FROM workspace_resources
@@ -300,6 +327,13 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     for (const binding of bindings) {
       const resourceId = binding.resourceId?.trim();
       if (!resourceId) continue;
+      ids.add(designSystemLogicalResourceId(resourceId));
+    }
+    return ids;
+  };
+  const reservedDesignSystemDirIds = (systems: Array<{ id: string }>): string[] => {
+    const ids = new Set(designSystemDirIdsFromCatalog(systems));
+    for (const resourceId of reservedDesignSystemResourceIds()) {
       ids.add(resourceId.startsWith('user:') ? resourceId.slice('user:'.length) : resourceId);
     }
     return [...ids];
@@ -663,14 +697,27 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const systems = workspaceId && workspaceMemberId
         ? catalog.filter((system) => {
             if (system.source !== 'user') return true;
-            const binding = getWorkspaceResourceByResourceId(
+            const teamBinding = getWorkspaceResourceByResourceId(
+              db,
+              'design_system',
+              workspaceTeamDesignSystemBindingResourceId(workspaceId, system.id),
+            );
+            if (
+              teamBinding?.workspaceId === workspaceId
+              && teamBinding.visibility === 'team'
+              && teamBinding.resourceState !== 'deleted'
+            ) {
+              return true;
+            }
+            const personalBinding = getWorkspaceResourceByResourceId(
               db,
               'design_system',
               system.id,
             );
-            if (!binding || binding.workspaceId !== workspaceId) return false;
-            if (binding.visibility === 'team') return true;
-            return binding.createdByWorkspaceMemberId === workspaceMemberId;
+            return personalBinding?.workspaceId === workspaceId
+              && personalBinding.visibility !== 'team'
+              && personalBinding.resourceState !== 'deleted'
+              && personalBinding.createdByWorkspaceMemberId === workspaceMemberId;
           })
         : catalog;
       // recvqb6mfyqXLD: decorate every teamSynced entry with the same
@@ -1037,11 +1084,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
           : '';
       if (
         candidateId
-        && getWorkspaceResourceByResourceId(
-          db,
-          'design_system',
-          userDesignSystemCatalogId(candidateId),
-        )
+        && reservedDesignSystemResourceIds().has(userDesignSystemCatalogId(candidateId))
       ) {
         return sendApiError(
           res,

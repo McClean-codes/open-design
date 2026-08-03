@@ -11,6 +11,7 @@ import type {
   UserDesignSystemInput,
 } from '../design-systems/index.js';
 import type { DesignTokenContractRebuildPreparation } from '../design-systems/token-contract-rebuild.js';
+import { workspaceTeamDesignSystemBindingResourceId } from '../design-systems/workspace-team-binding.js';
 import type {
   DesignSystemGenerationJob,
   DesignSystemRevisionInput,
@@ -223,7 +224,6 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     id: string,
     allowNavigationQuery = false,
   ): Promise<boolean> {
-    const binding = getDesignSystemBinding(db, id);
     const scopedRequest = allowNavigationQuery
       ? requestWithWorkspaceNavigationScope(req)
       : req;
@@ -245,6 +245,30 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         ...(resolution.retryable ? { retryable: true } : {}),
       });
       return false;
+    }
+    let bindingResourceId = id;
+    let binding = getDesignSystemBinding(db, id);
+    if (resolution.context) {
+      const teamBindingResourceId = workspaceTeamDesignSystemBindingResourceId(
+        resolution.context.workspaceId,
+        id,
+      );
+      const teamBinding = getBoundDesignSystem(
+        db,
+        resolution.context.workspaceId,
+        teamBindingResourceId,
+      );
+      const personalBinding = getBoundDesignSystem(
+        db,
+        resolution.context.workspaceId,
+        id,
+      );
+      if (teamBinding?.visibility === 'team') {
+        bindingResourceId = teamBindingResourceId;
+        binding = teamBinding;
+      } else {
+        binding = personalBinding;
+      }
     }
     const isPublicBuiltIn = resolution.context && !binding
       ? (await listAllDesignSystems({
@@ -285,7 +309,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       getBoundDesignSystem,
       getDesignSystemBinding,
       db,
-      id,
+      bindingResourceId,
       resolution.context
         ? async () => ({ ok: true as const, context: resolution.context! })
         : ctx.verifyWorkspaceRequestAuthority,
@@ -298,7 +322,6 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     res: Response,
     id: string,
   ): Promise<boolean> {
-    const binding = getDesignSystemBinding(db, id);
     const resolution = await resolveOptionalWorkspaceRequestAuthority(
       req,
       ctx.verifyWorkspaceRequestAuthority,
@@ -310,6 +333,30 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
         ...(resolution.retryable ? { retryable: true } : {}),
       });
       return false;
+    }
+    let bindingResourceId = id;
+    let binding = getDesignSystemBinding(db, id);
+    if (resolution.context) {
+      const teamBindingResourceId = workspaceTeamDesignSystemBindingResourceId(
+        resolution.context.workspaceId,
+        id,
+      );
+      const teamBinding = getBoundDesignSystem(
+        db,
+        resolution.context.workspaceId,
+        teamBindingResourceId,
+      );
+      const personalBinding = getBoundDesignSystem(
+        db,
+        resolution.context.workspaceId,
+        id,
+      );
+      if (teamBinding?.visibility === 'team') {
+        bindingResourceId = teamBindingResourceId;
+        binding = teamBinding;
+      } else {
+        binding = personalBinding;
+      }
     }
     if (resolution.context && (
       !binding
@@ -340,7 +387,7 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       getBoundDesignSystem,
       getDesignSystemBinding,
       db,
-      id,
+      bindingResourceId,
       'writeFiles',
       resolution.context
         ? async () => ({ ok: true as const, context: resolution.context! })

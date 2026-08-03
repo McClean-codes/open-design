@@ -20,6 +20,7 @@ export interface CreateWorkspaceOwnedDesignSystemDeps {
     resourceId: string,
     input: WorkspaceResourceEnvelopeInput,
   ) => unknown;
+  listReservedResourceIds?: () => Iterable<string>;
   createUserDesignSystem?: (
     root: string,
     input: UserDesignSystemInput,
@@ -48,13 +49,14 @@ export async function createWorkspaceOwnedDesignSystem(
   const remove = deps.deleteUserDesignSystem ?? deleteUserDesignSystem;
   const created = await create(root, {
     ...input,
+    reservedResourceIds: deps.listReservedResourceIds?.() ?? [],
     ...(context ? { workspaceId: context.workspaceId } : {}),
   });
 
   if (!context) return created;
 
   try {
-    deps.ensureWorkspaceResource(
+    const binding = deps.ensureWorkspaceResource(
       'design_system',
       context.workspaceId,
       created.id,
@@ -65,6 +67,20 @@ export async function createWorkspaceOwnedDesignSystem(
         updatedByWorkspaceMemberId: context.workspaceMemberId,
       },
     );
+    if (
+      !binding
+      || typeof binding !== 'object'
+      || !('workspaceId' in binding)
+      || binding.workspaceId !== context.workspaceId
+      || !('resourceId' in binding)
+      || binding.resourceId !== created.id
+      || !('visibility' in binding)
+      || binding.visibility !== 'personal'
+      || !('createdByWorkspaceMemberId' in binding)
+      || binding.createdByWorkspaceMemberId !== context.workspaceMemberId
+    ) {
+      throw new Error('DESIGN_SYSTEM_ID_CONFLICT');
+    }
     return created;
   } catch (error) {
     await remove(root, created.id).catch(() => false);

@@ -12,6 +12,69 @@ afterEach(async () => {
 });
 
 describe('createWorkspaceOwnedDesignSystem', () => {
+  const context = {
+    workspaceId: 'ws-rollback',
+    appUserId: 'user-rollback',
+    workspaceMemberId: 'member-rollback',
+    workspaceType: 'team' as const,
+    workspaceTypeAsserted: 'team' as const,
+    role: 'member' as const,
+    memberStatus: 'active' as const,
+    lifecycleState: 'active' as const,
+    canShareProjects: true,
+    canWriteSyncedFiles: true,
+  };
+
+  it('reserves orphan and Team logical ids before allocating Personal filesystem bytes', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-workspace-owned-ds-reserved-'));
+    roots.push(root);
+    const ensureWorkspaceResource = vi.fn((
+      _type: string,
+      workspaceId: string,
+      resourceId: string,
+      input: Record<string, unknown>,
+    ) => ({ workspaceId, resourceId, ...input }));
+
+    const created = await createWorkspaceOwnedDesignSystem(
+      root,
+      { title: 'Collision', artifactMode: 'agent-managed' },
+      context,
+      {
+        ensureWorkspaceResource,
+        listReservedResourceIds: () => ['user:collision'],
+      },
+    );
+
+    expect(created.id).toBe('user:collision-2');
+    expect(await readdir(root)).toEqual(['collision-2']);
+  });
+
+  it('rolls back a newly allocated directory when a binding race returns another owner', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'od-workspace-owned-ds-race-'));
+    roots.push(root);
+    const remove = vi.fn(async () => true);
+    const create = vi.fn(async () => ({ id: 'user:race' } as never));
+    const ensureWorkspaceResource = vi.fn(() => ({
+      workspaceId: 'other-workspace',
+      resourceId: 'user:race',
+      visibility: 'personal',
+      createdByWorkspaceMemberId: 'other-member',
+    }));
+
+    await expect(createWorkspaceOwnedDesignSystem(
+      root,
+      { title: 'Race', artifactMode: 'agent-managed' },
+      context,
+      {
+        createUserDesignSystem: create,
+        deleteUserDesignSystem: remove,
+        ensureWorkspaceResource,
+        listReservedResourceIds: () => [],
+      },
+    )).rejects.toThrow('DESIGN_SYSTEM_ID_CONFLICT');
+    expect(remove).toHaveBeenCalledWith(root, 'user:race');
+  });
+
   it('removes the just-created directory when the Workspace envelope write fails', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'od-workspace-owned-ds-'));
     roots.push(root);
@@ -23,18 +86,7 @@ describe('createWorkspaceOwnedDesignSystem', () => {
       createWorkspaceOwnedDesignSystem(
         root,
         { title: 'Rollback fixture', artifactMode: 'agent-managed' },
-        {
-          workspaceId: 'ws-rollback',
-          appUserId: 'user-rollback',
-          workspaceMemberId: 'member-rollback',
-          workspaceType: 'team',
-          workspaceTypeAsserted: 'team',
-          role: 'member',
-          memberStatus: 'active',
-          lifecycleState: 'active',
-          canShareProjects: true,
-          canWriteSyncedFiles: true,
-        },
+        context,
         { ensureWorkspaceResource },
       ),
     ).rejects.toThrow('injected workspace_resources failure');

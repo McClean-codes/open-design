@@ -327,6 +327,11 @@ import {
 } from './design-systems/workspace-owned-create.js';
 import { createDesignSystemGenerationJobStore } from './design-systems/generation-jobs.js';
 import { createDesignSystemServerServices } from './design-systems/server-services.js';
+import {
+  designSystemIdFromWorkspaceTeamBinding,
+  designSystemLogicalResourceId,
+  workspaceTeamDesignSystemBindingResourceId,
+} from './design-systems/workspace-team-binding.js';
 import { prepareDesignTokenContractRebuild } from './design-systems/token-contract-rebuild.js';
 import { registerBrandRoutes } from './brand-routes.js';
 import {
@@ -3063,13 +3068,32 @@ export async function startServer({
    * with zero rows there. Both writes happen from this single call site, so
    * they can never drift apart.
    */
+  const reservedDesignSystemResourceIds = (): Set<string> => {
+    const rows = db.prepare(
+      `SELECT resource_id AS resourceId
+         FROM workspace_resources
+        WHERE resource_type = 'design_system'`,
+    ).all() as Array<{ resourceId?: string }>;
+    return new Set(rows.flatMap((row) => {
+      const resourceId = row.resourceId?.trim();
+      return resourceId ? [designSystemLogicalResourceId(resourceId)] : [];
+    }));
+  };
   const createWorkspaceOwnedDesignSystemForContext = (
     root: string,
     input: UserDesignSystemInput,
     context: import('./collab/workspace-resource-mutation.js').WorkspaceResourceContext | null,
   ) => persistWorkspaceOwnedDesignSystem(root, input, context, {
-    ensureWorkspaceResource: (resourceType, workspaceId, resourceId, envelope) =>
-      ensureWorkspaceResource(db, resourceType, workspaceId, resourceId, envelope),
+    listReservedResourceIds: reservedDesignSystemResourceIds,
+    ensureWorkspaceResource: (resourceType, workspaceId, resourceId, envelope) => {
+      // The filesystem allocation awaited above, so another request could
+      // have claimed this logical id in the meantime. Fail before reusing its
+      // envelope; the wrapper removes only the directory it just allocated.
+      if (reservedDesignSystemResourceIds().has(resourceId)) {
+        throw new Error('DESIGN_SYSTEM_ID_CONFLICT');
+      }
+      return ensureWorkspaceResource(db, resourceType, workspaceId, resourceId, envelope);
+    },
   });
   const createWorkspaceOwnedDesignSystem = async (
     root: string,
@@ -5204,6 +5228,10 @@ export async function startServer({
     const hubResourceId =
       resource.hubResourceId ??
       `ds-${workspaceId.replace(/[^a-zA-Z0-9_-]/g, '-')}-${resource.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
+    const bindingResourceId = workspaceTeamDesignSystemBindingResourceId(
+      workspaceId,
+      resource.id,
+    );
     async function markTeamSynced(): Promise<void> {
       if (isOwnedByCurrentMember) return;
       const metadataPath = path.join(targetDir, 'metadata.json');
@@ -5234,13 +5262,18 @@ export async function startServer({
       // `workspace_resources` as `visibility: 'team'`, mirroring what
       // syncSharedTeamSkill's own markTeamSynced already does for skill.
       if (workspaceId) {
-        ensureWorkspaceResource(db, 'design_system', workspaceId, resource.id, {
+        ensureWorkspaceResource(db, 'design_system', workspaceId, bindingResourceId, {
           visibility: 'team',
           resourceState: 'active',
+          createdByWorkspaceMemberId: resource.ownerMemberId ?? scope.principal.memberId,
+          updatedByWorkspaceMemberId: scope.principal.memberId,
+          resourceHubResourceId: hubResourceId,
         });
-        updateWorkspaceResource(db, 'design_system', workspaceId, resource.id, {
+        updateWorkspaceResource(db, 'design_system', workspaceId, bindingResourceId, {
           visibility: 'team',
           resourceState: 'active',
+          updatedByWorkspaceMemberId: scope.principal.memberId,
+          resourceHubResourceId: hubResourceId,
         });
       }
     }
@@ -5684,12 +5717,54 @@ export async function startServer({
       }),
     );
   };
+  const adoptLegacyWorkspaceTeamDesignSystemBindings = async (
+    scope: TeamResourceRequestScope,
+  ): Promise<void> => {
+    const workspaceId = scope.principal.teamId;
+    const workspaceRoot = teamResourceWorkspaceRoot(
+      USER_DESIGN_SYSTEMS_DIR,
+      workspaceId,
+    );
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+        const marker = await readTeamResourceMaterialization(
+          USER_DESIGN_SYSTEMS_DIR,
+          workspaceId,
+          entry.name,
+          `user:${entry.name}`,
+        );
+        if (!marker || marker.kind !== 'design_system') return;
+        ensureWorkspaceResource(
+          db,
+          'design_system',
+          workspaceId,
+          workspaceTeamDesignSystemBindingResourceId(workspaceId, marker.resourceId),
+          {
+            visibility: 'team',
+            resourceState: 'active',
+            createdByWorkspaceMemberId: scope.principal.memberId,
+            updatedByWorkspaceMemberId: scope.principal.memberId,
+            resourceHubResourceId: marker.hubResourceId,
+          },
+        );
+      }),
+    );
+  };
   const reconcileTeamResourceKind = async (
     resourceType: ReconciledTeamResourceKind,
     scope: TeamResourceRequestScope,
   ) => {
     if (resourceType === 'plugin') {
       await adoptLegacyWorkspaceTeamPluginBindings(scope);
+    }
+    if (resourceType === 'design_system') {
+      await adoptLegacyWorkspaceTeamDesignSystemBindings(scope);
     }
     return reconcileWorkspaceResourcesWithRemote({
       getWorkspaceIdentity: async () => ({ workspaceId: scope.principal.teamId }),
@@ -5703,7 +5778,10 @@ export async function startServer({
           .flatMap((row: any) => {
             const logicalResourceId = resourceType === 'plugin'
               ? pluginIdFromWorkspaceTeamPluginBinding(workspaceId, row.resourceId)
-              : row.resourceId;
+              : resourceType === 'design_system'
+                ? designSystemIdFromWorkspaceTeamBinding(workspaceId, row.resourceId)
+                  ?? (row.resourceId.startsWith('user:') ? row.resourceId : null)
+                : row.resourceId;
             if (!logicalResourceId) return [];
             return [
               {
@@ -5717,7 +5795,9 @@ export async function startServer({
       applyRetire: (workspaceId, resourceId) => {
         const bindingResourceId = resourceType === 'plugin'
           ? workspaceTeamPluginBindingResourceId(workspaceId, resourceId)
-          : resourceId;
+          : resourceType === 'design_system'
+            ? workspaceTeamDesignSystemBindingResourceId(workspaceId, resourceId)
+            : resourceId;
         updateWorkspaceResource(db, resourceType, workspaceId, bindingResourceId, {
           resourceState: 'deleted',
         });
