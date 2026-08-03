@@ -1,7 +1,7 @@
-import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import http from 'node:http';
 import { dirname, resolve as pathResolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
@@ -15,37 +15,38 @@ const tsxCli = pathResolve(repoRoot, 'node_modules/tsx/dist/cli.mjs');
 interface CapturedRequest {
   method: string;
   url: string;
-  body: string;
   headers: http.IncomingHttpHeaders;
 }
 
-describe('od skill install CLI', () => {
+describe('od plugin exact workspace transport', () => {
   const requests: CapturedRequest[] = [];
   let server: http.Server;
   let baseUrl: string;
 
   beforeAll(async () => {
     server = http.createServer((req, res) => {
-      let body = '';
-      req.on('data', (chunk) => {
-        body += chunk;
+      requests.push({
+        method: req.method ?? '',
+        url: req.url ?? '',
+        headers: req.headers,
       });
-      req.on('end', () => {
-        requests.push({
-          method: req.method ?? '',
-          url: req.url ?? '',
-          body,
-          headers: req.headers,
-        });
+      res.statusCode = 200;
+      if (req.url === '/api/plugins') {
         res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify({
-          skill: {
-            id: 'remote-skill',
-            name: 'remote-skill',
-            source: 'user',
-          },
-        }));
-      });
+        res.end(JSON.stringify({ plugins: [] }));
+        return;
+      }
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        ok: true,
+        snapshotId: 'snapshot-a',
+        pluginId: 'plugin-a',
+        capabilitiesGranted: [],
+        issues: [],
+        freshDigest: '1234567890123456',
+        files: [],
+        folder: '/tmp/exported-plugin',
+      }));
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     const address = server.address();
@@ -85,53 +86,21 @@ describe('od skill install CLI', () => {
     }
   }
 
-  it('POSTs the plugin-compatible source and prints the response as JSON', async () => {
-    const result = await runCli([
-      'skill',
-      'install',
-      'github:owner/skill-repo',
-      '--daemon-url',
-      baseUrl,
-      '--json',
-    ]);
-
-    expect(result.code).toBe(0);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
-      method: 'POST',
-      url: '/api/skills/install',
-      body: JSON.stringify({ source: 'github:owner/skill-repo' }),
-    });
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      skill: { id: 'remote-skill' },
-    });
-  });
-
-  it('passes a browser GitHub repository URL to the shared daemon installer', async () => {
-    const result = await runCli([
-      'skill',
-      'install',
-      'https://github.com/leonxlnx/taste-skill',
-      '--daemon-url',
-      baseUrl,
-      '--json',
-    ]);
-
-    expect(result.code).toBe(0);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toMatchObject({
-      method: 'POST',
-      url: '/api/skills/install',
-      body: JSON.stringify({ source: 'https://github.com/leonxlnx/taste-skill' }),
-    });
-  });
-
   it.each([
-    ['install', ['install', 'github:owner/skill-repo']],
-    ['uninstall', ['uninstall', 'remote-skill']],
-  ])('sends the exact workspace pair for skill %s', async (_label, command) => {
+    ['list', ['list', '--json']],
+    ['info', ['info', 'plugin-a', '--json']],
+    ['apply', ['apply', 'plugin-a', '--json']],
+    ['trust', ['trust', 'plugin-a', '--capabilities', 'fs:read', '--json']],
+    ['uninstall', ['uninstall', 'plugin-a']],
+    ['snapshot show', ['snapshots', 'show', 'snapshot-a', '--json']],
+    ['canon', ['canon', 'snapshot-a', '--json']],
+    [
+      'export',
+      ['export', 'project-a', '--as', 'od', '--out', '/tmp/exported-plugin', '--json'],
+    ],
+  ])('sends exact workspace headers for %s', async (_label, command) => {
     const result = await runCli([
-      'skill',
+      'plugin',
       ...command,
       '--workspace',
       'workspace-a',
@@ -139,7 +108,6 @@ describe('od skill install CLI', () => {
       'member-a',
       '--daemon-url',
       baseUrl,
-      '--json',
     ]);
 
     expect(result.code).toBe(0);
@@ -150,22 +118,33 @@ describe('od skill install CLI', () => {
     });
   });
 
-  it.each([
-    ['install', ['install', 'github:owner/skill-repo']],
-    ['uninstall', ['uninstall', 'remote-skill']],
-  ])('rejects an incomplete workspace pair before skill %s', async (_label, command) => {
+  it('rejects an incomplete plugin scope before making a request', async () => {
     const result = await runCli([
-      'skill',
-      ...command,
+      'plugin',
+      'list',
       '--workspace',
       'workspace-a',
       '--daemon-url',
       baseUrl,
-      '--json',
     ]);
 
     expect(result.code).not.toBe(0);
     expect(result.stderr).toContain('--workspace-member');
     expect(requests).toHaveLength(0);
+  });
+
+  it('keeps headerless local CLI compatibility when both flags are absent', async () => {
+    const result = await runCli([
+      'plugin',
+      'list',
+      '--json',
+      '--daemon-url',
+      baseUrl,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.headers['x-od-workspace-id']).toBeUndefined();
+    expect(requests[0]?.headers['x-od-workspace-member-id']).toBeUndefined();
   });
 });

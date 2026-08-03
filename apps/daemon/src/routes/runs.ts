@@ -495,8 +495,22 @@ export interface RegisterRunRoutesDeps {
       runs: ChatRunService;
       db: SqliteDb;
     }) => void;
-    loadPluginRegistryView: () => Promise<Parameters<typeof resolvePluginSnapshot>[0]['registry']>;
+    loadPluginRegistryView: (options?: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    }) => Promise<Parameters<typeof resolvePluginSnapshot>[0]['registry']>;
     renderPluginBriefTemplate: (template: string, inputs?: Record<string, unknown>) => string;
+    /**
+     * Fail-closed request-scoped plugin lookup. The catalog API and the run
+     * API must use the same Workspace/member visibility rules; otherwise a
+     * caller can bypass a hidden Personal plugin by posting its id directly
+     * to /api/runs.
+     */
+    authorizePluginRequest?: (
+      req: ApiRequest,
+      res: ApiResponse,
+      pluginId: string,
+    ) => Promise<boolean>;
   };
   telemetry: {
     reportRunCompletionTelemetryFallback: (input: RunCreatedFallbackInput) => void;
@@ -1243,7 +1257,21 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
       let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
       try {
-        registryView = await loadPluginRegistryView();
+        const projectBinding = ctx.projectStore?.getWorkspaceProjectByProjectId(
+          db,
+          requestBody.projectId,
+        );
+        registryView = await loadPluginRegistryView(
+          projectBinding?.workspaceId
+            ? {
+                workspaceId: String(projectBinding.workspaceId),
+                workspaceMemberId:
+                  typeof projectBinding.createdByWorkspaceMemberId === 'string'
+                    ? projectBinding.createdByWorkspaceMemberId
+                    : null,
+              }
+            : undefined,
+        );
       } catch (err) {
         return res.status(500).json({ error: String(err) });
       }
@@ -1264,6 +1292,19 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           }
         }
       }
+      // Authorize the final plugin id, not only the literal request field.
+      // Project-kind fallback may synthesize a pluginId, and it must not gain
+      // a bypass around the same scoped catalog resolver.
+      if (
+        typeof runResolveBody.pluginId === 'string'
+        && runResolveBody.pluginId.length > 0
+        && ctx.plugins.authorizePluginRequest
+        && !await ctx.plugins.authorizePluginRequest(
+          req,
+          res,
+          runResolveBody.pluginId,
+        )
+      ) return;
       const resolved = resolvePluginSnapshot({
         db,
         body: runResolveBody,
@@ -2793,6 +2834,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         byokInputError,
       );
     }
+    if (
+      typeof requestBody.pluginId === 'string'
+      && requestBody.pluginId.length > 0
+      && ctx.plugins.authorizePluginRequest
+      && !await ctx.plugins.authorizePluginRequest(
+        req,
+        res,
+        requestBody.pluginId,
+      )
+    ) return;
     const meta: RunCreateMeta = {
       ...withoutSensitiveRunInput(requestBody),
       mediaExecution: mediaExecution.policy,

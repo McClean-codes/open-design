@@ -120,6 +120,26 @@ describe('team resource share /team listing', () => {
     expect(shareCalls).toBe(0);
   });
 
+  it('checks exact Personal creator ownership before invoking the share service', async () => {
+    let shareCalls = 0;
+    const service = {
+      async share() {
+        shareCalls += 1;
+        return { version: 1 };
+      },
+    } as unknown as TeamResourceShareService;
+    const req = await startServer({
+      basePath: 'plugins',
+      share: service,
+      authorizeShare: async () => false,
+    });
+
+    const response = await req.post('/api/workspace/plugins/private-plugin/share');
+    expect(response.status).toBe(403);
+    expect(response.body.error).toBe('WORKSPACE_RESOURCE_SHARE_DENIED');
+    expect(shareCalls).toBe(0);
+  });
+
   it('forwards each request-resolved scope through list, share, and unshare', async () => {
     const seen: Array<{ operation: string; workspaceId: string }> = [];
     const service = {

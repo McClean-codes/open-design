@@ -86,7 +86,11 @@ export function createDesignSystemServerServices({
   skills: {
     listSkills: (
       roots: string[],
-      options?: { db?: Database.Database; workspaceId?: string | null },
+      options?: {
+        db?: Database.Database;
+        workspaceId?: string | null;
+        workspaceMemberId?: string | null;
+      },
     ) => Promise<SkillEntry[]>;
     findSkillById: (skills: SkillEntry[], id: string) => SkillEntry | undefined;
   };
@@ -156,7 +160,10 @@ export function createDesignSystemServerServices({
    * branch the way a plain `options.workspaceId ? … : …` truthiness check
    * would.
    */
-  async function listAllSkills(options: { workspaceId?: string | null } = {}) {
+  async function listAllSkills(options: {
+    workspaceId?: string | null;
+    workspaceMemberId?: string | null;
+  } = {}) {
     const db = getDb?.();
     if (!db || options.workspaceId === undefined) {
       return skills.listSkills(roots.SKILL_ROOTS);
@@ -164,6 +171,7 @@ export function createDesignSystemServerServices({
     const personalAndBuiltIn = await skills.listSkills(roots.SKILL_ROOTS, {
       db,
       workspaceId: options.workspaceId,
+      workspaceMemberId: options.workspaceMemberId ?? null,
     });
     const workspaceId = options.workspaceId?.trim();
     if (!workspaceId || !roots.SKILL_ROOTS[0]) return personalAndBuiltIn;
@@ -182,7 +190,10 @@ export function createDesignSystemServerServices({
   }
 
   async function listAllSkillLikeEntries(
-    options: { workspaceId?: string | null } = {},
+    options: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    } = {},
   ) {
     if (options.workspaceId === undefined) {
       return skills.listSkills(roots.ALL_SKILL_LIKE_ROOTS);

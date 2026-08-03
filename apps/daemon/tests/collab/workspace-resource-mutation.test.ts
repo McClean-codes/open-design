@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   enforceVerifiedWorkspaceResourceMutation,
+  enforceVerifiedWorkspaceResourceRead,
   enforceWorkspaceResourceMutation,
   type WorkspaceResourceAccessInput,
 } from '../../src/collab/workspace-resource-mutation.js';
@@ -190,7 +191,7 @@ describe('enforceWorkspaceResourceMutation', () => {
     }]);
   });
 
-  it('allows a privileged owner/admin to mutate a resource they did not create', () => {
+  it('does not let a privileged owner/admin mutate another member\'s Personal resource', () => {
     const { getWorkspaceResource, getWorkspaceResourceByResourceId } = makeLookups({
       'plugin-a': { workspaceId: 'ws-1', visibility: 'personal', resourceState: 'active', createdByWorkspaceMemberId: 'member-a' },
     });
@@ -204,6 +205,26 @@ describe('enforceWorkspaceResourceMutation', () => {
       getWorkspaceResourceByResourceId,
       {},
       'plugin-a',
+      'delete',
+    );
+    expect(allowed).toBe(false);
+    expect(calls.at(-1)?.code).toBe('WORKSPACE_PLUGIN_PERMISSION_DENIED');
+  });
+
+  it('keeps the existing Team-resource admin management policy', () => {
+    const { getWorkspaceResource, getWorkspaceResourceByResourceId } = makeLookups({
+      'plugin-team': { workspaceId: 'ws-1', visibility: 'team', resourceState: 'active', createdByWorkspaceMemberId: 'member-a' },
+    });
+    const { calls, sendApiError } = spySendApiError();
+    const allowed = enforceWorkspaceResourceMutation(
+      'plugin',
+      fakeReq(workspaceHeaders({ workspaceId: 'ws-1', memberId: 'member-admin', role: 'admin' })),
+      fakeRes(),
+      sendApiError,
+      getWorkspaceResource,
+      getWorkspaceResourceByResourceId,
+      {},
+      'plugin-team',
       'delete',
     );
     expect(allowed).toBe(true);
@@ -697,5 +718,90 @@ describe('authoritative Workspace-bound mutation regression', () => {
 
     expect(allowed).toBe(true);
     expect(calls).toEqual([]);
+  });
+});
+
+describe('authoritative Personal and Team resource visibility', () => {
+  const verifiedAs = (
+    memberId: string,
+    role: 'owner' | 'admin' | 'member' = 'member',
+  ) => async () => ({
+    ok: true as const,
+    context: workspaceContextFromDirectoryItem({
+      workspaceId: 'workspace-a',
+      workspaceName: 'Workspace A',
+      workspaceType: 'team' as const,
+      workspaceMemberId: memberId,
+      role,
+      memberStatus: 'active' as const,
+      lifecycleState: 'active' as const,
+    }),
+  });
+
+  async function readAs(
+    row: WorkspaceResourceAccessInput & { workspaceId: string },
+    memberId: string,
+    role: 'owner' | 'admin' | 'member' = 'member',
+  ) {
+    const lookups = makeLookups({ resource: row });
+    const errors = spySendApiError();
+    const allowed = await enforceVerifiedWorkspaceResourceRead(
+      'skill',
+      fakeReq(workspaceHeaders({ workspaceId: 'workspace-a', memberId, role })),
+      fakeRes(),
+      errors.sendApiError,
+      lookups.getWorkspaceResource,
+      lookups.getWorkspaceResourceByResourceId,
+      {},
+      'resource',
+      verifiedAs(memberId, role),
+    );
+    return { allowed, errors: errors.calls };
+  }
+
+  it('allows the Personal creator to read', async () => {
+    const result = await readAs({
+      workspaceId: 'workspace-a',
+      visibility: 'personal',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    }, 'member-a');
+    expect(result.allowed).toBe(true);
+    expect(result.errors).toEqual([]);
+  });
+
+  it.each(['owner', 'admin'] as const)(
+    'does not let a same-Workspace %s read another member\'s Personal resource',
+    async (role) => {
+      const result = await readAs({
+        workspaceId: 'workspace-a',
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'member-a',
+      }, `member-${role}`, role);
+      expect(result.allowed).toBe(false);
+      expect(result.errors.at(-1)?.code).toBe('WORKSPACE_SKILL_PERMISSION_DENIED');
+    },
+  );
+
+  it('quarantines an attributed Personal row whose creator is missing', async () => {
+    const result = await readAs({
+      workspaceId: 'workspace-a',
+      visibility: 'personal',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: null,
+    }, 'member-owner', 'owner');
+    expect(result.allowed).toBe(false);
+  });
+
+  it('lets another active member read a Team resource', async () => {
+    const result = await readAs({
+      workspaceId: 'workspace-a',
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    }, 'member-b');
+    expect(result.allowed).toBe(true);
+    expect(result.errors).toEqual([]);
   });
 });

@@ -29,6 +29,7 @@ import { createEnforceWorkspaceProjectMutation } from '../src/routes/project/ind
 import { workspaceContextFromDirectoryItem } from '../src/collab/vela-workspace-context.js';
 import { registerRunRoutes } from '../src/routes/runs.js';
 import { connectorService } from '../src/connectors/service.js';
+import { upsertInstalledPlugin } from '../src/plugins/registry.js';
 
 let server: http.Server | null = null;
 let tempDir: string | null = null;
@@ -166,6 +167,8 @@ async function startServer(opts?: {
   ) => Promise<boolean>;
   isAmrSignedIn?: () => boolean | Promise<boolean>;
   verifyWorkspaceRequestAuthority?: (req: any) => Promise<any>;
+  authorizePluginRequest?: (req: any, res: any, pluginId: string) => Promise<boolean>;
+  seedImplicitScenarioPlugin?: boolean;
   teamProjectResourceState?: 'active' | 'deleted';
   loadPluginRegistryView?: () => Promise<any>;
 }) {
@@ -174,7 +177,34 @@ async function startServer(opts?: {
   const db = openDatabase(tempDir);
   const now = Date.now();
   for (const id of [TEAM_PROJECT, PERSONAL_PROJECT, UNBOUND_PROJECT]) {
-    insertProject(db, { id, name: id, createdAt: now, updatedAt: now });
+    insertProject(db, {
+      id,
+      name: id,
+      createdAt: now,
+      updatedAt: now,
+      ...(id === PERSONAL_PROJECT && opts?.seedImplicitScenarioPlugin
+        ? { metadata: { kind: 'prototype' } }
+        : {}),
+    });
+  }
+  if (opts?.seedImplicitScenarioPlugin) {
+    upsertInstalledPlugin(db, {
+      id: 'example-web-prototype',
+      title: 'Bundled prototype scenario',
+      version: '1.0.0',
+      sourceKind: 'bundled',
+      source: '/bundled/example-web-prototype',
+      trust: 'bundled',
+      capabilitiesGranted: [],
+      manifest: {
+        name: 'example-web-prototype',
+        title: 'Bundled prototype scenario',
+        version: '1.0.0',
+      } as any,
+      fsPath: '/bundled/example-web-prototype',
+      installedAt: now,
+      updatedAt: now,
+    });
   }
   ensureWorkspaceProject(db, {
     projectId: TEAM_PROJECT,
@@ -247,6 +277,7 @@ async function startServer(opts?: {
       firePipelineForRun: () => {},
       loadPluginRegistryView: opts?.loadPluginRegistryView ?? (async () => ({} as any)),
       renderPluginBriefTemplate: (template: string) => template,
+      authorizePluginRequest: opts?.authorizePluginRequest,
     },
     telemetry: {
       reportRunCompletionTelemetryFallback: () => {},
@@ -320,6 +351,73 @@ async function startServer(opts?: {
 }
 
 describe('POST /api/runs — workspace mutation gate', () => {
+  it.each(['/api/runs', '/api/chat'])(
+    'does not let an explicit plugin id bypass the request-scoped catalog through %s',
+    async (route) => {
+      const authorizePluginRequest = vi.fn(async (_req, res) => {
+        sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+        return false;
+      });
+      const baseUrl = await startServer({ authorizePluginRequest });
+      const resp = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: PERSONAL_PROJECT,
+          pluginId: 'private-plugin-owned-by-another-member',
+          agentId: 'claude',
+          message: 'must fail before global snapshot resolution',
+        }),
+      });
+
+      expect(resp.status).toBe(404);
+      await expect(resp.json()).resolves.toMatchObject({
+        error: { code: 'PLUGIN_NOT_FOUND' },
+      });
+      expect(authorizePluginRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'private-plugin-owned-by-another-member',
+      );
+    },
+  );
+
+  it(
+    'authorizes an implicit project-kind plugin before snapshot resolution through /api/runs',
+    async () => {
+      const authorizePluginRequest = vi.fn(async (_req, res) => {
+        sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+        return false;
+      });
+      const baseUrl = await startServer({
+        authorizePluginRequest,
+        seedImplicitScenarioPlugin: true,
+      });
+      const resp = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: PERSONAL_PROJECT,
+          agentId: 'claude',
+          message: 'fallback must use scoped plugin lookup',
+        }),
+      });
+
+      expect(resp.status).toBe(404);
+      expect(authorizePluginRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'example-web-prototype',
+      );
+    },
+  );
+
   it('allows a headerless local run against a personal bound project so billing uses the persisted binding', async () => {
     const baseUrl = await startServer();
     const resp = await fetch(`${baseUrl}/api/runs`, {

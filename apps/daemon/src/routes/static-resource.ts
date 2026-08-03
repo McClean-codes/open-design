@@ -366,7 +366,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
       const workspaceId = authority?.workspaceId ?? null;
-      const skills = await listAllSkills({ workspaceId });
+      const skills = await listAllSkills({
+        workspaceId,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       // Strip full body + on-disk dir from the listing — frontend fetches the
       // body via /api/skills/:id when needed (keeps the listing payload small).
       res.json({
@@ -385,7 +388,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
       const workspaceId = authority?.workspaceId ?? null;
-      const skills = await listAllSkills({ workspaceId });
+      const skills = await listAllSkills({
+        workspaceId,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const skill = findSkillById(skills, req.params.id);
       if (!skill) return res.status(404).json({ error: 'skill not found' });
       const { dir: _dir, ...serializable } = skill;
@@ -434,7 +440,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       if (authority === undefined) return;
       const result = await importUserSkill(USER_SKILLS_DIR, req.body || {});
       bindImportedSkillToWorkspace(authority, result.id);
-      const skills = await listAllSkills({ workspaceId: authority?.workspaceId ?? null });
+      const skills = await listAllSkills({
+        workspaceId: authority?.workspaceId ?? null,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const skill = findSkillById(skills, result.id);
       if (!skill) {
         return sendApiError(
@@ -469,10 +478,30 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     try {
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
-      const skills = await listAllSkills({ workspaceId: authority?.workspaceId ?? null });
+      const skills = await listAllSkills({
+        workspaceId: authority?.workspaceId ?? null,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const skill = findSkillById(skills, req.params.id);
       if (!skill) {
         return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
+      }
+      const existingBinding = getWorkspaceResourceByResourceId(db, 'skill', skill.id);
+      if (
+        authority
+        && existingBinding
+        && !(
+          existingBinding.workspaceId === authority.workspaceId
+          && existingBinding.visibility === 'personal'
+          && existingBinding.createdByWorkspaceMemberId === authority.workspaceMemberId
+        )
+      ) {
+        return sendApiError(
+          res,
+          409,
+          'WORKSPACE_RESOURCE_ID_CONFLICT',
+          'a Personal skill with this id belongs to another workspace member',
+        );
       }
       // AC-9 copy red-line (D3): a frozen team skill cannot be edit-shadowed into
       // a personal editable copy. No-op until the resource-hub reports this skill
@@ -486,7 +515,11 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
         id: skill.id,
         sourceDir: skill.dir,
       });
-      const next = await listAllSkills({ workspaceId: authority?.workspaceId ?? null });
+      bindImportedSkillToWorkspace(authority, result.id);
+      const next = await listAllSkills({
+        workspaceId: authority?.workspaceId ?? null,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const updated = findSkillById(next, result.id);
       if (!updated) {
         return sendApiError(
@@ -523,7 +556,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
       const workspaceId = authority?.workspaceId ?? null;
-      const skills = await listAllSkills({ workspaceId });
+      const skills = await listAllSkills({
+        workspaceId,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const skill = findSkillById(skills, req.params.id);
       if (!skill) {
         return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
@@ -727,7 +763,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       });
       if (authority === undefined) return;
       const workspaceId = authority?.workspaceId ?? null;
-      const skills = await listAllSkillLikeEntries({ workspaceId });
+      const skills = await listAllSkillLikeEntries({
+        workspaceId,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const workspaceQuery = authority
         ? `?workspaceId=${encodeURIComponent(authority.workspaceId)}&workspaceMemberId=${encodeURIComponent(authority.workspaceMemberId)}`
         : '';
@@ -859,7 +898,10 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       });
       if (authority === undefined) return;
       const workspaceId = authority?.workspaceId ?? null;
-      const skills = await listAllSkillLikeEntries({ workspaceId });
+      const skills = await listAllSkillLikeEntries({
+        workspaceId,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
       const skill = findSkillById(skills, req.params.id);
       if (!skill) {
         return res.status(404).type('text/plain').send('skill not found');
@@ -918,13 +960,23 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       if (typeof result.dir !== 'string' || !result.dir) {
         return res.status(500).json({ error: 'skill install did not return an installation directory' });
       }
-      const skills = await listAllSkills({ workspaceId: authority?.workspaceId ?? null });
       const installedDir = fs.realpathSync.native(result.dir);
-      const skill = skills.find((candidate) => fs.realpathSync.native(candidate.dir) === installedDir);
-      if (!skill) {
+      const unscopedSkills = await listAllSkills();
+      const installed = unscopedSkills.find(
+        (candidate) => fs.realpathSync.native(candidate.dir) === installedDir,
+      );
+      if (!installed) {
         return res.status(500).json({ error: `installed skill was not found in catalog: ${result.dir}` });
       }
-      bindImportedSkillToWorkspace(authority, skill.id);
+      bindImportedSkillToWorkspace(authority, installed.id);
+      const scopedSkills = await listAllSkills({
+        workspaceId: authority?.workspaceId ?? null,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
+      const skill = findSkillById(scopedSkills, installed.id);
+      if (!skill) {
+        return res.status(500).json({ error: 'installed skill was not found in scoped catalog' });
+      }
       res.json({
         skill: {
           ...skill,
@@ -947,6 +999,15 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
   app.delete('/api/skills/:id', async (req, res) => {
     if (!requireLocalOrigin(req, res)) return;
     try {
+      const authority = await resolveWorkspaceAuthority(req, res);
+      if (authority === undefined) return;
+      const skills = await listAllSkills({
+        workspaceId: authority?.workspaceId ?? null,
+        workspaceMemberId: authority?.workspaceMemberId ?? null,
+      });
+      if (!findSkillById(skills, req.params.id)) {
+        return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
+      }
       if (!await enforceSkillWorkspaceMutation(req, res, req.params.id, 'delete')) return;
       const result = await uninstallById(req.params.id, USER_SKILLS_DIR, SKILLS_DIR, 'skill');
       if (!result.ok) return res.status(result.status || 400).json({ error: result.error });

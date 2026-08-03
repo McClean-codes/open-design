@@ -72,6 +72,7 @@ export interface ResourceDeps {
   // compose the system prompt) from anywhere.
   listAllSkills: (options?: {
     workspaceId?: string | null;
+    workspaceMemberId?: string | null;
   }) => Promise<Array<SkillInfo & { source?: string }>>;
   // Mirrors listAllSkills but scans DESIGN_TEMPLATE_ROOTS so the Templates
   // surface only sees rendering-catalogue entries.
@@ -82,6 +83,7 @@ export interface ResourceDeps {
   // a stored project.skillId points at either root.
   listAllSkillLikeEntries: (options?: {
     workspaceId?: string | null;
+    workspaceMemberId?: string | null;
   }) => Promise<Array<SkillInfo & { source?: string }>>;
   mimeFor: (filePath: string) => string;
 }

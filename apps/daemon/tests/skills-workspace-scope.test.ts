@@ -89,30 +89,42 @@ function bindSkillToWorkspace(skillId: string, workspaceId: string, createdByWor
   });
 }
 
-async function fetchSkillIds(workspaceId?: string): Promise<string[]> {
+async function fetchSkills(
+  workspaceId?: string,
+  workspaceMemberId = 'member-owner',
+): Promise<Array<{ id: string; source?: string; teamSynced?: boolean }>> {
   const resp = await fetch(
     `${baseUrl}/api/skills`,
     workspaceId
       ? {
           headers: {
             'x-od-workspace-id': workspaceId,
-            'x-od-workspace-member-id': 'member-owner',
+            'x-od-workspace-member-id': workspaceMemberId,
           },
         }
       : undefined,
   );
-  const body = (await resp.json()) as { skills: Array<{ id: string }> };
-  return body.skills.map((s) => s.id);
+  const body = (await resp.json()) as {
+    skills: Array<{ id: string; source?: string; teamSynced?: boolean }>;
+  };
+  return body.skills;
+}
+
+async function fetchSkillIds(
+  workspaceId?: string,
+  workspaceMemberId = 'member-owner',
+): Promise<string[]> {
+  return (await fetchSkills(workspaceId, workspaceMemberId)).map((skill) => skill.id);
 }
 
 describe('GET /api/skills — workspace visibility scope', () => {
-  it('keeps an unclaimed (unbound) skill visible from every workspace', async () => {
+  it('quarantines an unclaimed user skill from every explicit workspace', async () => {
     const skillId = `wsscope-unclaimed-${Date.now()}`;
     await seedSkillFolder(skillId);
 
-    expect(await fetchSkillIds('ws-scope-a')).toContain(skillId);
-    expect(await fetchSkillIds('ws-scope-b')).toContain(skillId);
-    // Also visible with no workspace header at all (unscoped catalog).
+    expect(await fetchSkillIds('ws-scope-a', 'member-a')).not.toContain(skillId);
+    expect(await fetchSkillIds('ws-scope-b', 'member-b')).not.toContain(skillId);
+    // Signed-out/local catalog remains able to use the preserved legacy skill.
     expect(await fetchSkillIds()).toContain(skillId);
   });
 
@@ -123,6 +135,103 @@ describe('GET /api/skills — workspace visibility scope', () => {
 
     expect(await fetchSkillIds('ws-scope-owner')).toContain(skillId);
     expect(await fetchSkillIds('ws-scope-other')).not.toContain(skillId);
+  });
+
+  it('hides an unshared personal skill from another member in the same workspace', async () => {
+    const skillId = `wsscope-personal-${Date.now()}`;
+    await seedSkillFolder(skillId);
+    bindSkillToWorkspace(skillId, 'ws-scope-team', 'member-owner');
+
+    expect(await fetchSkillIds('ws-scope-team', 'member-owner')).toContain(skillId);
+    expect(await fetchSkillIds('ws-scope-team', 'member-other')).not.toContain(skillId);
+
+    const detail = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      headers: workspaceHeaders('member-other', 'admin', 'ws-scope-team'),
+    });
+    const files = await fetch(`${baseUrl}/api/skills/${skillId}/files`, {
+      headers: workspaceHeaders('member-other', 'owner', 'ws-scope-team'),
+    });
+    expect(detail.status).toBe(404);
+    expect(files.status).toBe(404);
+  });
+
+  it('shows a shared Team skill to another member in the same workspace', async () => {
+    const skillId = `wsscope-team-${Date.now()}`;
+    await seedSkillFolder(skillId);
+    bindSkillToWorkspace(skillId, 'ws-scope-team-shared', 'member-owner');
+    const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+    updateWorkspaceResource(db, 'skill', 'ws-scope-team-shared', skillId, {
+      visibility: 'team',
+    });
+
+    expect(await fetchSkillIds('ws-scope-team-shared', 'member-other')).toContain(skillId);
+    const detail = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      headers: workspaceHeaders('member-other', 'member', 'ws-scope-team-shared'),
+    });
+    expect(detail.status).toBe(200);
+  });
+
+  it('falls back to the bundled skill when another member owns a same-id user shadow', async () => {
+    const skillId = 'agent-browser';
+    await seedSkillFolder(skillId);
+    bindSkillToWorkspace(skillId, 'ws-scope-shadow', 'member-owner');
+
+    const mine = (await fetchSkills('ws-scope-shadow', 'member-owner'))
+      .find((skill) => skill.id === skillId);
+    const other = (await fetchSkills('ws-scope-shadow', 'member-other'))
+      .find((skill) => skill.id === skillId);
+
+    expect(mine?.source).toBe('user');
+    expect(other?.source).toBe('built-in');
+  });
+
+  it('keeps a built-in edit shadow private and rejects a same-id overwrite by another member', async () => {
+    const skillId = 'full-page-screenshot';
+    const ownerHeaders = {
+      ...workspaceHeaders('member-owner', 'member', 'ws-scope-edit-shadow'),
+      'content-type': 'application/json',
+    };
+    const otherHeaders = {
+      ...workspaceHeaders('member-other', 'admin', 'ws-scope-edit-shadow'),
+      'content-type': 'application/json',
+    };
+    const ownerEdit = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      method: 'PUT',
+      headers: ownerHeaders,
+      body: JSON.stringify({
+        name: skillId,
+        description: 'Private owner edit',
+        body: 'PRIVATE OWNER SKILL BODY',
+      }),
+    });
+    expect(ownerEdit.status).toBe(200);
+
+    const ownerDetail = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      headers: ownerHeaders,
+    });
+    const otherDetail = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      headers: otherHeaders,
+    });
+    const ownerBody = await ownerDetail.text();
+    const otherBody = await otherDetail.text();
+    expect(ownerBody).toContain('PRIVATE OWNER SKILL BODY');
+    expect(otherBody).not.toContain('PRIVATE OWNER SKILL BODY');
+    expect(JSON.parse(otherBody).source).toBe('built-in');
+
+    const overwrite = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      method: 'PUT',
+      headers: otherHeaders,
+      body: JSON.stringify({
+        name: skillId,
+        description: 'Attacker edit',
+        body: 'ATTACKER OVERWRITE',
+      }),
+    });
+    expect(overwrite.status).toBe(409);
+    const ownerAfter = await fetch(`${baseUrl}/api/skills/${skillId}`, {
+      headers: ownerHeaders,
+    });
+    expect(await ownerAfter.text()).toContain('PRIVATE OWNER SKILL BODY');
   });
 
   // spec 04 §10: the symmetric case plugin/design-system already pin — a
@@ -138,8 +247,7 @@ describe('GET /api/skills — workspace visibility scope', () => {
     bindSkillToWorkspace(skillId, 'ws-scope-headerless', 'member-owner');
 
     expect(await fetchSkillIds()).not.toContain(skillId);
-    // Still visible from its own workspace, and to any workspace for an
-    // unclaimed sibling — this fix narrows one branch, not the whole filter.
+    // Still visible from its exact owner identity.
     expect(await fetchSkillIds('ws-scope-headerless')).toContain(skillId);
   });
 });
@@ -155,7 +263,7 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
       headers: workspaceHeaders('member-other', 'member', 'skill-gate-1'),
     });
 
-    expect(resp.status).toBe(403);
+    expect(resp.status).toBe(404);
     expect(existsSync(folder)).toBe(true);
   });
 
@@ -177,7 +285,7 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
     expect(getWorkspaceResourceByResourceId(db, 'skill', skillId)).toBeUndefined();
   });
 
-  it('allows a workspace admin to delete a skill imported by someone else', async () => {
+  it('does not let a workspace admin discover or delete another member\'s Personal skill', async () => {
     const skillId = `wsgate-admin-${Date.now()}`;
     const folder = await seedSkillFolder(skillId);
     bindSkillToWorkspace(skillId, 'skill-gate-3', 'member-owner');
@@ -187,16 +295,11 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
       headers: workspaceHeaders('member-admin', 'admin', 'skill-gate-3'),
     });
 
-    expect(resp.status).toBe(200);
-    expect(existsSync(folder)).toBe(false);
+    expect(resp.status).toBe(404);
+    expect(existsSync(folder)).toBe(true);
   });
 
-  // No retroactive tagging (spec's stated design principle, same rule
-  // design-systems and plugin already ship): a skill with no
-  // workspace_resources row — every skill imported before this round shipped
-  // — stays outside the isolation regime rather than becoming permanently
-  // un-deletable the moment a caller happens to carry workspace headers.
-  it('still allows deleting a legacy skill with no workspace binding at all', async () => {
+  it('quarantines a legacy unbound skill from an explicitly scoped caller', async () => {
     const skillId = `wsgate-legacy-${Date.now()}`;
     const folder = await seedSkillFolder(skillId);
 
@@ -204,6 +307,16 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
       method: 'DELETE',
       headers: workspaceHeaders('member-someone-else', 'member', 'skill-gate-4'),
     });
+
+    expect(resp.status).toBe(404);
+    expect(existsSync(folder)).toBe(true);
+  });
+
+  it('keeps a legacy unbound skill manageable from the headerless local lane', async () => {
+    const skillId = `wsgate-legacy-local-${Date.now()}`;
+    const folder = await seedSkillFolder(skillId);
+
+    const resp = await fetch(`${baseUrl}/api/skills/${skillId}`, { method: 'DELETE' });
 
     expect(resp.status).toBe(200);
     expect(existsSync(folder)).toBe(false);
@@ -218,7 +331,7 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
 
     const resp = await fetch(`${baseUrl}/api/skills/${skillId}`, { method: 'DELETE' });
 
-    expect(resp.status).toBe(400);
+    expect(resp.status).toBe(404);
     expect(existsSync(folder)).toBe(true);
   });
 
@@ -234,7 +347,7 @@ describe('DELETE /api/skills/:id — workspace ownership gate', () => {
 
     const resp = await fetch(`${baseUrl}/api/skills/${skillId}`, { method: 'DELETE' });
 
-    expect(resp.status).toBe(400);
+    expect(resp.status).toBe(404);
     expect(existsSync(folder)).toBe(true);
   });
 });
@@ -282,7 +395,7 @@ describe('GET /api/skills — teamSynced projection', () => {
     expect(skill?.teamSynced).toBeFalsy();
   });
 
-  it('omits teamSynced for an unbound (legacy) skill', async () => {
+  it('keeps an unbound legacy skill out of an explicit workspace', async () => {
     const skillId = `wsteamsynced-legacy-${Date.now()}`;
     await seedSkillFolder(skillId);
 
@@ -292,7 +405,7 @@ describe('GET /api/skills — teamSynced projection', () => {
     const body = (await resp.json()) as { skills: Array<{ id: string; teamSynced?: boolean }> };
     const skill = body.skills.find((s) => s.id === skillId);
 
-    expect(skill).toBeTruthy();
-    expect(skill?.teamSynced).toBeFalsy();
+    expect(skill).toBeUndefined();
+    expect((await fetchSkills()).find((row) => row.id === skillId)?.teamSynced).toBeFalsy();
   });
 });

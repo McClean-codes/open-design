@@ -316,17 +316,27 @@ export function workspaceResourceAccess(
   const frozen = wp.resourceState === 'frozen' || wp.resourceState === 'deleted' || isWorkspaceResourceLocked(ctx);
   const selfCreated = wp.createdByWorkspaceMemberId != null && wp.createdByWorkspaceMemberId === ctx.workspaceMemberId;
   const privileged = ctx.role === 'owner' || ctx.role === 'admin';
-  const canMutate = !frozen && ctx.canWriteSyncedFiles && ctx.memberStatus === 'active' && (privileged || selfCreated);
-  // Sharing is the one mutation that must ALSO work on an unattributed row:
-  // lazy projection never assigns ownership to the reader (adoption red
-  // line), yet a local resource physically exists only on this user's disk —
-  // sharing it stamps the sharer as owner. Without this, a plain member's own
-  // local resources could never be shared. Destructive actions
-  // (delete/rename/unshare) stay on the strict `canMutate`.
+  const canMutate =
+    !frozen
+    && ctx.canWriteSyncedFiles
+    && ctx.memberStatus === 'active'
+    && (
+      wp.visibility === 'personal'
+        ? selfCreated
+        : privileged || selfCreated
+    );
+  // A bound Personal row must always have an exact creator witness; neither a
+  // privileged role nor a missing creator permits adoption. Truly unbound
+  // local resources use the separate no-binding compatibility lane and never
+  // reach this computation. Team rows retain the existing governance policy.
   const unattributed = wp.createdByWorkspaceMemberId == null;
   const canShareLocal =
     !frozen && ctx.canWriteSyncedFiles && ctx.memberStatus === 'active' &&
-    (privileged || selfCreated || unattributed);
+    (
+      wp.visibility === 'personal'
+        ? selfCreated
+        : privileged || selfCreated || unattributed
+    );
   const disabledReason: 'workspace_deleted' | 'workspace_locked' | 'permission_denied' | undefined = frozen
     ? ctx.lifecycleState === 'deleted' || wp.resourceState === 'deleted'
       ? 'workspace_deleted'
@@ -627,7 +637,14 @@ export async function enforceVerifiedWorkspaceResourceRead(
   }
   const context = workspaceResourceContextFromVerified(verified.context);
   const row = getWorkspaceResource(db, context.workspaceId, resourceId);
-  if (!row || context.memberStatus !== 'active') {
+  if (
+    !row
+    || context.memberStatus !== 'active'
+    || (
+      row.visibility === 'personal'
+      && row.createdByWorkspaceMemberId !== context.workspaceMemberId
+    )
+  ) {
     sendApiError(
       res,
       403,

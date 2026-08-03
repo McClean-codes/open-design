@@ -729,6 +729,7 @@ import {
 import {
   headerValue,
   isWorkspaceResourceLocked,
+  resolveOptionalWorkspaceRequestAuthority,
   workspaceResourceContext,
   workspaceResourceContextFromRequest,
 } from './collab/workspace-resource-mutation.js';
@@ -5565,6 +5566,16 @@ export async function startServer({
   registerTeamResourceShareRoutes(app, {
     basePath: 'plugins',
     resolveScope: resolveTeamResourceScope,
+    authorizeShare: (id, scope) => {
+      const binding = getWorkspaceResourceByResourceId(db, 'plugin', id);
+      return Boolean(
+        binding
+        && binding.workspaceId === scope.principal.teamId
+        && binding.visibility === 'personal'
+        && binding.resourceState === 'active'
+        && binding.createdByWorkspaceMemberId === scope.principal.memberId
+      );
+    },
     syncSharedResource: syncSharedTeamPlugin,
     share: pluginsTeamShare,
     listTeam: pluginsTeamList,
@@ -5595,6 +5606,16 @@ export async function startServer({
   registerTeamResourceShareRoutes(app, {
     basePath: 'skills',
     resolveScope: resolveTeamResourceScope,
+    authorizeShare: (id, scope) => {
+      const binding = getWorkspaceResourceByResourceId(db, 'skill', id);
+      return Boolean(
+        binding
+        && binding.workspaceId === scope.principal.teamId
+        && binding.visibility === 'personal'
+        && binding.resourceState === 'active'
+        && binding.createdByWorkspaceMemberId === scope.principal.memberId
+      );
+    },
     syncSharedResource: syncSharedTeamSkill,
     share: skillsTeamShare,
     listTeam: skillsTeamList,
@@ -6902,6 +6923,24 @@ export async function startServer({
     env: process.env,
   });
 
+  const allowScopedPluginReplace = (
+    scope: { workspaceId: string; workspaceMemberId: string } | null,
+    pluginId: string,
+  ): boolean | string => {
+    if (!scope) return true;
+    const installed = getInstalledPlugin(db, pluginId);
+    if (installed?.sourceKind === 'bundled') {
+      return `Bundled plugin "${pluginId}" cannot be replaced`;
+    }
+    const binding = getWorkspaceResourceByResourceId(db, 'plugin', pluginId);
+    if (
+      binding?.workspaceId === scope.workspaceId
+      && binding.visibility === 'personal'
+      && binding.createdByWorkspaceMemberId === scope.workspaceMemberId
+    ) return true;
+    return `Plugin "${pluginId}" is owned by another workspace member`;
+  };
+
   const pluginRouteHelpers = {
     PLUGIN_PREVIEWS_DIR,
     applyBakedPreviews,
@@ -6960,13 +6999,11 @@ export async function startServer({
       res.flushHeaders?.();
       const writeEvent = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
       if (mode === 'upgrade') writeEvent('progress', { kind: 'progress', phase: 'resolving', message: `Upgrading ${id} from ${source} (policy=${body.policy === 'pinned' ? 'pinned' : 'latest'})` });
-      // Stamp a fresh INSTALL (not upgrade — upgrading a plugin installed
-      // before workspace isolation shipped must not retroactively tag it,
-      // same "no retroactive tagging" rule design-systems already ships) with
-      // the requesting workspace, mirroring the project-creation route's
-      // `ensureWorkspaceProject` call. No-op when the caller carries no
-      // workspace headers (e.g. `od plugin install`, or a not-logged-in web
-      // session) — the plugin simply stays unbound, visible everywhere.
+      // A fresh scoped install is stamped Personal to the exact verified
+      // Workspace/member. Replacement is checked before any existing bytes
+      // are removed, so another member cannot overwrite a same-id Personal
+      // plugin. Headerless local/CLI installs remain unbound and available on
+      // that compatibility lane, but explicit Workspaces quarantine them.
       try {
         const basePlugin = mode === 'upgrade' ? getInstalledPlugin(db, id) : null;
         for await (const ev of installPlugin(db, {
@@ -6982,6 +7019,8 @@ export async function startServer({
           manifestDigest: marketplaceResolution?.manifestDigest ?? basePlugin?.manifestDigest,
           archiveIntegrity: marketplaceResolution?.archiveIntegrity ?? basePlugin?.archiveIntegrity,
           lockfilePath: PLUGIN_LOCKFILE_PATH,
+          allowReplacePlugin: (pluginId) =>
+            allowScopedPluginReplace(installWorkspaceContext, pluginId),
         })) {
           writeEvent(ev.kind, ev);
           if (ev.kind === 'success' && mode === 'install' && installWorkspaceContext && ev.plugin?.id) {
@@ -7000,10 +7039,8 @@ export async function startServer({
         res.end();
       }
     },
-    handleShareProject: async (req, res) => {
+    handleShareProject: async (req, res, sourcePlugin) => {
       try {
-        const sourcePlugin = getInstalledPlugin(db, req.params.id);
-        if (!sourcePlugin) return sendApiError(res, 404, 'NOT_FOUND', 'plugin not found');
         if (!USER_PLUGIN_SOURCE_KINDS.has(sourcePlugin.sourceKind)) return res.status(409).json({ ok: false, code: 'plugin-not-shareable', message: 'Only user-installed plugins can start a share project.' });
         const body = req.body && typeof req.body === 'object' ? req.body : {};
         const action = normalizePluginShareAction(body.action);
@@ -7031,15 +7068,14 @@ export async function startServer({
           id,
           now,
         );
-        const registry = await loadPluginRegistryView(); const connectorProbe = buildConnectorProbe(connectorService); const resolved = resolvePluginSnapshot({ db, body: { pluginId: actionPluginId, pluginInputs: { source_plugin_id: sourcePlugin.id, source_plugin_title: sourcePlugin.title || sourcePlugin.id, source_plugin_version: sourcePlugin.version, source_plugin_path: sourcePlugin.fsPath, plugin_context_path: stagedPath }, locale: typeof body.locale === 'string' ? body.locale : undefined }, projectId: id, conversationId: cid, registry, connectorProbe });
+        const registry = await loadPluginRegistryView({ workspaceId: createWorkspace.context.workspaceId, workspaceMemberId: createWorkspace.context.workspaceMemberId }); const connectorProbe = buildConnectorProbe(connectorService); const resolved = resolvePluginSnapshot({ db, body: { pluginId: actionPluginId, pluginInputs: { source_plugin_id: sourcePlugin.id, source_plugin_title: sourcePlugin.title || sourcePlugin.id, source_plugin_version: sourcePlugin.version, source_plugin_path: sourcePlugin.fsPath, plugin_context_path: stagedPath }, locale: typeof body.locale === 'string' ? body.locale : undefined }, projectId: id, conversationId: cid, registry, connectorProbe });
         if (resolved && !resolved.ok) return res.status(resolved.status).json(resolved.body);
         const project = getProject(db, id); if (!project) return sendApiError(res, 500, 'INTERNAL_ERROR', 'created project could not be loaded');
         res.json({ ok: true, project, conversationId: cid, ...(resolved?.ok ? { appliedPluginSnapshotId: resolved.snapshotId } : {}), actionPluginId, sourcePluginId: sourcePlugin.id, stagedPath, prompt, message: `Created a ${PLUGIN_SHARE_ACTION_LABELS[action]} task for ${sourcePlugin.title || sourcePlugin.id}.` });
       } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err) }); }
     },
-    handlePluginTrust: async (req, res) => {
+    handlePluginTrust: async (req, res, plugin) => {
       try {
-        const plugin = getInstalledPlugin(db, req.params.id); if (!plugin) return res.status(404).json({ error: 'plugin not found' });
         const body = req.body && typeof req.body === 'object' ? req.body : {}; const action = body.action === 'revoke' ? 'revoke' : 'grant';
         const { validateCapabilityList, grantCapabilities, revokeCapabilities } = await import('./plugins/trust.js');
         const { accepted, rejected } = validateCapabilityList(body.capabilities);
@@ -7051,14 +7087,14 @@ export async function startServer({
         res.status(action === 'grant' ? 201 : 200).json({ ok: true, id: req.params.id, action, capabilitiesGranted: next, plugin: updated });
       } catch (err) { res.status(500).json({ error: String(err) }); }
     },
-    handlePluginStats: async (res) => {
-      try { const { pluginInventoryStats, snapshotInventoryStats } = await import('./plugins/stats.js'); const installed = listInstalledPlugins(db); const inventoryRows = db.prepare(`SELECT status, project_id, run_id, applied_at FROM applied_plugin_snapshots`).all(); res.json({ plugins: pluginInventoryStats(installed), snapshots: snapshotInventoryStats(inventoryRows), generatedAt: Date.now() }); } catch (err) { res.status(500).json({ error: String(err) }); }
+    handlePluginStats: async (res, scopedInstalled, scopedSnapshotRows) => {
+      try { const { pluginInventoryStats, snapshotInventoryStats } = await import('./plugins/stats.js'); const installed = scopedInstalled ?? listInstalledPlugins(db); const inventoryRows = scopedSnapshotRows ?? db.prepare(`SELECT status, project_id, run_id, applied_at FROM applied_plugin_snapshots`).all(); res.json({ plugins: pluginInventoryStats(installed), snapshots: snapshotInventoryStats(inventoryRows), generatedAt: Date.now() }); } catch (err) { res.status(500).json({ error: String(err) }); }
     },
     handleAppliedPluginExport: async (req, res) => {
       try { const body = req.body && typeof req.body === 'object' ? req.body : {}; const target = body.target === 'od' || body.target === 'claude-plugin' || body.target === 'agent-skill' ? body.target : null; if (!target) return res.status(400).json({ error: 'target must be one of: od, claude-plugin, agent-skill' }); const outDir = typeof body.outDir === 'string' && body.outDir.length > 0 ? body.outDir : null; if (!outDir) return res.status(400).json({ error: 'outDir is required' }); const { exportPlugin, ExportError } = await import('./plugins/export.js'); try { const result = await exportPlugin({ db, target, outDir, ...(typeof body.snapshotId === 'string' ? { snapshotId: body.snapshotId } : {}), ...(typeof body.projectId === 'string' ? { projectId: body.projectId } : {}) }); res.json({ ok: true, ...result }); } catch (err) { if (err instanceof ExportError) return res.status(404).json({ error: err.message }); throw err; } } catch (err) { res.status(500).json({ error: String(err) }); }
     },
     handleProjectInstallFolder: async (req, res) => {
-      try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const body = req.body && typeof req.body === 'object' ? req.body : {}; const relativePath = normalizeProjectPluginFolderPath(body.path); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const folder = await resolveProjectChildDirectory(projectRoot, relativePath); const warnings = []; const log = []; let plugin = null; let message = 'Install finished.'; for await (const ev of installPlugin(db, { source: folder, roots: PLUGIN_REGISTRY_ROOTS })) { if (ev.message) log.push(ev.message); if (Array.isArray(ev.warnings)) warnings.splice(0, warnings.length, ...ev.warnings); if (ev.kind === 'success') { plugin = ev.plugin; message = `Installed ${ev.plugin.title}.`; break; } if (ev.kind === 'error') { message = ev.message; break; } } res.status(plugin ? 200 : 400).json({ ok: Boolean(plugin), plugin, warnings, message, log }); } catch (err) { const code = err && err.code; const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400; sendApiError(res, status, status === 404 ? 'PLUGIN_FOLDER_NOT_FOUND' : 'BAD_REQUEST', String(err?.message || err)); }
+      try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const projectBinding = getWorkspaceProjectByProjectId(db, req.params.id); if (!projectBinding?.workspaceId || !projectBinding.createdByWorkspaceMemberId) return sendApiError(res, 409, 'WORKSPACE_PROJECT_UNBOUND', 'project must have an exact workspace owner before installing a plugin'); const installScope = { workspaceId: String(projectBinding.workspaceId), workspaceMemberId: String(projectBinding.createdByWorkspaceMemberId) }; const body = req.body && typeof req.body === 'object' ? req.body : {}; const relativePath = normalizeProjectPluginFolderPath(body.path); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const folder = await resolveProjectChildDirectory(projectRoot, relativePath); const warnings = []; const log = []; let plugin = null; let message = 'Install finished.'; for await (const ev of installPlugin(db, { source: folder, roots: PLUGIN_REGISTRY_ROOTS, allowReplacePlugin: (pluginId) => allowScopedPluginReplace(installScope, pluginId) })) { if (ev.message) log.push(ev.message); if (Array.isArray(ev.warnings)) warnings.splice(0, warnings.length, ...ev.warnings); if (ev.kind === 'success') { plugin = ev.plugin; ensureWorkspaceResource(db, 'plugin', installScope.workspaceId, ev.plugin.id, { visibility: 'personal', resourceState: 'active', createdByWorkspaceMemberId: installScope.workspaceMemberId, updatedByWorkspaceMemberId: installScope.workspaceMemberId }); message = `Installed ${ev.plugin.title}.`; break; } if (ev.kind === 'error') { message = ev.message; break; } } res.status(plugin ? 200 : 400).json({ ok: Boolean(plugin), plugin, warnings, message, log }); } catch (err) { const code = err && err.code; const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400; sendApiError(res, status, status === 404 ? 'PLUGIN_FOLDER_NOT_FOUND' : 'BAD_REQUEST', String(err?.message || err)); }
     },
     handleProjectPluginCli: async (req, res, action) => {
       try { const project = getProject(db, req.params.id); if (!project) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'project not found'); const body = req.body && typeof req.body === 'object' ? req.body : {}; const relativePath = normalizeProjectPluginFolderPath(body.path); const projectRoot = resolveProjectDir(PROJECTS_DIR, req.params.id, project.metadata); const folder = await resolveProjectChildDirectory(projectRoot, relativePath); const subcommand = action === 'publish-github' ? 'publish-repo' : 'open-design-pr'; const timeout = action === 'publish-github' ? 240_000 : 300_000; const result = await execCommandViaLoginShell(OD_NODE_BIN, [OD_BIN, 'plugin', subcommand, folder, '--json'], { timeout }); const payload = result.stdout ? JSON.parse(result.stdout) : null; if (!result.ok || !payload?.ok) return res.status(500).json({ ok: false, code: payload?.error?.label || (action === 'publish-github' ? 'publish-repo-failed' : 'open-design-pr-failed'), message: payload?.error?.stderr || payload?.error?.stdout || (action === 'publish-github' ? 'GitHub repo publish failed.' : 'Open Design PR creation failed.'), log: payload?.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [result.stderr || result.stdout || `${subcommand} failed`] }); res.json({ ok: true, message: action === 'publish-github' ? (payload.repoUrl ? `Published plugin to ${payload.repoUrl}.` : 'Published plugin to GitHub.') : (payload.prUrl ? `Opened Open Design PR flow at ${payload.prUrl}.` : 'Opened Open Design PR flow.'), ...(payload.repoUrl ? { url: payload.repoUrl } : {}), ...(payload.prUrl ? { url: payload.prUrl } : {}), log: payload.steps?.map((step) => step.stderr || step.stdout || step.command).filter(Boolean) ?? [] }); } catch (err) { res.status(400).json({ ok: false, message: String(err?.message || err), log: [] }); }
@@ -7081,10 +7117,17 @@ export async function startServer({
   // plugin context against the live registry. Skills + design systems are
   // walked from disk; craft is empty in v1; atoms come from the
   // first-party catalog. Project-scoped overrides arrive in Phase 4.
-  async function loadPluginRegistryView() {
+  async function loadPluginRegistryView(options: {
+    workspaceId?: string | null;
+    workspaceMemberId?: string | null;
+  } = {}) {
     const [skills, designSystems] = await Promise.all([
-      listAllSkills(),
-      listAllDesignSystems(),
+      listAllSkills(options),
+      listAllDesignSystems(
+        options.workspaceId !== undefined
+          ? { workspaceId: options.workspaceId }
+          : {},
+      ),
     ]);
     // Spec §23.3.3: surface the bundled scenario plugins so apply()
     // can fall back to the matching scenario's pipeline when the
@@ -7210,8 +7253,9 @@ export async function startServer({
   const listWorkspacePlugins = async (
     dbHandle,
     workspaceId?: string | null,
+    workspaceMemberId?: string | null,
   ) => {
-    const personal = listInstalledPlugins(dbHandle, workspaceId);
+    const personal = listInstalledPlugins(dbHandle, workspaceId, workspaceMemberId);
     const exactWorkspaceId = workspaceId?.trim();
     if (!exactWorkspaceId) return personal;
     const workspaceRoot = teamResourceWorkspaceRoot(
@@ -7238,13 +7282,14 @@ export async function startServer({
     dbHandle,
     id: string,
     workspaceId: string | null,
+    workspaceMemberId?: string | null,
   ) => {
     const exactWorkspaceId = workspaceId?.trim();
     if (exactWorkspaceId) {
       const team = await readWorkspaceTeamPlugin(exactWorkspaceId, id);
       if (team) return team;
     }
-    return listInstalledPlugins(dbHandle, workspaceId).find(
+    return listInstalledPlugins(dbHandle, workspaceId, workspaceMemberId).find(
       (plugin) => plugin.id === id,
     ) ?? null;
   };
@@ -7263,6 +7308,7 @@ export async function startServer({
       getWorkspaceResource,
       getWorkspaceResourceByResourceId,
       workspaceTeamPluginBindingAllowsRead,
+      getWorkspaceProjectByProjectId,
     },
     plugins: {
       listInstalledPlugins: listWorkspacePlugins,
@@ -7422,9 +7468,21 @@ export async function startServer({
           allowAppDefault: project === null,
         });
     const effectiveDesignSystemId = designSystemSelection.id;
+    const projectResourceScope =
+      typeof projectId === 'string' && projectId
+        ? getWorkspaceProjectByProjectId(db, projectId)
+        : null;
     let allSkillsPromise: ReturnType<typeof listAllSkillLikeEntries> | null = null;
     const loadAllSkills = async () => {
-      allSkillsPromise ??= listAllSkillLikeEntries();
+      allSkillsPromise ??= projectResourceScope?.workspaceId
+        ? listAllSkillLikeEntries({
+            workspaceId: String(projectResourceScope.workspaceId),
+            workspaceMemberId:
+              typeof projectResourceScope.createdByWorkspaceMemberId === 'string'
+                ? projectResourceScope.createdByWorkspaceMemberId
+                : null,
+          })
+        : listAllSkillLikeEntries();
       return await allSkillsPromise;
     };
 
@@ -12550,9 +12608,15 @@ export async function startServer({
     // the split, but earlier projects may still point at functional-skill
     // ids for the same purpose — search both roots so a stored project id
     // keeps resolving through one or the other.
-    const skills = await listAllSkillLikeEntries();
+    // This callback carries no request/project Workspace authority. It may
+    // therefore resolve app-bundled templates only; accepting a user skill
+    // here would turn an unscoped scheduler callback into a cross-member read.
+    const skills = await listAllSkillLikeEntries({
+      workspaceId: null,
+      workspaceMemberId: null,
+    });
     const skill = findSkillById(skills, skillId);
-    if (!skill || skill.scenario !== 'orbit') return null;
+    if (!skill || skill.source !== 'built-in' || skill.scenario !== 'orbit') return null;
     return {
       id: skill.id,
       name: skill.name,
@@ -12578,6 +12642,32 @@ export async function startServer({
       firePipelineForRun,
       loadPluginRegistryView,
       renderPluginBriefTemplate,
+      authorizePluginRequest: async (req, res, pluginId) => {
+        const authority = await resolveOptionalWorkspaceRequestAuthority(
+          req,
+          verifyWorkspaceRequestAuthority,
+        );
+        if (!authority.ok) {
+          sendApiError(
+            res,
+            authority.status,
+            authority.code,
+            authority.message,
+          );
+          return false;
+        }
+        const plugin = await getWorkspacePluginForRequest(
+          db,
+          pluginId,
+          authority.context?.workspaceId ?? null,
+          authority.context?.workspaceMemberId ?? null,
+        );
+        if (!plugin) {
+          sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+          return false;
+        }
+        return true;
+      },
     },
     telemetry: {
       reportRunCompletionTelemetryFallback,
@@ -12741,7 +12831,18 @@ export async function startServer({
     const primaryPluginId = routineContext.pluginIds?.[0] ?? null;
     const resolveRoutinePluginSnapshot = async () => {
       if (!primaryPluginId || resolvedRoutineSnapshot) return;
-      const registry = await loadPluginRegistryView();
+      const routineProjectBinding = getWorkspaceProjectByProjectId(db, projectId);
+      const registry = await loadPluginRegistryView(
+        routineProjectBinding?.workspaceId
+          ? {
+              workspaceId: String(routineProjectBinding.workspaceId),
+              workspaceMemberId:
+                typeof routineProjectBinding.createdByWorkspaceMemberId === 'string'
+                  ? routineProjectBinding.createdByWorkspaceMemberId
+                  : null,
+            }
+          : undefined,
+      );
       const projectSnapshotBefore = routine.target.mode === 'reuse'
         ? getProject(db, routine.target.projectId)?.appliedPluginSnapshotId ?? null
         : null;

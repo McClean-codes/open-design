@@ -21,7 +21,11 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { startServer } from '../src/server.js';
-import { defaultRegistryRoots } from '../src/plugins/registry.js';
+import {
+  defaultRegistryRoots,
+  resolvePluginFolder,
+  upsertInstalledPlugin,
+} from '../src/plugins/registry.js';
 import { ensureWorkspaceResource, openDatabase, updateWorkspaceResource } from '../src/db.js';
 
 let server: http.Server;
@@ -60,6 +64,15 @@ async function seedPluginFolder(pluginId: string): Promise<string> {
     path.join(folder, 'open-design.json'),
     JSON.stringify({ name: pluginId, title: pluginId, version: '1.0.0' }),
   );
+  const resolved = await resolvePluginFolder({
+    folder,
+    folderId: pluginId,
+    sourceKind: 'local',
+    source: folder,
+  });
+  if (!resolved.ok) throw new Error(resolved.errors.join('; '));
+  const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+  upsertInstalledPlugin(db, resolved.record);
   return folder;
 }
 
@@ -74,6 +87,48 @@ function bindPluginToWorkspace(pluginId: string, workspaceId: string, createdByW
 }
 
 describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
+  it('hides Personal detail, trust, and share routes from another same-Workspace member', async () => {
+    const pluginId = `wsgate-sensitive-${Date.now()}`;
+    await seedPluginFolder(pluginId);
+    bindPluginToWorkspace(pluginId, 'ws-gate-sensitive', 'member-owner');
+    const headers = {
+      ...workspaceHeaders('member-admin', 'admin', 'ws-gate-sensitive'),
+      'content-type': 'application/json',
+    };
+
+    const detail = await fetch(`${baseUrl}/api/plugins/${pluginId}`, { headers });
+    const trust = await fetch(`${baseUrl}/api/plugins/${pluginId}/trust`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ capabilities: ['pipeline:run'] }),
+    });
+    const share = await fetch(`${baseUrl}/api/plugins/${pluginId}/share-project`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action: 'publish-github' }),
+    });
+
+    expect(detail.status).toBe(404);
+    expect(trust.status).toBe(404);
+    expect(share.status).toBe(404);
+  });
+
+  it('lets another same-Workspace member read a Team plugin detail', async () => {
+    const pluginId = `wsgate-team-read-${Date.now()}`;
+    await seedPluginFolder(pluginId);
+    bindPluginToWorkspace(pluginId, 'ws-gate-team-read', 'member-owner');
+    const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+    updateWorkspaceResource(db, 'plugin', 'ws-gate-team-read', pluginId, {
+      visibility: 'team',
+    });
+
+    const detail = await fetch(`${baseUrl}/api/plugins/${pluginId}`, {
+      headers: workspaceHeaders('member-other', 'member', 'ws-gate-team-read'),
+    });
+
+    expect(detail.status).toBe(200);
+  });
+
   it('rejects a non-owner, non-privileged member of the same workspace', async () => {
     const pluginId = `wsgate-member-${Date.now()}`;
     const folder = await seedPluginFolder(pluginId);
@@ -84,7 +139,7 @@ describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
       headers: workspaceHeaders('member-other', 'member', 'ws-gate-1'),
     });
 
-    expect(resp.status).toBe(403);
+    expect(resp.status).toBe(404);
     expect(existsSync(folder)).toBe(true);
   });
 
@@ -102,7 +157,7 @@ describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
     expect(existsSync(folder)).toBe(false);
   });
 
-  it('allows a workspace admin to uninstall a plugin installed by someone else', async () => {
+  it('does not let a workspace admin discover or uninstall another member\'s Personal plugin', async () => {
     const pluginId = `wsgate-admin-${Date.now()}`;
     const folder = await seedPluginFolder(pluginId);
     bindPluginToWorkspace(pluginId, 'ws-gate-3', 'member-owner');
@@ -112,22 +167,29 @@ describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
       headers: workspaceHeaders('member-admin', 'admin', 'ws-gate-3'),
     });
 
-    expect(resp.status).toBe(200);
-    expect(existsSync(folder)).toBe(false);
+    expect(resp.status).toBe(404);
+    expect(existsSync(folder)).toBe(true);
   });
 
-  // No retroactive tagging (spec's stated design principle, same rule
-  // design-systems already ships): a plugin with no workspace_resources row
-  // — every plugin installed before this round shipped — stays outside the
-  // isolation regime rather than becoming permanently un-uninstallable the
-  // moment a caller happens to carry workspace headers.
-  it('still allows uninstalling a legacy plugin with no workspace binding at all', async () => {
+  it('quarantines a legacy unbound plugin from an explicitly scoped caller', async () => {
     const pluginId = `wsgate-legacy-${Date.now()}`;
     const folder = await seedPluginFolder(pluginId);
 
     const resp = await fetch(`${baseUrl}/api/plugins/${pluginId}/uninstall`, {
       method: 'POST',
       headers: workspaceHeaders('member-someone-else', 'member', 'ws-gate-4'),
+    });
+
+    expect(resp.status).toBe(404);
+    expect(existsSync(folder)).toBe(true);
+  });
+
+  it('keeps a legacy unbound plugin manageable from the headerless local lane', async () => {
+    const pluginId = `wsgate-legacy-local-${Date.now()}`;
+    const folder = await seedPluginFolder(pluginId);
+
+    const resp = await fetch(`${baseUrl}/api/plugins/${pluginId}/uninstall`, {
+      method: 'POST',
     });
 
     expect(resp.status).toBe(200);
@@ -143,7 +205,7 @@ describe('POST /api/plugins/:id/uninstall — workspace ownership gate', () => {
 
     const resp = await fetch(`${baseUrl}/api/plugins/${pluginId}/uninstall`, { method: 'POST' });
 
-    expect(resp.status).toBe(400);
+    expect(resp.status).toBe(404);
     expect(existsSync(folder)).toBe(true);
   });
 });
