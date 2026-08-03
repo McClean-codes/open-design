@@ -1115,14 +1115,59 @@
   margin: 0 0 14px;
 }
 .df-card--image .df-card-thumb {
-  aspect-ratio: auto;
+  /* Lazy images have no intrinsic height until their headers arrive. Reserve a
+     real card-sized box during that window instead of collapsing each masonry
+     item into a one-pixel border line. Loaded images switch back to their
+     natural aspect so the waterfall keeps its varied rhythm. */
+  aspect-ratio: 4 / 3;
   /* No meta strip below — the image is the whole card. */
   border-bottom: 0;
+}
+.df-card--image .df-card-thumb[data-image-status="loaded"] {
+  aspect-ratio: auto;
 }
 .df-card--image .df-card-thumb img {
   display: block;
   width: 100%;
   height: auto;
+  opacity: 0;
+  transition: opacity 200ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+.df-card--image .df-card-thumb img[data-loaded="true"] {
+  opacity: 1;
+}
+.df-image-skeleton,
+.df-image-error {
+  position: absolute;
+  inset: 0;
+}
+.df-image-skeleton {
+  background:
+    linear-gradient(
+      105deg,
+      transparent 35%,
+      color-mix(in srgb, var(--bg-panel) 72%, transparent) 50%,
+      transparent 65%
+    ),
+    var(--bg-subtle);
+  background-size: 220% 100%;
+  animation: df-image-skeleton-sheen 1.4s ease-in-out infinite;
+}
+.df-image-error {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  background: var(--bg-subtle);
+}
+@keyframes df-image-skeleton-sheen {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .df-image-skeleton {
+    animation: none;
+  }
 }
 /* Row menu floats over the image's top-right corner (mirrors the check chip
    top-left): hover-revealed chip so the bare image stays clean. */

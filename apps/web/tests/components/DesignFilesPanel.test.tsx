@@ -519,6 +519,24 @@ describe("DesignFilesPanel selection", () => {
     expect(container.querySelector(".df-preview")).toBeNull();
   });
 
+  it("reserves a full thumbnail skeleton until masonry image bytes load", () => {
+    const { container } = renderPanel([
+      file({ name: "slow-shot.png", kind: "image", mime: "image/png" }),
+    ]);
+    clickTab("cat:image");
+
+    const thumb = container.querySelector<HTMLButtonElement>(
+      ".df-card--image .df-card-thumb",
+    );
+    const image = thumb?.querySelector<HTMLImageElement>("img");
+    expect(thumb?.dataset.imageStatus).toBe("loading");
+    expect(thumb?.querySelector(".df-image-skeleton")).toBeTruthy();
+
+    fireEvent.load(image!);
+    expect(thumb?.dataset.imageStatus).toBe("loaded");
+    expect(thumb?.querySelector(".df-image-skeleton")).toBeNull();
+  });
+
   it("opens the file from a single click on a list row's name", () => {
     const { container, onOpenFile } = renderPanel([
       file({ name: "notes.txt", kind: "text", mime: "text/plain" }),

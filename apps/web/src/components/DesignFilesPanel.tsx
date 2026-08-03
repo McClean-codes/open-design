@@ -188,6 +188,59 @@ function ActionNoticeView({ notice }: { notice: ActionNotice | null }) {
   );
 }
 
+function DesignFileImageThumb({
+  src,
+  title,
+  onOpen,
+}: {
+  src: string;
+  title: string;
+  onOpen: () => void;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const [settled, setSettled] = useState<{
+    src: string;
+    status: 'loaded' | 'error';
+  } | null>(null);
+  const status = settled?.src === src ? settled.status : 'loading';
+
+  useEffect(() => {
+    const image = imageRef.current;
+    if (!image?.complete) return;
+    setSettled({
+      src,
+      status: image.naturalWidth > 0 ? 'loaded' : 'error',
+    });
+  }, [src]);
+
+  return (
+    <button
+      type="button"
+      className="df-card-thumb"
+      data-image-status={status}
+      onClick={onOpen}
+      title={title}
+      aria-label={title}
+    >
+      {status === 'loading' ? <span className="df-image-skeleton" aria-hidden /> : null}
+      {status === 'error' ? (
+        <span className="df-image-error" aria-hidden>
+          <Icon name="image" size={24} />
+        </span>
+      ) : null}
+      <img
+        ref={imageRef}
+        src={src}
+        alt=""
+        loading="lazy"
+        data-loaded={status === 'loaded' ? 'true' : 'false'}
+        onLoad={() => setSettled({ src, status: 'loaded' })}
+        onError={() => setSettled({ src, status: 'error' })}
+      />
+    </button>
+  );
+}
+
 // Useful-info tips that rotate one at a time in the panel footer, ordered as
 // a loose journey: file basics → feeding context → generating → iterating →
 // exporting/sharing → community. A tip with a `url` renders its typed line as
@@ -960,6 +1013,10 @@ export function DesignFilesPanel({
   function renderImageCard(f: ProjectFile, _category: FileCategory) {
     const isSelected = selected.has(f.name);
     const openLabel = `${t('designFiles.previewOpen')} ${f.name}`;
+    const src = appendResourceQuery(
+      projectRawUrl(projectId, f.name, workspaceContext),
+      `v=${Math.round(f.mtime)}`,
+    );
     return (
       <div
         key={f.name}
@@ -990,22 +1047,11 @@ export function DesignFilesPanel({
             <RemixIcon name={isSelected ? 'checkbox-line' : 'checkbox-blank-line'} size={14} />
           )}
         </span>
-        <button
-          type="button"
-          className="df-card-thumb"
-          onClick={() => onOpenFile(f.name)}
+        <DesignFileImageThumb
+          src={src}
           title={openLabel}
-          aria-label={openLabel}
-        >
-          <img
-            src={appendResourceQuery(
-              projectRawUrl(projectId, f.name, workspaceContext),
-              `v=${Math.round(f.mtime)}`,
-            )}
-            alt=""
-            loading="lazy"
-          />
-        </button>
+          onOpen={() => onOpenFile(f.name)}
+        />
         {/* Positioned overlay — rendered after the thumb so the card's first
             button stays the primary open target (mirrors list rows, where
             controls never precede the openable name). */}
