@@ -16,6 +16,7 @@ import {
   buildWorkspaceSeatSummary,
 } from '@open-design/contracts';
 import { coalescedGet, forceCoalescedGet } from '../lib/coalesced-get';
+import { markProjectDisplaySnapshotsDirty } from '../state/project-display-cache';
 import { isTeamPlanTier } from './team-plan';
 import { fetchTeamProjectsCatalog } from './team-projects-catalog';
 import { useWorkspaceInvalidation } from './workspace-events';
@@ -420,19 +421,29 @@ export function lastResolvedWorkspaceContext(): WorkspaceContextState['context']
 }
 
 // Last team-shared catalogs this shell successfully read, partitioned by the
-// Workspace + member identity that authorized each response. A missing entry
+// account generation + complete Workspace identity that authorized each response. A missing entry
 // means "never loaded", which is NOT the same as "nothing is shared" —
 // consumers that relax a fail-closed gate on this must treat it as "unknown".
 const cachedTeamProjects = new Map<string, TeamProject[]>();
+const MAX_CACHED_TEAM_PROJECT_CATALOGS = 24;
 
 function teamProjectsIdentity(
   context: WorkspaceCollabContext | null | undefined,
+  accountGeneration = currentWorkspaceAccountGeneration(),
 ): string | null {
-  const workspaceId = context?.workspaceId?.trim();
-  const workspaceMemberId = context?.workspaceMemberId?.trim();
-  return workspaceId && workspaceMemberId
-    ? JSON.stringify([workspaceId, workspaceMemberId])
+  return context?.workspaceId?.trim() && context.workspaceMemberId?.trim()
+    ? JSON.stringify([accountGeneration, workspaceIdentityCacheKey(context)])
     : null;
+}
+
+function cacheTeamProjects(identity: string, projects: TeamProject[]): void {
+  cachedTeamProjects.delete(identity);
+  cachedTeamProjects.set(identity, projects);
+  while (cachedTeamProjects.size > MAX_CACHED_TEAM_PROJECT_CATALOGS) {
+    const oldest = cachedTeamProjects.keys().next().value as string | undefined;
+    if (!oldest) break;
+    cachedTeamProjects.delete(oldest);
+  }
 }
 
 /** Test seam: clear the module-level team-project cache between tests. */
@@ -1561,27 +1572,41 @@ export function useTeamProjects(): TeamProjectsState {
   const catalogContext = resourceReadIdentity?.context ?? null;
   const catalogGeneration = resourceReadIdentity?.generation ?? null;
   const catalogContextIdentity = workspaceIdentityCacheKey(catalogContext);
+  const catalogAccountGeneration = currentWorkspaceAccountGeneration();
   const catalogScopeKey = catalogGeneration
-    ? JSON.stringify([catalogGeneration, catalogContextIdentity])
+    ? JSON.stringify([catalogAccountGeneration, catalogGeneration, catalogContextIdentity])
     : null;
   const resourceReadIdentityRef = useRef(resourceReadIdentity);
   resourceReadIdentityRef.current = resourceReadIdentity;
-  const teamCatalogIdentity = teamProjectsIdentity(catalogContext);
+  const teamCatalogIdentity = teamProjectsIdentity(
+    catalogContext,
+    catalogAccountGeneration,
+  );
+  const initialCachedCatalog = teamCatalogIdentity
+    ? cachedTeamProjects.get(teamCatalogIdentity) ?? null
+    : null;
   const [catalog, setCatalog] = useState<{
     identity: string | null;
     projects: TeamProject[];
-  }>(() => {
+  }>(() => ({
+    identity: initialCachedCatalog ? catalogScopeKey : null,
+    projects: initialCachedCatalog ?? [],
+  }));
+  const [loading, setLoading] = useState(initialCachedCatalog === null);
+  const [nonce, setNonce] = useState(0);
+  const mountedRef = useRef(true);
+  const catalogScopeRef = useRef(catalogScopeKey);
+  if (catalogScopeRef.current !== catalogScopeKey) {
     const cached = teamCatalogIdentity
       ? cachedTeamProjects.get(teamCatalogIdentity) ?? null
       : null;
-    return {
+    catalogScopeRef.current = catalogScopeKey;
+    setCatalog({
       identity: cached ? catalogScopeKey : null,
       projects: cached ?? [],
-    };
-  });
-  const [loading, setLoading] = useState(true);
-  const [nonce, setNonce] = useState(0);
-  const mountedRef = useRef(true);
+    });
+    setLoading(cached === null);
+  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -1599,10 +1624,12 @@ export function useTeamProjects(): TeamProjectsState {
   // to that same change in one synchronous burst into a single fetch.
   const loadFull = useCallback(async (force = false) => {
     const issuedIdentity = resourceReadIdentityRef.current;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const read = beginWorkspaceScopedRead(issuedIdentity?.context);
     const isStillCurrent = () => {
       const current = resourceReadIdentityRef.current;
-      return current?.generation === issuedIdentity?.generation
+      return currentWorkspaceAccountGeneration() === issuedAccountGeneration
+        && current?.generation === issuedIdentity?.generation
         && read.isStillCurrent(current?.context);
     };
     if (!read.context) {
@@ -1622,8 +1649,8 @@ export function useTeamProjects(): TeamProjectsState {
         requestGeneration: issuedIdentity?.generation,
       });
       if (!isStillCurrent()) return;
-      const identity = teamProjectsIdentity(read.context);
-      if (identity) cachedTeamProjects.set(identity, projects);
+      const identity = teamProjectsIdentity(read.context, issuedAccountGeneration);
+      if (identity) cacheTeamProjects(identity, projects);
       if (mountedRef.current) {
         setCatalog({ identity: catalogScopeKey, projects });
         setLoading(false);
@@ -1634,9 +1661,11 @@ export function useTeamProjects(): TeamProjectsState {
       // newer workspace's successful catalog when it rejects late.
       if (!isStillCurrent()) return;
       if (mountedRef.current) {
+        const identity = teamProjectsIdentity(read.context, issuedAccountGeneration);
+        const cached = identity ? cachedTeamProjects.get(identity) ?? null : null;
         setCatalog({
-          identity: catalogScopeKey,
-          projects: [],
+          identity: cached ? catalogScopeKey : null,
+          projects: cached ?? [],
         });
         setLoading(false);
       }
@@ -1649,16 +1678,40 @@ export function useTeamProjects(): TeamProjectsState {
       (workspaceContextLoading || identityChangePending)
       && !resourceReadIdentity
     ) return;
-    setLoading(true);
+    const cached = teamCatalogIdentity
+      ? cachedTeamProjects.get(teamCatalogIdentity) ?? null
+      : null;
+    if (cached) {
+      setCatalog({ identity: catalogScopeKey, projects: cached });
+      setLoading(false);
+    } else {
+      setLoading(true);
+    }
     void loadFull();
-  }, [nonce, loadFull, workspaceContextLoading]);
+  }, [
+    catalogScopeKey,
+    nonce,
+    loadFull,
+    teamCatalogIdentity,
+    workspaceContextLoading,
+  ]);
 
   // Collab realtime hop-2: subscribe to the workspace SSE and re-fetch on a
   // pushed `team-projects-changed` (a teammate shared/unshared a project). The
   // daemon's workspace-invalidation poller diffs the team list and pushes only
   // on an actual change. `connected` drives poll-as-floor below.
   const { connected: sseConnected } = useWorkspaceInvalidation(
-    { 'team-projects-changed': () => void loadFull() },
+    {
+      'team-projects-changed': () => {
+        if (workspaceContext) {
+          markProjectDisplaySnapshotsDirty({
+            accountGeneration: currentWorkspaceAccountGeneration(),
+            context: workspaceContext,
+          });
+        }
+        void loadFull();
+      },
+    },
     {
       workspaceContext,
       onActive: () => void loadFull(),
@@ -1693,6 +1746,12 @@ export function useTeamProjects(): TeamProjectsState {
       if (document.visibilityState === 'visible') void loadFull();
     };
     const onTeamProjectsChanged = () => {
+      if (workspaceContext) {
+        markProjectDisplaySnapshotsDirty({
+          accountGeneration: currentWorkspaceAccountGeneration(),
+          context: workspaceContext,
+        });
+      }
       // A workspace switch fires this same event (see `switchWorkspace` in
       // EntryNavRail.tsx). Without forcing, an in-flight coalesced read
       // started just before the switch can resolve inside the new call's
@@ -1712,7 +1771,7 @@ export function useTeamProjects(): TeamProjectsState {
       window.removeEventListener('storage', onStorage);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [loadFull]);
+  }, [loadFull, workspaceContext]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const catalogMatchesIdentity = catalog.identity === catalogScopeKey;

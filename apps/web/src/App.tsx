@@ -177,6 +177,14 @@ import type {
   PluginShareProjectOutcome,
   WorkspaceProjectListView,
 } from './state/projects';
+import {
+  markProjectDisplaySnapshotsDirty,
+  patchProjectDisplaySnapshots,
+  projectDisplaySnapshotKey,
+  readProjectDisplaySnapshot,
+  removeProjectFromDisplaySnapshots,
+  writeProjectDisplaySnapshot,
+} from './state/project-display-cache';
 import { getOpenDesignHost, type OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import { useI18n } from './i18n';
 import { liveArtifactTabId } from './types';
@@ -335,7 +343,9 @@ function clearStaleAmrModelChoiceOnProfileChange(
 type ProjectListRequest = {
   generation: number;
   mutationVersion: number;
+  accountGeneration: number;
   scopeKey: string;
+  displayKey: string;
   workspaceView: WorkspaceProjectListView | undefined;
 };
 
@@ -1007,34 +1017,6 @@ function AppInner() {
   }, []);
   const [dsLoading, setDsLoading] = useState(true);
   const [projectsLoading, setProjectsLoading] = useState(true);
-  // A loaded project list describes exactly ONE workspace identity, so leaving
-  // that workspace INVALIDATES it — it does not merely make it stale.
-  //
-  // Everything downstream of `projects` (the home 最近项目 strip, the 全部项目 and
-  // 草稿 grids) renders whatever this array holds, and the re-list on switch is
-  // an effect: effects run after the commit, so the browser paints the previous
-  // workspace's cards under the new workspace's identity first and only swaps
-  // them when the new list lands. That is the reported 「总是要慢一拍」 — the
-  // strip presenting one workspace's projects as another's, which is worse than
-  // showing nothing. Dropping the list here, during the render that first
-  // observes the new scope, means no frame ever shows the wrong workspace's
-  // data. (`reconcileFetchedProjects` already refuses to APPLY a response whose
-  // scope has moved on; the missing half was discarding what is already on
-  // screen.)
-  //
-  // Nothing is refetched: the switch effect below owns that, and its request is
-  // already keyed on the resolved workspace, so this is not a backend problem
-  // and needs no extra round-trip.
-  const projectListScopeRef = useRef(currentProjectListScope);
-  if (projectListScopeRef.current !== currentProjectListScope) {
-    const leftAResolvedWorkspace =
-      projectListScopeRef.current !== UNRESOLVED_PROJECT_LIST_SCOPE;
-    projectListScopeRef.current = currentProjectListScope;
-    if (leftAResolvedWorkspace) {
-      setProjects([]);
-      setProjectsLoading(true);
-    }
-  }
   const [promptTemplatesLoading, setPromptTemplatesLoading] = useState(true);
   // Goes true once the daemon-persisted config (agentId/designSystemId/etc.)
   // has merged into local state. Auto-selection effects below wait on this
@@ -1077,6 +1059,33 @@ function AppInner() {
   // every click. Mirror the callback's own collapse here so the effect's
   // dependency is stable outside a workspace, matching the fetch it triggers.
   const effectiveWorkspaceProjectView = workspaceContext ? workspaceProjectView : undefined;
+  const projectDisplayAccountGeneration = currentWorkspaceAccountGeneration();
+  const currentProjectDisplayKey = projectDisplaySnapshotKey({
+    accountGeneration: projectDisplayAccountGeneration,
+    context: workspaceContext,
+    view: effectiveWorkspaceProjectView,
+  });
+  // Display snapshots are deliberately separate from authorization. They may
+  // prevent a warm view from flashing a loader, but every network read and
+  // mutation still carries the current request's independently verified
+  // Workspace context. An exact account/workspace/member+view hit is safe to
+  // render while it revalidates; any other identity is cleared before paint.
+  const projectListScopeRef = useRef(currentProjectListScope);
+  const projectDisplayKeyRef = useRef(currentProjectDisplayKey);
+  if (projectDisplayKeyRef.current !== currentProjectDisplayKey) {
+    const leftAResolvedWorkspace =
+      projectListScopeRef.current !== UNRESOLVED_PROJECT_LIST_SCOPE;
+    const snapshot = readProjectDisplaySnapshot(currentProjectDisplayKey);
+    projectListScopeRef.current = currentProjectListScope;
+    projectDisplayKeyRef.current = currentProjectDisplayKey;
+    if (snapshot) {
+      setProjects(snapshot.projects);
+      setProjectsLoading(false);
+    } else if (leftAResolvedWorkspace) {
+      setProjects([]);
+      setProjectsLoading(true);
+    }
+  }
   const projectScopeRefreshMountedRef = useRef(false);
   const analytics = useAnalytics();
 
@@ -1113,6 +1122,13 @@ function AppInner() {
     pendingLocalProjectIdsRef.current.add(projectId);
     locallyDeletedProjectIdsRef.current.delete(projectId);
     projectListMutationVersionRef.current += 1;
+    const context = workspaceContextRef.current;
+    if (context) {
+      markProjectDisplaySnapshotsDirty({
+        accountGeneration: currentWorkspaceAccountGeneration(),
+        context,
+      });
+    }
   }, []);
 
   const handleTeamProjectContentReady = useCallback(async (
@@ -1158,16 +1174,27 @@ function AppInner() {
   ): ProjectListRequest => {
     projectListRequestGenerationRef.current += 1;
     const issuedContext = workspaceContextRef.current;
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const effectiveView = issuedContext ? workspaceView ?? 'recent' : undefined;
     return {
       generation: projectListRequestGenerationRef.current,
       mutationVersion: projectListMutationVersionRef.current,
+      accountGeneration,
       scopeKey: projectListScopeKey(issuedContext),
-      workspaceView: issuedContext ? workspaceView ?? 'recent' : undefined,
+      displayKey: projectDisplaySnapshotKey({
+        accountGeneration,
+        context: issuedContext,
+        view: effectiveView,
+      }),
+      workspaceView: effectiveView,
     };
   }, []);
 
   const reconcileFetchedProjects = useCallback((list: Project[], request: ProjectListRequest) => {
-    if (request.scopeKey !== projectListScopeKey(workspaceContextRef.current)) {
+    if (
+      request.accountGeneration !== currentWorkspaceAccountGeneration()
+      || request.scopeKey !== projectListScopeKey(workspaceContextRef.current)
+    ) {
       return false;
     }
     const pendingLocalProjectIds = pendingLocalProjectIdsRef.current;
@@ -1235,6 +1262,11 @@ function AppInner() {
       activeDeletedProjectIds.size > 0
         ? new Set(visibleList.map((project) => project.id))
         : fetchedIds;
+    writeProjectDisplaySnapshot({
+      accountGeneration: request.accountGeneration,
+      context: workspaceContextRef.current,
+      view: request.workspaceView,
+    }, visibleList);
     setProjects((current) => {
       const preserved = current.filter(
         (project) =>
@@ -1879,6 +1911,25 @@ function AppInner() {
     reconcileFetchedProjects,
   ]);
 
+  // Keep the active projection's last-good display in sync with optimistic
+  // local mutations (rename/delete/create). Related projections are marked
+  // dirty by the mutation helpers and still revalidate when selected.
+  useEffect(() => {
+    if (projectsLoading) return;
+    writeProjectDisplaySnapshot({
+      accountGeneration: projectDisplayAccountGeneration,
+      context: workspaceContext,
+      view: effectiveWorkspaceProjectView,
+    }, projects);
+  }, [
+    currentProjectDisplayKey,
+    effectiveWorkspaceProjectView,
+    projectDisplayAccountGeneration,
+    projects,
+    projectsLoading,
+    workspaceContext,
+  ]);
+
   // Auto-pick the first available agent once both the daemon-stored config
   // and the agents listing have landed. Splitting this out of bootstrap
   // avoids racing the local-config initial value against a slow agents
@@ -1984,7 +2035,13 @@ function AppInner() {
     }
     let cancelled = false;
     const request = beginProjectListRequest(effectiveWorkspaceProjectView);
-    setProjectsLoading(true);
+    const snapshot = readProjectDisplaySnapshot(request.displayKey);
+    if (snapshot) {
+      setProjects(snapshot.projects);
+      setProjectsLoading(false);
+    } else {
+      setProjectsLoading(true);
+    }
     (async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -2019,6 +2076,7 @@ function AppInner() {
   }, [
     workspaceContext?.workspaceId,
     beginProjectListRequest,
+    currentProjectDisplayKey,
     effectiveWorkspaceProjectView,
     listCurrentWorkspaceProjects,
     reconcileFetchedProjects,
@@ -3271,8 +3329,17 @@ function AppInner() {
     // ownership check actually runs — see deleteProject's docblock
     // (recvq5ecTkar91: a leaked-in project was really deletable, not just
     // visible, because this call sent no workspace headers at all).
-    const ok = await deleteProjectApi(id, workspaceContextRef.current);
+    const mutationContext = workspaceContextRef.current;
+    const mutationAccountGeneration = currentWorkspaceAccountGeneration();
+    const ok = await deleteProjectApi(id, mutationContext);
     if (!ok) return false;
+    if (mutationContext) {
+      removeProjectFromDisplaySnapshots({
+        accountGeneration: mutationAccountGeneration,
+        context: mutationContext,
+        projectId: id,
+      });
+    }
     clearLocalProject(id, { deleted: true });
     iframeKeepAlivePool.evictProject(id, { includeActive: true });
     setProjects((curr) => curr.filter((p) => p.id !== id));
@@ -3285,10 +3352,20 @@ function AppInner() {
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    const mutationContext = workspaceContextRef.current;
+    const mutationAccountGeneration = currentWorkspaceAccountGeneration();
     setProjects((curr) =>
       curr.map((p) => (p.id === id ? { ...p, name: trimmed } : p)),
     );
-    void patchProject(id, { name: trimmed }, workspaceContextRef.current);
+    if (mutationContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: mutationAccountGeneration,
+        context: mutationContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === id ? { ...project, name: trimmed } : project),
+      });
+    }
+    void patchProject(id, { name: trimmed }, mutationContext);
   }, []);
 
   // The project header back button is an escape hatch back to Home. Avoid
@@ -3312,7 +3389,16 @@ function AppInner() {
         p.id === projectId ? { ...p, pendingPrompt: undefined } : p,
       ),
     );
-    void patchProject(projectId, { pendingPrompt: null }, workspaceContextRef.current);
+    const mutationContext = workspaceContextRef.current;
+    if (mutationContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: currentWorkspaceAccountGeneration(),
+        context: mutationContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === projectId ? { ...project, pendingPrompt: undefined } : project),
+      });
+    }
+    void patchProject(projectId, { pendingPrompt: null }, mutationContext);
   }, [route]);
 
   const handleTouchProject = useCallback(() => {
@@ -3322,7 +3408,16 @@ function AppInner() {
     setProjects((curr) =>
       curr.map((p) => (p.id === projectId ? { ...p, updatedAt } : p)),
     );
-    void patchProject(projectId, { updatedAt }, workspaceContextRef.current);
+    const mutationContext = workspaceContextRef.current;
+    if (mutationContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: currentWorkspaceAccountGeneration(),
+        context: mutationContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === projectId ? { ...project, updatedAt } : project),
+      });
+    }
+    void patchProject(projectId, { updatedAt }, mutationContext);
   }, [route]);
 
   const handleProjectChange = useCallback((updated: Project) => {

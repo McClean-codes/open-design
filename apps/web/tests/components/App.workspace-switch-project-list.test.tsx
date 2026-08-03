@@ -32,6 +32,7 @@ import { buildWorkspacePermissions } from '@open-design/contracts';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/App';
+import { navigate } from '../../src/router';
 import type { AppConfig, Project } from '../../src/types';
 import {
   fetchComposioConfigFromDaemon,
@@ -55,6 +56,7 @@ import {
   resetWorkspaceContextCache,
 } from '../../src/collab/useWorkspaceContext';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+import { resetProjectDisplaySnapshots } from '../../src/state/project-display-cache';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
 const projectViewLifecycle = vi.hoisted(() => ({
@@ -64,9 +66,16 @@ const projectViewLifecycle = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/components/EntryView', () => ({
-  EntryView: ({ projects }: { projects: Project[] }) => (
+  EntryView: ({
+    projects,
+    projectsLoading,
+  }: {
+    projects: Project[];
+    projectsLoading?: boolean;
+  }) => (
     <main>
       <div data-testid="entry-home-surface" />
+      <div data-testid="entry-projects-loading">{String(Boolean(projectsLoading))}</div>
       {projects.map((project) => (
         <div key={project.id} data-testid={`entry-project-${project.id}`}>
           {project.name}
@@ -266,6 +275,7 @@ describe('App project list across a workspace switch', () => {
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
     resetCoalescedGet();
+    resetProjectDisplaySnapshots();
     window.localStorage.clear();
     window.history.replaceState(null, '', '/');
     vi.mocked(daemonIsLive).mockResolvedValue(true);
@@ -292,6 +302,7 @@ describe('App project list across a workspace switch', () => {
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
     resetCoalescedGet();
+    resetProjectDisplaySnapshots();
   });
 
   it('never renders the previous workspace\'s projects while the new list is in flight', async () => {
@@ -354,6 +365,137 @@ describe('App project list across a workspace switch', () => {
       expect(screen.getByTestId(`entry-project-${WORKSPACE_B_PROJECT.id}`)).toBeTruthy(),
     );
     expect(screen.queryByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeNull();
+  });
+
+  it('shows an exact warm view snapshot while one background refresh runs', async () => {
+    const refreshedDrafts = deferred<Project[]>();
+    let draftsReads = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return Response.json(
+          pathname.endsWith('/workspace/directory')
+            ? workspaceDirectoryFixture([workspaceContext('ws-a')])
+            : pathname.endsWith('/workspace/context')
+              ? workspaceContextPayload('ws-a')
+              : {},
+        );
+      }),
+    );
+    vi.mocked(listProjects).mockImplementation(async (options) => {
+      if (options?.workspaceView === 'drafts') {
+        draftsReads += 1;
+        return draftsReads === 1 ? [WORKSPACE_A_PROJECT] : refreshedDrafts.promise;
+      }
+      if (options?.workspaceView === 'all') return [WORKSPACE_B_PROJECT];
+      return [];
+    });
+    window.history.replaceState(null, '', '/drafts');
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeTruthy(),
+    );
+    act(() => navigate({ kind: 'home', view: 'all-projects' }));
+    await waitFor(() =>
+      expect(screen.getByTestId(`entry-project-${WORKSPACE_B_PROJECT.id}`)).toBeTruthy(),
+    );
+
+    act(() => navigate({ kind: 'home', view: 'drafts' }));
+    await waitFor(() => expect(draftsReads).toBe(2));
+
+    expect(screen.getByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`entry-project-${WORKSPACE_B_PROJECT.id}`)).toBeNull();
+    expect(screen.getByTestId('entry-projects-loading').textContent).toBe('false');
+    expect(draftsReads).toBe(2);
+
+    await act(async () => {
+      refreshedDrafts.resolve([{ ...WORKSPACE_A_PROJECT, name: 'Workspace A refreshed' }]);
+      await refreshedDrafts.promise;
+    });
+    await waitFor(() => expect(screen.getByText('Workspace A refreshed')).toBeTruthy());
+  });
+
+  it('keeps the exact last-good view when its background refresh fails', async () => {
+    let draftsReads = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return Response.json(
+          pathname.endsWith('/workspace/directory')
+            ? workspaceDirectoryFixture([workspaceContext('ws-a')])
+            : pathname.endsWith('/workspace/context')
+              ? workspaceContextPayload('ws-a')
+              : {},
+        );
+      }),
+    );
+    vi.mocked(listProjects).mockImplementation(async (options) => {
+      if (options?.workspaceView === 'drafts') {
+        draftsReads += 1;
+        if (draftsReads === 1) return [WORKSPACE_A_PROJECT];
+        throw new Error('draft refresh unavailable');
+      }
+      if (options?.workspaceView === 'all') return [WORKSPACE_B_PROJECT];
+      return [];
+    });
+    window.history.replaceState(null, '', '/drafts');
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeTruthy(),
+    );
+    act(() => navigate({ kind: 'home', view: 'all-projects' }));
+    await waitFor(() =>
+      expect(screen.getByTestId(`entry-project-${WORKSPACE_B_PROJECT.id}`)).toBeTruthy(),
+    );
+    act(() => navigate({ kind: 'home', view: 'drafts' }));
+
+    await waitFor(() => expect(draftsReads).toBe(3), { timeout: 3000 });
+    expect(screen.getByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeTruthy();
+    expect(screen.queryByTestId(`entry-project-${WORKSPACE_B_PROJECT.id}`)).toBeNull();
+    expect(screen.getByTestId('entry-projects-loading').textContent).toBe('false');
+  });
+
+  it('does not reuse a snapshot across an account boundary with the same workspace identity', async () => {
+    const secondAccountProjects = deferred<Project[]>();
+    let reads = 0;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return Response.json(
+          pathname.endsWith('/workspace/directory')
+            ? workspaceDirectoryFixture([workspaceContext('ws-a')])
+            : pathname.endsWith('/workspace/context')
+              ? workspaceContextPayload('ws-a')
+              : {},
+        );
+      }),
+    );
+    vi.mocked(listProjects).mockImplementation(async () => {
+      reads += 1;
+      return reads === 1 ? [WORKSPACE_A_PROJECT] : secondAccountProjects.promise;
+    });
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeTruthy(),
+    );
+
+    act(() => notifyWorkspaceContextRefresh());
+    await waitFor(() => expect(reads).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByTestId(`entry-project-${WORKSPACE_A_PROJECT.id}`)).toBeNull();
+
+    await act(async () => {
+      secondAccountProjects.resolve([WORKSPACE_B_PROJECT]);
+      await secondAccountProjects.promise;
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId(`entry-project-${WORKSPACE_B_PROJECT.id}`)).toBeTruthy(),
+    );
   });
 
   it('keeps an open A project mounted and scoped to A while the ambient shell switches to B', async () => {

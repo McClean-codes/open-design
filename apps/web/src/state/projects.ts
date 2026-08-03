@@ -32,6 +32,7 @@ import type {
   WorkspaceProjectsResponse,
 } from '@open-design/contracts';
 import { randomUUID } from '../utils/uuid';
+import { markProjectDisplaySnapshotsDirty } from './project-display-cache';
 import {
   workspaceIdentityCacheKey,
   workspaceProjectHeaders,
@@ -74,6 +75,7 @@ function evictWorkspaceProjectLists(context: WorkspaceCollabContext): void {
   for (const workspaceView of WORKSPACE_PROJECT_LIST_VIEWS) {
     evictCoalescedGet(workspaceProjectListCacheKey(context, workspaceView));
   }
+  markProjectDisplaySnapshotsDirty({ context });
 }
 
 export type WorkspaceContextForWrite = {

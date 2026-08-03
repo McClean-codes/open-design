@@ -32,6 +32,12 @@ import {
   buildWorkspaceSeatSummary,
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
+import {
+  projectDisplaySnapshotKey,
+  readProjectDisplaySnapshot,
+  resetProjectDisplaySnapshots,
+  writeProjectDisplaySnapshot,
+} from '../../src/state/project-display-cache';
 
 function personalWorkspaceContext(): WorkspaceCollabContext {
   return {
@@ -1184,6 +1190,7 @@ describe('pickLocalFolderPath', () => {
 describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    resetProjectDisplaySnapshots();
   });
 
   it('carries the daemon contract error code so the UI can tell a permanent owner conflict from a transient failure', async () => {
@@ -1242,6 +1249,10 @@ describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
     ];
     const fetchMock = vi.fn<typeof fetch>(async () => responses.shift()!);
     vi.stubGlobal('fetch', fetchMock);
+    const recentDisplayScope = { accountGeneration: 7, context, view: 'recent' as const };
+    const draftsDisplayScope = { accountGeneration: 7, context, view: 'drafts' as const };
+    writeProjectDisplaySnapshot(recentDisplayScope, []);
+    writeProjectDisplaySnapshot(draftsDisplayScope, []);
 
     await listWorkspaceProjectSummaries({ context, workspaceView: 'recent' });
     await listWorkspaceProjectSummaries({ context, workspaceView: 'drafts' });
@@ -1250,6 +1261,10 @@ describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
       visibility: 'team',
       workspaceContext: context,
     });
+    expect(readProjectDisplaySnapshot(projectDisplaySnapshotKey(recentDisplayScope))?.dirty)
+      .toBe(true);
+    expect(readProjectDisplaySnapshot(projectDisplaySnapshotKey(draftsDisplayScope))?.dirty)
+      .toBe(true);
 
     await expect(listWorkspaceProjectSummaries({ context, workspaceView: 'recent' }))
       .resolves.toMatchObject([{ id: 'recent-after' }]);
