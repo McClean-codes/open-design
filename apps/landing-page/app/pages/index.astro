@@ -116,6 +116,20 @@ const homepageGraph = {
   '@graph': [websiteSchema, organizationSchema, softwareSchema],
 };
 const faq = getHomeFaq(locale, { origin, repo: REPO_URL });
+const campaignPricingHref = localePath(locale, '/pricing/');
+const campaignCopy = locale.startsWith('zh')
+  ? {
+      badge: '无限使用',
+      title: 'DeepSeek V4 Flash 放开跑',
+      detail: '订阅后连续 7 天',
+      cta: '查看活动权益',
+    }
+  : {
+      badge: 'Unlimited',
+      title: 'Let DeepSeek V4 Flash run',
+      detail: '7 consecutive days after subscribing',
+      cta: 'View campaign benefits',
+    };
 const pageHtml = renderToStaticMarkup(
   Page({ counts, github, locale, faq }) as ReturnType<typeof createElement>,
 );
@@ -213,7 +227,61 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
     <script is:inline type="application/ld+json" set:html={JSON.stringify(homepageGraph)} />
   </head>
   <body>
+    <a class="home-campaign-banner" href={campaignPricingHref} aria-label={`${campaignCopy.title} · ${campaignCopy.cta}`}>
+      <span class="home-campaign-banner__badge">{campaignCopy.badge}</span>
+      <strong>{campaignCopy.title}</strong>
+      <span class="home-campaign-banner__detail">{campaignCopy.detail}</span>
+      <span class="home-campaign-banner__cta">{campaignCopy.cta}<span aria-hidden="true"> →</span></span>
+    </a>
     <Fragment set:html={pageHtml} />
+    <style is:global>
+      :root { --home-campaign-banner-height: 44px; }
+      .home-campaign-banner {
+        position: fixed;
+        z-index: 70;
+        top: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        min-height: var(--home-campaign-banner-height);
+        padding: 8px 24px;
+        border-bottom: 1px solid color-mix(in srgb, var(--coral) 36%, var(--line));
+        color: var(--ink);
+        background: color-mix(in srgb, var(--coral) 11%, #fff);
+        font-family: var(--sans);
+        font-size: 13px;
+        line-height: 1.25;
+        text-decoration: none;
+        box-shadow: 0 6px 24px rgb(38 38 38 / 6%);
+      }
+      .home-campaign-banner__badge {
+        padding: 3px 8px;
+        border-radius: 999px;
+        color: #123305;
+        background: var(--coral);
+        font-size: 11px;
+        font-weight: 800;
+      }
+      .home-campaign-banner__detail { color: var(--ink-mute); }
+      .home-campaign-banner__cta { font-weight: 750; }
+      .home-campaign-banner:hover .home-campaign-banner__cta { text-decoration: underline; }
+      .site-chrome { top: var(--home-campaign-banner-height); }
+      @media (max-width: 680px) {
+        :root { --home-campaign-banner-height: 58px; }
+        .home-campaign-banner {
+          justify-content: flex-start;
+          gap: 8px;
+          padding: 8px 14px;
+          font-size: 12px;
+        }
+        .home-campaign-banner__detail { display: none; }
+        .home-campaign-banner__cta { margin-left: auto; white-space: nowrap; }
+        .hero { padding-top: calc(92px + var(--home-campaign-banner-height)); }
+      }
+    </style>
     {/*
      * Tighter than the catalog default (1500px): the homepage's heavy
      * below-the-fold art — full-bleed section backdrops, product shots — must

@@ -118,18 +118,24 @@ const FREE_PREMIUM_MODELS = [...PREMIUM_MODELS].sort(
 const renderCatalogLabel = (label: string) => fillTemplate(label, catalogLabelVars);
 const deepSeekCampaign = locale.startsWith('zh')
   ? {
-      badge: '不限次',
+      badge: '无限使用',
       headline: '这次，别省着用。DeepSeek V4 Flash 放开跑。',
       body: '需求、文案、脚本、代码，想改就改，跑到满意为止。',
-      timing: '活动期间，产品内使用不计入小时及每日次数。',
-      modelBenefit: 'DeepSeek V4 Flash · 免费不限次',
+      timing: '订阅后连续 7 天，产品内使用不计入小时及每日次数。',
+      modelBenefit: 'DeepSeek V4 Flash 无限使用',
+      paidBenefitNote: '订阅后连续 7 天',
+      freeBenefitNote: '升级付费方案后解锁',
+      teamBenefitNote: '订阅团队版后连续 7 天 · 团队成员可用',
     }
   : {
       badge: 'Unlimited',
       headline: 'Stop rationing. Let DeepSeek V4 Flash run.',
       body: 'Requirements, copy, scripts, or code—iterate until it is right.',
-      timing: 'During the campaign, in-product runs do not count toward hourly or daily limits.',
-      modelBenefit: 'DeepSeek V4 Flash · Free unlimited runs',
+      timing: 'For 7 days after subscribing, in-product runs do not count toward hourly or daily limits.',
+      modelBenefit: 'Unlimited DeepSeek V4 Flash',
+      paidBenefitNote: '7 consecutive days after subscribing',
+      freeBenefitNote: 'Unlock with a paid plan',
+      teamBenefitNote: '7 days after subscribing to Teams · available to team members',
     };
 
 // Vela's grant already includes the advertised Pro/Max uplift. The percentage
@@ -318,7 +324,10 @@ const jsonLd = [
         </a>
 
         <ul class="pr-feats">
-          <li class="pr-feat pr-campaign-model-benefit">{deepSeekCampaign.modelBenefit}</li>
+          <li class="pr-feat pr-campaign-model-benefit pr-campaign-model-benefit--locked">
+            <strong>{deepSeekCampaign.modelBenefit}</strong>
+            <small>{deepSeekCampaign.freeBenefitNote}</small>
+          </li>
           {/* The trial-credit row and both model lists only exist through the
               signup credit grant; they vanish while that promotion is offline
               (TRIAL_CREDIT_PROMO_ENABLED, mirrors the vela modal). */}
@@ -406,7 +415,10 @@ const jsonLd = [
             {/* Fully-expanded benefits — credit + concurrency lead the list,
                 then every included benefit; no "includes all <tier>" heading. */}
             <ul class="pr-feats">
-              <li class="pr-feat pr-campaign-model-benefit">{deepSeekCampaign.modelBenefit}</li>
+              <li class="pr-feat pr-campaign-model-benefit">
+                <strong>{deepSeekCampaign.modelBenefit}</strong>
+                <small>{deepSeekCampaign.paidBenefitNote}</small>
+              </li>
               <li class="pr-feat pr-feat-lead pr-feat-strong">
                 <span data-od-credit>{v.credits}</span>
                 {v.bonusPct != null && (
@@ -541,6 +553,10 @@ const jsonLd = [
           </p>
 
           <ul class="pr-team-feature-list">
+            <li class="pr-campaign-model-benefit">
+              <strong>{deepSeekCampaign.modelBenefit}</strong>
+              <small>{deepSeekCampaign.teamBenefitNote}</small>
+            </li>
             {teamContent.teamFeatures.map((feature) => <li>{feature}</li>)}
           </ul>
 
@@ -727,6 +743,8 @@ const jsonLd = [
           nextButton.focus();
         });
       }
+      const requestedAudience = new URLSearchParams(window.location.search).get('audience');
+      if (requestedAudience === 'team') activateAudience('team');
 
       // ── Billing interval toggle ──────────────────────────────────────────
       // One entry point so the toggle button and the "save $X yearly" nudge
@@ -1058,8 +1076,26 @@ const jsonLd = [
   .pr-campaign strong { font-size: 1rem; }
   .pr-campaign p { margin: 4px 0 0; color: var(--muted); font-size: .82rem; }
   .pr-campaign small { max-width: 260px; color: var(--muted); line-height: 1.45; }
-  .pr-campaign-model-benefit { color: #225f0c; font-weight: 750; }
+  .pr-feat.pr-campaign-model-benefit,
+  .pr-team-feature-list .pr-campaign-model-benefit {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding-top: 9px;
+    padding-right: 10px;
+    padding-bottom: 9px;
+    border: 1px solid color-mix(in srgb, #68f22e 34%, var(--border));
+    border-radius: 10px;
+    color: #225f0c;
+    background: color-mix(in srgb, #68f22e 7%, transparent);
+  }
+  .pr-campaign-model-benefit strong { font-weight: 780; }
+  .pr-campaign-model-benefit small { color: var(--muted); font-size: .72rem; font-weight: 500; }
   .pr-campaign-model-benefit::before { background: #68f22e !important; }
+  .pr-feat.pr-campaign-model-benefit--locked {
+    color: var(--muted);
+    background: color-mix(in srgb, var(--border) 20%, transparent);
+  }
   @media (max-width: 760px) {
     .pr-campaign { align-items: flex-start; flex-wrap: wrap; }
     .pr-campaign small { width: 100%; max-width: none; }

@@ -1913,6 +1913,21 @@
   font-weight: 800;
   line-height: 1.4;
 }
+.inline-switcher__campaign-badge--upgrade {
+  color: var(--text-muted);
+  background: var(--bg-muted);
+}
+.inline-switcher__chip[data-campaign-highlight='true'] {
+  border-color: var(--accent);
+  animation: deepseek-campaign-chip-pulse 760ms cubic-bezier(0.23, 1, 0.32, 1) 2;
+}
+@keyframes deepseek-campaign-chip-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  50% { box-shadow: 0 0 0 5px color-mix(in srgb, var(--accent) 22%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .inline-switcher__chip[data-campaign-highlight='true'] { animation: none; }
+}
 .inline-switcher__agent-status {
   display: inline-flex;
   align-items: center;

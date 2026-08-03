@@ -1,12 +1,24 @@
-import { useEffect, useState } from 'react';
-import { Button } from '@open-design/components';
+import { useEffect, useId, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { Button, Dialog } from '@open-design/components';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN as campaign,
   DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM,
+  type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
+import { useWorkspaceContext } from '../collab/useWorkspaceContext';
+import {
+  amrPlansUrlForProfile,
+  amrPlansUrlForWorkspace,
+} from '../runtime/amr-guidance';
+import { Icon } from './Icon';
 import styles from './DeepSeekV4FlashCampaign.module.css';
 
 const SEEN_KEY = `open-design:campaign-seen:${campaign.id}`;
+
+interface Props {
+  audience: DeepSeekV4FlashCampaignAudience;
+}
 
 function shouldForceCampaignReview(): boolean {
   if (typeof window === 'undefined') return false;
@@ -32,57 +44,117 @@ function markCampaignSeen(): void {
 }
 
 function focusModelSwitcher(): void {
-  document.querySelector<HTMLButtonElement>('[data-testid="inline-model-switcher-chip"]')?.click();
+  const chip = document.querySelector<HTMLButtonElement>(
+    '[data-testid="inline-model-switcher-chip"]',
+  );
+  if (!chip) return;
+  chip.click();
+  chip.setAttribute('data-campaign-highlight', 'true');
+  window.setTimeout(() => chip.removeAttribute('data-campaign-highlight'), 1_500);
 }
 
-export function DeepSeekV4FlashCampaign() {
+export function DeepSeekV4FlashCampaign({ audience }: Props) {
+  const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
+  const dialogId = useId();
+  const titleId = useId();
+  const descriptionId = useId();
 
   useEffect(() => {
+    if (audience === 'unknown') return;
     if (shouldForceCampaignReview() || !hasSeenCampaign()) setModalOpen(true);
-  }, []);
+  }, [audience]);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    const panel = document.getElementById(dialogId);
+    if (!panel) return;
+    const previouslyFocused =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousBodyOverflow = document.body.style.overflow;
+    panel.tabIndex = -1;
+    panel.focus({ preventScroll: true });
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousBodyOverflow;
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [dialogId, modalOpen]);
 
   const closeModal = () => {
     markCampaignSeen();
     setModalOpen(false);
   };
 
-  const start = () => {
+  const paid = audience === 'paid';
+  const presentation = paid ? campaign.paid : campaign.unpaid;
+  const takeAction = () => {
     closeModal();
-    window.setTimeout(focusModelSwitcher, 0);
+    if (paid) {
+      window.setTimeout(focusModelSwitcher, 0);
+      return;
+    }
+    const plansUrl =
+      amrPlansUrlForWorkspace(undefined, workspaceContext?.workspaceId)
+      ?? amrPlansUrlForProfile(undefined);
+    window.open(plansUrl, '_blank', 'noopener,noreferrer');
   };
 
-  return (
-    <>
-      <section className={styles.banner} aria-label="DeepSeek V4 Flash 活动">
-        <span className={styles.badge}>{campaign.badge}</span>
-        <div className={styles.bannerCopy}>
-          <strong>{campaign.headline}</strong>
-          <span>{campaign.description}</span>
-        </div>
-        <span className={styles.timing}>{campaign.timing}</span>
-        <Button onClick={focusModelSwitcher}>{campaign.cta}</Button>
-      </section>
+  if (!modalOpen || audience === 'unknown' || typeof document === 'undefined') {
+    return null;
+  }
 
-      <div className={`${styles.modalRoot}${modalOpen ? ` ${styles.modalOpen}` : ''}`} aria-hidden={!modalOpen}>
-        <button className={styles.backdrop} type="button" aria-label="关闭活动弹窗" onClick={closeModal} />
-        <section className={styles.modal} role="dialog" aria-modal="true" aria-labelledby="deepseek-campaign-title">
-          <button className={styles.close} type="button" aria-label="关闭" onClick={closeModal}>×</button>
-          <div className={styles.modalBadge}>{campaign.badge}</div>
-          <h2 id="deepseek-campaign-title">{campaign.headline}</h2>
-          <p className={styles.lead}>{campaign.description}</p>
-          <div className={styles.modelCard}>
-            <span className={styles.modelMark}>DS</span>
-            <span><strong>DeepSeek V4 Flash</strong><small>{campaign.timing}</small></span>
-            <span className={styles.free}>免费</span>
-          </div>
-          <p className={styles.boundary}>{campaign.boundary}</p>
-          <div className={styles.actions}>
-            <Button onClick={start}>{campaign.cta}</Button>
-            <Button variant="ghost" onClick={closeModal}>先逛逛</Button>
-          </div>
-        </section>
+  return createPortal(
+    <Dialog
+      id={dialogId}
+      ariaLabelledBy={titleId}
+      ariaDescribedBy={descriptionId}
+      onClose={closeModal}
+      closeOnEscape
+      className={styles.panel}
+      backdropClassName={styles.backdrop}
+      data-testid="deepseek-v4-flash-campaign-dialog"
+    >
+      <Button
+        variant="ghost"
+        size="icon"
+        className={styles.close}
+        aria-label="关闭"
+        onClick={closeModal}
+      >
+        <Icon name="close" size={17} strokeWidth={1.8} />
+      </Button>
+
+      <div className={styles.offerBar}>
+        <span className={styles.offerBadge}>{campaign.badge}</span>
+        <span>{campaign.timing}</span>
       </div>
-    </>
+
+      <p className={styles.eyebrow}>{presentation.eyebrow}</p>
+      <h2 id={titleId} className={styles.title}>{campaign.headline}</h2>
+      <p id={descriptionId} className={styles.lead}>{campaign.description}</p>
+
+      <div className={styles.modelCard}>
+        <span className={styles.modelMark} aria-hidden="true">DS</span>
+        <span className={styles.modelCopy}>
+          <strong>{campaign.benefit}</strong>
+          <small>{presentation.status}</small>
+        </span>
+        <span className={paid ? styles.available : styles.locked}>
+          {paid ? '已解锁' : '待解锁'}
+        </span>
+      </div>
+
+      <p className={styles.boundary}>{campaign.boundary}</p>
+      <div className={styles.actions}>
+        <Button className={styles.primaryAction} onClick={takeAction}>
+          {presentation.cta}
+        </Button>
+        <Button variant="ghost" onClick={closeModal}>
+          {presentation.secondaryCta}
+        </Button>
+      </div>
+    </Dialog>,
+    document.body,
   );
 }

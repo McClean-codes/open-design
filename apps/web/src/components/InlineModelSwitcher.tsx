@@ -94,6 +94,7 @@ import {
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
   isDeepSeekV4FlashCampaignModel,
+  type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 
 interface Props {
@@ -125,6 +126,7 @@ interface Props {
       | 'pet'
       | 'about',
   ) => void;
+  deepSeekV4FlashCampaignAudience?: DeepSeekV4FlashCampaignAudience;
 }
 
 const API_PROTOCOL_TABS: Array<{ id: ApiProtocol; title: string }> = [
@@ -183,6 +185,7 @@ export function InlineModelSwitcher({
   onApiModelChange,
   onProviderModelsCacheChange,
   onOpenSettings,
+  deepSeekV4FlashCampaignAudience = 'unknown',
 }: Props) {
   const t = useT();
   const analytics = useAnalytics();
@@ -760,9 +763,14 @@ export function InlineModelSwitcher({
     () =>
       inlineAgentModelOptions.map((model) => ({
         model,
-        selectable: agentModelIsSelectable(currentAgent, model.id),
+        selectable:
+          agentModelIsSelectable(currentAgent, model.id)
+          && !(
+            deepSeekV4FlashCampaignAudience === 'unpaid'
+            && isDeepSeekV4FlashCampaignModel(model.id)
+          ),
       })),
-    [currentAgent, inlineAgentModelOptions],
+    [currentAgent, deepSeekV4FlashCampaignAudience, inlineAgentModelOptions],
   );
 
   /** Where a refused model pick sends the user instead — the same plans
@@ -1090,7 +1098,15 @@ export function InlineModelSwitcher({
             />
             <span className="inline-switcher__chip-model-name">{chipModel}</span>
             {isDeepSeekV4FlashCampaignModel(currentModelId) ? (
-              <span className="inline-switcher__campaign-badge">{DEEPSEEK_V4_FLASH_CAMPAIGN.badge}</span>
+              <span className={`inline-switcher__campaign-badge${
+                deepSeekV4FlashCampaignAudience === 'unpaid'
+                  ? ' inline-switcher__campaign-badge--upgrade'
+                  : ''
+              }`}>
+                {deepSeekV4FlashCampaignAudience === 'unpaid'
+                  ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge
+                  : DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge}
+              </span>
             ) : null}
           </>
         ) : (
@@ -1209,9 +1225,12 @@ export function InlineModelSwitcher({
                     // A model above the caller's plan is shown, but honestly:
                     // disabled with the reason the settings picker already uses,
                     // never as a normal row whose click gets reverted.
+                    const campaignModel = isDeepSeekV4FlashCampaignModel(m.id);
                     const lockedHint = selectable
                       ? null
-                      : t('settings.amrModelUpgradeHint');
+                      : campaignModel && deepSeekV4FlashCampaignAudience === 'unpaid'
+                        ? '订阅后可享连续 7 天无限使用'
+                        : t('settings.amrModelUpgradeHint');
                     return (
                       <div key={m.id} className="inline-switcher__agent-row">
                         <button
@@ -1227,6 +1246,10 @@ export function InlineModelSwitcher({
                           }
                           data-testid={`inline-model-switcher-compact-model-${m.id}`}
                           onClick={() => {
+                            if (campaignModel && deepSeekV4FlashCampaignAudience === 'unpaid') {
+                              openAmrModelUpgrade();
+                              return;
+                            }
                             // The sink is the authority, not the row's styling:
                             // a refused pick routes to the plans page (same as
                             // the settings picker's lock) instead of writing a
@@ -1266,8 +1289,16 @@ export function InlineModelSwitcher({
                           <span className="inline-switcher__agent-name">
                             {m.label}
                           </span>
-                          {isDeepSeekV4FlashCampaignModel(m.id) ? (
-                            <span className="inline-switcher__campaign-badge">免费 · {DEEPSEEK_V4_FLASH_CAMPAIGN.badge}</span>
+                          {campaignModel ? (
+                            <span className={`inline-switcher__campaign-badge${
+                              deepSeekV4FlashCampaignAudience === 'unpaid'
+                                ? ' inline-switcher__campaign-badge--upgrade'
+                                : ''
+                            }`}>
+                              {deepSeekV4FlashCampaignAudience === 'unpaid'
+                                ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge
+                                : DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge}
+                            </span>
                           ) : null}
                           {lockedHint ? (
                             <span

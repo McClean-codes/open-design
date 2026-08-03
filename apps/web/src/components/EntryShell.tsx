@@ -149,6 +149,8 @@ import {
   workspaceBillingSummaryForContext,
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
+import { resolvePlanTier } from '../collab/team-plan';
+import { resolveDeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
 import {
   beginWorkspaceScopedRead,
   workspaceIdentityCacheKey,
@@ -631,6 +633,11 @@ export function EntryShell({
     workspaceBillingResponse,
     workspaceContext,
   );
+  const deepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
+    plan: resolvePlanTier({ billing: workspaceBilling, context: workspaceContext }),
+    loggedIn: amrLoggedIn,
+    search: typeof window === 'undefined' ? null : window.location.search,
+  });
   const workspaceBalanceUsd = workspaceBillingBalanceUsd(
     workspaceBillingResponse,
     workspaceContext,
@@ -1426,6 +1433,7 @@ export function EntryShell({
       onApiProtocolChange={onApiProtocolChange}
       onApiModelChange={onApiModelChange}
       onOpenSettings={onOpenSettings}
+      deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
     />
   );
 
@@ -1547,6 +1555,7 @@ export function EntryShell({
                 onRecommendationDismiss={dismissRecommendation}
                 executionSwitcher={view === 'home' ? homeExecutionSwitcher : undefined}
                 artifactUpgradeSlot={artifactUpgradeSlot}
+                deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
               />
             </div>
             <div data-testid="entry-view-projects" data-active={view === 'projects' ? 'true' : 'false'} {...inactiveViewProps(view === 'projects')}>
