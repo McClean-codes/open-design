@@ -46,4 +46,18 @@ describe('onboarding layout styles', () => {
     expect(benefitsBlock).toMatch(/(?:^|[;\n])\s*flex-wrap:\s*wrap\s*;/);
     expect(benefitsBlock).not.toMatch(/(?:^|[;\n])\s*flex-wrap:\s*nowrap\s*;/);
   });
+
+  it('centers intrinsic-width activation retry controls', () => {
+    const actionsBlock = cssDeclarations(
+      '.onboarding-cloud__activation .amr-login-activation__actions',
+    );
+    const openBlock = cssDeclarations(
+      '.onboarding-cloud__activation .amr-login-activation__open',
+    );
+    const dismissBlock = cssDeclarations('.onboarding-cloud__activation-dismiss');
+
+    expect(actionsBlock).toMatch(/(?:^|[;\n])\s*justify-content:\s*center\s*;/);
+    expect(openBlock).toMatch(/(?:^|[;\n])\s*flex:\s*0\s+0\s+auto\s*;/);
+    expect(dismissBlock).toMatch(/(?:^|[;\n])\s*flex:\s*0\s+0\s+auto\s*;/);
+  });
 });

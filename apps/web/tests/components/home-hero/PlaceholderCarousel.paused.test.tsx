@@ -46,6 +46,7 @@ describe('PlaceholderCarousel — paused while the editor has focus (#118)', () 
       />,
     );
     expect(container.textContent).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
 
     // And it stays silent: with the animation loop stopped, further time
     // passing must not bring any text back under the caret.
