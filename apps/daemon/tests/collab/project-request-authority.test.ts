@@ -292,33 +292,19 @@ describe('createAuthorizeProjectRequest', () => {
     )).resolves.toBe(true);
   });
 
-  it.each([
-    [
-      'the shared-project owner',
-      {
-        visibility: 'team',
-        resourceState: 'active',
-        createdByWorkspaceMemberId: 'member-a',
-      },
-      context({ role: 'member' }),
-    ],
-    [
-      'a Workspace owner on a personal project',
-      {
-        visibility: 'personal',
-        resourceState: 'active',
-        createdByWorkspaceMemberId: 'another-member',
-      },
-      context({ role: 'owner' }),
-    ],
-  ])('preserves write access for %s', async (_label, row, verifiedContext) => {
+  it('preserves write access for the shared-project owner', async () => {
+    const row = {
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    };
     const authorize = createAuthorizeProjectRequest({
       db: {},
       getWorkspaceProject: () => row,
       getWorkspaceProjectByProjectId: () => row,
       verifyWorkspaceRequestAuthority: async () => ({
         ok: true,
-        context: verifiedContext,
+        context: context({ role: 'member' }),
       }),
       sendApiError: vi.fn(),
     });
@@ -330,6 +316,45 @@ describe('createAuthorizeProjectRequest', () => {
       { mode: 'write', capability: 'writeFiles' },
     )).resolves.toBe(true);
   });
+
+  it.each(['owner', 'admin'] as const)(
+    'does not let a Workspace %s mutate another member\'s Personal project',
+    async (role) => {
+      const row = {
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'project-owner',
+      };
+      const callerMemberId = `workspace-${role}`;
+      const sendApiError = vi.fn();
+      const authorize = createAuthorizeProjectRequest({
+        db: {},
+        getWorkspaceProject: () => row,
+        getWorkspaceProjectByProjectId: () => row,
+        verifyWorkspaceRequestAuthority: async () => ({
+          ok: true,
+          context: context({
+            workspaceMemberId: callerMemberId,
+            role,
+          }),
+        }),
+        sendApiError,
+      });
+
+      await expect(authorize(
+        request({ workspaceId: 'workspace-a', memberId: callerMemberId }),
+        response(),
+        'project-a',
+        { mode: 'write', capability: 'writeFiles' },
+      )).resolves.toBe(false);
+      expect(sendApiError).toHaveBeenCalledWith(
+        expect.anything(),
+        403,
+        'WORKSPACE_PROJECT_PERMISSION_DENIED',
+        'workspace project mutation is not allowed',
+      );
+    },
+  );
 
   it.each([
     [
