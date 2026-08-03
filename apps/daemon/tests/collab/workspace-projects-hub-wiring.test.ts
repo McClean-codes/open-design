@@ -356,11 +356,13 @@ describe('server.ts wiring (source boundary)', () => {
       'reconcileWorkspaceProjectsFromRemote(subscribedWorkspaceId)',
     );
     expect(reconnectBody).toContain(
-      'reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId)',
+      'reconcileAndInvalidateTeamResourcesFromRemote(',
     );
+    expect(reconnectBody).toContain('invalidateAllReconciledKinds: true');
     expect(sourceGapBody).toContain(
       'workspaceId ?? subscribedWorkspaceId',
     );
+    expect(sourceGapBody).toContain('invalidateAllReconciledKinds: true');
   });
 
   it('polls remembered, subscribed, and persisted Team resource Workspaces instead of only ambient', () => {
@@ -392,8 +394,9 @@ describe('server.ts wiring (source boundary)', () => {
     expect(body).not.toContain('activeWorkspace.get()');
     expect(body).toContain('teamResourceBackgroundWorkspaceIds()');
     expect(body).toContain(
-      'reconcileTeamResourcesFromRemote(undefined, workspaceId)',
+      'reconcileAndInvalidateTeamResourcesFromRemote(undefined, workspaceId',
     );
+    expect(body).toContain('invalidateChangedSignatures: true');
   });
 
   it('has no ambient active-workspace invalidation poller or hub subscription', () => {

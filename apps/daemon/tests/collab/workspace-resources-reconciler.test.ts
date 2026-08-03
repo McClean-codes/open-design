@@ -1,12 +1,47 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createWorkspaceResourceSignatureTracker,
   planWorkspaceResourceReconciliation,
   reconcileWorkspaceResourcesWithRemote,
   type LocalTeamResourceBinding,
 } from '../../src/collab/workspace-resources-reconciler.js';
 
 const WORKSPACE_ID = 'team-1';
+
+describe('createWorkspaceResourceSignatureTracker', () => {
+  it('detects shares, retractions, and version moves per Workspace and kind', () => {
+    const tracker = createWorkspaceResourceSignatureTracker();
+
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [])).toBe(false);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [
+      { resourceId: 'shared', versionId: 'v1', version: 1 },
+    ])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [
+      { resourceId: 'shared', versionId: 'v2', version: 2 },
+    ])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [
+      { resourceId: 'shared', versionId: 'v2', version: 2 },
+    ])).toBe(false);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [])).toBe(true);
+
+    expect(tracker.observe(WORKSPACE_ID, 'plugin', [])).toBe(true);
+    expect(tracker.observe('team-2', 'skill', [])).toBe(true);
+  });
+
+  it('does not treat remote listing order as a change', () => {
+    const tracker = createWorkspaceResourceSignatureTracker();
+    expect(tracker.observe(WORKSPACE_ID, 'design_system', [
+      { resourceId: 'b', versionId: 'v1' },
+      { resourceId: 'a', versionId: 'v2' },
+    ])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'design_system', [
+      { resourceId: 'a', versionId: 'v2' },
+      { resourceId: 'b', versionId: 'v1' },
+    ])).toBe(false);
+  });
+});
 
 describe('planWorkspaceResourceReconciliation (pure)', () => {
   it('retires a local active-team row the remote listing no longer confirms', () => {

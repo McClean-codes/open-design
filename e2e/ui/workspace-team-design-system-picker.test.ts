@@ -28,9 +28,9 @@ const MEMBER = {
   role: 'member' as const,
 };
 
-test.describe.configure({ timeout: T.xlong * 5 });
+test.describe.configure({ timeout: T.xlong * 8 });
 
-test('[P0] a Team design system materializes, catches up a missed retraction, and clears on switch', async ({
+test('[P0] Team design systems catch up missed shares, updates, and retractions', async ({
   browser,
 }, testInfo) => {
   const hubRoot = testInfo.outputPath('fake-team-design-system-hub');
@@ -183,16 +183,88 @@ test('[P0] a Team design system materializes, catches up a missed retraction, an
     ).toBe(true);
 
     // Keep the member's real picker open while its upstream event stream is
-    // unavailable and the owner retracts the Team resource. Restoring only the
-    // daemon-to-hub stream must reconcile the missed change and invalidate the
-    // continuously connected browser; reopening Home or visiting Design
-    // Systems would hide the stale-catalog bug this witness is intended to
-    // catch.
+    // unavailable. Restoring only the daemon-to-hub stream must invalidate the
+    // continuously connected browser after missed shares, updates, and
+    // retractions; reopening Home or visiting Design Systems would hide the
+    // stale-catalog bug this witness is intended to catch.
     await memberPage.getByTestId('home-hero-design-system-trigger').click();
     const openPicker = memberPage.getByTestId('project-ds-picker-popover');
     await expect(
       openPicker.getByTestId(`project-ds-picker-option-${designSystemId}`),
     ).toBeVisible();
+
+    hub.setEventsAvailable(MEMBER.memberId, false);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.long },
+    ).toBe(0);
+    const missedCreateResponse = await ownerPage.request.post('/api/design-systems', {
+      data: {
+        title: 'Missed Shared Language',
+        summary: 'Shared while the member event stream is unavailable.',
+        category: 'Custom',
+        status: 'published',
+      },
+      headers: workspaceHeaders(OWNER),
+      timeout: T.long,
+    });
+    expect(missedCreateResponse.ok(), await missedCreateResponse.text()).toBeTruthy();
+    const missedCreated = await missedCreateResponse.json() as {
+      id?: string;
+      designSystem?: { id?: string };
+    };
+    const missedDesignSystemId = missedCreated.id ?? missedCreated.designSystem?.id;
+    expect(missedDesignSystemId).toBeTruthy();
+    const missedWorkspaceResponse = await ownerPage.request.post(
+      `/api/design-systems/${encodeURIComponent(missedDesignSystemId!)}/workspace`,
+      { headers: workspaceHeaders(OWNER), timeout: T.long },
+    );
+    expect(
+      missedWorkspaceResponse.ok(),
+      await missedWorkspaceResponse.text(),
+    ).toBeTruthy();
+    const missedShareResponse = await ownerPage.request.post(
+      `/api/workspace/design-systems/${encodeURIComponent(missedDesignSystemId!)}/share`,
+      { headers: workspaceHeaders(OWNER), timeout: T.long },
+    );
+    expect(missedShareResponse.ok(), await missedShareResponse.text()).toBeTruthy();
+    hub.setEventsAvailable(MEMBER.memberId, true);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.xlong },
+    ).toBeGreaterThan(0);
+    await expect(
+      openPicker.getByTestId(`project-ds-picker-option-${missedDesignSystemId}`),
+    ).toContainText('Missed Shared Language', { timeout: T.xlong });
+
+    hub.setEventsAvailable(MEMBER.memberId, false);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.long },
+    ).toBe(0);
+    const updateResponse = await ownerPage.request.patch(
+      `/api/design-systems/${encodeURIComponent(designSystemId!)}`,
+      {
+        data: { title: 'Shared Product Language v2' },
+        headers: workspaceHeaders(OWNER),
+        timeout: T.long,
+      },
+    );
+    expect(updateResponse.ok(), await updateResponse.text()).toBeTruthy();
+    const republishResponse = await ownerPage.request.post(
+      `/api/workspace/design-systems/${encodeURIComponent(designSystemId!)}/share`,
+      { headers: workspaceHeaders(OWNER), timeout: T.long },
+    );
+    expect(republishResponse.ok(), await republishResponse.text()).toBeTruthy();
+    hub.setEventsAvailable(MEMBER.memberId, true);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.xlong },
+    ).toBeGreaterThan(0);
+    await expect(
+      openPicker.getByTestId(`project-ds-picker-option-${designSystemId}`),
+    ).toContainText('Shared Product Language v2', { timeout: T.xlong });
+
     const catalogRequestsBeforeRetraction = memberCatalogRequests.designSystems;
     hub.setEventsAvailable(MEMBER.memberId, false);
     await expect.poll(

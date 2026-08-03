@@ -824,6 +824,7 @@ import {
   type LocalTeamProjectBinding,
 } from './collab/workspace-projects-reconciler.js';
 import {
+  createWorkspaceResourceSignatureTracker,
   reconcileWorkspaceResourcesWithRemote,
   type LocalTeamResourceBinding,
 } from './collab/workspace-resources-reconciler.js';
@@ -4865,6 +4866,7 @@ export async function startServer({
       void reconcileAndInvalidateTeamResourcesFromRemote(
         undefined,
         subscribedWorkspaceId,
+        { invalidateAllReconciledKinds: true },
       )
         .catch(() => undefined);
     },
@@ -4886,6 +4888,7 @@ export async function startServer({
       void reconcileAndInvalidateTeamResourcesFromRemote(
         undefined,
         exactWorkspaceId,
+        { invalidateAllReconciledKinds: true },
       )
         .catch(() => undefined);
     },
@@ -5572,6 +5575,7 @@ export async function startServer({
     plugin: pluginsTeamShare,
     skill: skillsTeamShare,
   };
+  const teamResourceSignatures = createWorkspaceResourceSignatureTracker();
   const adoptLegacyWorkspaceTeamPluginBindings = async (
     scope: TeamResourceRequestScope,
   ): Promise<void> => {
@@ -5618,12 +5622,23 @@ export async function startServer({
     if (resourceType === 'plugin') {
       await adoptLegacyWorkspaceTeamPluginBindings(scope);
     }
-    return reconcileWorkspaceResourcesWithRemote({
+    let remoteResources: Array<{
+      resourceId: string;
+      versionId?: string;
+      version?: number;
+    }> | undefined;
+    const reconciliation = await reconcileWorkspaceResourcesWithRemote({
       getWorkspaceIdentity: async () => ({ workspaceId: scope.principal.teamId }),
-      listRemoteTeamResources: async () =>
-        (await teamResourceShareByKind[resourceType].sharedResources(scope)).map((resource) => ({
+      listRemoteTeamResources: async () => {
+        remoteResources = (
+          await teamResourceShareByKind[resourceType].sharedResources(scope)
+        ).map((resource) => ({
           resourceId: resource.id,
-        })),
+          ...(resource.versionId ? { versionId: resource.versionId } : {}),
+          ...(resource.version !== undefined ? { version: resource.version } : {}),
+        }));
+        return remoteResources;
+      },
       listLocalActiveTeamRows: (workspaceId): LocalTeamResourceBinding[] =>
         listWorkspaceResources(db, resourceType, workspaceId)
           .filter((row: any) => row.visibility === 'team' && row.resourceState !== 'deleted')
@@ -5651,6 +5666,7 @@ export async function startServer({
       },
       onError: (error) => console.warn(`[od] workspace-resources (${resourceType}) reconciliation error:`, error),
     });
+    return { ...reconciliation, remoteResources };
   };
   // `resourceKind` scopes the pass to just the kind the event was about;
   // omitted (hub reconnect catch-up, the poll fallback) reconciles every
@@ -5658,7 +5674,7 @@ export async function startServer({
   const reconcileTeamResourcesFromRemote = async (
     resourceKind?: string,
     workspaceId?: string,
-  ): Promise<Array<{ resourceKind: ReconciledTeamResourceKind; retired: number }>> => {
+  ) => {
     const requestedWorkspaceId = workspaceId?.trim();
     if (!requestedWorkspaceId) return [];
     // Background events carry only a Workspace id, not an HTTP request. Resolve
@@ -5691,8 +5707,12 @@ export async function startServer({
   const reconcileAndInvalidateTeamResourcesFromRemote = async (
     resourceKind?: string,
     workspaceId?: string,
-    options: { invalidateRequestedKind?: boolean } = {},
-  ): Promise<Array<{ resourceKind: ReconciledTeamResourceKind; retired: number }>> => {
+    options: {
+      invalidateRequestedKind?: boolean;
+      invalidateAllReconciledKinds?: boolean;
+      invalidateChangedSignatures?: boolean;
+    } = {},
+  ) => {
     const results = await reconcileTeamResourcesFromRemote(resourceKind, workspaceId);
     const requestedKind = RECONCILED_TEAM_RESOURCE_KINDS.find(
       (kind) => kind === resourceKind,
@@ -5702,14 +5722,28 @@ export async function startServer({
         .filter((result) => result.retired > 0)
         .map((result) => result.resourceKind),
     );
+    const exactWorkspaceId = workspaceId?.trim();
+    if (exactWorkspaceId) {
+      for (const result of results) {
+        if (!result.remoteResources) continue;
+        const signatureChanged = teamResourceSignatures.observe(
+          exactWorkspaceId,
+          result.resourceKind,
+          result.remoteResources,
+        );
+        if (options.invalidateChangedSignatures && signatureChanged) {
+          changedKinds.add(result.resourceKind);
+        }
+      }
+    }
     // A named hub event is itself authoritative evidence of a share, update,
-    // or retraction, including changes that do not alter a binding row. Gap
-    // catch-ups and polls lack that signal, so they notify only for successful
-    // retirements reported by reconciliation.
+    // or retraction, including changes that do not alter a binding row.
     if (options.invalidateRequestedKind && requestedKind) {
       changedKinds.add(requestedKind);
     }
-    const exactWorkspaceId = workspaceId?.trim();
+    if (options.invalidateAllReconciledKinds) {
+      for (const result of results) changedKinds.add(result.resourceKind);
+    }
     if (exactWorkspaceId) {
       for (const changedKind of changedKinds) {
         emitWorkspaceEvent(exactWorkspaceId, {
@@ -5746,12 +5780,15 @@ export async function startServer({
   // diffing a cheap SIGNATURE against the previous one (see its
   // `emitIfChanged`), and there is no equivalent cheap "did the team-shared
   // resource set change" digest to diff against (vela's own
-  // `/api/v1/collab/sync-digest` carries no resources token) — so this
-  // always just re-reads and re-diffs unconditionally on its own cadence
-  // instead of piggybacking on that poller's change-detection.
+  // `/api/v1/collab/sync-digest` carries no resources token). Retain a local
+  // signature from each authoritative per-kind listing instead; it includes
+  // resource identity and published version so the poll catches shares,
+  // updates, and retractions without refreshing browser catalogs every tick.
   const teamResourcesPollTimer = setInterval(() => {
     for (const workspaceId of teamResourceBackgroundWorkspaceIds()) {
-      void reconcileAndInvalidateTeamResourcesFromRemote(undefined, workspaceId)
+      void reconcileAndInvalidateTeamResourcesFromRemote(undefined, workspaceId, {
+        invalidateChangedSignatures: true,
+      })
         .catch((error) =>
           console.warn(
             `[od] workspace ${workspaceId} resources poll error:`,

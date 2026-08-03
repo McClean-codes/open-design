@@ -63,6 +63,34 @@ export interface LocalTeamResourceBinding {
  *  resource_id` directly). */
 export interface RemoteTeamResourceRef {
   resourceId: string;
+  versionId?: string;
+  version?: number;
+}
+
+/** Tracks the last authoritative listing independently by Workspace and kind. */
+export function createWorkspaceResourceSignatureTracker() {
+  const signatures = new Map<string, string>();
+  return {
+    observe(
+      workspaceId: string,
+      resourceKind: string,
+      remoteResources: readonly RemoteTeamResourceRef[],
+    ): boolean {
+      const key = JSON.stringify([workspaceId, resourceKind]);
+      const signature = JSON.stringify(
+        remoteResources
+          .map((resource) => [
+            resource.resourceId,
+            resource.versionId ?? null,
+            resource.version ?? null,
+          ] as const)
+          .sort(([left], [right]) => left.localeCompare(right)),
+      );
+      const previous = signatures.get(key);
+      signatures.set(key, signature);
+      return previous !== signature;
+    },
+  };
 }
 
 export type WorkspaceResourceReconcileAction = {
