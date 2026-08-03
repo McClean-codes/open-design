@@ -5,6 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { resetCoalescedGet } from '../src/lib/coalesced-get';
 import {
+  readProjectDisplaySnapshot,
+  resetProjectDisplaySnapshots,
+  writeProjectDisplaySnapshot,
+  projectDisplaySnapshotKey,
+} from '../src/state/project-display-cache';
+import {
+  currentWorkspaceAccountGeneration,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
   TEAM_PROJECTS_CHANGED_EVENT,
@@ -53,6 +60,7 @@ describe('useTeamProjects targeted metadata refresh', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
+    resetProjectDisplaySnapshots();
   });
 
   afterEach(() => {
@@ -61,6 +69,7 @@ describe('useTeamProjects targeted metadata refresh', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
+    resetProjectDisplaySnapshots();
   });
 
   it('patches only the renamed row without blanking or rolling back an unrelated row', async () => {
@@ -132,5 +141,111 @@ describe('useTeamProjects targeted metadata refresh', () => {
       ]);
     });
     expect(hook.result.current.loading).toBe(false);
+  });
+
+  it('discards an older same-project metadata response after a newer event updates the row and snapshots', async () => {
+    const olderMetadataRefresh = deferred<Response>();
+    const newerMetadataRefresh = deferred<Response>();
+    let catalogReads = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/api/workspace/directory')) {
+        return Promise.resolve(jsonResponse(workspaceDirectoryFixture([CONTEXT])));
+      }
+      if (url.includes('/api/workspace/context')) {
+        return Promise.resolve(jsonResponse({ context: CONTEXT }));
+      }
+      if (url.includes('/api/workspace/projects/team')) {
+        catalogReads += 1;
+        if (catalogReads === 1) {
+          return Promise.resolve(jsonResponse({ projects: INITIAL_PROJECTS }));
+        }
+        return catalogReads === 2
+          ? olderMetadataRefresh.promise
+          : newerMetadataRefresh.promise;
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    const hooks = [
+      renderHook(() => useTeamProjects()),
+      renderHook(() => useTeamProjects()),
+    ];
+    await waitFor(() => {
+      for (const hook of hooks) {
+        expect(hook.result.current.loading).toBe(false);
+        expect(hook.result.current.projects).toEqual(INITIAL_PROJECTS);
+      }
+    });
+    const displayScope = {
+      accountGeneration: currentWorkspaceAccountGeneration(),
+      context: CONTEXT,
+      view: 'recent' as const,
+    };
+    writeProjectDisplaySnapshot(displayScope, [{
+      id: 'project-renamed',
+      name: 'Before rename',
+      skillId: null,
+      designSystemId: null,
+      workspaceId: CONTEXT.workspaceId,
+      createdAt: 1,
+      updatedAt: 1,
+    }]);
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(TEAM_PROJECTS_CHANGED_EVENT, {
+        detail: {
+          type: 'team-projects-changed',
+          projectId: 'project-renamed',
+          kind: 'metadata',
+        },
+      }));
+      window.dispatchEvent(new CustomEvent(TEAM_PROJECTS_CHANGED_EVENT, {
+        detail: {
+          type: 'team-projects-changed',
+          projectId: 'project-renamed',
+          kind: 'metadata',
+        },
+      }));
+    });
+
+    await waitFor(() => expect(catalogReads).toBe(3));
+    newerMetadataRefresh.resolve(jsonResponse({
+      projects: [{
+        projectId: 'project-renamed',
+        ownerMemberId: 'member-owner',
+        name: 'Newest rename',
+        updatedAt: 3,
+      }, INITIAL_PROJECTS[1]],
+    }));
+    await waitFor(() => {
+      for (const hook of hooks) {
+        expect(hook.result.current.projects[0]?.name).toBe('Newest rename');
+      }
+      expect(
+        readProjectDisplaySnapshot(projectDisplaySnapshotKey(displayScope))?.projects[0]?.name,
+      ).toBe('Newest rename');
+    });
+
+    olderMetadataRefresh.resolve(jsonResponse({
+      projects: [{
+        projectId: 'project-renamed',
+        ownerMemberId: 'member-owner',
+        name: 'Older rename',
+        updatedAt: 2,
+      }, INITIAL_PROJECTS[1]],
+    }));
+    await act(async () => {
+      await olderMetadataRefresh.promise;
+      await Promise.resolve();
+    });
+
+    for (const hook of hooks) {
+      expect(hook.result.current.projects[0]?.name).toBe('Newest rename');
+      expect(hook.result.current.loading).toBe(false);
+    }
+    expect(
+      readProjectDisplaySnapshot(projectDisplaySnapshotKey(displayScope))?.projects[0]?.name,
+    ).toBe('Newest rename');
   });
 });

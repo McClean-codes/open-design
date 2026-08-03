@@ -22,8 +22,10 @@ import {
 } from '../state/project-display-cache';
 import { isTeamPlanTier } from './team-plan';
 import {
+  beginTeamProjectMetadataRefresh,
   fetchTeamProjectCatalogEntry,
   fetchTeamProjectsCatalog,
+  resetTeamProjectMetadataRefreshOrdering,
 } from './team-projects-catalog';
 import { useWorkspaceInvalidation } from './workspace-events';
 import {
@@ -497,6 +499,7 @@ function cacheTeamProjects(identity: string, projects: TeamProject[]): void {
 /** Test seam: clear the module-level team-project cache between tests. */
 export function resetTeamProjectsCache(): void {
   cachedTeamProjects.clear();
+  resetTeamProjectMetadataRefreshOrdering();
 }
 
 /**
@@ -1729,23 +1732,35 @@ export function useTeamProjects(): TeamProjectsState {
     }
   }, [catalogScopeKey]);
 
-  const loadProjectMetadata = useCallback(async (projectId: string) => {
+  const loadProjectMetadata = useCallback(async (
+    payload: Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
+  ) => {
+    const projectId = payload.projectId;
+    if (!projectId) return;
     const issuedIdentity = resourceReadIdentityRef.current;
     const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const read = beginWorkspaceScopedRead(issuedIdentity?.context);
+    if (!read.context) return;
+    const metadataRefresh = beginTeamProjectMetadataRefresh({
+      accountGeneration: issuedAccountGeneration,
+      context: read.context,
+      projectId,
+      event: payload,
+    });
     const isStillCurrent = () => {
       const current = resourceReadIdentityRef.current;
       return currentWorkspaceAccountGeneration() === issuedAccountGeneration
         && current?.generation === issuedIdentity?.generation
-        && read.isStillCurrent(current?.context);
+        && read.isStillCurrent(current?.context)
+        && metadataRefresh.isLatest();
     };
-    if (!read.context) return;
     try {
       const project = await fetchTeamProjectCatalogEntry({
         context: read.context,
         projectId,
         force: true,
         requestGeneration: issuedIdentity?.generation,
+        cacheDiscriminator: metadataRefresh.cacheDiscriminator,
       });
       if (!isStillCurrent()) return;
       if (!project) {
@@ -1780,7 +1795,7 @@ export function useTeamProjects(): TeamProjectsState {
       });
       if (mountedRef.current) {
         setCatalog((current) =>
-          current.identity === catalogScopeKey
+          isStillCurrent() && current.identity === catalogScopeKey
             ? {
                 ...current,
                 projects: current.projects.map((candidate) =>
@@ -1799,7 +1814,7 @@ export function useTeamProjects(): TeamProjectsState {
     payload?: Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
   ) => {
     if (payload?.kind === 'metadata' && payload.projectId) {
-      void loadProjectMetadata(payload.projectId);
+      void loadProjectMetadata(payload);
       return;
     }
     void loadFull(true);

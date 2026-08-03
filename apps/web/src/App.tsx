@@ -25,6 +25,7 @@ import type {
   RunContextSelection,
   TeamProject,
   WorkspaceCollabContext,
+  WorkspaceInvalidationSsePayload,
   ProjectWorkspaceScope,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
@@ -95,6 +96,7 @@ import {
 } from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
 import {
+  beginTeamProjectMetadataRefresh,
   fetchTeamProjectCatalogEntry as fetchScopedTeamProjectCatalogEntry,
   fetchTeamProjectsCatalog,
 } from './collab/team-projects-catalog';
@@ -954,30 +956,48 @@ function AppInner() {
   const authoritativeProjectNamesRef = useRef(authoritativeProjectNames);
   authoritativeProjectNamesRef.current = authoritativeProjectNames;
   const projectNameAuthorityRequestGenerationRef = useRef<Map<string, number>>(new Map());
-  const refreshTargetedProjectMetadata = useCallback(async (projectId: string) => {
+  const refreshTargetedProjectMetadata = useCallback(async (
+    payload: Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
+  ) => {
+    const projectId = payload.projectId;
+    if (!projectId) return;
     const issuedContext = workspaceContextRef.current;
     if (!issuedContext) return;
     const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
+    const metadataRefresh = beginTeamProjectMetadataRefresh({
+      accountGeneration: issuedAccountGeneration,
+      context: issuedContext,
+      projectId,
+      event: payload,
+    });
+    const metadataRequestIsCurrent = () =>
+      currentWorkspaceAccountGeneration() === issuedAccountGeneration
+      && workspaceIdentityCacheKey(workspaceContextRef.current) === issuedIdentity
+      && metadataRefresh.isLatest();
     try {
       const catalogProject = await fetchScopedTeamProjectCatalogEntry({
         context: issuedContext,
         projectId,
         force: true,
+        cacheDiscriminator: metadataRefresh.cacheDiscriminator,
       });
       if (
         !catalogProject
-        || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
-        || workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity
+        || !metadataRequestIsCurrent()
       ) return;
       const name = catalogProject.name?.trim();
       if (!name) return;
-      setProjects((current) => current.map((project) =>
-        project.id === projectId
-        && project.workspaceId === issuedContext.workspaceId
-          ? { ...project, name }
-          : project
-      ));
+      setProjects((current) => {
+        if (!metadataRequestIsCurrent()) return current;
+        return current.map((project) =>
+          project.id === projectId
+          && project.workspaceId === issuedContext.workspaceId
+            ? { ...project, name }
+            : project
+        );
+      });
+      if (!metadataRequestIsCurrent()) return;
       patchProjectDisplaySnapshots({
         accountGeneration: issuedAccountGeneration,
         context: issuedContext,
@@ -999,11 +1019,12 @@ function AppInner() {
       // window/device logged into the same member).
       if (catalogProject.ownerMemberId !== issuedContext.workspaceMemberId) {
         const authorityKey = projectViewAuthorizationLifetimeKey(projectId, issuedContext);
-        setAuthoritativeProjectNames((current) =>
-          current[authorityKey] === name
+        setAuthoritativeProjectNames((current) => {
+          if (!metadataRequestIsCurrent()) return current;
+          return current[authorityKey] === name
             ? current
-            : { ...current, [authorityKey]: name }
-        );
+            : { ...current, [authorityKey]: name };
+        });
       }
     } catch {
       // Keep the last-good projection. Reconnect/poll performs full catch-up.
@@ -1012,7 +1033,7 @@ function AppInner() {
   useWorkspaceInvalidation({
     'team-projects-changed': (payload) => {
       if (payload.kind === 'metadata' && payload.projectId) {
-        void refreshTargetedProjectMetadata(payload.projectId);
+        void refreshTargetedProjectMetadata(payload);
       }
     },
   }, { workspaceContext });

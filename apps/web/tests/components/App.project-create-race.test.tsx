@@ -2474,6 +2474,108 @@ describe('App project creation routing', () => {
     });
   });
 
+  it('keeps current, recent, and tab projections on the newest targeted rename response', async () => {
+    const sharedProject: Project = {
+      ...existingProject,
+      id: 'project-shared',
+      name: 'Before rename',
+      workspaceId: 'ws-1',
+    };
+    mockedListProjects.mockResolvedValue([sharedProject]);
+    const olderMetadataRefresh = deferred<Response>();
+    const newerMetadataRefresh = deferred<Response>();
+    let catalogReads = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return new Response(JSON.stringify(workspaceDirectoryFixture([
+          workspaceContext('ws-1', 'wm-viewer'),
+        ])), { status: 200 });
+      }
+      if (pathname.endsWith('/workspace/context')) {
+        return new Response(JSON.stringify(
+          workspaceContextPayload('ws-1', 'wm-viewer'),
+        ), { status: 200 });
+      }
+      if (pathname.endsWith('/workspace/projects/team')) {
+        catalogReads += 1;
+        if (catalogReads === 1) {
+          return new Response(JSON.stringify({ projects: [{
+            projectId: sharedProject.id,
+            ownerMemberId: 'wm-owner',
+            name: 'Before rename',
+          }] }), { status: 200 });
+        }
+        return catalogReads === 2
+          ? olderMetadataRefresh.promise
+          : newerMetadataRefresh.promise;
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Before rename' }));
+    await screen.findByTestId('project-view');
+    await waitFor(() => expect(catalogReads).toBe(1));
+
+    const metadataHandler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-projects-changed'])
+      .find((handler) => typeof handler === 'function');
+    expect(metadataHandler).toBeTypeOf('function');
+    act(() => {
+      metadataHandler!({
+        type: 'team-projects-changed',
+        projectId: sharedProject.id,
+        kind: 'metadata',
+      });
+      metadataHandler!({
+        type: 'team-projects-changed',
+        projectId: sharedProject.id,
+        kind: 'metadata',
+      });
+    });
+
+    await waitFor(() => expect(catalogReads).toBe(3));
+    newerMetadataRefresh.resolve(new Response(JSON.stringify({
+      projects: [{
+        projectId: sharedProject.id,
+        ownerMemberId: 'wm-owner',
+        name: 'Newest rename',
+        updatedAt: 3,
+      }],
+    }), { status: 200 }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-title').textContent).toBe('Newest rename');
+      expect(screen.getByTestId('workspace-tab-name-project-shared').textContent).toBe(
+        'Newest rename',
+      );
+    });
+
+    olderMetadataRefresh.resolve(new Response(JSON.stringify({
+      projects: [{
+        projectId: sharedProject.id,
+        ownerMemberId: 'wm-owner',
+        name: 'Older rename',
+        updatedAt: 2,
+      }],
+    }), { status: 200 }));
+    await act(async () => {
+      await olderMetadataRefresh.promise;
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('project-title').textContent).toBe('Newest rename');
+    expect(screen.getByTestId('workspace-tab-name-project-shared').textContent).toBe(
+      'Newest rename',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to projects' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-project-project-shared').textContent).toContain(
+        'Newest rename',
+      );
+    });
+  });
+
   it('projects a current-view rename into the tab and recent list immediately', async () => {
     mockedListProjects.mockResolvedValue([existingProject]);
 

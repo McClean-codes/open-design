@@ -35,6 +35,66 @@ import {
   workspaceProjectHeaders,
 } from './workspace-identity';
 
+let metadataEventSequence = 0;
+let metadataEventTokens = new WeakMap<object, number>();
+const latestMetadataEventByProjectScope = new Map<string, number>();
+const MAX_TRACKED_METADATA_PROJECT_SCOPES = 256;
+
+/**
+ * Give one thin metadata event a stable semantic generation shared by every
+ * mounted consumer. The shared EventStream manager fans the same parsed payload
+ * object out to all subscribers, and CustomEvent does the same with `detail`,
+ * so consumers of one event retain single-flight while a later event always
+ * gets a distinct request key and supersedes older responses.
+ */
+export function beginTeamProjectMetadataRefresh(options: {
+  accountGeneration: number;
+  context: WorkspaceCollabContext;
+  projectId: string;
+  event: object;
+}): {
+  cacheDiscriminator: string;
+  isLatest: () => boolean;
+} {
+  let eventGeneration = metadataEventTokens.get(options.event);
+  if (eventGeneration === undefined) {
+    eventGeneration = ++metadataEventSequence;
+    metadataEventTokens.set(options.event, eventGeneration);
+  }
+  const scopeProjectKey = JSON.stringify([
+    options.accountGeneration,
+    workspaceIdentityCacheKey(options.context),
+    options.projectId,
+  ]);
+  const latestGeneration = latestMetadataEventByProjectScope.get(scopeProjectKey) ?? 0;
+  if (eventGeneration > latestGeneration) {
+    latestMetadataEventByProjectScope.delete(scopeProjectKey);
+    latestMetadataEventByProjectScope.set(scopeProjectKey, eventGeneration);
+    while (
+      latestMetadataEventByProjectScope.size > MAX_TRACKED_METADATA_PROJECT_SCOPES
+    ) {
+      const oldest = latestMetadataEventByProjectScope.keys().next().value as
+        | string
+        | undefined;
+      if (!oldest) break;
+      // Removing an old key is fail-closed for any response still in flight:
+      // its `isLatest` closure observes `undefined`, never a reused generation.
+      latestMetadataEventByProjectScope.delete(oldest);
+    }
+  }
+  return {
+    cacheDiscriminator: `metadata-event:${eventGeneration}`,
+    isLatest: () =>
+      latestMetadataEventByProjectScope.get(scopeProjectKey) === eventGeneration,
+  };
+}
+
+export function resetTeamProjectMetadataRefreshOrdering(): void {
+  metadataEventSequence = 0;
+  metadataEventTokens = new WeakMap<object, number>();
+  latestMetadataEventByProjectScope.clear();
+}
+
 /**
  * Narrow an untrusted catalog payload to the row array every consumer expects.
  *
@@ -107,12 +167,22 @@ export async function fetchTeamProjectCatalogEntry(options: {
   projectId: string;
   force?: boolean;
   requestGeneration?: string;
+  /**
+   * Semantic invalidation generation for this project. Consecutive metadata
+   * events must not join an older in-flight forced read inside the coalescer's
+   * burst window.
+   */
+  cacheDiscriminator?: string;
 }): Promise<TeamProject | null> {
   const projects = await fetchTeamProjectsCatalog({
     context: options.context,
     force: options.force,
     requestGeneration: options.requestGeneration,
-    cacheDiscriminator: `project:${options.projectId}`,
+    cacheDiscriminator: [
+      'project',
+      options.projectId,
+      options.cacheDiscriminator ?? 'read',
+    ].join(':'),
   });
   return projects.find((project) => project.projectId === options.projectId) ?? null;
 }
