@@ -25,6 +25,7 @@ import type {
   RunContextSelection,
   TeamProject,
   WorkspaceCollabContext,
+  ProjectWorkspaceScope,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
 import { DEFAULT_UNSELECTED_SCENARIO_PLUGIN_ID } from '@open-design/contracts';
@@ -34,7 +35,10 @@ import type { IntegrationTab } from './components/IntegrationsView';
 import { MarketplaceView } from './components/MarketplaceView';
 import { PluginDetailView } from './components/PluginDetailView';
 import type { CreateInput, ImportClaudeDesignOutcome } from './components/NewProjectPanel';
-import { MemoryToast } from './components/MemoryToast';
+import {
+  MemoryToast,
+  memoryToastSubscriptionMode,
+} from './components/MemoryToast';
 import { Toast } from './components/Toast';
 import { CenteredLoader } from './components/Loading';
 import { PetOverlay, type PetTaskCenter } from './components/pet/PetOverlay';
@@ -767,6 +771,12 @@ function AppInner() {
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
   const projectRouteWorkspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
+  const projectOpenWorkspaceWitnessRef = useRef<{
+    projectId: string;
+    projectWorkspaceId: string;
+    context: WorkspaceCollabContext;
+    accountGeneration: number;
+  } | null>(null);
   workspaceContextRef.current = workspaceContext;
   workspaceContextStateRef.current = workspaceContextState;
   const listCurrentWorkspaceProjects = useCallback(
@@ -935,6 +945,16 @@ function AppInner() {
     queued: [],
     recent: [],
   });
+  const [projectRunActivity, setProjectRunActivity] = useState<{
+    projectId: string | null;
+    active: boolean;
+  }>({ projectId: null, active: false });
+  const handleProjectRunActivityChange = useCallback(
+    (projectId: string, active: boolean) => {
+      setProjectRunActivity({ projectId, active });
+    },
+    [],
+  );
   const pendingLocalProjectIdsRef = useRef<Set<string>>(new Set());
   const pendingLocalProjectScopeRef = useRef(projectListScopeKey(workspaceContext));
   const currentProjectListScope = projectListScopeKey(workspaceContext);
@@ -3067,6 +3087,7 @@ function AppInner() {
     const hintedProjectName = projectTitleHint?.name.trim() || null;
     const requiresBoundCatalogProject = projectTitleHint?.authoritative === true;
     const openingContext = workspaceContextRef.current;
+    const openingAccountGeneration = currentWorkspaceAccountGeneration();
     const openingAuthorizationGeneration = projectAuthorizationGenerationRef.current;
     const openingScopeKey = projectListScopeKey(openingContext);
     const expectedWorkspaceId = openingContext?.workspaceId ?? null;
@@ -3093,6 +3114,24 @@ function AppInner() {
     const canUseLocalProject = (project: Project) => {
       if (project.workspaceId) return project.workspaceId === expectedWorkspaceId;
       return !requiresBoundCatalogProject;
+    };
+    const navigateToOpenedProject = (project: Project) => {
+      const projectWorkspaceId = project.workspaceId?.trim() ?? '';
+      projectOpenWorkspaceWitnessRef.current =
+        projectWorkspaceId
+        && openingContext?.workspaceId === projectWorkspaceId
+        && openingContext.workspaceMemberId.trim().length > 0
+        && openingContext.memberStatus === 'active'
+        && openingContext.lifecycleState !== 'deleted'
+          ? {
+              projectId: project.id,
+              projectWorkspaceId,
+              context: openingContext,
+              accountGeneration: openingAccountGeneration,
+            }
+          : null;
+      navigate({ kind: 'project', projectId: id, fileName: routeFileName });
+      return true;
     };
     const rememberHintAuthority = () => {
       if (projectTitleHint?.authoritative && catalogName && openingScopeIsCurrent()) {
@@ -3141,8 +3180,10 @@ function AppInner() {
         return next;
       });
       rememberHintAuthority();
-      navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-      return true;
+      const localProject = projectsRef.current.find(
+        (project) => project.id === id && canUseLocalProject(project),
+      );
+      return localProject ? navigateToOpenedProject(localProject) : false;
     }
     if (
       !catalogName
@@ -3150,8 +3191,10 @@ function AppInner() {
         (project) => project.id === id && canUseLocalProject(project),
       )
     ) {
-      navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-      return true;
+      const localProject = projectsRef.current.find(
+        (project) => project.id === id && canUseLocalProject(project),
+      );
+      return localProject ? navigateToOpenedProject(localProject) : false;
     }
     try {
       const project = await getProject(id, openingContext);
@@ -3165,8 +3208,7 @@ function AppInner() {
             ]
           : curr);
         rememberHintAuthority();
-        navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-        return true;
+        return navigateToOpenedProject(openedProject);
       }
       const { pulled } = await pullTeamSharedProjectIfAvailable(id, openingContext);
       if (!openingScopeIsCurrent()) return false;
@@ -3184,8 +3226,7 @@ function AppInner() {
               ]
             : curr);
           rememberHintAuthority();
-          navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-          return true;
+          return navigateToOpenedProject(openedProject);
         }
       }
       const request = beginProjectListRequest('all');
@@ -3205,8 +3246,7 @@ function AppInner() {
           );
       if (fetchedProject) {
         rememberHintAuthority();
-        navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-        return true;
+        return navigateToOpenedProject(fetchedProject);
       }
     } catch {
       // Fall through to the same visible missing-project state. The daemon can
@@ -3409,6 +3449,9 @@ function AppInner() {
     project: Project;
     accountGeneration: number;
     capturedAfterListGeneration: number;
+    workspaceScope?: ProjectWorkspaceScope;
+    resolvedDir?: string | null;
+    workspaceContext?: WorkspaceCollabContext;
   } | null>(null);
   const [, setRouteProjectSnapshotRevision] = useState(0);
   const activeAccountGeneration = currentWorkspaceAccountGeneration();
@@ -3416,11 +3459,35 @@ function AppInner() {
   if (route.kind === 'project') {
     const listedProject = projects.find((project) => project.id === route.projectId);
     if (listedProject) {
+      const previous = routeProjectSnapshotRef.current;
+      const openingWitness = projectOpenWorkspaceWitnessRef.current;
+      const exactOpeningContext =
+        openingWitness?.projectId === listedProject.id
+        && openingWitness.projectWorkspaceId === listedProject.workspaceId
+        && openingWitness.accountGeneration === activeAccountGeneration
+          ? openingWitness.context
+          : null;
+      const preservesBootstrapWitness =
+        previous?.project.id === listedProject.id
+        && previous.accountGeneration === activeAccountGeneration
+        && previous.project.workspaceId === listedProject.workspaceId;
       routeProjectSnapshotRef.current = {
         project: listedProject,
         accountGeneration: activeAccountGeneration,
         capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+        ...(preservesBootstrapWitness && previous.workspaceScope
+          ? { workspaceScope: previous.workspaceScope }
+          : {}),
+        ...(preservesBootstrapWitness && previous.resolvedDir !== undefined
+          ? { resolvedDir: previous.resolvedDir }
+          : {}),
+        ...(preservesBootstrapWitness && previous.workspaceContext
+          ? { workspaceContext: previous.workspaceContext }
+          : exactOpeningContext
+            ? { workspaceContext: exactOpeningContext }
+            : {}),
       };
+      if (exactOpeningContext) projectOpenWorkspaceWitnessRef.current = null;
     } else if (
       routeProjectSnapshotRef.current?.project.id !== route.projectId
       || routeProjectSnapshotRef.current.accountGeneration !== activeAccountGeneration
@@ -3450,6 +3517,10 @@ function AppInner() {
   const projectRouteWorkspaceContext = useProjectRouteWorkspaceContext(
     loadedActiveProject?.workspaceId,
     workspaceContextState,
+    routeProjectSnapshotRef.current?.project.id === loadedActiveProject?.id
+      ? routeProjectSnapshotRef.current?.workspaceContext
+        ?? routeProjectSnapshotRef.current?.workspaceScope?.context
+      : null,
   );
   // Never mount ProjectView around the synthetic "Untitled" placeholder. Its
   // effects immediately fan out project-owned reads, but before the project
@@ -3576,7 +3647,6 @@ function AppInner() {
   useEffect(() => {
     if (route.kind !== 'project') return;
     if (loadedActiveProject) return;
-    if (projectsLoading || !daemonLive) return;
     if (projects.some((p) => p.id === route.projectId)) return;
     let cancelled = false;
     const projectId = route.projectId;
@@ -3591,7 +3661,16 @@ function AppInner() {
     const accountChanged = () =>
       currentWorkspaceAccountGeneration() !== accountGeneration;
     void (async () => {
-      const bootstrap = await bootstrapProjectRoute(projectId, { accountGeneration });
+      const openingWitness = projectOpenWorkspaceWitnessRef.current;
+      const exactOpenContext =
+        openingWitness?.projectId === projectId
+        && openingWitness.accountGeneration === accountGeneration
+          ? openingWitness.context
+          : null;
+      const bootstrap = await bootstrapProjectRoute(projectId, {
+        accountGeneration,
+        exactContext: exactOpenContext,
+      });
       // This scope came from the project's persisted binding, not the shell's
       // selection. Ambient null -> B settlement and A -> B navigation cannot
       // invalidate it; only a real account boundary can.
@@ -3601,6 +3680,8 @@ function AppInner() {
           project: bootstrap.project,
           accountGeneration,
           capturedAfterListGeneration: latestAppliedProjectListGenerationRef.current,
+          workspaceScope: bootstrap.scope,
+          resolvedDir: bootstrap.resolvedDir,
         };
         setRouteProjectSnapshotRevision((current) => current + 1);
         return;
@@ -3610,12 +3691,19 @@ function AppInner() {
         return;
       }
       if (bootstrap.kind === 'unavailable') {
+        // The optimistic bootstrap races the daemon health/list boot on purpose.
+        // A transport miss before those settle is not terminal; the dependency
+        // change below retries the bootstrap through its evicted failure key.
+        if (projectsLoading || !daemonLive) return;
         setDeepLinkResolutionFailure({
           projectId,
           failure: 'materialization-failed',
         });
         return;
       }
+      // Preserve the existing shared-project recovery lane, but only after the
+      // ambient boot has settled enough to supply its exact catalog identity.
+      if (projectsLoading || !daemonLive) return;
       const resolution = await resolveDeepLinkedTeamSharedProject(projectId, {
         getProject: (id) => getProject(id, deepLinkContext),
         pullTeamSharedProjectIfAvailable: (id) =>
@@ -4188,6 +4276,20 @@ function AppInner() {
               ? activeProjectWorkspaceContext
               : undefined
           }
+          initialWorkspaceScope={
+            routeProjectSnapshotRef.current?.project.id === activeProject.id
+              ? routeProjectSnapshotRef.current.workspaceScope
+              : undefined
+          }
+          initialProjectDetail={
+            routeProjectSnapshotRef.current?.project.id === activeProject.id
+            && routeProjectSnapshotRef.current.resolvedDir !== undefined
+              ? {
+                  project: routeProjectSnapshotRef.current.project,
+                  resolvedDir: routeProjectSnapshotRef.current.resolvedDir,
+                }
+              : undefined
+          }
           projectAuthorizationKey={
             activeProjectAuthorizationKey ?? activeProject.id
           }
@@ -4229,6 +4331,7 @@ function AppInner() {
           onCreateProjectFromDesignSystem={handleCreateProjectFromDesignSystem}
           onCreateDesignSystemFromProject={handleCreateDesignSystemFromProject}
           onDuplicateProject={handleDuplicateProject}
+          onRunActivityChange={handleProjectRunActivityChange}
         />
       );
     }
@@ -4392,7 +4495,22 @@ function AppInner() {
         renderSettingsSurface('modal')
       ) : null}
       </AnimatePresence>
-      <MemoryToast onOpenMemory={() => openSettings('memory')} />
+      <MemoryToast
+        onOpenMemory={() => openSettings('memory')}
+        subscriptionMode={memoryToastSubscriptionMode({
+          routeKind: route.kind,
+          projectRunActive:
+            route.kind === 'project'
+            && projectRunActivity.projectId === route.projectId
+            && projectRunActivity.active,
+          memorySurfaceOpen:
+            settingsInitialSection === 'memory'
+            && (
+              settingsOpen
+              || (route.kind === 'home' && route.view === 'settings')
+            ),
+        })}
+      />
       {workingDirError ? (
         <Toast
           message={workingDirError}

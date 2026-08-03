@@ -87,6 +87,23 @@ afterEach(() => {
 });
 
 describe('fresh project route Workspace gate', () => {
+  it('adopts a bootstrap witness without waiting for the ambient directory read', async () => {
+    const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const hook = renderHook(() => useProjectRouteWorkspaceContext(
+      WORKSPACE_A.workspaceId,
+      { context: null, loading: true },
+      WORKSPACE_A,
+    ));
+
+    expect(hook.result.current).toMatchObject({
+      context: WORKSPACE_A,
+      loading: false,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('separates ambient Workspace selection from real account generations', () => {
     expect(currentWorkspaceAccountGeneration()).toBe(0);
     notifyWorkspaceContextRefresh({ context: WORKSPACE_B });

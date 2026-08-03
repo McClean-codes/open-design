@@ -43,6 +43,7 @@ import {
   patchProject,
 } from '../../src/state/projects';
 import {
+  WORKSPACE_CONTEXT_REFRESH_EVENT,
   notifyWorkspaceContextRefresh,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
@@ -325,6 +326,11 @@ vi.mock('../../src/components/ProjectView', () => ({
       <span data-testid="project-title">{project.name}</span>
       <span data-testid="project-authoritative-title">{authoritativeProjectName ?? 'none'}</span>
       <span data-testid="project-workspace-id">{project.workspaceId ?? 'unbound'}</span>
+      <span data-testid="project-route-workspace-context">
+        {workspaceContextOverride
+          ? `${workspaceContextOverride.workspaceId}:${workspaceContextOverride.workspaceMemberId}`
+          : 'none'}
+      </span>
       <span data-testid="project-route-conversation">{routeConversationId ?? 'none'}</span>
       <span data-testid="project-auth-continuation">
         {amrAuthRetryContinuation?.assistantId ?? 'none'}
@@ -1658,6 +1664,64 @@ describe('App project creation routing', () => {
     });
     expect(window.location.pathname).toBe('/projects/project-shared');
     expect(mockedGetProject).not.toHaveBeenCalled();
+  });
+
+  it('retains the exact card-opening context while the ambient workspace revalidates', async () => {
+    const workspaceProject: Project = {
+      id: 'project-opening-witness',
+      name: 'Workspace project',
+      skillId: null,
+      designSystemId: null,
+      workspaceId: 'ws-1',
+      createdAt: 20,
+      updatedAt: 20,
+    };
+    const pendingDirectory = new Promise<Response>(() => {});
+    let blockDirectory = false;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        if (blockDirectory) return pendingDirectory;
+        return new Response(JSON.stringify(
+          workspaceDirectoryFixture([workspaceContext('ws-1', 'wm-1')]),
+        ), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname.endsWith('/workspace/context')) {
+        return new Response(JSON.stringify(workspaceContextPayload('ws-1', 'wm-1')), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+    mockedListProjects.mockResolvedValue([workspaceProject]);
+
+    render(<App />);
+
+    await screen.findByTestId(`entry-project-${workspaceProject.id}`);
+    fireEvent.click(screen.getByRole('button', { name: `Open ${workspaceProject.name}` }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-route-workspace-context').textContent).toBe(
+        'ws-1:wm-1',
+      );
+    });
+
+    blockDirectory = true;
+    await act(async () => {
+      window.dispatchEvent(new Event(WORKSPACE_CONTEXT_REFRESH_EVENT));
+      await Promise.resolve();
+    });
+
+    expect(window.location.pathname).toBe(`/projects/${workspaceProject.id}`);
+    expect(screen.getByTestId('project-route-workspace-context').textContent).toBe(
+      'ws-1:wm-1',
+    );
   });
 
   it('uses a title hint only after loading the workspace-bound local row', async () => {

@@ -40,6 +40,7 @@ export function projectResourceReadsCanStart(
 export function useProjectRouteWorkspaceContext(
   persistedWorkspaceId: string | null | undefined,
   ambientState: WorkspaceContextState,
+  bootstrapWorkspaceContext?: WorkspaceCollabContext | null,
 ): ProjectRouteWorkspaceContextState {
   const workspaceId = persistedWorkspaceId?.trim() ?? '';
   const [identityRefreshPending, setIdentityRefreshPending] = useState(false);
@@ -50,7 +51,17 @@ export function useProjectRouteWorkspaceContext(
       ? ambientState.context
       : null;
   const exactAmbientIdentity = workspaceIdentityCacheKey(exactAmbientContext);
+  const exactBootstrapContext =
+    bootstrapWorkspaceContext?.workspaceId === workspaceId
+    && bootstrapWorkspaceContext.workspaceMemberId.trim().length > 0
+    && bootstrapWorkspaceContext.memberStatus === 'active'
+    && bootstrapWorkspaceContext.lifecycleState !== 'deleted'
+      ? bootstrapWorkspaceContext
+      : null;
+  const exactBootstrapIdentity = workspaceIdentityCacheKey(exactBootstrapContext);
+  const initialExactContext = exactAmbientContext ?? exactBootstrapContext;
   const requestEpochRef = useRef(0);
+  const consumedBootstrapContextRef = useRef<WorkspaceCollabContext | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const retry = useCallback(() => {
     setRefreshRevision((current) => current + 1);
@@ -61,7 +72,7 @@ export function useProjectRouteWorkspaceContext(
   }>(() => ({
     workspaceId,
     state: workspaceId
-      ? { context: exactAmbientContext, loading: exactAmbientContext === null }
+      ? { context: initialExactContext, loading: initialExactContext === null }
       : { context: null, loading: false },
   }));
 
@@ -128,6 +139,24 @@ export function useProjectRouteWorkspaceContext(
       });
       return;
     }
+    if (
+      exactBootstrapContext
+      && consumedBootstrapContextRef.current !== exactBootstrapContext
+    ) {
+      // The object is a newly completed route/open witness. Accept it once even
+      // if this long-lived hook observed focus or Workspace refresh events before
+      // the project route existed; those revisions predate this exact witness.
+      // Remember the object, not just its identity key, so a later refresh cannot
+      // reuse the same snapshot while a genuinely new verification for the same
+      // member remains adoptable.
+      consumedBootstrapContextRef.current = exactBootstrapContext;
+      setIdentityRefreshPending(false);
+      setResolved({
+        workspaceId,
+        state: { context: exactBootstrapContext, loading: false },
+      });
+      return;
+    }
 
     setResolved((current) => current.workspaceId === workspaceId
       ? {
@@ -162,7 +191,12 @@ export function useProjectRouteWorkspaceContext(
         });
       },
     );
-  }, [workspaceId, exactAmbientIdentity, refreshRevision]);
+  }, [
+    workspaceId,
+    exactAmbientIdentity,
+    exactBootstrapIdentity,
+    refreshRevision,
+  ]);
 
   if (!workspaceId) return { context: null, loading: false, retry };
   if (exactAmbientContext) {

@@ -260,38 +260,102 @@ export async function getProject(
 }
 
 export type ProjectRouteBootstrapResult =
-  | { kind: 'found'; project: Project }
+  | {
+      kind: 'found';
+      project: Project;
+      scope: ProjectWorkspaceScopeResponse['scope'];
+      resolvedDir: string | null;
+    }
   | { kind: 'not-found' }
   | { kind: 'forbidden' }
   | { kind: 'unavailable' };
 
 /**
  * Bootstrap a fresh project deep link without borrowing the shell's ambient
- * Workspace. The scope endpoint returns only an exact, account-generation
- * leased directory-verified local binding; the actual project row is then read
- * through the normal data-plane gate with that exact Workspace/member context.
+ * Workspace. A card-opening witness goes straight through the scoped endpoint;
+ * a context-free deep link uses its first headerless response only to discover
+ * the persisted binding, then re-confirms it with exact Workspace/member
+ * headers. The project row is read only after either exact check succeeds.
  */
 export async function bootstrapProjectRoute(
   projectId: string,
-  options: { accountGeneration: number },
+  options: {
+    accountGeneration: number;
+    exactContext?: WorkspaceCollabContext | null;
+  },
 ): Promise<ProjectRouteBootstrapResult> {
-  const key = `project-route-bootstrap:${options.accountGeneration}:${projectId}`;
+  const suppliedContext = options.exactContext ?? null;
+  const suppliedIdentity = workspaceIdentityCacheKey(suppliedContext);
+  const key = [
+    'project-route-bootstrap',
+    options.accountGeneration,
+    projectId,
+    suppliedIdentity,
+  ].join(':');
   const result = await coalescedGet(key, async (): Promise<ProjectRouteBootstrapResult> => {
     try {
       const scopeResponse = await fetch(
         `/api/projects/${encodeURIComponent(projectId)}/workspace-scope`,
-        { cache: 'no-store' },
+        {
+          cache: 'no-store',
+          ...(suppliedContext
+            ? { headers: workspaceProjectHeaders(suppliedContext) }
+            : {}),
+        },
       );
       if (!scopeResponse.ok) {
         if (scopeResponse.status === 404) return { kind: 'not-found' };
         if (scopeResponse.status === 403) return { kind: 'forbidden' };
         return { kind: 'unavailable' };
       }
-      const body = (await scopeResponse.json()) as ProjectWorkspaceScopeResponse;
+      let body = (await scopeResponse.json()) as ProjectWorkspaceScopeResponse;
       if (!body.scope || body.scope.projectId !== projectId) {
         return { kind: 'unavailable' };
       }
-      const context = body.scope.context;
+      let context = body.scope.context;
+      if (suppliedContext) {
+        if (
+          !context
+          || body.scope.workspaceId !== suppliedContext.workspaceId
+          || workspaceIdentityCacheKey(context) !== suppliedIdentity
+        ) {
+          // A caller-supplied witness is exact authority, never a hint. If the
+          // daemon cannot re-confirm it, do not retry this project headerless or
+          // let it fall through to Personal/local scope.
+          return { kind: 'forbidden' };
+        }
+      } else if (context) {
+        // Headerless scope is discovery only. Once it names the exact persisted
+        // Workspace/member pair, prove that claim through the ordinary
+        // fail-closed authorization lane before trusting it as ProjectView's
+        // seed. This also ensures an already-known Team route never completes
+        // with headerless scope as its last authorization request.
+        const exactScopeResponse = await fetch(
+          `/api/projects/${encodeURIComponent(projectId)}/workspace-scope`,
+          {
+            cache: 'no-store',
+            headers: workspaceProjectHeaders(context),
+          },
+        );
+        if (!exactScopeResponse.ok) {
+          if (exactScopeResponse.status === 404) return { kind: 'not-found' };
+          if (exactScopeResponse.status === 403) return { kind: 'forbidden' };
+          return { kind: 'unavailable' };
+        }
+        const exactBody = (await exactScopeResponse.json()) as ProjectWorkspaceScopeResponse;
+        const exactContext = exactBody.scope?.context;
+        if (
+          !exactBody.scope
+          || exactBody.scope.projectId !== projectId
+          || !exactContext
+          || exactBody.scope.workspaceId !== context.workspaceId
+          || workspaceIdentityCacheKey(exactContext) !== workspaceIdentityCacheKey(context)
+        ) {
+          return { kind: 'forbidden' };
+        }
+        body = exactBody;
+        context = exactContext;
+      }
       const projectResponse = await fetch(
         `/api/projects/${encodeURIComponent(projectId)}`,
         {
@@ -304,7 +368,10 @@ export async function bootstrapProjectRoute(
         if (projectResponse.status === 403) return { kind: 'forbidden' };
         return { kind: 'unavailable' };
       }
-      const projectBody = (await projectResponse.json()) as { project?: Project };
+      const projectBody = (await projectResponse.json()) as {
+        project?: Project;
+        resolvedDir?: unknown;
+      };
       if (!projectBody.project || projectBody.project.id !== projectId) {
         return { kind: 'unavailable' };
       }
@@ -319,7 +386,17 @@ export async function bootstrapProjectRoute(
       if (!context && projectBody.project.workspaceId) {
         return { kind: 'forbidden' };
       }
-      return { kind: 'found', project: projectBody.project };
+      return {
+        kind: 'found',
+        project: projectBody.project,
+        scope: body.scope,
+        resolvedDir:
+          typeof projectBody.resolvedDir === 'string'
+            ? projectBody.resolvedDir
+            : typeof projectBody.project.metadata?.baseDir === 'string'
+              ? projectBody.project.metadata.baseDir
+              : null,
+      };
     } catch {
       return { kind: 'unavailable' };
     }

@@ -309,6 +309,7 @@ export function useProjectWorkspaceScope(
   projectId: string,
   callerWorkspaceContext: WorkspaceCollabContext | null = null,
   persistedProjectWorkspaceId?: string | null,
+  initialScope?: ProjectWorkspaceScope | null,
 ): ProjectWorkspaceScopeState {
   const epochRef = useRef(0);
   const pinnedAuthorityRef = useRef<{
@@ -319,17 +320,6 @@ export function useProjectWorkspaceScope(
   const [refreshRequest, setRefreshRequest] = useState({
     revision: 0,
     preserveResolvedScope: false,
-  });
-  const [state, setState] = useState<ProjectWorkspaceScopeState & {
-    resolvedRevision: number;
-    resolvedAuthorityKey: string | null;
-    resolvedCallerIdentityKey: string;
-  }>({
-    loading: true,
-    scope: null,
-    resolvedRevision: -1,
-    resolvedAuthorityKey: null,
-    resolvedCallerIdentityKey: 'none',
   });
   const boundWorkspaceId =
     typeof persistedProjectWorkspaceId === 'string'
@@ -355,6 +345,29 @@ export function useProjectWorkspaceScope(
       : null;
   const requestAuthorityKey = projectWorkspaceAuthorityKey(requestWorkspaceAuthority);
   const callerIdentityKey = workspaceIdentityCacheKey(callerWorkspaceContext);
+  const initialScopeContext = projectWorkspaceContext(initialScope);
+  const initialScopeCanSeed = Boolean(
+    initialScope
+    && validScopeForProject(initialScope, projectId)
+    && (
+      !boundWorkspaceId
+        ? initialScope.kind === 'unbound'
+        : initialScope.workspaceId === boundWorkspaceId
+          && workspaceIdentityCacheKey(initialScopeContext) === callerIdentityKey
+    ),
+  );
+  const [state, setState] = useState<ProjectWorkspaceScopeState & {
+    resolvedRevision: number;
+    resolvedAuthorityKey: string | null;
+    resolvedCallerIdentityKey: string;
+  }>(() => ({
+    loading: !initialScopeCanSeed,
+    scope: initialScopeCanSeed ? initialScope ?? null : null,
+    resolvedRevision: initialScopeCanSeed ? 0 : -1,
+    resolvedAuthorityKey: initialScopeCanSeed ? requestAuthorityKey : null,
+    resolvedCallerIdentityKey: initialScopeCanSeed ? callerIdentityKey : 'none',
+  }));
+  const skipFirstActiveRevalidationRef = useRef(initialScopeCanSeed);
 
   const scheduleDeferredRevalidation = useCallback(() => {
     // The daemon shares a short successful directory cache between the scope
@@ -388,11 +401,22 @@ export function useProjectWorkspaceScope(
     scheduleDeferredRevalidation();
   }, [scheduleDeferredRevalidation]);
 
+  const revalidateOnActive = useCallback(() => {
+    // A route bootstrap scope was fetched immediately before this hook mounted.
+    // The first EventSource `open` is connection establishment, not evidence of
+    // a change since that witness, so do not repeat the exact same scope read.
+    if (skipFirstActiveRevalidationRef.current) {
+      skipFirstActiveRevalidationRef.current = false;
+      return;
+    }
+    revalidateInBackground();
+  }, [revalidateInBackground]);
+
   useWorkspaceInvalidation(
     { 'workspace-context-changed': revalidateInBackground },
     {
       workspaceContext: projectWorkspaceContext(state.scope),
-      onActive: revalidateInBackground,
+      onActive: revalidateOnActive,
     },
   );
 
@@ -421,6 +445,10 @@ export function useProjectWorkspaceScope(
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let firstAttempt = true;
     const refreshRevision = refreshRequest.revision;
+
+    if (refreshRevision === 0 && initialScopeCanSeed) {
+      return () => controller.abort();
+    }
 
     const load = async () => {
       if (boundWorkspaceId && !requestWorkspaceAuthority) {
@@ -569,6 +597,7 @@ export function useProjectWorkspaceScope(
     refreshRequest,
     requestAuthorityKey,
     callerIdentityKey,
+    initialScopeCanSeed,
   ]);
 
   // React preserves hook state across a ProjectView A→B prop change until the

@@ -6451,6 +6451,7 @@ export async function startServer({
     status: projectStatusDeps,
     // Same provider `collab` was built with (collab.workspaceContext ===
     // workspaceContext) — see the mutation-gate cross-check note above.
+    verifyWorkspaceReadAuthority,
     verifyWorkspaceRequestAuthority,
     authorizeProjectRequest,
     isProjectRevoked: (projectId) =>

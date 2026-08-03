@@ -8,7 +8,11 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { startServer } from '../../src/server.js';
 import { registerProjectRoutes } from '../../src/routes/project/index.js';
 import { projectResourceIdFor } from '../../src/integrations/vela-team-projects.js';
-import type { WorkspaceDirectoryFetchResult } from '../../src/collab/vela-workspace-context.js';
+import { verifyWorkspaceRequestContext } from '../../src/collab/request-workspace-context.js';
+import {
+  createWorkspaceDirectoryAuthorityBroker,
+  type WorkspaceDirectoryFetchResult,
+} from '../../src/collab/vela-workspace-context.js';
 import { recoverPersistedTeamShareOwnership } from '../../src/collab/persisted-team-share.js';
 
 describe('workspace project routes', () => {
@@ -2432,6 +2436,81 @@ async function close(server: http.Server): Promise<void> {
     server.close((err) => (err ? reject(err) : resolve()));
   });
 }
+
+describe('workspace project list authority cache boundary', () => {
+  it('reuses the bounded read witness while mutations still require fresh authority', async () => {
+    const workspaceId = 'project-list-read-workspace';
+    const projectId = 'project-list-read-project';
+    const memberId = 'project-list-read-member';
+    const fetchDirectory = vi.fn(async (): Promise<WorkspaceDirectoryFetchResult> => ({
+      ok: true,
+      items: [{
+        workspaceId,
+        workspaceName: 'Project list read workspace',
+        workspaceType: 'team',
+        workspaceMemberId: memberId,
+        role: 'owner',
+        memberStatus: 'active',
+        lifecycleState: 'active',
+      }],
+    }));
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'project-list-read-session',
+      ttlMs: 15_000,
+    });
+    const verifyWith = (
+      fetchWorkspaceDirectory: () => Promise<WorkspaceDirectoryFetchResult>,
+    ) => (req: express.Request) => verifyWorkspaceRequestContext({
+      req,
+      fetchWorkspaceDirectory,
+    });
+    const deps = workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+    }) as any;
+    deps.verifyWorkspaceReadAuthority = verifyWith(authority.read);
+    deps.verifyWorkspaceRequestAuthority = verifyWith(authority.fresh);
+
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, deps);
+    const routeServer = await listen(app);
+    const headers = {
+      'content-type': 'application/json',
+      'x-od-workspace-id': workspaceId,
+      'x-od-workspace-member-id': memberId,
+      'x-od-workspace-type': 'team',
+      'x-od-workspace-role': 'owner',
+    };
+
+    try {
+      for (let index = 0; index < 2; index += 1) {
+        const response = await fetch(
+          `${routeServer.url}/api/workspaces/${workspaceId}/projects?view=drafts`,
+          { headers },
+        );
+        expect(response.status, await response.text()).toBe(200);
+      }
+      expect(fetchDirectory).toHaveBeenCalledTimes(1);
+
+      const mutation = await fetch(
+        `${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({}),
+        },
+      );
+      expect(mutation.status).toBe(400);
+      expect(fetchDirectory).toHaveBeenCalledTimes(2);
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+});
 
 describe('GET /api/projects/:id/workspace-scope route bootstrap', () => {
   const projectId = 'route-bootstrap-project-a';

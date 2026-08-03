@@ -5,7 +5,7 @@
 // resolvedDir), so we fall back to `metadata.baseDir` when present and
 // emit `null` otherwise so callers can degrade their UI gracefully.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   Project,
   ProjectDetailResponse,
@@ -20,15 +20,33 @@ export interface ProjectDetailState {
   refresh: () => Promise<void>;
 }
 
+export interface ProjectDetailSeed {
+  project: Project;
+  resolvedDir: string | null;
+}
+
 export function useProjectDetail(
   projectId: string,
   workspaceContext: WorkspaceCollabContext | null = null,
   persistedProjectWorkspaceId?: string | null,
+  initialDetail?: ProjectDetailSeed | null,
 ): ProjectDetailState {
-  const [project, setProject] = useState<Project | null>(null);
-  const [resolvedDir, setResolvedDir] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const initialDetailCanSeed = Boolean(
+    initialDetail?.project.id === projectId
+    && (
+      !persistedProjectWorkspaceId?.trim()
+      || initialDetail.project.workspaceId === persistedProjectWorkspaceId.trim()
+    ),
+  );
+  const [project, setProject] = useState<Project | null>(
+    initialDetailCanSeed ? initialDetail?.project ?? null : null,
+  );
+  const [resolvedDir, setResolvedDir] = useState<string | null>(
+    initialDetailCanSeed ? initialDetail?.resolvedDir ?? null : null,
+  );
+  const [loading, setLoading] = useState(!initialDetailCanSeed);
   const [error, setError] = useState<Error | null>(null);
+  const initialDetailConsumedRef = useRef(false);
   const boundWorkspaceId =
     typeof persistedProjectWorkspaceId === 'string'
       ? persistedProjectWorkspaceId.trim()
@@ -96,10 +114,14 @@ export function useProjectDetail(
   );
 
   useEffect(() => {
+    if (initialDetailCanSeed && !initialDetailConsumedRef.current) {
+      initialDetailConsumedRef.current = true;
+      return;
+    }
     const controller = new AbortController();
     void fetchOnce(controller.signal);
     return () => controller.abort();
-  }, [fetchOnce]);
+  }, [fetchOnce, initialDetailCanSeed]);
 
   const refresh = useCallback(() => fetchOnce(), [fetchOnce]);
 
