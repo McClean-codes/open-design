@@ -101,4 +101,39 @@ describe('useWorkspaceContext module cache', () => {
       });
     });
   });
+
+  it('keeps a verified context when a legacy directory row omits workspaceName', async () => {
+    const legacyContext = workspaceContextFixture({
+      workspaceId: 'ws-legacy-no-name',
+      workspaceMemberId: 'member-legacy-no-name',
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) =>
+        new Response(JSON.stringify(
+          String(input) === '/api/workspace/directory'
+            ? {
+                items: [{
+                  workspaceId: 'ws-legacy-no-name',
+                  workspaceType: 'team',
+                  workspaceMemberId: 'member-legacy-no-name',
+                  role: 'member',
+                  memberStatus: 'active',
+                  lifecycleState: 'active',
+                }],
+                activeWorkspaceId: null,
+              }
+            : { context: legacyContext },
+        ), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+
+    const result = renderHook(() => useWorkspaceContext());
+    await waitFor(() => expect(result.result.current.loading).toBe(false));
+    expect(result.result.current.context).toEqual(legacyContext);
+    expect(result.result.current.failure).toBeUndefined();
+  });
 });
