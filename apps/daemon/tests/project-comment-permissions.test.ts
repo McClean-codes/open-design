@@ -81,9 +81,9 @@ async function startServer({ shared = true }: { shared?: boolean } = {}) {
     // p1 is owned by OWNER.
     resolveProjectOwnerMemberId: async () => OWNER,
     isSharedProject: async () => shared,
-    onCommentCreated: (c) => created.push(c.id),
-    onCommentUpdated: (c) => updated.push(c.id),
-    onCommentDeleted: (c) => deleted.push(c.id),
+    onCommentCreated: (c) => { created.push(c.id); },
+    onCommentUpdated: (c) => { updated.push(c.id); },
+    onCommentDeleted: (c) => { deleted.push(c.id); },
   });
   server = http.createServer(app);
   await new Promise<void>((resolve) => server!.listen(0, resolve));

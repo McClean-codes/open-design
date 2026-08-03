@@ -97,7 +97,7 @@ export interface RegisterProjectCommentRoutesDeps extends RouteDeps<'db' | 'proj
   onCommentCreated?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
-  ) => void;
+  ) => boolean | void;
   /**
    * Fired after a comment's status changes (the send-to-agent lifecycle), so the
    * new status propagates to other members. Best-effort.
@@ -105,7 +105,7 @@ export interface RegisterProjectCommentRoutesDeps extends RouteDeps<'db' | 'proj
   onCommentUpdated?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
-  ) => void;
+  ) => boolean | void;
   /**
    * Fired after a comment is deleted, with the comment as it last existed, so a
    * tombstone can be pushed to the relay. Best-effort.
@@ -113,7 +113,7 @@ export interface RegisterProjectCommentRoutesDeps extends RouteDeps<'db' | 'proj
   onCommentDeleted?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
-  ) => void;
+  ) => boolean | void;
   /**
    * Fired when the comment list is read. The hub push channel marks closed
    * projects comment-dirty instead of pulling eagerly; the first read after
@@ -264,6 +264,12 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
     );
   }
 
+  function requireRelayEnqueued(result: boolean | void): void {
+    if (result === false) {
+      throw new Error('failed to persist Team comment relay delivery');
+    }
+  }
+
   /**
    * Server-authoritative permission gate for status change + delete. Both are
    * allowed for the comment's author and the project owner (owner drives
@@ -384,23 +390,21 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
         workspaceContext,
         Boolean(ctx.onCommentCreated),
       );
-      const comment = upsertPreviewComment(db, req.params.id, req.params.cid, body, {
-        pinPendingCloudConfirm: syncEnabled,
-      });
-      updateProject(db, req.params.id, {});
-      // Production persists this callback into the relay outbox before
-      // returning; transport delivery remains asynchronous so a Vela outage
-      // never stalls the local save.
-      if (comment && syncEnabled) {
-        try {
-          ctx.onCommentCreated?.(
-            comment as unknown as PreviewComment,
+      // Local row + durable relay intent commit atomically. Network delivery is
+      // still asynchronous, so a Vela outage never delays this transaction.
+      const comment = db.transaction(() => {
+        const saved = upsertPreviewComment(db, req.params.id, req.params.cid, body, {
+          pinPendingCloudConfirm: syncEnabled,
+        });
+        updateProject(db, req.params.id, {});
+        if (saved && syncEnabled) {
+          requireRelayEnqueued(ctx.onCommentCreated?.(
+            saved as unknown as PreviewComment,
             workspaceContext,
-          );
-        } catch {
-          /* optional integration callback must not roll back the local save */
+          ));
         }
-      }
+        return saved;
+      })();
       res.json({ comment });
     } catch (err: any) {
       res.status(400).json({ error: String(err?.message || err) });
@@ -441,30 +445,31 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
         ))) {
           return res.status(403).json({ error: 'not permitted' });
         }
-        const comment = updatePreviewCommentStatus(
-          db,
-          req.params.id,
-          req.params.cid,
-          req.params.commentId,
-          req.body?.status,
-        );
-        if (!comment)
-          return res.status(404).json({ error: 'comment not found' });
-        updateProject(db, req.params.id, {});
-        if (isLocalTeamRelayCandidate(
+        const syncEnabled = isLocalTeamRelayCandidate(
           req.params.id,
           workspaceContext,
           Boolean(ctx.onCommentUpdated),
-        )) {
-          try {
-            ctx.onCommentUpdated?.(
-              comment as unknown as PreviewComment,
+        );
+        const comment = db.transaction(() => {
+          const saved = updatePreviewCommentStatus(
+            db,
+            req.params.id,
+            req.params.cid,
+            req.params.commentId,
+            req.body?.status,
+          );
+          if (!saved) return null;
+          updateProject(db, req.params.id, {});
+          if (syncEnabled) {
+            requireRelayEnqueued(ctx.onCommentUpdated?.(
+              saved as unknown as PreviewComment,
               workspaceContext,
-            );
-          } catch {
-            /* optional integration callback must not roll back the local save */
+            ));
           }
-        }
+          return saved;
+        })();
+        if (!comment)
+          return res.status(404).json({ error: 'comment not found' });
         res.json({ comment });
       } catch (err: any) {
         res.status(400).json({ error: String(err?.message || err) });
@@ -579,25 +584,31 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
       ))) {
         return res.status(403).json({ error: 'not permitted' });
       }
-      const ok = deletePreviewComment(
-        db,
-        req.params.id,
-        req.params.cid,
-        req.params.commentId,
-      );
-      if (!ok) return res.status(404).json({ error: 'comment not found' });
-      updateProject(db, req.params.id, {});
-      if (isLocalTeamRelayCandidate(
+      const syncEnabled = isLocalTeamRelayCandidate(
         req.params.id,
         workspaceContext,
         Boolean(ctx.onCommentDeleted),
-      )) {
-        try {
-          ctx.onCommentDeleted?.(existing, workspaceContext);
-        } catch {
-          /* optional integration callback must not roll back the local delete */
-        }
+      );
+      let ok = false;
+      try {
+        ok = db.transaction(() => {
+          const deleted = deletePreviewComment(
+            db,
+            req.params.id,
+            req.params.cid,
+            req.params.commentId,
+          );
+          if (!deleted) return false;
+          updateProject(db, req.params.id, {});
+          if (syncEnabled) {
+            requireRelayEnqueued(ctx.onCommentDeleted?.(existing, workspaceContext));
+          }
+          return true;
+        })();
+      } catch (err: any) {
+        return res.status(400).json({ error: String(err?.message || err) });
       }
+      if (!ok) return res.status(404).json({ error: 'comment not found' });
       res.json({ ok: true });
     },
   );

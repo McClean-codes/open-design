@@ -475,6 +475,78 @@ describe('project comments — workspace mutation gate', () => {
       .toEqual([expect.objectContaining({ id: payload.comment.id })]);
   });
 
+  it('rolls back create, update, and delete when durable enqueue fails', async () => {
+    const projectContext = activeTeamContext(OWNER_MEMBER_ID, 'owner');
+    const baseUrl = await startServer({
+      resolveWorkspaceContext: async () => ({ ok: true, context: projectContext }),
+      onCommentCreated: () => false,
+      onCommentUpdated: () => false,
+      onCommentDeleted: () => false,
+    });
+    const commentsUrl =
+      `${baseUrl}/api/projects/${TEAM_PROJECT}/conversations/conv-team/comments`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+    };
+
+    const create = await fetch(commentsUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ target: COMMENT_TARGET, note: 'must roll back' }),
+    });
+    expect(create.status).toBe(400);
+    expect(listPreviewComments(database!, TEAM_PROJECT, 'conv-team')).toEqual([]);
+
+    const updateTarget = upsertPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      {
+        id: 'comment-update-rollback',
+        target: COMMENT_TARGET,
+        note: 'keep open',
+        authorMemberId: OWNER_MEMBER_ID,
+      },
+    );
+    const removeTarget = upsertPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      {
+        id: 'comment-delete-rollback',
+        target: COMMENT_TARGET,
+        note: 'keep row',
+        authorMemberId: OWNER_MEMBER_ID,
+      },
+    );
+
+    const update = await fetch(`${commentsUrl}/${updateTarget!.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'applying' }),
+    });
+    expect(update.status).toBe(400);
+    expect(getPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      updateTarget!.id,
+    )?.status).toBe('open');
+
+    const remove = await fetch(`${commentsUrl}/${removeTarget!.id}`, {
+      method: 'DELETE',
+      headers,
+    });
+    expect(remove.status).toBe(400);
+    expect(getPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      removeTarget!.id,
+    )).not.toBeNull();
+  });
+
   it('fails closed before saving or relaying when project scope authority is unavailable', async () => {
     let relayed = 0;
     const baseUrl = await startServer({

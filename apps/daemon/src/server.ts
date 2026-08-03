@@ -6515,21 +6515,27 @@ export async function startServer({
           // original delivery failed.
           onCommentCreated: (comment, context) => {
             if (!context) return;
-            if (!collabCloud.enqueueComment(comment, context)) {
+            const enqueued = collabCloud.enqueueComment(comment, context);
+            if (!enqueued) {
               console.warn('[od] refused to enqueue comment without exact Team authority');
             }
+            return enqueued;
           },
           onCommentUpdated: (comment, context) => {
             if (!context) return;
-            if (!collabCloud.enqueueComment(comment, context)) {
+            const enqueued = collabCloud.enqueueComment(comment, context);
+            if (!enqueued) {
               console.warn('[od] refused to enqueue comment update without exact Team authority');
             }
+            return enqueued;
           },
           onCommentDeleted: (comment, context) => {
             if (!context) return;
-            if (!collabCloud.enqueueCommentDeletion(comment, context)) {
+            const enqueued = collabCloud.enqueueCommentDeletion(comment, context);
+            if (!enqueued) {
               console.warn('[od] refused to enqueue comment deletion without exact Team authority');
             }
+            return enqueued;
           },
         }
       : {}),

@@ -171,15 +171,15 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
   onCommentCreated?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
-  ) => void;
+  ) => boolean | void;
   onCommentUpdated?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
-  ) => void;
+  ) => boolean | void;
   onCommentDeleted?: (
     comment: PreviewComment,
     context: WorkspaceCollabContext | null,
-  ) => void;
+  ) => boolean | void;
   onCommentsRead?: (
     projectId: string,
     context: WorkspaceCollabContext | null,
