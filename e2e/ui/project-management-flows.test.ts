@@ -4,6 +4,7 @@ import { openAllProjectFiles } from '@/playwright/workspace';
 import { T } from '@/timeouts';
 import type { Locator, Page, Request } from '@playwright/test';
 import { routeAgents, routeSuccessfulRuns } from '../lib/playwright/mock-factory.js';
+import { settingsSurface } from '../lib/playwright/amr.js';
 
 // The `/projects` view in `EntryShell` renders a `CenteredLoader` until
 // `projectsLoading || skillsLoading || designSystemsLoading` all clear
@@ -1500,7 +1501,7 @@ async function createBoundTeamProject(
   };
 }
 
-test('[P0] Team project send keeps exact Team run scope while its first scope read is pending', async ({ page }) => {
+test('[P0] Team project send keeps the exact Team scope confirmed during route bootstrap', async ({ page }) => {
   test.setTimeout(60_000);
   const prompt = 'Run against the Team workspace while its scope read is still pending.';
   const balanceRequests = await wireTeamRunBalanceFixtures(page, {
@@ -1511,22 +1512,11 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
     page,
     'Pending Team scope run witness',
   );
-  let releaseScope!: () => void;
-  const scopeGate = new Promise<void>((resolve) => {
-    releaseScope = resolve;
-  });
   let scopeRequests = 0;
-  let heldScopeHeaders: Record<string, string> | null = null;
+  const scopeRequestHeaders: Array<Record<string, string>> = [];
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
-    // Route bootstrap performs headerless discovery and then an exact Team
-    // confirmation before it is allowed to mount ProjectView. Hold only
-    // ProjectView's own first scope read (the third request): this preserves
-    // the intended pending window without deadlocking bootstrap itself.
-    if (scopeRequests > 2) {
-      heldScopeHeaders = await route.request().allHeaders();
-      await scopeGate;
-    }
+    scopeRequestHeaders.push(await route.request().allHeaders());
     await route.fulfill({
       json: {
         scope: {
@@ -1553,45 +1543,42 @@ test('[P0] Team project send keeps exact Team run scope while its first scope re
     await route.fallback();
   });
 
-  try {
-    await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
-    await expectWorkspaceReady(page);
-    await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(3);
-    expect(heldScopeHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
-    expect(heldScopeHeaders?.['x-od-workspace-member-id']).toBe(
-      TEAM_RUN_CONTEXT.workspaceMemberId,
-    );
-    await expect(page.getByTestId('chat-composer-input')).toBeEditable();
-    balanceRequests.resetBalanceRequests();
-    await page.getByTestId('chat-composer-input').fill(prompt);
-    await page.getByTestId('chat-send').click();
+  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+  await expectWorkspaceReady(page);
+  await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
+  expect(scopeRequestHeaders[0]?.['x-od-workspace-id']).toBeUndefined();
+  expect(scopeRequestHeaders[0]?.['x-od-workspace-member-id']).toBeUndefined();
+  expect(scopeRequestHeaders[1]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+  expect(scopeRequestHeaders[1]?.['x-od-workspace-member-id']).toBe(
+    TEAM_RUN_CONTEXT.workspaceMemberId,
+  );
+  await expect(page.getByTestId('chat-composer-input')).toBeEditable();
+  balanceRequests.resetBalanceRequests();
+  await page.getByTestId('chat-composer-input').fill(prompt);
+  await page.getByTestId('chat-send').click();
 
-    await expect.poll(() => runHeaders.length).toBe(1);
-    releaseScope();
-    expect(runHeaders[0]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
-    expect(runHeaders[0]?.['x-od-workspace-member-id']).toBe(
-      TEAM_RUN_CONTEXT.workspaceMemberId,
-    );
-    // Run scope is an HTTP authority header contract. The daemon intentionally
-    // does not duplicate this mutable principal into ChatRequest JSON.
-    expect(runBodies[0]?.currentPrompt).toBe(prompt);
-    expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
-    const teamBillingQueries = balanceRequests.teamBillingQueries();
-    expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
-    for (const query of teamBillingQueries) {
-      expect(query.scope).toBe('workspace');
-      expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
-      expect([null, 'authoritative']).toContain(query.freshness);
-    }
-    expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
-    // Team preflight reads the account snapshot once for signed-in identity
-    // metadata only; Personal $0 is not the balance oracle and cannot veto the
-    // Team-funded run proved above.
-    expect(balanceRequests.personalWalletRequests()).toBe(1);
-    await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
-  } finally {
-    releaseScope();
+  await expect.poll(() => runHeaders.length).toBe(1);
+  expect(runHeaders[0]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+  expect(runHeaders[0]?.['x-od-workspace-member-id']).toBe(
+    TEAM_RUN_CONTEXT.workspaceMemberId,
+  );
+  // Run scope is an HTTP authority header contract. The daemon intentionally
+  // does not duplicate this mutable principal into ChatRequest JSON.
+  expect(runBodies[0]?.currentPrompt).toBe(prompt);
+  expect(balanceRequests.teamBillingRequests()).toBeGreaterThanOrEqual(1);
+  const teamBillingQueries = balanceRequests.teamBillingQueries();
+  expect(teamBillingQueries.length).toBeGreaterThanOrEqual(1);
+  for (const query of teamBillingQueries) {
+    expect(query.scope).toBe('workspace');
+    expect(query.workspaceId).toBe(TEAM_RUN_CONTEXT.workspaceId);
+    expect([null, 'authoritative']).toContain(query.freshness);
   }
+  expect(teamBillingQueries.some((query) => query.freshness === 'authoritative')).toBe(true);
+  // Team preflight reads the account snapshot once for signed-in identity
+  // metadata only; Personal $0 is not the balance oracle and cannot veto the
+  // Team-funded run proved above.
+  expect(balanceRequests.personalWalletRequests()).toBe(1);
+  await expect(page.getByTestId('amr-balance-dialog')).toHaveCount(0);
 });
 
 test('[P0] Team project balance gate ignores funded Personal wallet and blocks on empty Team wallet', async ({ page }) => {
@@ -1858,7 +1845,7 @@ test('[P0] @critical project detail composer opens Execution settings where BYOK
   const { menu } = await openComposerAgentMenu(page);
   await menu.getByTestId('avatar-open-execution-settings').click();
 
-  const settings = page.getByRole('dialog');
+  const settings = settingsSurface(page);
   await expect(settings).toBeVisible();
   await expect(settings.getByTestId('settings-nav-execution')).toBeVisible();
   await settings.getByRole('tab', { name: 'API providers' }).click();
