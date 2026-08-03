@@ -2,12 +2,14 @@ import { RELEASE_METADATA_UPSTREAM_URL, formatStableReleaseVersion } from './rel
 
 export interface GithubRepoMeta {
   starsLabel: string;
+  contributorsCount: number;
   versionLabel: string;
 }
 
 const REPO_API = 'https://api.github.com/repos/nexu-io/open-design';
 const FALLBACK_META: GithubRepoMeta = {
-  starsLabel: '40K+',
+  starsLabel: '83.3K+',
+  contributorsCount: 387,
   // Build-time fallback when the GitHub releases API is unavailable / rate
   // limited. Keep in step with the latest published release.
   versionLabel: 'v0.9.0',
@@ -18,7 +20,23 @@ let repoMetaPromise: Promise<GithubRepoMeta> | null = null;
 function formatStars(count: unknown): string | null {
   if (typeof count !== 'number' || !Number.isFinite(count) || count <= 0) return null;
   if (count < 1000) return String(count);
-  return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}K`;
+  return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}K+`;
+}
+
+async function fetchContributorCount(): Promise<number> {
+  const response = await fetch(`${REPO_API}/contributors?per_page=1`, {
+    headers: { Accept: 'application/vnd.github+json' },
+  });
+  if (!response.ok) {
+    throw new Error(`Request returned ${response.status}: ${response.url}`);
+  }
+
+  const link = response.headers.get('link') ?? '';
+  const lastPage = link.match(/[?&]page=(\d+)>;\s*rel="last"/);
+  if (lastPage?.[1]) return Number.parseInt(lastPage[1], 10);
+
+  const contributors = (await response.json()) as unknown;
+  return Array.isArray(contributors) ? contributors.length : 0;
 }
 
 // Parse a display version (e.g. "v0.9.0") from a GitHub /releases/latest object.
@@ -51,18 +69,24 @@ async function fetchJson(url: string, headers?: Record<string, string>): Promise
 
 export function getGithubRepoMeta(): Promise<GithubRepoMeta> {
   repoMetaPromise ??= (async () => {
-    const [repoResult, releaseMetadataResult] = await Promise.allSettled([
+    const [repoResult, contributorsResult, releaseMetadataResult] = await Promise.allSettled([
       fetchJson(REPO_API, { Accept: 'application/vnd.github+json' }),
+      fetchContributorCount(),
       fetchJson(RELEASE_METADATA_UPSTREAM_URL, { Accept: 'application/json' }),
     ]);
 
     const repo = repoResult.status === 'fulfilled' ? repoResult.value : null;
+    const contributorsCount =
+      contributorsResult.status === 'fulfilled' && contributorsResult.value > 0
+        ? contributorsResult.value
+        : null;
     const releaseMetadata = releaseMetadataResult.status === 'fulfilled' ? releaseMetadataResult.value : null;
     const starsLabel = formatStars((repo as { stargazers_count?: unknown } | null)?.stargazers_count);
     const versionLabel = formatStableReleaseVersion(releaseMetadata);
 
     return {
       starsLabel: starsLabel ?? FALLBACK_META.starsLabel,
+      contributorsCount: contributorsCount ?? FALLBACK_META.contributorsCount,
       versionLabel: versionLabel ?? FALLBACK_META.versionLabel,
     };
   })();

@@ -309,12 +309,15 @@ interface PageProps {
    * fractions, and the footer Library never disagree.
    */
   counts: HeaderProps['counts'] & {
+    /** User-facing bundled plugins shown in the public plugin library. */
+    plugins: number;
     /** Optional richer breakdown used by the Labs filter pills. */
     byMode?: Readonly<Record<string, number>>;
     byPlatform?: Readonly<Record<string, number>>;
   };
   github: {
     starsLabel: string;
+    contributorsCount: number;
     versionLabel: string;
   };
   /** FAQ pairs rendered above the closing CTA. Content comes from `getHomeFaq`. */
@@ -403,6 +406,8 @@ export default function Page({
   // non-finite data-countup-to). `to: null` makes the renderer skip countup.
   const systemsCardNum = counts.systems > 0 ? `${counts.systems}+` : '—';
   const systemsCardTo: string | null = counts.systems > 0 ? String(counts.systems) : null;
+  const pluginsCardNum = counts.plugins > 0 ? `${counts.plugins}+` : '—';
+  const pluginsCardTo: string | null = counts.plugins > 0 ? String(counts.plugins) : null;
   const deckCount = pad2(counts.byMode?.deck);
   const prototypeCount = pad2(counts.byMode?.prototype);
   const mobileCount = pad2(counts.byPlatform?.mobile);
@@ -1036,7 +1041,7 @@ export default function Page({
               <div className='testimonial-copy' data-reveal>
                 <h2 style={{ marginTop: 30 }}>
                   {t.testiPre}
-                  <span data-github-contributors>343</span>
+                  <span data-github-contributors>{github.contributorsCount}</span>
                   {t.testiMid}
                   <br />
                   <span style={{ whiteSpace: 'nowrap' }}>{t.testiPost}</span>
@@ -1087,11 +1092,12 @@ export default function Page({
                 {([
                   // `live` cards show the real-time GitHub count (filled by the
                   // [data-github-stars] / [data-github-contributors] enhancers in
-                  // index.astro); the hard-coded `num` is only the SSR fallback
-                  // shown until the API responds. The rest count up from 0.
-                  { src: 'card-1.webp', num: '74K+', to: '74', suffix: 'K+', alt: 'GitHub Stars', href: REPO, live: 'stars' as const },
-                  { src: 'card-2.webp', num: '340+', to: '340', suffix: '+', alt: tt('贡献者', 'Contributors'), href: `${REPO}/graphs/contributors`, live: 'contributors' as const },
-                  { src: 'card-3.webp', num: '217+', to: '217', suffix: '+', alt: 'Plugins', href: href('/plugins/') },
+                  // index.astro); their build-time values come from GitHub and
+                  // stay visible if the browser API request is rate-limited.
+                  // Catalog-backed cards count up from 0.
+                  { src: 'card-1.webp', num: github.starsLabel, to: null, suffix: '', alt: 'GitHub Stars', href: REPO, live: 'stars' as const },
+                  { src: 'card-2.webp', num: String(github.contributorsCount), to: null, suffix: '', alt: tt('贡献者', 'Contributors'), href: `${REPO}/graphs/contributors`, live: 'contributors' as const },
+                  { src: 'card-3.webp', num: pluginsCardNum, to: pluginsCardTo, suffix: '+', alt: 'Plugins', href: href('/plugins/') },
                   { src: 'card-4.webp', num: systemsCardNum, to: systemsCardTo, suffix: '+', alt: 'Design Systems', href: href('/plugins/systems/') },
                   { src: 'card-5.webp', num: '21', to: '21', suffix: '', alt: tt('Coding Agent 支持', 'Coding Agents'), href: href('/agents/') },
                   { src: 'card-6.webp', num: null, to: null, suffix: '', alt: 'Star us', href: REPO, cta: true },
@@ -1242,7 +1248,12 @@ export default function Page({
                     {home.hero.download}
                   </a>
                   <p className='faq-download-note'>
-                    {cta.downloadProof}
+                    {cta.downloadProof.split('{stars}').map((part, index) => (
+                      <span key={`${part}-${index}`}>
+                        {index > 0 ? <span data-github-stars>{github.starsLabel}</span> : null}
+                        {part}
+                      </span>
+                    ))}
                   </p>
                 </div>
               </div>

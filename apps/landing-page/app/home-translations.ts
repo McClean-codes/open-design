@@ -1036,7 +1036,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Explore design systems',
     learnMore: 'Learn more →',
     statsTitle: 'The open-source vibe design workspace, by the numbers',
-    downloadProof: '74K+ stars · Apache-2.0 · Free',
+    downloadProof: '{stars} stars · Apache-2.0 · Free',
   },
   zh: {
     solutions: '浏览全部解决方案',
@@ -1046,7 +1046,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: '浏览设计系统',
     learnMore: '了解更多 →',
     statsTitle: '开源 vibe design workspace，用数据说话',
-    downloadProof: '74K+ Star · Apache-2.0 · 免费',
+    downloadProof: '{stars} Star · Apache-2.0 · 免费',
   },
   ja: {
     solutions: 'すべてのソリューションを見る',
@@ -1056,7 +1056,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'デザインシステムを見る',
     learnMore: '詳しく見る →',
     statsTitle: 'オープンソースの vibe design workspace を数字で',
-    downloadProof: '74K+ スター · Apache-2.0 · 無料',
+    downloadProof: '{stars} スター · Apache-2.0 · 無料',
   },
   ko: {
     solutions: '모든 솔루션 둘러보기',
@@ -1066,7 +1066,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: '디자인 시스템 둘러보기',
     learnMore: '자세히 보기 →',
     statsTitle: '오픈소스 vibe design workspace, 숫자로 보기',
-    downloadProof: '74K+ 스타 · Apache-2.0 · 무료',
+    downloadProof: '{stars} 스타 · Apache-2.0 · 무료',
   },
   de: {
     solutions: 'Alle Lösungen ansehen',
@@ -1076,7 +1076,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Design-Systeme ansehen',
     learnMore: 'Mehr erfahren →',
     statsTitle: 'Der quelloffene Vibe Design Workspace in Zahlen',
-    downloadProof: '74K+ Sterne · Apache-2.0 · Kostenlos',
+    downloadProof: '{stars} Sterne · Apache-2.0 · Kostenlos',
   },
   fr: {
     solutions: 'Voir toutes les solutions',
@@ -1086,7 +1086,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Voir les design systems',
     learnMore: 'En savoir plus →',
     statsTitle: 'Le vibe design workspace open source en chiffres',
-    downloadProof: '74K+ étoiles · Apache-2.0 · Gratuit',
+    downloadProof: '{stars} étoiles · Apache-2.0 · Gratuit',
   },
   ru: {
     solutions: 'Все решения',
@@ -1096,7 +1096,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Дизайн-системы',
     learnMore: 'Подробнее →',
     statsTitle: 'Открытый vibe design workspace в цифрах',
-    downloadProof: '74K+ звёзд · Apache-2.0 · Бесплатно',
+    downloadProof: '{stars} звёзд · Apache-2.0 · Бесплатно',
   },
   es: {
     solutions: 'Ver todas las soluciones',
@@ -1106,7 +1106,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Ver los design systems',
     learnMore: 'Más información →',
     statsTitle: 'El vibe design workspace open source en cifras',
-    downloadProof: '74K+ estrellas · Apache-2.0 · Gratis',
+    downloadProof: '{stars} estrellas · Apache-2.0 · Gratis',
   },
   'pt-br': {
     solutions: 'Ver todas as soluções',
@@ -1116,7 +1116,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Ver os design systems',
     learnMore: 'Saiba mais →',
     statsTitle: 'O vibe design workspace open source em números',
-    downloadProof: '74K+ estrelas · Apache-2.0 · Grátis',
+    downloadProof: '{stars} estrelas · Apache-2.0 · Grátis',
   },
   it: {
     solutions: 'Esplora tutte le soluzioni',
@@ -1126,7 +1126,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Esplora i design system',
     learnMore: 'Scopri di più →',
     statsTitle: 'Il vibe design workspace open source in numeri',
-    downloadProof: '74K+ stelle · Apache-2.0 · Gratis',
+    downloadProof: '{stars} stelle · Apache-2.0 · Gratis',
   },
   tr: {
     solutions: 'Tüm çözümleri gör',
@@ -1136,7 +1136,7 @@ const HOME_CTA: Partial<Record<LandingLocaleCode, HomeCta>> = {
     systems: 'Tasarım sistemlerini keşfet',
     learnMore: 'Daha fazla bilgi →',
     statsTitle: 'Sayılarla açık kaynaklı vibe design workspace',
-    downloadProof: '74K+ yıldız · Apache-2.0 · Ücretsiz',
+    downloadProof: '{stars} yıldız · Apache-2.0 · Ücretsiz',
   },
 };
 

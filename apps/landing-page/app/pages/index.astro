@@ -279,7 +279,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         const formatStars = (count) => {
           if (!Number.isFinite(count) || count <= 0) return '0';
           if (count < 1000) return String(count);
-          return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}K`;
+          return `${(count / 1000).toFixed(1).replace(/\.0$/, '')}K+`;
         };
 
         // Pull a clean 'v0.3.0'-style label from a GitHub release record.
