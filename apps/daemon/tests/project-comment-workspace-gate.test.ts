@@ -33,11 +33,13 @@ import {
   ensureWorkspaceProject,
   getConversation,
   getPreviewComment,
+  getProjectPreviewComment,
   getWorkspaceProject,
   getWorkspaceProjectByProjectId,
   insertConversation,
   insertProject,
   listPreviewComments,
+  listProjectPreviewComments,
   openDatabase,
   reorderPreviewComment,
   updatePreviewCommentAnchor,
@@ -174,8 +176,10 @@ async function startServer(
     conversations: {
       getConversation,
       listPreviewComments,
+      listProjectPreviewComments,
       upsertPreviewComment,
       getPreviewComment,
+      getProjectPreviewComment,
       updatePreviewCommentStatus,
       updatePreviewCommentAnchor,
       deletePreviewComment,
@@ -782,6 +786,110 @@ describe('project comments — workspace mutation gate', () => {
       },
     );
     expect(resp.status).toBe(200);
+  });
+
+  it('lists Team comments across local conversation anchors while keeping personal comments isolated', async () => {
+    const baseUrl = await startServer({
+      resolveReadWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+      resolveWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+    });
+    const db = database!;
+    const now = Date.now();
+    insertConversation(db, {
+      id: 'conv-team-active',
+      projectId: TEAM_MIRROR_PROJECT,
+      title: 'Current local chat',
+      createdAt: now,
+      updatedAt: now,
+    });
+    insertConversation(db, {
+      id: 'conv-personal-active',
+      projectId: PERSONAL_PROJECT,
+      title: 'Current personal chat',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const teamComment = upsertPreviewComment(db, TEAM_MIRROR_PROJECT, 'conv-team-mirror', {
+      target: COMMENT_TARGET,
+      note: 'remote comment stored under another local anchor',
+    })!;
+    const otherPersonalComment = upsertPreviewComment(db, PERSONAL_PROJECT, 'conv-personal', {
+      target: COMMENT_TARGET,
+      note: 'another personal conversation',
+    })!;
+    upsertPreviewComment(db, PERSONAL_PROJECT, 'conv-personal-active', {
+      target: { ...COMMENT_TARGET, elementId: 'personal-active' },
+      note: 'current personal conversation',
+    });
+
+    const teamResponse = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      { headers: workspaceHeaders(OTHER_MEMBER_ID, 'member') },
+    );
+    expect(teamResponse.status).toBe(200);
+    const teamPayload = (await teamResponse.json()) as {
+      comments: Array<{ conversationId: string; note: string }>;
+    };
+    expect(teamPayload.comments).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-team-mirror',
+        note: 'remote comment stored under another local anchor',
+      }),
+    ]);
+
+    const teamStatus = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({ status: 'resolved' }),
+      },
+    );
+    expect(teamStatus.status).toBe(200);
+    expect((await teamStatus.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        status: 'resolved',
+      }),
+    });
+
+    const personalResponse = await fetch(
+      `${baseUrl}/api/projects/${PERSONAL_PROJECT}/conversations/conv-personal-active/comments`,
+      { headers: workspaceHeaders(OWNER_MEMBER_ID, 'owner') },
+    );
+    expect(personalResponse.status).toBe(200);
+    const personalPayload = (await personalResponse.json()) as {
+      comments: Array<{ conversationId: string; note: string }>;
+    };
+    expect(personalPayload.comments).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-personal-active',
+        note: 'current personal conversation',
+      }),
+    ]);
+
+    const personalStatus = await fetch(
+      `${baseUrl}/api/projects/${PERSONAL_PROJECT}/conversations/conv-personal-active/comments/${otherPersonalComment.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({ status: 'resolved' }),
+      },
+    );
+    expect(personalStatus.status).toBe(404);
   });
 
   // Comment-capability follow-through: the same borrowed gate also fronts

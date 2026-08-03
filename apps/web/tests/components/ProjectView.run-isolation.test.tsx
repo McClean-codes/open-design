@@ -51,6 +51,7 @@ const saveTabs = vi.fn();
 const playSound = vi.fn();
 const showCompletionNotification = vi.fn();
 const analyticsTrackMock = vi.fn();
+const useProjectFileEvents = vi.fn();
 const workspaceScopeMocks = vi.hoisted(() => {
   const personalContext = (): WorkspaceCollabContext & {
     workspaceType: 'personal';
@@ -198,7 +199,7 @@ vi.mock('../../src/providers/daemon', () => ({
 }));
 
 vi.mock('../../src/providers/project-events', () => ({
-  useProjectFileEvents: vi.fn(),
+  useProjectFileEvents: (...args: unknown[]) => useProjectFileEvents(...args),
 }));
 
 vi.mock('../../src/utils/notifications', async (importOriginal) => ({
@@ -1934,6 +1935,37 @@ describe('ProjectView conversation run isolation', () => {
       conversationId: 'conv-b',
       projectId: 'project-1',
     }));
+  });
+
+  it('refreshes the active conversation when a project comment event arrives', async () => {
+    renderProjectView();
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    fireEvent.click(screen.getByTestId('conversation-select-conv-b'));
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-b'));
+    if (!resolveConversationBMessages) throw new Error('Expected conv-b message load to be pending');
+    resolveConversationBMessages([]);
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fetchPreviewComments.mockClear();
+    fetchPreviewComments.mockResolvedValue([previewComment]);
+    const handleProjectEvent = useProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'comment-changed'; projectId: string }) => void)
+      | undefined;
+    await act(async () => {
+      handleProjectEvent?.({ type: 'comment-changed', projectId: project.id });
+    });
+
+    await waitFor(() => {
+      expect(fetchPreviewComments).toHaveBeenCalledWith(
+        project.id,
+        'conv-b',
+        expect.anything(),
+      );
+    });
+    // The daemon GET is project-scoped for a Team share, so a comment whose
+    // local FK anchor is conv-a is intentionally accepted by the conv-b view.
+    expect(previewComment.conversationId).toBe('conv-a');
   });
   it('detaches saved comment attachments after queueing them for a busy conversation', async () => {
     fetchPreviewComments.mockResolvedValue([previewComment]);

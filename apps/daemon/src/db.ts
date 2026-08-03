@@ -2751,6 +2751,33 @@ export function listPreviewComments(db: SqliteDb, projectId: string, conversatio
     .map(normalizePreviewComment);
 }
 
+/**
+ * Team preview annotations are project resources, not chat transcript rows.
+ * Different daemons intentionally use different local conversation ids as the
+ * SQLite foreign-key anchor, so shared reads must not filter on that local id.
+ */
+export function listProjectPreviewComments(db: SqliteDb, projectId: string) {
+  return (db
+    .prepare(
+      `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+              file_path AS filePath, element_id AS elementId, selector, label,
+              text, position_json AS positionJson, html_hint AS htmlHint,
+              selection_kind AS selectionKind, member_count AS memberCount,
+              pod_members_json AS podMembersJson, style_json AS styleJson,
+              attachments_json AS attachmentsJson,
+              slide_index AS slideIndex,
+              anchor_state AS anchorState, anchored_version AS anchoredVersion,
+              author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
+              pin_seq AS pinSeq, sort_key AS sortKey,
+              note, status, created_at AS createdAt, updated_at AS updatedAt
+         FROM preview_comments
+        WHERE project_id = ?
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(projectId) as DbRow[])
+    .map(normalizePreviewComment);
+}
+
 export interface UpsertPreviewCommentOptions {
   /**
    * True when this project currently syncs comments to the collab cloud (see
@@ -3261,6 +3288,28 @@ export function getPreviewComment(db: SqliteDb, projectId: string, conversationI
         WHERE id = ? AND project_id = ? AND conversation_id = ?`,
     )
     .get(id, projectId, conversationId) as DbRow | undefined;
+  return row ? normalizePreviewComment(row) : null;
+}
+
+/** Resolve a Team annotation independently from its daemon-local FK anchor. */
+export function getProjectPreviewComment(db: SqliteDb, projectId: string, id: string) {
+  const row = db
+    .prepare(
+      `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+              file_path AS filePath, element_id AS elementId, selector, label,
+              text, position_json AS positionJson, html_hint AS htmlHint,
+              selection_kind AS selectionKind, member_count AS memberCount,
+              pod_members_json AS podMembersJson, style_json AS styleJson,
+              attachments_json AS attachmentsJson,
+              slide_index AS slideIndex,
+              anchor_state AS anchorState, anchored_version AS anchoredVersion,
+              author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
+              pin_seq AS pinSeq, sort_key AS sortKey,
+              note, status, created_at AS createdAt, updated_at AS updatedAt
+         FROM preview_comments
+        WHERE id = ? AND project_id = ?`,
+    )
+    .get(id, projectId) as DbRow | undefined;
   return row ? normalizePreviewComment(row) : null;
 }
 
