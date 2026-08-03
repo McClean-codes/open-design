@@ -92,6 +92,7 @@ vi.mock('../../src/components/ProjectView', async () => {
       project: Project;
       workspaceContextOverride?: ReturnType<typeof workspaceContext> | null;
       onBack: () => void;
+      onProjectChange: (project: Project) => void;
       onProjectsRefresh: () => Promise<void> | void;
     }) => {
       projectViewLifecycle.renders(props);
@@ -128,6 +129,30 @@ vi.mock('../../src/components/ProjectView', async () => {
       ]);
       return (
         <main data-testid="project-view">
+          <span data-testid="project-title">{props.project.name}</span>
+          <button
+            type="button"
+            data-testid="project-rename"
+            onClick={() => props.onProjectChange({
+              ...props.project,
+              name: 'Renamed from deep link',
+              updatedAt: props.project.updatedAt + 1,
+            })}
+          >
+            Rename
+          </button>
+          <button
+            type="button"
+            data-testid="project-foreign-update"
+            onClick={() => props.onProjectChange({
+              ...props.project,
+              name: 'Foreign workspace title',
+              workspaceId: 'ws-b',
+              updatedAt: props.project.updatedAt + 2,
+            })}
+          >
+            Foreign update
+          </button>
           <button data-testid="project-back" onClick={props.onBack}>Back</button>
           <button
             data-testid="project-refresh"
@@ -963,6 +988,23 @@ describe('App project list across a workspace switch', () => {
         resolvedDir: '/tmp/project-in-a',
       },
     });
+
+    fireEvent.click(screen.getByTestId('project-rename'));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-title').textContent).toBe('Renamed from deep link');
+      expect(
+        screen.getAllByRole('tab').some((tab) =>
+          tab.textContent?.includes('Renamed from deep link')),
+      ).toBe(true);
+    });
+
+    fireEvent.click(screen.getByTestId('project-foreign-update'));
+    await act(async () => Promise.resolve());
+    expect(screen.getByTestId('project-title').textContent).toBe('Renamed from deep link');
+    expect(
+      screen.getAllByRole('tab').some((tab) =>
+        tab.textContent?.includes('Foreign workspace title')),
+    ).toBe(false);
   });
 
   it('adopts a newly completed bootstrap after an earlier workspace refresh while directory stays pending', async () => {

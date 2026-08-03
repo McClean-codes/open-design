@@ -3679,6 +3679,36 @@ function AppInner() {
     // cannot restore an old title when the user next opens Personal or Team.
     const projectContext = projectRouteWorkspaceContextRef.current;
     const accountGeneration = currentWorkspaceAccountGeneration();
+    // A cold deep link can mount from this route-owned snapshot before the
+    // ambient project list resolves. Keep that independent row current too,
+    // but only under the exact account + Workspace principal that opened it.
+    const routeSnapshot = routeProjectSnapshotRef.current;
+    const routeSnapshotContext =
+      routeSnapshot?.workspaceContext
+      ?? routeSnapshot?.workspaceScope?.context
+      ?? null;
+    const routeSnapshotMatches =
+      routeRef.current.kind === 'project'
+      && routeRef.current.projectId === updated.id
+      && routeSnapshot?.project.id === updated.id
+      && routeSnapshot.accountGeneration === accountGeneration
+      && (routeSnapshot.project.workspaceId ?? null) === (updated.workspaceId ?? null)
+      && (
+        routeSnapshotContext === null && projectContext === null
+        || (
+          routeSnapshotContext !== null
+          && projectContext !== null
+          && workspaceIdentityCacheKey(routeSnapshotContext)
+            === workspaceIdentityCacheKey(projectContext)
+        )
+      );
+    if (routeSnapshotMatches) {
+      routeProjectSnapshotRef.current = {
+        ...routeSnapshot,
+        project: updated,
+      };
+      setRouteProjectSnapshotRevision((current) => current + 1);
+    }
     setProjects((curr) => {
       const previous = curr.find((p) => p.id === updated.id);
       if (
@@ -4785,7 +4815,15 @@ function AppInner() {
       >
         <WorkspaceTabsBar
           route={route}
-          projects={projects}
+          // The ambient list may still be loading (or belong to a different
+          // selected Workspace) while a deep-linked project is already open.
+          // Supply only that route-owned row to chrome; never insert it into
+          // the ambient Home catalogue.
+          projects={
+            activeProject && !projects.some((project) => project.id === activeProject.id)
+              ? [...projects, activeProject]
+              : projects
+          }
           activeProjectWorkspaceId={
             route.kind === 'project' && activeProject
               ? activeProject.workspaceId ?? null
