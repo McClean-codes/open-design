@@ -12917,7 +12917,10 @@ export async function startServer({
         id: projectId,
         name: projectName,
         skillId: routineSkillId,
-        designSystemId: appConfig.designSystemId ?? null,
+        // A background routine has no live request authority from which to
+        // prove an ambient app default. Persist no brand for a new project;
+        // reused projects carry their own already-persisted selection.
+        designSystemId: null,
         pendingPrompt: null,
         metadata: {
           kind: 'other',
@@ -12989,6 +12992,21 @@ export async function startServer({
     const resolveRoutinePluginSnapshot = async () => {
       if (!primaryPluginId || resolvedRoutineSnapshot) return;
       const routineProjectBinding = getWorkspaceProjectByProjectId(db, projectId);
+      const routinePlugin = await getWorkspacePluginForRequest(
+        db,
+        primaryPluginId,
+        routineProjectBinding?.workspaceId
+          ? String(routineProjectBinding.workspaceId)
+          : null,
+        typeof routineProjectBinding?.createdByWorkspaceMemberId === 'string'
+          ? routineProjectBinding.createdByWorkspaceMemberId
+          : null,
+      );
+      if (!routinePlugin) {
+        throw new Error(
+          `Automation plugin ${primaryPluginId} is not visible to the persisted project owner`,
+        );
+      }
       const registry = await loadPluginRegistryView(
         routineProjectBinding?.workspaceId
           ? {
@@ -13003,6 +13021,15 @@ export async function startServer({
       const projectSnapshotBefore = routine.target.mode === 'reuse'
         ? getProject(db, routine.target.projectId)?.appliedPluginSnapshotId ?? null
         : null;
+      const persistedDesignSystemId = getProject(db, projectId)?.designSystemId ?? null;
+      if (
+        persistedDesignSystemId
+        && !registry.designSystems.some((system) => system.id === persistedDesignSystemId)
+      ) {
+        throw new Error(
+          `Automation design system ${persistedDesignSystemId} is not visible to the persisted project owner`,
+        );
+      }
       let resolved;
       try {
         resolved = resolvePluginSnapshot({
@@ -13015,8 +13042,8 @@ export async function startServer({
           conversationId,
           registry,
           activeProjectDesignSystem:
-            typeof appConfig.designSystemId === 'string' && appConfig.designSystemId.length > 0
-              ? { id: appConfig.designSystemId }
+            typeof persistedDesignSystemId === 'string' && persistedDesignSystemId.length > 0
+              ? { id: persistedDesignSystemId }
               : undefined,
         });
       } catch (resolverError) {
@@ -13106,6 +13133,7 @@ export async function startServer({
       // been accepted and preparation has completed, so failed setup does not
       // surface phantom conversations (#1361).
       if (conversationCreatedEvent) emitProjectEvent(projectId, conversationCreatedEvent);
+      const persistedDesignSystemId = getProject(db, projectId)?.designSystemId ?? null;
       design.runs.start(run, () => startChatRun({
         agentId,
         projectId,
@@ -13113,7 +13141,7 @@ export async function startServer({
         assistantMessageId: run.assistantMessageId,
         clientRequestId: run.clientRequestId,
         skillId: routineSkillId,
-        designSystemId: appConfig.designSystemId ?? null,
+        designSystemId: persistedDesignSystemId,
         context: routineContext,
         model: modelPrefs.model ?? null,
         reasoning: modelPrefs.reasoning ?? null,

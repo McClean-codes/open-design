@@ -625,6 +625,86 @@ describe('POST /api/runs — workspace mutation gate', () => {
     ).get() as { count: number }).count).toBe(beforeSnapshotCount);
   });
 
+  it('authorizes the final run plugin before loading the scoped registry', async () => {
+    const calls: string[] = [];
+    const baseUrl = await startServer({
+      seedImplicitScenarioPlugin: true,
+      loadPluginRegistryView: async () => {
+        calls.push('registry');
+        return {};
+      },
+      authorizePluginRequest: async () => {
+        calls.push('plugin');
+        return true;
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: PERSONAL_PROJECT,
+        agentId: 'claude',
+        pluginId: 'example-web-prototype',
+        message: 'authorize before reading the registry',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(calls).toEqual(['plugin', 'registry']);
+  });
+
+  it('adopts an exact historical project scope before authorizing its chat plugin', async () => {
+    const calls: string[] = [];
+    const baseUrl = await startServer({
+      isAmrSignedIn: () => true,
+      verifyWorkspaceRequestAuthority: async () => {
+        calls.push('adoption');
+        return {
+          ok: true,
+          context: workspaceContextFromDirectoryItem({
+            workspaceId: WORKSPACE_ID,
+            workspaceName: WORKSPACE_ID,
+            workspaceType: 'personal',
+            workspaceMemberId: OWNER_MEMBER_ID,
+            role: 'owner',
+            memberStatus: 'active',
+            lifecycleState: 'active',
+          }),
+        };
+      },
+      authorizePluginRequest: async () => {
+        calls.push('plugin');
+        return true;
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: UNBOUND_PROJECT,
+        agentId: 'amr',
+        pluginId: 'explicit-plugin',
+        message: 'adopt before plugin lookup',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(calls).toEqual(['adoption', 'plugin']);
+    expect(getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT))
+      .toMatchObject({
+        workspaceId: WORKSPACE_ID,
+        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
+      });
+  });
+
   it('still allows a headerless run creation with no projectId at all (scratch / non-project usage)', async () => {
     const baseUrl = await startServer();
     const resp = await fetch(`${baseUrl}/api/runs`, {

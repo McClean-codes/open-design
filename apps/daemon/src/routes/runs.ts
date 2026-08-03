@@ -1312,26 +1312,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     let resolvedSnapshot = null;
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
-      let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
-      try {
-        const projectBinding = ctx.projectStore?.getWorkspaceProjectByProjectId(
-          db,
-          requestBody.projectId,
-        );
-        registryView = await loadPluginRegistryView(
-          projectBinding?.workspaceId
-            ? {
-                workspaceId: String(projectBinding.workspaceId),
-                workspaceMemberId:
-                  typeof projectBinding.createdByWorkspaceMemberId === 'string'
-                    ? projectBinding.createdByWorkspaceMemberId
-                    : null,
-              }
-            : undefined,
-        );
-      } catch (err) {
-        return res.status(500).json({ error: String(err) });
-      }
       const explicitPlugin =
         requestBody.pluginId || requestBody.appliedPluginSnapshotId;
       let runResolveBody: JsonRecord = requestBody;
@@ -1362,6 +1342,26 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           runResolveBody.pluginId,
         )
       ) return;
+      let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
+      try {
+        const projectBinding = ctx.projectStore?.getWorkspaceProjectByProjectId(
+          db,
+          requestBody.projectId,
+        );
+        registryView = await loadPluginRegistryView(
+          projectBinding?.workspaceId
+            ? {
+                workspaceId: String(projectBinding.workspaceId),
+                workspaceMemberId:
+                  typeof projectBinding.createdByWorkspaceMemberId === 'string'
+                    ? projectBinding.createdByWorkspaceMemberId
+                    : null,
+              }
+            : undefined,
+        );
+      } catch (err) {
+        return res.status(500).json({ error: String(err) });
+      }
       const resolved = resolvePluginSnapshot({
         db,
         body: runResolveBody,
@@ -2859,16 +2859,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         byokInputError,
       );
     }
-    if (
-      typeof requestBody.pluginId === 'string'
-      && requestBody.pluginId.length > 0
-      && ctx.plugins.authorizePluginRequest
-      && !await ctx.plugins.authorizePluginRequest(
-        req,
-        res,
-        requestBody.pluginId,
-      )
-    ) return;
     const meta: RunCreateMeta = {
       ...withoutSensitiveRunInput(requestBody),
       mediaExecution: mediaExecution.policy,
@@ -2887,6 +2877,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       if (!preparedWorkspaceScope.ok) return;
       meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
+    if (
+      typeof requestBody.pluginId === 'string'
+      && requestBody.pluginId.length > 0
+      && ctx.plugins.authorizePluginRequest
+      && !await ctx.plugins.authorizePluginRequest(
+        req,
+        res,
+        requestBody.pluginId,
+      )
+    ) return;
     if (
       typeof meta.projectId === 'string'
       && meta.projectId
