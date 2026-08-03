@@ -1360,6 +1360,66 @@ describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
     expect(fetchMock).toHaveBeenCalledTimes(5);
   });
 
+  it('invalidates every cached Workspace project view after a successful patch', async () => {
+    const context = teamWorkspaceContext({
+      workspaceId: 'ws-patch-cache-invalidation',
+      workspaceMemberId: 'wm-patch-cache-invalidation',
+    });
+    const reads = new Map<string, number>();
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), 'http://d.local');
+      if (init?.method === 'PATCH') {
+        return Response.json({ project: { id: 'p1', name: 'After rename' } });
+      }
+      const view = url.searchParams.get('view') ?? 'unknown';
+      const read = (reads.get(view) ?? 0) + 1;
+      reads.set(view, read);
+      return Response.json({
+        projects: [{
+          id: 'p1',
+          project: { id: 'p1', name: read === 1 ? 'Before rename' : 'After rename' },
+        }],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    for (const view of ['all', 'recent', 'drafts', 'team'] as const) {
+      await listWorkspaceProjectSummaries({ context, workspaceView: view });
+    }
+    await expect(patchProject('p1', { name: 'After rename' }, context))
+      .resolves.toMatchObject({ id: 'p1', name: 'After rename' });
+    for (const view of ['all', 'recent', 'drafts', 'team'] as const) {
+      await expect(listWorkspaceProjectSummaries({ context, workspaceView: view }))
+        .resolves.toMatchObject([{ project: { id: 'p1', name: 'After rename' } }]);
+    }
+
+    expect(reads).toEqual(new Map([
+      ['all', 2],
+      ['recent', 2],
+      ['drafts', 2],
+      ['team', 2],
+    ]));
+  });
+
+  it('invalidates the unscoped project list after a successful patch', async () => {
+    let listReads = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input, init) => {
+      if (init?.method === 'PATCH') {
+        return Response.json({ project: { id: 'p1', name: 'After rename' } });
+      }
+      listReads += 1;
+      return Response.json({
+        projects: [{ id: 'p1', name: listReads === 1 ? 'Before rename' : 'After rename' }],
+      });
+    }));
+
+    await expect(listProjects()).resolves.toMatchObject([{ name: 'Before rename' }]);
+    await expect(patchProject('p1', { name: 'After rename' }))
+      .resolves.toMatchObject({ id: 'p1', name: 'After rename' });
+    await expect(listProjects()).resolves.toMatchObject([{ name: 'After rename' }]);
+    expect(listReads).toBe(2);
+  });
+
   it('invalidates display snapshots only for the current account generation', () => {
     const context = teamWorkspaceContext({
       workspaceId: 'ws-external-catalog-invalidation',

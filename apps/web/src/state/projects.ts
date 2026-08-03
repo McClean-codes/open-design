@@ -772,6 +772,18 @@ export async function patchProject(
     });
     if (!resp.ok) return null;
     const json = (await resp.json()) as { project: Project };
+    // Any successful project patch can change fields rendered by the project
+    // lists (name, metadata, updatedAt, bindings displayed on cards). A list
+    // read started immediately after this write must not reuse the settled
+    // pre-write value from coalescedGet's one-second burst window.
+    if (workspaceContext) {
+      invalidateWorkspaceProjectLists(
+        workspaceContext,
+        currentWorkspaceAccountGeneration(),
+      );
+    } else {
+      evictCoalescedGet('local-projects');
+    }
     return json.project;
   } catch {
     return null;
