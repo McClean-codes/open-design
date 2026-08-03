@@ -35,7 +35,10 @@ import type { IntegrationTab } from './components/IntegrationsView';
 import { MarketplaceView } from './components/MarketplaceView';
 import { PluginDetailView } from './components/PluginDetailView';
 import type { CreateInput, ImportClaudeDesignOutcome } from './components/NewProjectPanel';
-import { MemoryToast } from './components/MemoryToast';
+import {
+  MemoryToast,
+  memoryToastSubscriptionMode,
+} from './components/MemoryToast';
 import { Toast } from './components/Toast';
 import { CenteredLoader } from './components/Loading';
 import { PetOverlay, type PetTaskCenter } from './components/pet/PetOverlay';
@@ -935,6 +938,16 @@ function AppInner() {
     queued: [],
     recent: [],
   });
+  const [projectRunActivity, setProjectRunActivity] = useState<{
+    projectId: string | null;
+    active: boolean;
+  }>({ projectId: null, active: false });
+  const handleProjectRunActivityChange = useCallback(
+    (projectId: string, active: boolean) => {
+      setProjectRunActivity({ projectId, active });
+    },
+    [],
+  );
   const pendingLocalProjectIdsRef = useRef<Set<string>>(new Set());
   const pendingLocalProjectScopeRef = useRef(projectListScopeKey(workspaceContext));
   const currentProjectListScope = projectListScopeKey(workspaceContext);
@@ -4240,6 +4253,7 @@ function AppInner() {
           onCreateProjectFromDesignSystem={handleCreateProjectFromDesignSystem}
           onCreateDesignSystemFromProject={handleCreateDesignSystemFromProject}
           onDuplicateProject={handleDuplicateProject}
+          onRunActivityChange={handleProjectRunActivityChange}
         />
       );
     }
@@ -4403,7 +4417,22 @@ function AppInner() {
         renderSettingsSurface('modal')
       ) : null}
       </AnimatePresence>
-      <MemoryToast onOpenMemory={() => openSettings('memory')} />
+      <MemoryToast
+        onOpenMemory={() => openSettings('memory')}
+        subscriptionMode={memoryToastSubscriptionMode({
+          routeKind: route.kind,
+          projectRunActive:
+            route.kind === 'project'
+            && projectRunActivity.projectId === route.projectId
+            && projectRunActivity.active,
+          memorySurfaceOpen:
+            settingsInitialSection === 'memory'
+            && (
+              settingsOpen
+              || (route.kind === 'home' && route.view === 'settings')
+            ),
+        })}
+      />
       {workingDirError ? (
         <Toast
           message={workingDirError}

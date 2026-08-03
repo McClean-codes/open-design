@@ -596,6 +596,9 @@ interface Props {
     sourceProjectId: string,
     input?: { name?: string },
   ) => Promise<void> | void;
+  /** Lets the shell spend the optional memory-notification SSE slot only while
+   * this project can produce a post-run extraction. */
+  onRunActivityChange?: (projectId: string, active: boolean) => void;
 }
 
 interface QueuedChatSend {
@@ -1654,6 +1657,7 @@ export function ProjectView({
   onCreateProjectFromDesignSystem,
   onCreateDesignSystemFromProject,
   onDuplicateProject,
+  onRunActivityChange,
 }: Props) {
   const { locale, t } = useI18n();
   const amrAuthRetryMountIdRef = useRef<string | null>(null);
@@ -2428,6 +2432,13 @@ export function ProjectView({
     () => messages.some((m) => m.role === 'assistant' && isActiveRunStatus(m.runStatus)),
     [messages],
   );
+  const memoryExtractionRunActive = currentConversationHasActiveRun || streaming;
+  useEffect(() => {
+    onRunActivityChange?.(project.id, memoryExtractionRunActive);
+  }, [memoryExtractionRunActive, onRunActivityChange, project.id]);
+  useEffect(() => () => {
+    onRunActivityChange?.(project.id, false);
+  }, [onRunActivityChange, project.id]);
   const currentConversationHasRecoverableArtifact = useMemo(
     () => messages.some((message) => hasRecoverableArtifactMessage(message)),
     [messages],
