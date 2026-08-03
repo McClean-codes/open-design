@@ -2064,7 +2064,7 @@ describe('ALL /api/integrations/vela/api-proxy/*', () => {
       return upstream;
     }) as typeof https.request);
     const daemonUrl = new URL(baseUrl);
-    const rawGet = (pathName: string, workspaceHeaders?: string[]) =>
+    const rawGet = (pathName: string, headers?: http.OutgoingHttpHeaders) =>
       new Promise<{ status: number; body: unknown }>((resolve, reject) => {
         const request = http.request(
           {
@@ -2072,9 +2072,7 @@ describe('ALL /api/integrations/vela/api-proxy/*', () => {
             port: daemonUrl.port,
             method: 'GET',
             path: pathName,
-            headers: workspaceHeaders === undefined
-              ? undefined
-              : { 'x-vela-workspace-id': workspaceHeaders },
+            headers,
           },
           (response) => {
             const chunks: Buffer[] = [];
@@ -2099,16 +2097,27 @@ describe('ALL /api/integrations/vela/api-proxy/*', () => {
       );
       const invalid = await rawGet(
         '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
-        ['workspace/escape'],
+        { 'x-vela-workspace-id': ['workspace/escape'] },
       );
       const duplicate = await rawGet(
         '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
-        ['workspace-a', 'workspace-b'],
+        { 'x-vela-workspace-id': ['workspace-a', 'workspace-b'] },
+      );
+      const connectionNominated = await rawGet(
+        '/api/integrations/vela/api-proxy/api/v1/wallet/balance',
+        {
+          connection: 'x-vela-workspace-id',
+          'x-vela-workspace-id': 'workspace-team',
+        },
       );
 
       expect(escaped).toEqual({ status: 404, body: { error: 'unknown_amr_api_proxy_path' } });
       expect(invalid).toEqual({ status: 400, body: { error: 'invalid_workspace_id' } });
       expect(duplicate).toEqual({ status: 400, body: { error: 'invalid_workspace_id' } });
+      expect(connectionNominated).toEqual({
+        status: 400,
+        body: { error: 'invalid_workspace_id' },
+      });
       expect(upstreamRequestCount).toBe(0);
     } finally {
       requestSpy.mockRestore();

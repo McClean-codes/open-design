@@ -265,10 +265,14 @@ function proxyAmrApiRequest(req: Request, res: Response): void {
     res.status(400).json({ error: 'invalid_workspace_id' });
     return;
   }
+  const requestConnectionTokens = connectionHeaderTokens(req.headers.connection);
+  if (workspaceId !== undefined && requestConnectionTokens.has('x-vela-workspace-id')) {
+    res.status(400).json({ error: 'invalid_workspace_id' });
+    return;
+  }
   const body = velaProxyRequestBody(req);
   const streamBody = shouldStreamVelaProxyRequest(req, body);
   const headers: Record<string, string | string[]> = {};
-  const requestConnectionTokens = connectionHeaderTokens(req.headers.connection);
   for (const [key, value] of Object.entries(req.headers)) {
     const lower = key.toLowerCase();
     if (lower === 'host' || isProxyHopByHopHeader(lower, requestConnectionTokens)) {
