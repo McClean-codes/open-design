@@ -2772,8 +2772,24 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
 
   app.get('/api/workspaces/:workspaceId/projects', async (req, res) => {
     try {
-      const ctx = workspaceProjectContext(req, req.params.workspaceId);
-      if (!ctx) return sendMissingWorkspaceContext(res);
+      const authoritativeCtx = await authoritativeWorkspaceProjectContext(
+        req,
+        res,
+        req.params.workspaceId,
+      );
+      if (!authoritativeCtx) return;
+      const assertedCtx = workspaceProjectContextFromRequest(req);
+      const ctx = assertedCtx && assertedCtx !== 'missing'
+        ? {
+            ...authoritativeCtx,
+            // Request capability flags are UI ceilings only: they may hide an
+            // action, but never elevate directory-backed authority.
+            canShareProjects:
+              authoritativeCtx.canShareProjects && assertedCtx.canShareProjects,
+            canWriteSyncedFiles:
+              authoritativeCtx.canWriteSyncedFiles && assertedCtx.canWriteSyncedFiles,
+          }
+        : authoritativeCtx;
       if (ctx.memberStatus === 'removed') {
         /** @type {import('@open-design/contracts').WorkspaceProjectsResponse} */
         const body = { projects: [] };

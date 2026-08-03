@@ -108,6 +108,29 @@ describe('workspace project routes', () => {
     return project;
   }
 
+  it('rejects a project list when the route Workspace conflicts with the explicit request scope', async () => {
+    const suffix = Date.now();
+    const workspaceA = `${workspaceId}-route-a-${suffix}`;
+    const workspaceB = `${workspaceId}-header-b-${suffix}`;
+    const projectId = `workspace-route-scope-${suffix}`;
+    await createProjectInWorkspace(
+      projectId,
+      'Workspace route scope fixture',
+      'member-route-a',
+      { 'x-od-workspace-id': workspaceA },
+    );
+
+    const response = await fetch(
+      `${baseUrl}/api/workspaces/${workspaceA}/projects?view=all`,
+      { headers: workspaceHeaders(workspaceB, 'member-header-b') },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'WORKSPACE_ACCESS_DENIED' },
+    });
+  });
+
   it('projects legacy rows into a workspace list without assigning ownership to the reader', async () => {
     const projectId = `workspace-list-${Date.now()}`;
     await createProject(projectId, 'Workspace list fixture');
