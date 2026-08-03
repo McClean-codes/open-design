@@ -41,6 +41,7 @@ import {
   listPreviewComments,
   listProjectPreviewComments,
   openDatabase,
+  repairTeamProjectCommentAnchorConversations,
   reorderPreviewComment,
   updatePreviewCommentAnchor,
   updatePreviewCommentStatus,
@@ -210,6 +211,49 @@ async function startServer(
 }
 
 describe('project comments — workspace mutation gate', () => {
+  it('lets a Member comment through the repaired anchor of a historical zero-conversation mirror', async () => {
+    const baseUrl = await startServer({
+      resolveWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+    });
+    database!.prepare('DELETE FROM conversations WHERE project_id = ?').run(TEAM_MIRROR_PROJECT);
+    expect(getConversation(database!, 'conv-team-mirror')).toBeNull();
+
+    expect(repairTeamProjectCommentAnchorConversations(database!, 10)).toMatchObject({
+      created: 1,
+    });
+    const anchor = database!
+      .prepare('SELECT id FROM conversations WHERE project_id = ?')
+      .get(TEAM_MIRROR_PROJECT) as { id: string };
+    expect(anchor.id).toMatch(/^comment-anchor-/);
+
+    const response = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/${anchor.id}/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          target: COMMENT_TARGET,
+          note: 'Member comment through repaired anchor',
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(listProjectPreviewComments(database!, TEAM_MIRROR_PROJECT)).toEqual([
+      expect.objectContaining({
+        conversationId: anchor.id,
+        authorMemberId: OTHER_MEMBER_ID,
+        note: 'Member comment through repaired anchor',
+      }),
+    ]);
+  });
+
   it('includes a dirty relay pull in the first comments response', async () => {
     let releasePull!: () => void;
     const pullGate = new Promise<void>((resolve) => {

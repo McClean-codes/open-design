@@ -53,7 +53,10 @@ import { connectorService } from '../../connectors/service.js';
 import type { RouteDeps } from '../../server-context.js';
 import { listSkills } from '../../skills.js';
 import { isSafeId } from '../../projects.js';
-import { SYNC_KEEPS_UPDATED_AT } from '../../db.js';
+import {
+  ensureProjectCommentAnchorConversation,
+  SYNC_KEEPS_UPDATED_AT,
+} from '../../db.js';
 import {
   BUILT_IN_PROJECT_LOCATION_ID,
   allProjectLocations,
@@ -3127,6 +3130,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         restoreWorkspaceProjectRow(row);
         throw new TeamProjectSyncError(error);
       }
+      if (visibility === 'team') {
+        const ensureCommentAnchor = db.transaction(() => {
+          ensureProjectCommentAnchorConversation(db, project.id);
+        });
+        ensureCommentAnchor();
+      }
       const updatedRow = listWorkspaceProjects(db, ctx.workspaceId).find((item: any) => item.id === project.id);
       res.json({ project: normalizeWorkspaceProjectRow(updatedRow, ctx) });
     } catch (err: any) {
@@ -3186,6 +3195,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         });
         rollbackMany(previousRows.filter(Boolean));
         throw new TeamProjectSyncError(error);
+      }
+      if (visibility === 'team') {
+        const ensureCommentAnchors = db.transaction((ids: string[]) => {
+          for (const id of ids) ensureProjectCommentAnchorConversation(db, id);
+        });
+        ensureCommentAnchors(projectIds);
       }
       const updatedRows = listWorkspaceProjects(db, ctx.workspaceId);
       const projects = projectIds.map((id: string) => normalizeWorkspaceProjectRow(updatedRows.find((row: any) => row.id === id), ctx));

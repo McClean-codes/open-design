@@ -607,6 +607,7 @@ import {
   listWorkspaceProjectBindings,
   getTemplate,
   ensureWorkspaceProject,
+  ensureProjectCommentAnchorConversation,
   ensureWorkspaceResource,
   getWorkspaceResource,
   getWorkspaceResourceByResourceId,
@@ -643,6 +644,7 @@ import {
   deleteRoutine as dbDeleteRoutine,
   openDatabase,
   reorderPreviewComment,
+  repairTeamProjectCommentAnchorConversations,
   setTabs,
   SYNC_KEEPS_UPDATED_AT,
   updateConversation,
@@ -2641,6 +2643,12 @@ export async function startServer({
     next();
   });
   const db = openDatabase(PROJECT_ROOT, { dataDir: RUNTIME_DATA_DIR });
+  const commentAnchorRepair = repairTeamProjectCommentAnchorConversations(db);
+  if (commentAnchorRepair.created > 0) {
+    console.warn(
+      `[comments] repaired ${commentAnchorRepair.created} historical Team project comment anchor(s)`,
+    );
+  }
   // Restore paired browser-extension origins into the in-memory allowlist the
   // /api origin middleware above consults, so a paired clipper survives daemon
   // restarts without re-pairing.
@@ -3220,12 +3228,18 @@ export async function startServer({
           cloudTombstonedAt: Date.now(),
           syncState: 'local_only',
         };
-    // `rebindWorkspaceProject`, not `updateWorkspaceProject`: the row this
-    // event is about can predate the share — a personal draft the user made
-    // before ever joining the team it just got shared into — so it sits under
-    // an unrelated, stale workspace_id. Asking for an update scoped to the
-    // NEW workspaceId would find nothing and silently never migrate it.
-    rebindWorkspaceProject(db, input.projectId, { ...patch, workspaceId });
+    const persist = db.transaction(() => {
+      // `rebindWorkspaceProject`, not `updateWorkspaceProject`: the row this
+      // event is about can predate the share — a personal draft the user made
+      // before ever joining the team it just got shared into — so it sits under
+      // an unrelated, stale workspace_id. Asking for an update scoped to the
+      // NEW workspaceId would find nothing and silently never migrate it.
+      rebindWorkspaceProject(db, input.projectId, { ...patch, workspaceId });
+      if (input.visibility === 'team') {
+        ensureProjectCommentAnchorConversation(db, input.projectId);
+      }
+    });
+    persist();
   }
   /**
    * The recvqzaDvUU6B3 fresh-install wipe guard's one db-backed predicate:

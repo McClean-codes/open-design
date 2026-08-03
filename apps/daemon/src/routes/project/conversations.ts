@@ -7,6 +7,7 @@ import type { BoundWorkspaceResourceMutationGate } from '../../collab/workspace-
 import type { AuthorizeProjectRequest } from '../../collab/project-request-authority.js';
 import { registerProjectCommentRoutes } from './comments.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
+import { deleteConversationAndRepairTeamCommentAnchor } from '../../db.js';
 
 export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'telemetry' | 'appConfig' | 'agents'> {
   /**
@@ -46,7 +47,6 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     getConversation,
     listConversations,
     updateConversation,
-    deleteConversation,
     listMessages,
     upsertMessage,
   } = ctx.conversations;
@@ -202,7 +202,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
     // Stop any live agent run for this conversation before the row is gone,
     // otherwise the CLI subprocess is orphaned and keeps billing (#5468).
     await cancelRunsOwnedBy(design.runs, { conversationId: req.params.cid });
-    deleteConversation(db, req.params.cid);
+    deleteConversationAndRepairTeamCommentAnchor(db, req.params.id, req.params.cid);
     res.json({ ok: true });
   });
 

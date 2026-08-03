@@ -42,6 +42,7 @@ import {
   getWorkspaceProject,
   getWorkspaceProjectByProjectId,
   insertProject,
+  listConversations,
   listWorkspaceProjectBindings,
   listWorkspaceProjects,
   openDatabase,
@@ -1110,6 +1111,7 @@ describe('project move to personal on an unbound (never-locally-shared) project'
     registerProjectRoutes(app, buildDeps({ teamProjectCatalog }));
     const routeServer = await listen(app);
     try {
+      expect(listConversations(db, projectId)).toEqual([]);
       const resp = await fetch(
         `${routeServer.url}/api/workspaces/${TEAM_WORKSPACE_ID}/projects/${projectId}/move`,
         {
@@ -1121,6 +1123,13 @@ describe('project move to personal on an unbound (never-locally-shared) project'
       const body = await resp.json() as any;
       expect(resp.status, `expected 200, got ${resp.status}: ${JSON.stringify(body)}`).toBe(200);
       expect(body.project).toMatchObject({ id: projectId, visibility: 'team' });
+      expect(listConversations(db, projectId)).toEqual([
+        expect.objectContaining({
+          projectId,
+          title: null,
+          sessionMode: 'design',
+        }),
+      ]);
       // The reconciliation guard is scoped to the 'personal' direction only —
       // it must not even consult the catalog for a 'team' request.
       expect(teamProjectCatalog.list).not.toHaveBeenCalled();
