@@ -47,6 +47,7 @@ import { buildPetTaskCenter } from './components/pet/taskCenter';
 import { migrateCustomPetAtlas } from './components/pet/pets';
 import {
   ProjectView,
+  type ProjectRenameFenceToken,
   type ProjectNameAuthorityResolution,
 } from './components/ProjectView';
 import { AmrArtifactUpgradeGate } from './components/AmrArtifactUpgradeGate';
@@ -350,6 +351,21 @@ type ProjectListRequest = {
   scopeKey: string;
   displayKey: string;
   workspaceView: WorkspaceProjectListView | undefined;
+};
+
+type PendingProjectNameProjection = {
+  accountGeneration: number;
+  scopeKey: string;
+  project: Project;
+  mutationVersion: number;
+  confirmed: boolean;
+};
+
+type QueuedProjectRenameState = {
+  generation: number;
+  confirmed: Project;
+  pending: number;
+  tail: Promise<void>;
 };
 
 /**
@@ -1078,7 +1094,10 @@ function AppInner() {
   }
   const locallyDeletedProjectIdsRef = useRef<Map<string, number>>(new Map());
   const projectListMutationVersionRef = useRef(0);
-  const projectRenameGenerationRef = useRef<Map<string, number>>(new Map());
+  const projectRenameStatesRef = useRef<Map<string, QueuedProjectRenameState>>(new Map());
+  const pendingProjectNameProjectionsRef = useRef<Map<string, PendingProjectNameProjection>>(
+    new Map(),
+  );
   const projectListRequestGenerationRef = useRef(0);
   const latestAppliedProjectListGenerationRef = useRef(0);
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
@@ -1316,14 +1335,41 @@ function AppInner() {
     ) {
       return false;
     }
+    const projectedList = list.map((project) => {
+      const key = JSON.stringify([
+        request.accountGeneration,
+        request.scopeKey,
+        project.id,
+      ]);
+      const pending = pendingProjectNameProjectionsRef.current.get(key);
+      if (!pending) return project;
+      if (
+        pending.confirmed
+        && request.mutationVersion >= pending.mutationVersion
+      ) {
+        // A request issued after the local mutation settled is authoritative,
+        // even when another tab has already committed a newer name. The fence
+        // only protects requests that were already in flight when the local
+        // optimistic rename began; keeping it past the first post-write read
+        // would permanently hide later remote renames.
+        pendingProjectNameProjectionsRef.current.delete(key);
+        return project;
+      }
+      return {
+        ...project,
+        name: pending.project.name,
+        metadata: pending.project.metadata,
+        updatedAt: Math.max(project.updatedAt, pending.project.updatedAt),
+      };
+    });
     const pendingLocalProjectIds = pendingLocalProjectIdsRef.current;
     const locallyDeletedProjectIds = locallyDeletedProjectIdsRef.current;
-    const fetchedIds = new Set(list.map((project) => project.id));
+    const fetchedIds = new Set(projectedList.map((project) => project.id));
     if (request.generation < latestAppliedProjectListGenerationRef.current) {
       const visibleList =
         locallyDeletedProjectIds.size > 0
-          ? list.filter((project) => !locallyDeletedProjectIds.has(project.id))
-          : list;
+          ? projectedList.filter((project) => !locallyDeletedProjectIds.has(project.id))
+          : projectedList;
       if (visibleList.length === 0) return false;
       const hydratableProjects = visibleList.filter(
         (project) =>
@@ -1375,8 +1421,8 @@ function AppInner() {
     const activeDeletedProjectIds = new Set(locallyDeletedProjectIds.keys());
     const visibleList =
       activeDeletedProjectIds.size > 0
-        ? list.filter((project) => !activeDeletedProjectIds.has(project.id))
-        : list;
+        ? projectedList.filter((project) => !activeDeletedProjectIds.has(project.id))
+        : projectedList;
     const visibleFetchedIds =
       activeDeletedProjectIds.size > 0
         ? new Set(visibleList.map((project) => project.id))
@@ -3551,8 +3597,34 @@ function AppInner() {
     const renameContext = workspaceContextRef.current;
     const renameAccountGeneration = currentWorkspaceAccountGeneration();
     const renameScopeKey = projectListScopeKey(renameContext);
-    const renameGeneration = (projectRenameGenerationRef.current.get(id) ?? 0) + 1;
-    projectRenameGenerationRef.current.set(id, renameGeneration);
+    const renameProjectionKey = JSON.stringify([
+      renameAccountGeneration,
+      renameScopeKey,
+      id,
+    ]);
+    let renameState = projectRenameStatesRef.current.get(renameProjectionKey);
+    if (!renameState || renameState.pending === 0) {
+      if (!previous) return;
+      renameState = {
+        generation: 0,
+        confirmed: previous,
+        pending: 0,
+        tail: Promise.resolve(),
+      };
+      projectRenameStatesRef.current.set(renameProjectionKey, renameState);
+    }
+    const renameGeneration = ++renameState.generation;
+    renameState.pending += 1;
+    projectListMutationVersionRef.current += 1;
+    const renameMutationVersion = projectListMutationVersionRef.current;
+    const optimistic = { ...(previous ?? renameState.confirmed), name: trimmed };
+    pendingProjectNameProjectionsRef.current.set(renameProjectionKey, {
+      accountGeneration: renameAccountGeneration,
+      scopeKey: renameScopeKey,
+      project: optimistic,
+      mutationVersion: renameMutationVersion,
+      confirmed: false,
+    });
     setProjects((curr) =>
       curr.map((p) => (p.id === id ? { ...p, name: trimmed } : p)),
     );
@@ -3564,60 +3636,78 @@ function AppInner() {
           project.id === id ? { ...project, name: trimmed } : project),
       });
     }
-    const persisted = await patchProject(id, { name: trimmed }, renameContext);
-    if (projectRenameGenerationRef.current.get(id) !== renameGeneration) return;
-    if (currentWorkspaceAccountGeneration() !== renameAccountGeneration) return;
-    if (projectListScopeKey(workspaceContextRef.current) !== renameScopeKey) return;
-    if (!persisted) {
-      if (previous) {
+    const runRename = async () => {
+      const persisted = await patchProject(id, { name: trimmed }, renameContext);
+      if (persisted) renameState.confirmed = persisted;
+      const isLatestQueuedRename =
+        projectRenameStatesRef.current.get(renameProjectionKey) === renameState
+        && renameState.generation === renameGeneration;
+      if (!isLatestQueuedRename) return;
+      const nextProject = persisted ?? renameState.confirmed;
+      const pendingProjection = pendingProjectNameProjectionsRef.current.get(renameProjectionKey);
+      if (pendingProjection?.mutationVersion === renameMutationVersion) {
+        pendingProjection.project = nextProject;
+        pendingProjection.confirmed = true;
+      }
+      if (renameContext) {
+        patchProjectDisplaySnapshots({
+          accountGeneration: renameAccountGeneration,
+          context: renameContext,
+          patch: (cachedProjects) => cachedProjects.map((project) =>
+            project.id === id && (persisted || project.name === trimmed)
+              ? {
+                  ...project,
+                  name: nextProject.name,
+                  metadata: nextProject.metadata,
+                  updatedAt: nextProject.updatedAt,
+                }
+              : project),
+        });
+      }
+      const isCurrentScope =
+        currentWorkspaceAccountGeneration() === renameAccountGeneration
+        && projectListScopeKey(workspaceContextRef.current) === renameScopeKey;
+      if (!isCurrentScope) return;
+      if (!persisted) {
         setProjects((current) => current.map((project) =>
           project.id === id && project.name === trimmed
             ? {
                 ...project,
-                name: previous.name,
-                metadata: previous.metadata,
+                name: nextProject.name,
+                metadata: nextProject.metadata,
+                updatedAt: nextProject.updatedAt,
               }
             : project
         ));
-        if (renameContext) {
-          patchProjectDisplaySnapshots({
-            accountGeneration: renameAccountGeneration,
-            context: renameContext,
-            patch: (cachedProjects) => cachedProjects.map((project) =>
-              project.id === id && project.name === trimmed
-                ? { ...project, name: previous.name, metadata: previous.metadata }
-                : project),
-          });
-        }
+        await refreshProjects();
+        return;
       }
-      return;
-    }
-    setProjects((current) => current.map((project) =>
-      project.id === id
-        ? {
-            ...project,
-            name: persisted.name,
-            metadata: persisted.metadata,
-            updatedAt: persisted.updatedAt,
-          }
-        : project
-    ));
-    if (renameContext) {
-      patchProjectDisplaySnapshots({
-        accountGeneration: renameAccountGeneration,
-        context: renameContext,
-        patch: (cachedProjects) => cachedProjects.map((project) =>
-          project.id === id
-            ? {
-                ...project,
-                name: persisted.name,
-                metadata: persisted.metadata,
-                updatedAt: persisted.updatedAt,
-              }
-            : project),
-      });
-    }
-    await refreshProjects();
+      setProjects((current) => current.map((project) =>
+        project.id === id
+          ? {
+              ...project,
+              name: persisted.name,
+              metadata: persisted.metadata,
+              updatedAt: persisted.updatedAt,
+            }
+          : project
+      ));
+      await refreshProjects();
+    };
+    const queued = renameState.tail.then(runRename, runRename);
+    renameState.tail = queued.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      renameState.pending -= 1;
+      if (
+        renameState.pending === 0
+        && projectRenameStatesRef.current.get(renameProjectionKey) === renameState
+      ) {
+        projectRenameStatesRef.current.delete(renameProjectionKey);
+      }
+    });
+    await queued;
   }, [refreshProjects]);
 
   // The project header back button is an escape hatch back to Home. Avoid
@@ -3732,6 +3822,45 @@ function AppInner() {
       });
     }
   }, [iframeKeepAlivePool]);
+
+  const handleProjectRenameStarted = useCallback((
+    optimistic: Project,
+  ): ProjectRenameFenceToken => {
+    const context = projectRouteWorkspaceContextRef.current;
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const scopeKey = projectListScopeKey(context);
+    projectListMutationVersionRef.current += 1;
+    const mutationVersion = projectListMutationVersionRef.current;
+    const key = JSON.stringify([accountGeneration, scopeKey, optimistic.id]);
+    pendingProjectNameProjectionsRef.current.set(
+      key,
+      {
+        accountGeneration,
+        scopeKey,
+        project: optimistic,
+        mutationVersion,
+        confirmed: false,
+      },
+    );
+    return {
+      accountGeneration,
+      scopeKey,
+      projectId: optimistic.id,
+      mutationVersion,
+    };
+  }, []);
+
+  const handleProjectRenameSettled = useCallback((
+    token: ProjectRenameFenceToken | null,
+    confirmed: Project,
+  ) => {
+    if (!token || token.projectId !== confirmed.id) return;
+    const key = JSON.stringify([token.accountGeneration, token.scopeKey, token.projectId]);
+    const pending = pendingProjectNameProjectionsRef.current.get(key);
+    if (!pending || pending.mutationVersion !== token.mutationVersion) return;
+    pending.project = confirmed;
+    pending.confirmed = true;
+  }, []);
 
   // ProjectView's prompt-context signature derives from SkillSummary /
   // DesignSystemSummary fields, so a body-only registry edit (same name,
@@ -4698,6 +4827,8 @@ function AppInner() {
           onClearPendingPrompt={handleClearPendingPrompt}
           onTouchProject={handleTouchProject}
           onProjectChange={handleProjectChange}
+          onProjectRenameStarted={handleProjectRenameStarted}
+          onProjectRenameSettled={handleProjectRenameSettled}
           onProjectsRefresh={refreshProjects}
           onDeleteProject={handleDeleteProject}
           onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}

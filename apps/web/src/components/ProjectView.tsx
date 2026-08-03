@@ -585,6 +585,11 @@ interface Props {
   onClearPendingPrompt: () => void;
   onTouchProject: () => void;
   onProjectChange: (next: Project) => void;
+  onProjectRenameStarted?: (optimistic: Project) => ProjectRenameFenceToken | null;
+  onProjectRenameSettled?: (
+    token: ProjectRenameFenceToken | null,
+    confirmed: Project,
+  ) => void;
   onProjectsRefresh: () => void;
   onDeleteProject?: (id: string) => Promise<boolean> | boolean;
   onChangeDefaultDesignSystem?: (designSystemId: string | null) => void;
@@ -602,6 +607,13 @@ interface Props {
    * this project can produce a post-run extraction. */
   onRunActivityChange?: (projectId: string, active: boolean) => void;
 }
+
+export type ProjectRenameFenceToken = Readonly<{
+  accountGeneration: number;
+  scopeKey: string;
+  projectId: string;
+  mutationVersion: number;
+}>;
 
 interface QueuedChatSend {
   id: string;
@@ -1687,6 +1699,8 @@ export function ProjectView({
   onClearPendingPrompt,
   onTouchProject,
   onProjectChange,
+  onProjectRenameStarted,
+  onProjectRenameSettled,
   onProjectsRefresh,
   onDeleteProject,
   onChangeDefaultDesignSystem,
@@ -8743,15 +8757,38 @@ export function ProjectView({
     ],
   );
 
-  const projectRenameGenerationRef = useRef(0);
+  const projectRenameStatesRef = useRef<Map<string, {
+    key: string;
+    generation: number;
+    confirmed: Project;
+    pending: number;
+    tail: Promise<void>;
+  }>>(new Map());
   const handleProjectRename = useCallback(
     (newName: string) => {
       const trimmed = newName.trim();
       if (!trimmed || trimmed === project.name) return;
-      const previous = project;
-      const renameGeneration = ++projectRenameGenerationRef.current;
+      const previousName = project.name;
       const renameContext = projectRunWorkspaceContextRef.current;
       const renameWorkspaceIdentity = workspaceIdentityCacheKey(renameContext);
+      const renameKey = JSON.stringify([
+        project.id,
+        project.workspaceId ?? null,
+        renameWorkspaceIdentity,
+      ]);
+      let renameState = projectRenameStatesRef.current.get(renameKey);
+      if (!renameState || renameState.pending === 0) {
+        renameState = {
+          key: renameKey,
+          generation: 0,
+          confirmed: project,
+          pending: 0,
+          tail: Promise.resolve(),
+        };
+        projectRenameStatesRef.current.set(renameKey, renameState);
+      }
+      const renameGeneration = ++renameState.generation;
+      renameState.pending += 1;
       const metadata = project.metadata
         ? { ...project.metadata, nameSource: 'user' as const }
         : undefined;
@@ -8761,47 +8798,83 @@ export function ProjectView({
         ...(metadata ? { metadata } : {}),
         updatedAt: Date.now(),
       };
+      const renameFenceToken = onProjectRenameStarted?.(updated) ?? null;
       onProjectChange(updated);
-      void (async () => {
+      const runRename = async () => {
         const persisted = await patchProject(project.id, {
           name: trimmed,
           ...(metadata ? { metadata } : {}),
         }, renameContext);
+        if (persisted) renameState.confirmed = persisted;
+        const isLatestQueuedRename =
+          projectRenameStatesRef.current.get(renameKey) !== renameState
+          ? false
+          : renameState.generation === renameGeneration;
+        if (!isLatestQueuedRename) return;
+        const settledProject = persisted ?? renameState.confirmed;
+        onProjectRenameSettled?.(renameFenceToken, settledProject);
         if (
-          projectRenameGenerationRef.current !== renameGeneration
-          || projectRef.current.id !== project.id
+          projectRef.current.id !== project.id
           || workspaceIdentityCacheKey(projectRunWorkspaceContextRef.current)
             !== renameWorkspaceIdentity
           || (
-            projectRef.current.name !== previous.name
+            projectRef.current.name !== previousName
             && projectRef.current.name !== trimmed
           )
         ) return;
         if (!persisted) {
           if (projectRef.current.name === trimmed) {
-            onProjectChange({
+            const rollback = {
               ...projectRef.current,
-              name: previous.name,
-              metadata: previous.metadata,
-            });
+              name: renameState.confirmed.name,
+              metadata: renameState.confirmed.metadata,
+              updatedAt: renameState.confirmed.updatedAt,
+            };
+            onProjectChange(rollback);
+            try {
+              await onProjectsRefresh();
+            } catch {
+              // The rollback is already projected locally. A later list read
+              // closes the stale-request fence if this refresh is unavailable.
+            }
           }
           return;
         }
-        onProjectChange({
+        const confirmed = {
           ...projectRef.current,
           name: persisted.name,
           metadata: persisted.metadata,
           updatedAt: persisted.updatedAt,
-        });
+        };
+        onProjectChange(confirmed);
         try {
           await onProjectsRefresh();
         } catch {
           // The rename is already persisted. Existing list retry/reconnect
           // paths will reconcile a transient projection refresh failure.
         }
-      })();
+      };
+      const queued = renameState.tail.then(runRename, runRename);
+      renameState.tail = queued.then(
+        () => undefined,
+        () => undefined,
+      ).finally(() => {
+        renameState.pending -= 1;
+        if (
+          renameState.pending === 0
+          && projectRenameStatesRef.current.get(renameKey) === renameState
+        ) {
+          projectRenameStatesRef.current.delete(renameKey);
+        }
+      });
     },
-    [onProjectChange, onProjectsRefresh, project],
+    [
+      onProjectChange,
+      onProjectRenameSettled,
+      onProjectRenameStarted,
+      onProjectsRefresh,
+      project,
+    ],
   );
 
   const activeConversationChatState = useMemo(

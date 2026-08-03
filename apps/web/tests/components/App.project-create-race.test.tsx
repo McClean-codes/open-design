@@ -9,7 +9,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { App } from '../../src/App';
 import { notifyAmrLoginStatusChanged } from '../../src/components/amrLoginPolling';
-import type { ProjectNameAuthorityResolution } from '../../src/components/ProjectView';
+import type {
+  ProjectNameAuthorityResolution,
+  ProjectRenameFenceToken,
+} from '../../src/components/ProjectView';
 import type { AgentInfo, AppConfig, Project } from '../../src/types';
 import {
   fetchComposioConfigFromDaemon,
@@ -65,6 +68,10 @@ const workspaceInvalidationHarness = vi.hoisted(() => ({
   handlers: [] as Array<Record<string, (payload: any) => void>>,
 }));
 
+const projectViewRenameFenceHarness = vi.hoisted(() => ({
+  token: null as ProjectRenameFenceToken | null,
+}));
+
 vi.mock('../../src/collab/workspace-events', () => ({
   useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
     workspaceInvalidationHarness.handlers.push(handlers);
@@ -79,6 +86,7 @@ vi.mock('../../src/components/EntryView', () => ({
     onDeleteProject,
     onImportFolderResponse,
     onOpenProject,
+    onRenameProject,
     onOpenSettings,
     onRefreshAgents,
     agents,
@@ -108,6 +116,7 @@ vi.mock('../../src/components/EntryView', () => ({
         workspaceMemberId: string | null;
       },
     ) => Promise<boolean> | boolean | void;
+    onRenameProject?: (id: string, name: string) => Promise<void> | void;
     onOpenSettings: () => void;
     onRefreshAgents: () => void | Promise<void>;
     agents: AgentInfo[];
@@ -209,6 +218,18 @@ vi.mock('../../src/components/EntryView', () => ({
       </button>
       <button
         type="button"
+        onClick={() => projects[0] && void onRenameProject?.(projects[0].id, 'Rename A')}
+      >
+        Rename first project A
+      </button>
+      <button
+        type="button"
+        onClick={() => projects[0] && void onRenameProject?.(projects[0].id, 'Rename B')}
+      >
+        Rename first project B
+      </button>
+      <button
+        type="button"
         onClick={() =>
           void onOpenProject('project-shared', undefined, {
             authoritative: true,
@@ -302,6 +323,8 @@ vi.mock('../../src/components/ProjectView', () => ({
     onDuplicateProject,
     onProjectsRefresh,
     onProjectChange,
+    onProjectRenameStarted,
+    onProjectRenameSettled,
     project,
     routeConversationId,
     authoritativeProjectName,
@@ -326,6 +349,11 @@ vi.mock('../../src/components/ProjectView', () => ({
     ) => Promise<void> | void;
     onProjectsRefresh: () => Promise<void>;
     onProjectChange: (project: Project) => void;
+    onProjectRenameStarted?: (project: Project) => ProjectRenameFenceToken | null;
+    onProjectRenameSettled?: (
+      token: ProjectRenameFenceToken | null,
+      project: Project,
+    ) => void;
     project: Project;
     routeConversationId?: string | null;
     authoritativeProjectName?: string;
@@ -386,13 +414,33 @@ vi.mock('../../src/components/ProjectView', () => ({
       </button>
       <button
         type="button"
+        onClick={() => {
+          const optimistic = {
+            ...project,
+            name: 'After local rename',
+            updatedAt: project.updatedAt + 1,
+          };
+          projectViewRenameFenceHarness.token = onProjectRenameStarted?.(optimistic) ?? null;
+          onProjectChange(optimistic);
+        }}
+      >
+        Rename current project
+      </button>
+      <button
+        type="button"
         onClick={() => onProjectChange({
           ...project,
-          name: 'After local rename',
+          name: 'Remote rename',
           updatedAt: project.updatedAt + 1,
         })}
       >
-        Rename current project
+        Apply remote project rename
+      </button>
+      <button
+        type="button"
+        onClick={() => onProjectRenameSettled?.(projectViewRenameFenceHarness.token, project)}
+      >
+        Settle current project rename
       </button>
       <button
         type="button"
@@ -687,6 +735,7 @@ describe('App project creation routing', () => {
     resetTeamProjectsCache();
     resetProjectDisplaySnapshots();
     workspaceInvalidationHarness.handlers.length = 0;
+    projectViewRenameFenceHarness.token = null;
     window.history.replaceState(null, '', '/');
     mockedDaemonIsLive.mockResolvedValue(true);
     mockedFetchAgentsStream.mockResolvedValue([]);
@@ -2666,6 +2715,174 @@ describe('App project creation routing', () => {
       );
     });
   });
+
+  it('does not mistake an authoritative remote title update for a local rename fence', async () => {
+    mockedListProjects
+      .mockResolvedValueOnce([existingProject])
+      .mockResolvedValue([{ ...existingProject, name: 'Newer server authority' }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Apply remote project rename' }));
+    expect(screen.getByTestId('project-title').textContent).toBe('Remote rename');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh projects' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-title').textContent).toBe('Newer server authority');
+      expect(screen.getByTestId('workspace-tab-name-project-existing').textContent).toBe(
+        'Newer server authority',
+      );
+    });
+  });
+
+  it('releases a settled local rename fence to a newer authoritative server title', async () => {
+    mockedListProjects
+      .mockResolvedValueOnce([existingProject])
+      .mockResolvedValue([{ ...existingProject, name: 'Other tab rename' }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename current project' }));
+    expect(screen.getByTestId('project-title').textContent).toBe('After local rename');
+    fireEvent.click(screen.getByRole('button', { name: 'Settle current project rename' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh projects' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-title').textContent).toBe('Other tab rename');
+      expect(screen.getByTestId('workspace-tab-name-project-existing').textContent).toBe(
+        'Other tab rename',
+      );
+    });
+  });
+
+  it('does not let a pre-rename list response roll back the project title or tab', async () => {
+    const staleList = deferred<Project[]>();
+    mockedListProjects
+      .mockResolvedValueOnce([existingProject])
+      .mockImplementationOnce(() => staleList.promise)
+      .mockResolvedValue([{ ...existingProject, name: 'After local rename' }]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+    fireEvent.click(screen.getByRole('button', { name: 'Rename current project' }));
+    expect(screen.getByTestId('project-title').textContent).toBe('After local rename');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh projects' }));
+    await waitFor(() => expect(mockedListProjects).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      staleList.resolve([existingProject]);
+      await staleList.promise;
+    });
+
+    expect(screen.getByTestId('project-title').textContent).toBe('After local rename');
+    expect(screen.getByTestId('workspace-tab-name-project-existing').textContent).toBe(
+      'After local rename',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh projects' }));
+    await waitFor(() => expect(mockedListProjects).toHaveBeenCalledTimes(3));
+    fireEvent.click(screen.getByRole('button', { name: 'Back to projects' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-project-project-existing').textContent).toContain(
+        'After local rename',
+      );
+    });
+  });
+
+  it('serializes list renames and rolls repeated failures back to the confirmed name', async () => {
+    const firstPatch = deferred<Project | null>();
+    const secondPatch = deferred<Project | null>();
+    mockedListProjects.mockResolvedValue([existingProject]);
+    mockedPatchProject
+      .mockImplementationOnce(() => firstPatch.promise)
+      .mockImplementationOnce(() => secondPatch.promise);
+
+    render(<App />);
+    await screen.findByTestId('entry-project-project-existing');
+    fireEvent.click(screen.getByRole('button', { name: 'Rename first project A' }));
+    await waitFor(() => expect(mockedPatchProject).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename first project B' }));
+    await act(async () => Promise.resolve());
+    expect(mockedPatchProject).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('entry-project-project-existing').textContent).toContain('Rename B');
+
+    await act(async () => {
+      firstPatch.resolve(null);
+      await firstPatch.promise;
+    });
+    await waitFor(() => expect(mockedPatchProject).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('entry-project-project-existing').textContent).toContain('Rename B');
+
+    await act(async () => {
+      secondPatch.resolve(null);
+      await secondPatch.promise;
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-project-project-existing').textContent).toContain(
+        'Existing project',
+      );
+    });
+  });
+
+  it.each([
+    [true, 'Newer Workspace A authority'],
+    [false, 'Workspace A project'],
+  ])(
+    'settles a captured Workspace rename fence after switching away (success=%s)',
+    async (succeeds, expectedName) => {
+      const workspaceA = workspaceContext('ws-a', 'wm-a');
+      const workspaceB = workspaceContext('ws-b', 'wm-b');
+      const projectA: Project = {
+        ...existingProject,
+        id: 'project-a',
+        name: 'Workspace A project',
+        workspaceId: workspaceA.workspaceId,
+      };
+      const projectB: Project = {
+        ...existingProject,
+        id: 'project-b',
+        name: 'Workspace B project',
+        workspaceId: workspaceB.workspaceId,
+      };
+      const patch = deferred<Project | null>();
+      let workspaceAAuthority = projectA;
+      mockedPatchProject.mockImplementationOnce(() => patch.promise);
+      mockedListProjects.mockImplementation(async (options) =>
+        options?.workspaceContext?.workspaceId === workspaceB.workspaceId
+          ? [projectB]
+          : [workspaceAAuthority]);
+      stubWorkspaceContext(workspaceA.workspaceId, workspaceA.workspaceMemberId);
+
+      render(<App />);
+      await screen.findByTestId('entry-project-project-a');
+      fireEvent.click(screen.getByRole('button', { name: 'Rename first project A' }));
+      await waitFor(() => expect(mockedPatchProject).toHaveBeenCalledTimes(1));
+
+      act(() => notifyWorkspaceContextRefresh({ context: workspaceB }));
+      await screen.findByTestId('entry-project-project-b');
+
+      const persisted = succeeds
+        ? { ...projectA, name: 'Rename A', updatedAt: projectA.updatedAt + 1 }
+        : null;
+      workspaceAAuthority = succeeds
+        ? { ...projectA, name: 'Newer Workspace A authority', updatedAt: projectA.updatedAt + 2 }
+        : projectA;
+      await act(async () => {
+        patch.resolve(persisted);
+        await patch.promise;
+      });
+
+      act(() => notifyWorkspaceContextRefresh({ context: workspaceA }));
+      await waitFor(() => {
+        expect(screen.getByTestId('entry-project-project-a').textContent).toContain(expectedName);
+      });
+    },
+  );
 
   it('keeps a newly created renamed project when the project route restores an older all snapshot', async () => {
     const context = workspaceContext('ws-1', 'wm-1');
