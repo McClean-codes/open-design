@@ -157,9 +157,15 @@ vi.mock('../../src/components/WorkspaceTabsBar', () => ({
   WorkspaceTabsBar: () => null,
 }));
 
-vi.mock('../../src/components/MemoryToast', () => ({
-  MemoryToast: () => null,
-}));
+vi.mock('../../src/components/MemoryToast', async () => {
+  const actual = await vi.importActual<typeof import('../../src/components/MemoryToast')>(
+    '../../src/components/MemoryToast',
+  );
+  return {
+    ...actual,
+    MemoryToast: () => null,
+  };
+});
 
 vi.mock('../../src/components/PrivacyConsentModal', () => ({
   PrivacyConsentModal: () => null,
