@@ -5,8 +5,17 @@ import { fireEvent, waitFor } from '@testing-library/react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  buildWorkspacePermissions,
+  buildWorkspaceSeatSummary,
+  type WorkspaceCollabContext,
+} from '@open-design/contracts';
 
 import { FileWorkspace } from '../../src/components/FileWorkspace';
+import {
+  CollabProvider,
+  type CollabContextValue,
+} from '../../src/collab/collab-context';
 import type { AgentEvent, DesignSystemSummary, ProjectFile } from '../../src/types';
 
 const registryMocks = vi.hoisted(() => ({
@@ -93,6 +102,47 @@ function designSystem(overrides: Partial<DesignSystemSummary> = {}): DesignSyste
   };
 }
 
+function teamContext(): WorkspaceCollabContext {
+  return {
+    workspaceId: 'workspace-logo',
+    workspaceType: 'team',
+    workspaceMemberId: 'member-logo',
+    role: 'owner',
+    memberStatus: 'active',
+    lifecycleState: 'active',
+    billingState: 'active',
+    planId: 'team_plus',
+    providerMode: 'platform_credits',
+    teamId: 'team-logo',
+    seatSummary: buildWorkspaceSeatSummary({ seatLimit: 3, usedSeats: 1 }),
+    permissions: buildWorkspacePermissions({ role: 'owner', lifecycleState: 'active' }),
+  };
+}
+
+function collabValue(workspaceContext: WorkspaceCollabContext): CollabContextValue {
+  return {
+    workspaceContext,
+    workspaceContextLoading: false,
+    enabled: false,
+    member: null,
+    present: [],
+    publishedVersion: null,
+    syncState: null,
+    viewerOnly: false,
+    writerAuthority: 'allowed',
+    isOwner: true,
+    isEffectiveOwner: true,
+    isSharedNonOwner: false,
+    ownerDisplayName: null,
+    ownerRole: null,
+    downloadPending: false,
+    reportChange: () => {},
+    requestPublish: () => {},
+    refreshPresence: () => {},
+    checkStatusNow: () => {},
+  };
+}
+
 function renderWorkspace(element: React.ReactElement) {
   host = document.createElement('div');
   document.body.appendChild(host);
@@ -125,6 +175,46 @@ function todoWrite(
 }
 
 describe('FileWorkspace design-system project surface', () => {
+  it('keeps a legacy logo-only brand.json visible with the exact project Workspace scope', async () => {
+    const workspaceContext = teamContext();
+    registryMocks.fetchProjectFileText.mockImplementation((_projectId: string, name: string) => {
+      if (name === 'DESIGN.md') return Promise.resolve('# Legacy Logo');
+      if (name === 'brand.json') {
+        return Promise.resolve(JSON.stringify({
+          logo: { primary: 'assets/logo.svg' },
+        }));
+      }
+      return Promise.resolve(null);
+    });
+
+    const container = renderWorkspace(
+      <CollabProvider value={collabValue(workspaceContext)}>
+        <FileWorkspace
+          projectId="ds-legacy-logo"
+          projectKind="prototype"
+          files={[workspaceFile('DESIGN.md'), workspaceFile('brand.json'), workspaceFile('assets/logo.svg')]}
+          liveArtifacts={[]}
+          onRefreshFiles={vi.fn()}
+          isDeck={false}
+          tabsState={{ tabs: [], active: null }}
+          onTabsStateChange={vi.fn()}
+          designSystemProject={designSystem({ id: 'user:legacy-logo', title: 'Legacy Logo' })}
+        />
+      </CollabProvider>,
+    );
+
+    await flushKit();
+
+    const logo = container.querySelector<HTMLImageElement>(
+      '[data-testid="design-kit-logo-section"] img[alt="Legacy Logo"]',
+    );
+    expect(logo).toBeTruthy();
+    const logoUrl = new URL(logo!.src);
+    expect(logoUrl.pathname).toBe('/api/projects/ds-legacy-logo/raw/assets/logo.svg');
+    expect(logoUrl.searchParams.get('workspaceId')).toBe('workspace-logo');
+    expect(logoUrl.searchParams.get('workspaceMemberId')).toBe('member-logo');
+  });
+
   it('renders the brand.html-style kit modules from the project DESIGN.md', async () => {
     registryMocks.fetchProjectFileText.mockImplementation((_projectId: string, name: string) => {
       if (name === 'DESIGN.md') {

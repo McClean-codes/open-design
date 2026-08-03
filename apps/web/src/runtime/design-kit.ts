@@ -623,6 +623,68 @@ function tryParseBrand(raw: string | null): Brand | null {
   return null;
 }
 
+interface LegacyBrandLogo {
+  primary: string | null;
+  alternates: string[];
+  notes?: string;
+}
+
+function tryParseLegacyBrandLogo(raw: string | null): LegacyBrandLogo | null {
+  if (!raw) return null;
+  try {
+    const data = JSON.parse(raw) as { logo?: unknown };
+    if (!data || typeof data !== 'object' || !data.logo || typeof data.logo !== 'object') {
+      return null;
+    }
+    const logo = data.logo as {
+      primary?: unknown;
+      alternates?: unknown;
+      notes?: unknown;
+    };
+    const primary = typeof logo.primary === 'string' && logo.primary.trim()
+      ? logo.primary.trim()
+      : null;
+    const alternates = Array.isArray(logo.alternates)
+      ? logo.alternates
+          .filter((candidate): candidate is string => typeof candidate === 'string')
+          .map((candidate) => candidate.trim())
+          .filter(Boolean)
+      : [];
+    const notes = typeof logo.notes === 'string' && logo.notes.trim()
+      ? logo.notes.trim()
+      : undefined;
+    return primary || alternates.length > 0
+      ? { primary, alternates, ...(notes ? { notes } : {}) }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function mergeLegacyBrandLogo(
+  kit: DesignKit,
+  logo: LegacyBrandLogo | null,
+  options: {
+    projectId: string;
+    reloadKey?: number | string;
+    workspaceContext?: WorkspaceCollabContext | null;
+  },
+): DesignKit {
+  if (!logo) return kit;
+  const asset = (filePath: string) => withCacheBust(
+    projectRawUrl(options.projectId, filePath, options.workspaceContext),
+    options.reloadKey,
+  );
+  return {
+    ...kit,
+    logoSrc: logo.primary ? asset(logo.primary) : kit.logoSrc,
+    logoAlternates: logo.alternates.length > 0
+      ? logo.alternates.map(asset)
+      : kit.logoAlternates,
+    logoNotes: logo.notes ?? kit.logoNotes,
+  };
+}
+
 /**
  * Resolve a DesignKit for any design system. When a backing project carries a
  * writable `brand.json` we render the full brand kit (logo / imagery / kit /
@@ -712,7 +774,11 @@ export function useDesignKit(source: DesignKitSource): { kit: DesignKit | null; 
           workspaceContext,
         }));
       } else {
-        setKit(fromDesignMd(rawDesignMd ?? ''));
+        setKit(mergeLegacyBrandLogo(
+          fromDesignMd(rawDesignMd ?? ''),
+          tryParseLegacyBrandLogo(rawBrand),
+          { projectId, reloadKey, workspaceContext },
+        ));
       }
       setLoading(false);
     })();
