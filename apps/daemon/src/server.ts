@@ -3379,6 +3379,28 @@ export async function startServer({
           ) return null;
           return { workspaceId, ownerMemberId };
         },
+        validateCommentRelayProjectBinding: (record) =>
+          getWorkspaceProjectByProjectId(db, record.projectId)?.workspaceId?.trim()
+            === record.workspaceId,
+        resolveCommentRelayWorkspaceContext: async (queuedIdentity) => {
+          const context = await resolveAuthoritativeTeamWorkspaceContext(
+            queuedIdentity.workspaceId,
+            { fresh: true },
+          );
+          const principal = contextToResourceHubPrincipal(context);
+          if (
+            !context
+            || !principal
+            || principal.memberId !== queuedIdentity.workspaceMemberId
+            || principal.teamId !== queuedIdentity.teamId
+          ) return null;
+          return context;
+        },
+        listRemoteProjectRelayBindings: async (context) =>
+          (await teamProjectsLister(context.workspaceId)).map((project) => ({
+            projectId: project.projectId,
+            ownerMemberId: project.ownerMemberId,
+          })),
         resolveRemoteProjectOwnerMemberId: async (projectId, context) =>
           (await teamProjectsLister(context.workspaceId))
             .find((project) => project.projectId === projectId)
