@@ -43,6 +43,16 @@ export interface VelaTeamProjectCatalog {
   remove(projectId: string, principal?: ResourceHubPrincipal | null): Promise<void>;
 }
 
+export interface ScopedVelaTeamProjectCatalogClientCache
+  extends VelaTeamProjectCatalogClient {
+  /**
+   * Invalidate one verified principal, or every principal when a caller only
+   * knows that the shared catalog changed (for example after an unshare or a
+   * hub event).
+   */
+  invalidate(principal?: ResourceHubPrincipal): void;
+}
+
 type TeamProjectWire = {
   projectId?: unknown;
   resourceId?: unknown;
@@ -263,7 +273,7 @@ export function createVelaCliTeamProjectCatalogClient(
 export function createScopedVelaTeamProjectCatalogClientCache(
   client: VelaTeamProjectCatalogClient,
   freshMs = 3000,
-): VelaTeamProjectCatalogClient {
+): ScopedVelaTeamProjectCatalogClientCache {
   const lists = new Map<string, SwrCache<VelaTeamProjectRecord[]>>();
   const scopeKey = (principal: ResourceHubPrincipal): string =>
     JSON.stringify([
@@ -273,6 +283,17 @@ export function createScopedVelaTeamProjectCatalogClientCache(
       principal.lifecycleState,
       principal.workspaceType ?? null,
     ]);
+
+  const invalidate = (principal?: ResourceHubPrincipal): void => {
+    if (principal) {
+      const key = scopeKey(principal);
+      lists.get(key)?.invalidate();
+      lists.delete(key);
+      return;
+    }
+    for (const list of lists.values()) list.invalidate();
+    lists.clear();
+  };
 
   return {
     list(principal) {
@@ -289,7 +310,12 @@ export function createScopedVelaTeamProjectCatalogClientCache(
       }
       return list();
     },
-    upsert: (input, principal) => client.upsert(input, principal),
+    async upsert(input, principal) {
+      const result = await client.upsert(input, principal);
+      invalidate(principal);
+      return result;
+    },
+    invalidate,
   };
 }
 

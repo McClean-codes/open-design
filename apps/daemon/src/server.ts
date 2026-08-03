@@ -4146,7 +4146,10 @@ export async function startServer({
       dbDeleteProject(db, projectId);
       void removeProjectDir(PROJECTS_DIR, projectId).catch(() => {});
     },
-    invalidateTeamProjectCatalog: () => teamProjectsDisplayCache.invalidate(),
+    invalidateTeamProjectCatalog: () => {
+      teamProjectsDisplayCache.invalidate();
+      workspaceTeamProjectCatalog?.invalidate();
+    },
     onTeamShareStateChanged: persistWorkspaceProjectVisibility,
     // See `notifyFilesChanged`'s doc comment on RegisterCollabSyncRoutesDeps
     // (recvq6CIesNvWZ): a pull's directory-replace can silently orphan the
@@ -6590,7 +6593,10 @@ export async function startServer({
         }
       },
       refreshTeamProjectMetadata: (projectId) => collab.refreshTeamProjectMetadata(projectId),
-      invalidateTeamProjectCatalog: () => teamProjectsDisplayCache.invalidate(),
+      invalidateTeamProjectCatalog: () => {
+        teamProjectsDisplayCache.invalidate();
+        workspaceTeamProjectCatalog?.invalidate();
+      },
     },
     ...(workspaceTeamProjectCatalog ? { teamProjectCatalog: workspaceTeamProjectCatalog } : {}),
     // Second witness for the team-share invariant: refuse a team share aimed at
