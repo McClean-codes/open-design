@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createWorkspaceTeamResourceEventCoordinator,
   planWorkspaceResourceReconciliation,
   reconcileWorkspaceResourcesWithRemote,
   type LocalTeamResourceBinding,
@@ -181,5 +182,160 @@ describe('reconcileWorkspaceResourcesWithRemote (orchestrator)', () => {
     );
     expect(result).toEqual({ retired: 1 });
     expect(applyRetire).toHaveBeenCalledWith(WORKSPACE_ID, 'already-retired');
+  });
+});
+
+describe('createWorkspaceTeamResourceEventCoordinator', () => {
+  const scope = { workspaceId: WORKSPACE_ID };
+
+  it('materializes before reconciling and emits only after both complete', async () => {
+    let resolveMaterialization!: (value: readonly { resourceId: string; versionId?: string }[]) => void;
+    const materialized = new Promise<readonly { resourceId: string; versionId?: string }[]>((resolve) => {
+      resolveMaterialization = resolve;
+    });
+    const calls: string[] = [];
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => {
+        calls.push('materialize:start');
+        const resources = await materialized;
+        calls.push('materialize:end');
+        return resources;
+      },
+      reconcile: async ({ resources }) => {
+        calls.push(`reconcile:${resources[0]?.resourceId}`);
+        return { retired: 0 };
+      },
+      emit: (_workspaceId, payload) => calls.push(`emit:${payload.resourceKind}`),
+      now: () => 123,
+    });
+
+    const refresh = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'push',
+    });
+    await Promise.resolve();
+    expect(calls).toEqual(['materialize:start']);
+
+    resolveMaterialization([{ resourceId: 'skill-1', versionId: 'v1' }]);
+    await expect(refresh).resolves.toEqual({
+      processedKinds: ['skill'],
+      emittedKinds: ['skill'],
+      failedKinds: [],
+    });
+    expect(calls).toEqual([
+      'materialize:start',
+      'materialize:end',
+      'reconcile:skill-1',
+      'emit:skill',
+    ]);
+  });
+
+  it('ignores unknown kinds and does not emit after materialization or reconciliation failure', async () => {
+    const emit = vi.fn();
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async ({ resourceKind }) => {
+        if (resourceKind === 'plugin') throw new Error('pull failed');
+        return [{ resourceId: 'skill-1', versionId: 'v1' }];
+      },
+      reconcile: async ({ resourceKind }) => {
+        if (resourceKind === 'skill') throw new Error('sqlite failed');
+        return { retired: 0 };
+      },
+      emit,
+    });
+
+    await expect(coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'project',
+      reason: 'push',
+    })).resolves.toEqual({ processedKinds: [], emittedKinds: [], failedKinds: [] });
+    await expect(coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'plugin',
+      reason: 'push',
+    })).resolves.toEqual({ processedKinds: [], emittedKinds: [], failedKinds: ['plugin'] });
+    await expect(coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'push',
+    })).resolves.toEqual({ processedKinds: [], emittedKinds: [], failedKinds: ['skill'] });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('suppresses unchanged poll snapshots but emits when the version changes', async () => {
+    let versionId = 'v1';
+    const emit = vi.fn();
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => [{ resourceId: 'skill-1', versionId }],
+      reconcile: async () => ({ retired: 0 }),
+      emit,
+    });
+
+    await coordinator.refresh({ workspaceId: WORKSPACE_ID, scope, resourceKind: 'skill', reason: 'poll' });
+    await coordinator.refresh({ workspaceId: WORKSPACE_ID, scope, resourceKind: 'skill', reason: 'poll' });
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    versionId = 'v2';
+    await coordinator.refresh({ workspaceId: WORKSPACE_ID, scope, resourceKind: 'skill', reason: 'poll' });
+    await coordinator.refresh({ workspaceId: WORKSPACE_ID, scope, resourceKind: 'skill', reason: 'poll' });
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps an initial empty poll silent but emits when reconciliation retires a local binding', async () => {
+    let retired = 0;
+    const emit = vi.fn();
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => [],
+      reconcile: async () => ({ retired }),
+      emit,
+    });
+
+    await coordinator.refresh({ workspaceId: WORKSPACE_ID, scope, resourceKind: 'skill', reason: 'poll' });
+    expect(emit).not.toHaveBeenCalled();
+
+    retired = 1;
+    await coordinator.refresh({ workspaceId: WORKSPACE_ID, scope, resourceKind: 'skill', reason: 'poll' });
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('serializes overlapping refreshes for the same workspace and kind', async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let materializations = 0;
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => {
+        materializations += 1;
+        if (materializations === 1) await firstBlocked;
+        return [{ resourceId: 'skill-1', versionId: String(materializations) }];
+      },
+      reconcile: async () => ({ retired: 0 }),
+      emit: vi.fn(),
+    });
+
+    const first = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'push',
+    });
+    const second = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'push',
+    });
+    await Promise.resolve();
+    expect(materializations).toBe(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(materializations).toBe(2);
   });
 });
