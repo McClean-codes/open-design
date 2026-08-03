@@ -7874,7 +7874,10 @@ export async function startServer({
     let designSystemDigest = null;
     if (effectiveDesignSystemId) {
       const designSystemListOptions = projectWorkspaceId
-        ? { workspaceId: projectWorkspaceId }
+        ? {
+            workspaceId: projectWorkspaceId,
+            workspaceMemberId: projectCreatorMemberId || null,
+          }
         : {};
       let systems = await listAllDesignSystems(designSystemListOptions);
       let summary = systems.find(
