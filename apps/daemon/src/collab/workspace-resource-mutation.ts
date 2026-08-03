@@ -57,6 +57,78 @@ export type VerifyWorkspaceRequestAuthority = (
   req: unknown,
 ) => Promise<WorkspaceRequestAuthorityResult>;
 
+type RequestAuthorityCacheEntry = {
+  identity: string;
+  promise: Promise<WorkspaceRequestAuthorityResult>;
+};
+
+const REQUEST_AUTHORITY_CACHE = Symbol('open-design.workspace-request-authority');
+
+/**
+ * One mutation request can pass through more than one independent resource
+ * gate (for example, a project gate followed by a plugin gate when starting a
+ * run). Those gates must agree on one fresh directory witness without turning
+ * that witness into a process-wide or cross-request membership cache.
+ *
+ * The cache lives on the Express request itself, is partitioned by verifier
+ * identity, and includes every request-claimed authority field. A different
+ * HTTP request always starts empty; changing the claimed identity on the same
+ * request also forces a new verification rather than reusing stale standing.
+ */
+function verifyWorkspaceRequestAuthorityForRequest(
+  req: any,
+  verifyWorkspaceRequestAuthority: VerifyWorkspaceRequestAuthority,
+): Promise<WorkspaceRequestAuthorityResult> {
+  const claimed = workspaceResourceContextFromRequest(req);
+  const identity = claimed === null
+    ? 'none'
+    : claimed === 'missing'
+      ? [
+          'missing',
+          req?.get?.('x-od-workspace-id')?.trim?.() ?? '',
+          req?.get?.('x-od-workspace-member-id')?.trim?.() ?? '',
+        ].join('\u0000')
+      : [
+          claimed.workspaceId,
+          claimed.workspaceType,
+          claimed.workspaceTypeAsserted ?? '',
+          claimed.appUserId,
+          claimed.workspaceMemberId,
+          claimed.role,
+          claimed.memberStatus,
+          claimed.lifecycleState,
+          String(claimed.canShareProjects),
+          String(claimed.canWriteSyncedFiles),
+        ].join('\u0000');
+  const holder = req && (typeof req === 'object' || typeof req === 'function')
+    ? req as Record<PropertyKey, unknown>
+    : null;
+  const existing = holder?.[REQUEST_AUTHORITY_CACHE] instanceof Map
+    ? holder[REQUEST_AUTHORITY_CACHE] as Map<VerifyWorkspaceRequestAuthority, RequestAuthorityCacheEntry>
+    : null;
+  const cached = existing?.get(verifyWorkspaceRequestAuthority);
+  if (cached?.identity === identity) return cached.promise;
+
+  const promise = Promise.resolve().then(() => verifyWorkspaceRequestAuthority(req));
+  if (!holder) return promise;
+  const cache = existing ?? new Map<VerifyWorkspaceRequestAuthority, RequestAuthorityCacheEntry>();
+  cache.set(verifyWorkspaceRequestAuthority, { identity, promise });
+  if (!existing) {
+    try {
+      Object.defineProperty(holder, REQUEST_AUTHORITY_CACHE, {
+        configurable: true,
+        enumerable: false,
+        value: cache,
+      });
+    } catch {
+      // Exotic request facades may be non-extensible. They retain the secure
+      // legacy behavior (a fresh verification per gate), only without the
+      // request-local performance optimization.
+    }
+  }
+  return promise;
+}
+
 /**
  * Browser navigation transports such as EventSource and iframe/src URLs
  * cannot attach custom headers. For those read-only routes only, accept the
@@ -135,7 +207,10 @@ export async function resolveOptionalWorkspaceRequestAuthority(
       message: 'an explicit workspace context is required',
     };
   }
-  return verifyWorkspaceRequestAuthority(req);
+  return verifyWorkspaceRequestAuthorityForRequest(
+    req,
+    verifyWorkspaceRequestAuthority,
+  );
 }
 
 /**
@@ -550,7 +625,10 @@ export async function enforceVerifiedWorkspaceResourceMutation(
     return false;
   }
 
-  const verified = await verifyWorkspaceRequestAuthority(req);
+  const verified = await verifyWorkspaceRequestAuthorityForRequest(
+    req,
+    verifyWorkspaceRequestAuthority,
+  );
   if (!verified.ok) {
     sendApiError(res, verified.status, verified.code, verified.message);
     return false;

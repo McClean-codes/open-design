@@ -27,6 +27,7 @@ import {
   linkSnapshotToProject,
 } from '../src/plugins/snapshots.js';
 import { createAuthorizeProjectRequest } from '../src/collab/project-request-authority.js';
+import { resolveOptionalWorkspaceRequestAuthority } from '../src/collab/workspace-resource-mutation.js';
 import { createEnforceWorkspaceProjectMutation } from '../src/routes/project/index.js';
 import { workspaceContextFromDirectoryItem } from '../src/collab/vela-workspace-context.js';
 import { registerRunRoutes } from '../src/routes/runs.js';
@@ -170,6 +171,7 @@ async function startServer(opts?: {
   isAmrSignedIn?: () => boolean | Promise<boolean>;
   verifyWorkspaceRequestAuthority?: (req: any) => Promise<any>;
   authorizePluginRequest?: (req: any, res: any, pluginId: string) => Promise<boolean>;
+  authorizePluginWithWorkspaceAuthority?: boolean;
   seedImplicitScenarioPlugin?: boolean;
   teamProjectResourceState?: 'active' | 'deleted';
   loadPluginRegistryView?: () => Promise<any>;
@@ -279,7 +281,26 @@ async function startServer(opts?: {
       firePipelineForRun: () => {},
       loadPluginRegistryView: opts?.loadPluginRegistryView ?? (async () => ({} as any)),
       renderPluginBriefTemplate: (template: string) => template,
-      authorizePluginRequest: opts?.authorizePluginRequest,
+      authorizePluginRequest: opts?.authorizePluginRequest ?? (
+        opts?.authorizePluginWithWorkspaceAuthority
+          ? async (req: any, res: any) => {
+              const authority = await resolveOptionalWorkspaceRequestAuthority(
+                req,
+                verifyWorkspaceRequestAuthority,
+              );
+              if (!authority.ok) {
+                sendApiError(
+                  res,
+                  authority.status,
+                  authority.code,
+                  authority.message,
+                );
+                return false;
+              }
+              return true;
+            }
+          : undefined
+      ),
     },
     telemetry: {
       reportRunCompletionTelemetryFallback: () => {},
@@ -353,6 +374,239 @@ async function startServer(opts?: {
 }
 
 describe('POST /api/runs — workspace mutation gate', () => {
+  it.each(['/api/runs', '/api/chat'])(
+    'reuses one fresh exact Workspace authority witness for project and plugin gates through %s',
+    async (route) => {
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: OWNER_MEMBER_ID,
+          role: 'owner',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+        seedImplicitScenarioPlugin: true,
+      });
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'authorize once',
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['/api/runs', '/api/chat'])(
+    'still performs one fresh project mutation check when no plugin is requested through %s',
+    async (route) => {
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: OWNER_MEMBER_ID,
+          role: 'owner',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+      });
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          message: 'project-only authority',
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['/api/runs', '/api/chat'])(
+    'fails closed on a rejected authority witness before plugin resolution through %s',
+    async (route) => {
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: false,
+        status: 503 as const,
+        code: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
+        message: 'workspace membership authority is temporarily unavailable',
+        retryable: true as const,
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+        seedImplicitScenarioPlugin: true,
+      });
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'must fail closed',
+        }),
+      });
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'WORKSPACE_AUTHORITY_UNAVAILABLE' },
+      });
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
+      expect(createdRunCount).toBe(0);
+    },
+  );
+
+  it.each(['/api/runs', '/api/chat'])(
+    'does not reuse a prior request witness after Workspace membership changes through %s',
+    async (route) => {
+      let memberStatus: 'active' | 'removed' = 'active';
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: OWNER_MEMBER_ID,
+          role: 'owner',
+          memberStatus,
+          lifecycleState: 'active',
+        }),
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+        seedImplicitScenarioPlugin: true,
+      });
+      const create = () => fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'request-scoped membership',
+        }),
+      });
+
+      expect((await create()).status).toBe(202);
+      memberStatus = 'removed';
+      const removedResponse = await create();
+      expect(removedResponse.status).toBe(403);
+      await expect(removedResponse.json()).resolves.toMatchObject({
+        error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+      });
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not share a fresh authority witness between concurrent run requests', async () => {
+    const pending: Array<{
+      memberId: string;
+      resolve: (value: any) => void;
+    }> = [];
+    const verifyWorkspaceRequestAuthority = vi.fn((req: any) => {
+      const memberId = String(req.get('x-od-workspace-member-id'));
+      if (pending.length >= 2) {
+        return Promise.resolve({
+          ok: true,
+          context: workspaceContextFromDirectoryItem({
+            workspaceId: WORKSPACE_ID,
+            workspaceName: 'Team',
+            workspaceType: 'team',
+            workspaceMemberId: memberId,
+            role: memberId === OWNER_MEMBER_ID ? 'owner' : 'member',
+            memberStatus: 'active',
+            lifecycleState: 'active',
+          }),
+        });
+      }
+      return new Promise((resolve) => pending.push({ memberId, resolve }));
+    });
+    const baseUrl = await startServer({
+      verifyWorkspaceRequestAuthority,
+      authorizePluginWithWorkspaceAuthority: true,
+      seedImplicitScenarioPlugin: true,
+    });
+    const create = (memberId: string, role: 'owner' | 'member') =>
+      fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(memberId, role),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'concurrent authority',
+        }),
+      });
+
+    const ownerRequest = create(OWNER_MEMBER_ID, 'owner');
+    const memberRequest = create('member-concurrent-run', 'member');
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    for (const entry of pending) {
+      entry.resolve({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: entry.memberId,
+          role: entry.memberId === OWNER_MEMBER_ID ? 'owner' : 'member',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      });
+    }
+
+    const [ownerResponse, memberResponse] = await Promise.all([
+      ownerRequest,
+      memberRequest,
+    ]);
+    expect(ownerResponse.status).toBe(202);
+    expect(memberResponse.status).toBe(403);
+    expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(2);
+  });
+
   it.each(['/api/runs', '/api/chat'])(
     'does not let an explicit plugin id bypass the request-scoped catalog through %s',
     async (route) => {

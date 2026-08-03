@@ -116,7 +116,7 @@ describe('createAuthorizeProjectRequest', () => {
 
     for (let index = 0; index < 2; index += 1) {
       await expect(authorize(
-        req,
+        request({ workspaceId: 'workspace-a', memberId: 'member-a' }),
         response(),
         'project-a',
         { mode: 'write', capability: 'writeFiles' },
