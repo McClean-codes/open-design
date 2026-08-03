@@ -2897,6 +2897,12 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       const projects = mergedProjects
         .filter((project: any) => {
           const createdByCurrentMember = workspaceProjectCreatedByCurrentMember(project, ctx);
+          // Personal projects are private to their recorded creator, even when
+          // two accounts have used the same local data root or are members of
+          // the same Team Workspace. Apply this before every view/owner filter
+          // so `recent`, `all`, and `owner=others` cannot become privacy
+          // bypasses. Team projects remain visible to active Workspace members.
+          if (project.visibility === 'personal' && !createdByCurrentMember) return false;
           if (view === 'drafts') {
             if (project.visibility !== 'personal' || !createdByCurrentMember) return false;
           }

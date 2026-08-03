@@ -52,6 +52,30 @@ export { workspaceProjectHeaders } from '../collab/workspace-identity';
 
 export type WorkspaceProjectListView = 'all' | 'recent' | 'drafts' | 'team';
 
+const WORKSPACE_PROJECT_LIST_VIEWS: readonly WorkspaceProjectListView[] = [
+  'all',
+  'recent',
+  'drafts',
+  'team',
+];
+
+function workspaceProjectListCacheKey(
+  context: WorkspaceCollabContext,
+  workspaceView: WorkspaceProjectListView,
+): string {
+  return [
+    'workspace-projects',
+    workspaceIdentityCacheKey(context),
+    workspaceView,
+  ].join(':');
+}
+
+function evictWorkspaceProjectLists(context: WorkspaceCollabContext): void {
+  for (const workspaceView of WORKSPACE_PROJECT_LIST_VIEWS) {
+    evictCoalescedGet(workspaceProjectListCacheKey(context, workspaceView));
+  }
+}
+
 export type WorkspaceContextForWrite = {
   context: WorkspaceCollabContext | null;
   loading: boolean;
@@ -153,6 +177,10 @@ export async function moveWorkspaceProject(input: {
     }
     throw new WorkspaceProjectMoveError(message, code);
   }
+  // A share/unshare changes membership across several projections at once
+  // (`recent`, `drafts`, `team`, and `all`). Do not let the coalescing window
+  // replay the pre-move snapshot into the immediate refresh.
+  evictWorkspaceProjectLists(context);
   const json = (await resp.json()) as { project: WorkspaceProjectSummary };
   return json.project;
 }
@@ -219,11 +247,7 @@ export async function listWorkspaceProjectSummaries(options: {
 }): Promise<WorkspaceProjectSummary[]> {
   const { context } = options;
   const workspaceView = options.workspaceView ?? 'drafts';
-  const key = [
-    'workspace-projects',
-    workspaceIdentityCacheKey(context),
-    workspaceView,
-  ].join(':');
+  const key = workspaceProjectListCacheKey(context, workspaceView);
   try {
     return await coalescedGet(key, async () => {
       const resp = await fetch(

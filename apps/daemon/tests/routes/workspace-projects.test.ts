@@ -454,12 +454,21 @@ describe('workspace project routes', () => {
     const draftId = `workspace-view-draft-${suffix}`;
     const teamId = `workspace-view-team-${suffix}`;
     const otherId = `workspace-view-other-${suffix}`;
-    await createProject(draftId, 'Draft view fixture');
-    await list('member-view');
-    await createProject(teamId, 'Team view fixture');
-    await list('member-view');
-    await createProject(otherId, 'Other member view fixture');
-    await list('member-other');
+    const otherWorkspaceId = `${workspaceId}-other-${suffix}`;
+    const otherWorkspaceProjectId = `workspace-view-cross-workspace-${suffix}`;
+    await createProjectInWorkspace(draftId, 'Draft view fixture', 'member-view', {
+      'x-od-workspace-type': 'team',
+    });
+    await createProjectInWorkspace(teamId, 'Team view fixture', 'member-view', {
+      'x-od-workspace-type': 'team',
+    });
+    await createProjectInWorkspace(otherId, 'Other member view fixture', 'member-other', {
+      'x-od-workspace-type': 'team',
+    });
+    await createProjectInWorkspace(otherWorkspaceProjectId, 'Other Workspace fixture', 'member-view', {
+      'x-od-workspace-id': otherWorkspaceId,
+      'x-od-workspace-type': 'team',
+    });
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${teamId}/move`, {
       method: 'POST',
@@ -475,22 +484,22 @@ describe('workspace project routes', () => {
     const recent = await list('member-view', '?view=recent');
     const drafts = await list('member-view', '?view=drafts');
     const team = await list('member-view', '?view=team');
+    const otherPersonal = await list(
+      'member-view',
+      '?view=all&owner=others&visibility=personal',
+    );
 
     expect(all.projects.some((item) => item.id === draftId)).toBe(true);
     expect(recent.projects.map((item) => item.id)).toContain(draftId);
-    expect(recent.projects.map((item) => item.id)).toContain(otherId);
     expect(recent.projects.map((item) => item.id)).toContain(teamId);
-    // Every fixture project is created through the bare `/api/projects` path, so
-    // each has a null workspace creator and counts as a local draft for whoever
-    // views it (legacy local-project compatibility). draftId and otherId are
-    // still personal, so both surface in drafts; teamId was moved to team, so it
-    // drops out. Real per-member draft isolation applies once a project carries a
-    // stamped workspace creator (created within a workspace context, or shared).
     expect(drafts.projects.map((item) => item.id)).toContain(draftId);
-    expect(drafts.projects.map((item) => item.id)).toContain(otherId);
     expect(drafts.projects.map((item) => item.id)).not.toContain(teamId);
     expect(team.projects.map((item) => item.id)).toContain(teamId);
     expect(team.projects.map((item) => item.id)).not.toContain(draftId);
+    for (const response of [all, recent, drafts, team, otherPersonal]) {
+      expect(response.projects.map((item) => item.id)).not.toContain(otherId);
+      expect(response.projects.map((item) => item.id)).not.toContain(otherWorkspaceProjectId);
+    }
 
     const invalid = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects?view=personal`, {
       headers: headers('member-view'),
@@ -1974,6 +1983,10 @@ describe('workspace project routes', () => {
       dbDeleteProject: vi.fn(),
       removeProjectDir: vi.fn(),
       teamProjectCatalog,
+      workspaceRowOverrides: {
+        createdByWorkspaceMemberId: 'member-viewer',
+        updatedByWorkspaceMemberId: 'member-viewer',
+      },
     }));
     const routeServer = await listen(app);
     try {

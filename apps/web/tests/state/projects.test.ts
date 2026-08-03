@@ -1227,6 +1227,36 @@ describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
     );
     expect(workspaceProjectMoveErrorCode(error)).toBeNull();
   });
+
+  it('invalidates every cached Workspace project view after a successful move', async () => {
+    const context = teamWorkspaceContext({
+      workspaceId: 'ws-move-cache-invalidation',
+      workspaceMemberId: 'wm-move-cache-invalidation',
+    });
+    const responses = [
+      Response.json({ projects: [{ id: 'recent-before', project: { id: 'recent-before' } }] }),
+      Response.json({ projects: [{ id: 'draft-before', project: { id: 'draft-before' } }] }),
+      Response.json({ project: { id: 'recent-before', visibility: 'team' } }),
+      Response.json({ projects: [{ id: 'recent-after', project: { id: 'recent-after' } }] }),
+      Response.json({ projects: [{ id: 'draft-after', project: { id: 'draft-after' } }] }),
+    ];
+    const fetchMock = vi.fn<typeof fetch>(async () => responses.shift()!);
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listWorkspaceProjectSummaries({ context, workspaceView: 'recent' });
+    await listWorkspaceProjectSummaries({ context, workspaceView: 'drafts' });
+    await moveWorkspaceProject({
+      projectId: 'recent-before',
+      visibility: 'team',
+      workspaceContext: context,
+    });
+
+    await expect(listWorkspaceProjectSummaries({ context, workspaceView: 'recent' }))
+      .resolves.toMatchObject([{ id: 'recent-after' }]);
+    await expect(listWorkspaceProjectSummaries({ context, workspaceView: 'drafts' }))
+      .resolves.toMatchObject([{ id: 'draft-after' }]);
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
 });
 
 describe('deleteProject tabs cache', () => {
