@@ -7,6 +7,7 @@ import * as designSystems from '../../src/design-systems/index.js';
 import { createDesignSystemServerServices } from '../../src/design-systems/server-services.js';
 import * as skills from '../../src/skills.js';
 import { materializeWorkspaceScopedTeamResource } from '../../src/collab/team-resource-materialization.js';
+import { workspaceTeamSkillBindingResourceId } from '../../src/skills/workspace-team-binding.js';
 
 const roots: string[] = [];
 
@@ -97,6 +98,13 @@ describe('Team resource consumers use explicit Workspace scope', () => {
         verifyWorkspaceScope: async () => true,
         verifyStillShared: async () => true,
       });
+      ensureWorkspaceResource(
+        fixture.db,
+        'skill',
+        workspaceId,
+        workspaceTeamSkillBindingResourceId(workspaceId, 'same-skill'),
+        { visibility: 'team', resourceState: 'active' },
+      );
       await materializeWorkspaceScopedTeamResource({
         kindRoot: fixture.userDesignSystems,
         storageName: 'same-design-system',

@@ -279,6 +279,13 @@ import {
   resolveSkillId,
   splitDerivedSkillId,
 } from './skills.js';
+import {
+  activateWorkspaceTeamSkillIfStillShared,
+  resolveAndActivateWorkspaceTeamSkill,
+  skillIdFromWorkspaceTeamBinding,
+  workspaceTeamSkillBindingActivationFence,
+  workspaceTeamSkillBindingResourceId,
+} from './skills/workspace-team-binding.js';
 import { validateLinkedDirs } from './linked-dirs.js';
 import { installFromTarget, uninstallById, sanitizeRepoName } from './library-install.js';
 import {
@@ -5411,22 +5418,46 @@ export async function startServer({
     const isOwnedByCurrentMember =
       typeof resource.ownerMemberId === 'string' &&
       resource.ownerMemberId === scope.principal.memberId;
+    const bindingResourceId = workspaceTeamSkillBindingResourceId(
+      workspaceId,
+      resource.id,
+    );
+    const captureActivationFence = (): string | null =>
+      workspaceTeamSkillBindingActivationFence(db, workspaceId, resource.id);
     // Claim the pulled copy for the workspace whose hub served it — a
     // team-shared skill is workspace-owned by construction, same rule
     // syncSharedTeamDesignSystem's markTeamSynced already ships (#145).
     // Fills the gap this resource type previously had no binding row at
     // all: `enforceSkillWorkspaceMutation` (routes/static-resource.ts) and
     // `listSkills`'s workspace filter (skills.ts) both read this row.
-    function markTeamSynced(): void {
-      if (isOwnedByCurrentMember || !workspaceId) return;
-      ensureWorkspaceResource(db, 'skill', workspaceId, resource.id, {
+    function markTeamSynced(): boolean {
+      if (isOwnedByCurrentMember || !workspaceId) return false;
+      const existingBinding = getWorkspaceResourceByResourceId(
+        db,
+        'skill',
+        bindingResourceId,
+      );
+      if (
+        existingBinding
+        && (
+          existingBinding.workspaceId !== workspaceId
+          || existingBinding.visibility !== 'team'
+        )
+      ) return false;
+      ensureWorkspaceResource(db, 'skill', workspaceId, bindingResourceId, {
         visibility: 'team',
         resourceState: 'active',
+        createdByWorkspaceMemberId: resource.ownerMemberId ?? scope.principal.memberId,
+        updatedByWorkspaceMemberId: scope.principal.memberId,
+        resourceHubResourceId: hubResourceId,
       });
-      updateWorkspaceResource(db, 'skill', workspaceId, resource.id, {
+      updateWorkspaceResource(db, 'skill', workspaceId, bindingResourceId, {
         visibility: 'team',
         resourceState: 'active',
+        updatedByWorkspaceMemberId: scope.principal.memberId,
+        resourceHubResourceId: hubResourceId,
       });
+      return true;
     }
     if (isOwnedByCurrentMember) return;
     if (
@@ -5435,11 +5466,21 @@ export async function startServer({
       resource.versionId &&
       teamResourceVersions.get(workspaceId, 'skill', resource.id) === resource.versionId
     ) {
-      markTeamSynced();
+      await activateWorkspaceTeamSkillIfStillShared({
+        captureActivationFence,
+        stillShared: () => teamResourceStillShared('skill', resource, scope),
+        activationFenceIsCurrent: (fence) => captureActivationFence() === fence,
+        activate: markTeamSynced,
+      });
       return;
     }
     if (fs.existsSync(targetDir) && !resource.versionId) {
-      markTeamSynced();
+      await activateWorkspaceTeamSkillIfStillShared({
+        captureActivationFence,
+        stillShared: () => teamResourceStillShared('skill', resource, scope),
+        activationFenceIsCurrent: (fence) => captureActivationFence() === fence,
+        activate: markTeamSynced,
+      });
       return;
     }
 
@@ -5468,7 +5509,21 @@ export async function startServer({
         verifyStillShared: () => teamResourceStillShared('skill', resource, scope),
       });
       if (materialized.status !== 'committed') return;
-      markTeamSynced();
+      const activated = await resolveAndActivateWorkspaceTeamSkill({
+        resolve: async () => {
+          const resolved = await listSkills([
+            teamResourceWorkspaceRoot(USER_SKILLS_DIR, workspaceId),
+          ]);
+          return resolved.find(
+            (skill) => skill.id === resource.id && skill.dir === materialized.targetDir,
+          ) ?? null;
+        },
+        captureActivationFence,
+        stillShared: () => teamResourceStillShared('skill', resource, scope),
+        activationFenceIsCurrent: (fence) => captureActivationFence() === fence,
+        activate: markTeamSynced,
+      });
+      if (!activated) return;
       if (workspaceId && resource.versionId) {
         await teamResourceVersions.set(
           workspaceId,
@@ -5808,6 +5863,50 @@ export async function startServer({
       }),
     );
   };
+  const adoptLegacyWorkspaceTeamSkillBindings = async (
+    scope: TeamResourceRequestScope,
+  ): Promise<void> => {
+    const workspaceId = scope.principal.teamId;
+    const workspaceRoot = teamResourceWorkspaceRoot(USER_SKILLS_DIR, workspaceId);
+    let entries: fs.Dirent[] = [];
+    try {
+      entries = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+        let marker = await readTeamResourceMaterialization(
+          USER_SKILLS_DIR,
+          workspaceId,
+          entry.name,
+          entry.name,
+        );
+        if (!marker) {
+          marker = await readTeamResourceMaterialization(
+            USER_SKILLS_DIR,
+            workspaceId,
+            `user:${entry.name}`,
+            entry.name,
+          );
+        }
+        if (!marker || marker.kind !== 'skill') return;
+        ensureWorkspaceResource(
+          db,
+          'skill',
+          workspaceId,
+          workspaceTeamSkillBindingResourceId(workspaceId, marker.resourceId),
+          {
+            visibility: 'team',
+            resourceState: 'active',
+            createdByWorkspaceMemberId: scope.principal.memberId,
+            updatedByWorkspaceMemberId: scope.principal.memberId,
+            resourceHubResourceId: marker.hubResourceId,
+          },
+        );
+      }),
+    );
+  };
   const reconcileTeamResourceKind = async (
     resourceType: ReconciledTeamResourceKind,
     scope: TeamResourceRequestScope,
@@ -5817,6 +5916,9 @@ export async function startServer({
     }
     if (resourceType === 'design_system') {
       await adoptLegacyWorkspaceTeamDesignSystemBindings(scope);
+    }
+    if (resourceType === 'skill') {
+      await adoptLegacyWorkspaceTeamSkillBindings(scope);
     }
     return reconcileWorkspaceResourcesWithRemote({
       getWorkspaceIdentity: async () => ({ workspaceId: scope.principal.teamId }),
@@ -5833,7 +5935,8 @@ export async function startServer({
               : resourceType === 'design_system'
                 ? designSystemIdFromWorkspaceTeamBinding(workspaceId, row.resourceId)
                   ?? (row.resourceId.startsWith('user:') ? row.resourceId : null)
-                : row.resourceId;
+                : skillIdFromWorkspaceTeamBinding(workspaceId, row.resourceId)
+                  ?? (row.resourceId.startsWith('team-mirror:') ? null : row.resourceId);
             if (!logicalResourceId) return [];
             return [
               {
@@ -5849,7 +5952,7 @@ export async function startServer({
           ? workspaceTeamPluginBindingResourceId(workspaceId, resourceId)
           : resourceType === 'design_system'
             ? workspaceTeamDesignSystemBindingResourceId(workspaceId, resourceId)
-            : resourceId;
+            : workspaceTeamSkillBindingResourceId(workspaceId, resourceId);
         updateWorkspaceResource(db, resourceType, workspaceId, bindingResourceId, {
           resourceState: 'deleted',
         });

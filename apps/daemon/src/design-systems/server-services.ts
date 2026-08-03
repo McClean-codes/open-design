@@ -2,14 +2,18 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
+import {
+  readTeamResourceMaterialization,
+  teamResourceWorkspaceRoot,
+} from '../collab/team-resource-materialization.js';
 import {
   getWorkspaceProjectByProjectId,
   getWorkspaceResourceByResourceId,
 } from '../db.js';
+import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
 
 type JsonRecord = Record<string, unknown>;
-type SkillEntry = { id: string } & JsonRecord;
+type SkillEntry = { id: string; dir?: string } & JsonRecord;
 type DesignSystemSummary = {
   id: string;
   source?: string;
@@ -189,10 +193,56 @@ export function createDesignSystemServerServices({
       workspaceMemberId: options.workspaceMemberId ?? null,
     });
     const workspaceId = options.workspaceId?.trim();
-    if (!workspaceId || !roots.SKILL_ROOTS[0]) return personalAndBuiltIn;
-    const team = await skills.listSkills([
-      teamResourceWorkspaceRoot(roots.SKILL_ROOTS[0], workspaceId),
-    ]);
+    const userSkillsRoot = roots.SKILL_ROOTS[0];
+    if (!workspaceId || !userSkillsRoot) return personalAndBuiltIn;
+    const workspaceRoot = teamResourceWorkspaceRoot(userSkillsRoot, workspaceId);
+    let directories: fs.Dirent[] = [];
+    try {
+      directories = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
+    } catch {
+      return personalAndBuiltIn;
+    }
+    const markerByDirectory = new Map<string, string>();
+    await Promise.all(
+      directories
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          // Skill hub ids may use either the plain local id or the historical
+          // `user:` prefix. Both materialize into the same safe storage name;
+          // the marker is authoritative about which logical id was pulled.
+          const candidates = [entry.name, `user:${entry.name}`];
+          let marker = null;
+          for (const candidate of candidates) {
+            marker = await readTeamResourceMaterialization(
+              userSkillsRoot,
+              workspaceId,
+              candidate,
+              entry.name,
+            );
+            if (marker) break;
+          }
+          if (
+            marker?.kind !== 'skill'
+            || !workspaceTeamSkillBindingAllowsRead(db, workspaceId, marker.resourceId)
+          ) return;
+          markerByDirectory.set(path.join(workspaceRoot, entry.name), marker.resourceId);
+        }),
+    );
+    if (markerByDirectory.size === 0) return personalAndBuiltIn;
+    const discoveredTeam = await skills.listSkills([workspaceRoot]);
+    // Re-check the exact binding after filesystem parsing. Reconciliation can
+    // tombstone a Team Skill while SKILL.md and its attachments are being
+    // read; that newer negative verdict must win over the stale directory.
+    const team = discoveredTeam.filter((entry) => {
+      const logicalId = typeof entry.dir === 'string'
+        ? markerByDirectory.get(entry.dir)
+        : undefined;
+      return Boolean(
+        logicalId
+        && (entry.id === logicalId || entry.id.startsWith(`${logicalId}:`))
+        && workspaceTeamSkillBindingAllowsRead(db, workspaceId, logicalId),
+      );
+    });
     const teamIds = new Set(team.map((entry) => entry.id));
     return [
       ...team.map((entry) => ({ ...entry, teamSynced: true })),

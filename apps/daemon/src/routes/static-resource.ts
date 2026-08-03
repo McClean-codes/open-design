@@ -22,6 +22,7 @@ import {
   splitDerivedSkillId,
   updateUserSkill,
 } from '../skills.js';
+import { workspaceTeamSkillBindingResourceId } from '../skills/workspace-team-binding.js';
 import { parseFrontmatter } from '../design-systems/frontmatter.js';
 import {
   deleteWorkspaceResourceByResourceId,
@@ -314,6 +315,35 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       ctx.verifyWorkspaceRequestAuthority,
     );
   };
+  const hasActiveTeamSkillBinding = (
+    authority: WorkspaceCollabContext | null,
+    skillId: string,
+  ): boolean => {
+    const workspaceId = authority?.workspaceId?.trim();
+    if (!workspaceId) return false;
+    const binding = getWorkspaceResource(
+      db,
+      'skill',
+      workspaceId,
+      workspaceTeamSkillBindingResourceId(workspaceId, skillId),
+    );
+    return binding?.visibility === 'team' && binding.resourceState !== 'deleted';
+  };
+  const denyTeamSkillMutation = (
+    res: Response,
+    authority: WorkspaceCollabContext | null,
+    skillId: string,
+    teamSynced = false,
+  ): boolean => {
+    if (!teamSynced && !hasActiveTeamSkillBinding(authority, skillId)) return false;
+    sendApiError(
+      res,
+      403,
+      'WORKSPACE_RESOURCE_MANAGE_DENIED',
+      'Team Skill mirrors are read-only',
+    );
+    return true;
+  };
   const importedDesignSystemResponse = async <T extends { id: string }>(designSystem: T) => {
     let tokenContractRebuild: DesignSystemTokenContractRebuildJobResponse | undefined;
     try {
@@ -572,6 +602,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     try {
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
+      if (denyTeamSkillMutation(res, authority, req.params.id)) return;
       const skills = await listAllSkills({
         workspaceId: authority?.workspaceId ?? null,
         workspaceMemberId: authority?.workspaceMemberId ?? null,
@@ -580,6 +611,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       if (!skill) {
         return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
       }
+      if (denyTeamSkillMutation(res, authority, skill.id, skill.teamSynced === true)) return;
       const existingBinding = getWorkspaceResourceByResourceId(db, 'skill', skill.id);
       if (
         authority
@@ -1145,13 +1177,16 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
     try {
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
+      if (denyTeamSkillMutation(res, authority, req.params.id)) return;
       const skills = await listAllSkills({
         workspaceId: authority?.workspaceId ?? null,
         workspaceMemberId: authority?.workspaceMemberId ?? null,
       });
-      if (!findSkillById(skills, req.params.id)) {
+      const skill = findSkillById(skills, req.params.id);
+      if (!skill) {
         return sendApiError(res, 404, 'NOT_FOUND', 'skill not found');
       }
+      if (denyTeamSkillMutation(res, authority, skill.id, skill.teamSynced === true)) return;
       if (!await enforceSkillWorkspaceMutation(req, res, req.params.id, 'delete')) return;
       const result = await uninstallById(req.params.id, USER_SKILLS_DIR, SKILLS_DIR, 'skill');
       if (!result.ok) return res.status(result.status || 400).json({ error: result.error });
