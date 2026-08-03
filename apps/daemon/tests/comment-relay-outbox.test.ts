@@ -611,6 +611,53 @@ describe('durable Team comment relay outbox', () => {
     service.dispose();
   });
 
+  it('does not lose a drain request when a newer same-project revision arrives during push', async () => {
+    const db = seededDb();
+    const queuedContext = context('member');
+    let timestamp = 950;
+    const firstPush = deferred<{ seq: number }>();
+    const pushedNotes: string[] = [];
+    const outbox = createCommentRelayOutboxStore(db, () => timestamp++);
+    const deps = Object.assign({
+      client: clientWithPush(async (_teamId, _projectId, payload) => {
+        pushedNotes.push(payload.note);
+        if (pushedNotes.length === 1) return firstPush.promise;
+        return { seq: 2 };
+      }),
+      commentOutbox: outbox,
+      resolveLocalProjectRelayBinding: () => ({
+        workspaceId: 'workspace-a',
+        ownerMemberId: 'project-owner',
+      }),
+      listProjectIds: () => [],
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+      now: () => 1_000,
+      retryDelayMs: () => 0,
+    }, {
+      resolveCommentRelayWorkspaceContext: async () => queuedContext,
+      listRemoteProjectRelayBindings: async () => [{
+        projectId: 'p1',
+        ownerMemberId: 'project-owner',
+      }],
+    });
+    const service = createCollabCloudService(deps);
+    service.enqueueComment(comment(), queuedContext);
+
+    const firstFlush = service.flushPendingComments();
+    await waitForCondition(() => pushedNotes.length === 1);
+    service.enqueueComment(comment({ note: 'newer note', updatedAt: 20 }), queuedContext);
+    // This is the same signal queuedCloudComment schedules in production.
+    // It must join the active drain instead of becoming a dropped no-op.
+    await service.flushPendingComments();
+    firstPush.resolve({ seq: 1 });
+    await firstFlush;
+
+    expect(pushedNotes).toEqual(['first note', 'newer note']);
+    expect(outbox.count()).toBe(0);
+    service.dispose();
+  });
+
   it('fails a batch closed before catalog or push when its fresh identity changed', async () => {
     const db = seededDb();
     const queuedContext = context('member');

@@ -233,6 +233,7 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   let outboxRunning = false;
+  let outboxRerunRequested = false;
   let started = false;
   // The identity we last pushed to the member directory. Re-registering only
   // when this changes keeps `pollOnce` from spawning a `vela member register`
@@ -537,27 +538,38 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
   }
 
   async function flushPendingComments(): Promise<void> {
-    if (!deps.commentOutbox || outboxRunning) return;
+    if (!deps.commentOutbox) return;
+    if (outboxRunning) {
+      // A mutation can land after the active drain took its SQLite snapshot.
+      // Coalesce that signal into one follow-up pass instead of dropping it
+      // and making the revision wait for the next 5s poll tick.
+      outboxRerunRequested = true;
+      return;
+    }
     outboxRunning = true;
     try {
-      const pending = deps.commentOutbox.listDue(now());
-      if (
-        !deps.resolveCommentRelayWorkspaceContext
-        || !deps.listRemoteProjectRelayBindings
-      ) {
-        for (const record of pending) await flushLegacyOutboxRecord(record);
-        return;
-      }
-      const batches = new Map<string, CommentRelayOutboxRecord[]>();
-      for (const record of pending) {
-        const key = relayIdentityKey(record);
-        const batch = batches.get(key);
-        if (batch) batch.push(record);
-        else batches.set(key, [record]);
-      }
-      // Identity batches remain serial so a login/session transition cannot
-      // overlap two principals. Pushes inside one verified batch are bounded.
-      for (const batch of batches.values()) await flushOutboxIdentityBatch(batch);
+      do {
+        outboxRerunRequested = false;
+        const pending = deps.commentOutbox.listDue(now());
+        if (pending.length === 0) continue;
+        if (
+          !deps.resolveCommentRelayWorkspaceContext
+          || !deps.listRemoteProjectRelayBindings
+        ) {
+          for (const record of pending) await flushLegacyOutboxRecord(record);
+          continue;
+        }
+        const batches = new Map<string, CommentRelayOutboxRecord[]>();
+        for (const record of pending) {
+          const key = relayIdentityKey(record);
+          const batch = batches.get(key);
+          if (batch) batch.push(record);
+          else batches.set(key, [record]);
+        }
+        // Identity batches remain serial so a login/session transition cannot
+        // overlap two principals. Pushes inside one verified batch are bounded.
+        for (const batch of batches.values()) await flushOutboxIdentityBatch(batch);
+      } while (outboxRerunRequested);
     } finally {
       outboxRunning = false;
     }
