@@ -1,10 +1,22 @@
 import express from 'express';
 import type http from 'node:http';
-import { mkdtempSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { closeDatabase, openDatabase } from '../../src/db.js';
+import {
+  closeDatabase,
+  ensureWorkspaceResource,
+  openDatabase,
+} from '../../src/db.js';
+import { workspaceContextFromDirectoryItem } from '../../src/collab/vela-workspace-context.js';
 import { registerDesignSystemRoutes } from '../../src/routes/design-systems.js';
 import { registerStaticResourceRoutes } from '../../src/routes/static-resource.js';
 import type { DesignSystemSummary } from '../../src/design-systems/index.js';
@@ -95,11 +107,43 @@ function commonPaths(root: string) {
 async function startListRoute(input: {
   resolveWorkspaceScope: (req?: express.Request) => Promise<string | null>;
   listAllDesignSystems: any;
+  exactMemberCatalog?: boolean;
 }) {
   tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-ds-explicit-list-'));
+  const db = input.exactMemberCatalog
+    ? openDatabase(tempDir, { dataDir: tempDir })
+    : ({} as never);
+  if (input.exactMemberCatalog) {
+    ensureWorkspaceResource(db, 'design_system', 'workspace-a', summary.id, {
+      visibility: 'personal',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    });
+    ensureWorkspaceResource(db, 'design_system', 'workspace-a', 'user:team-system', {
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    });
+  }
   const app = express();
   registerStaticResourceRoutes(app, {
-    db: {} as never,
+    db,
+    ...(input.exactMemberCatalog
+      ? {
+          verifyWorkspaceRequestAuthority: async (req: any) => ({
+            ok: true as const,
+            context: workspaceContextFromDirectoryItem({
+              workspaceId: req.get('x-od-workspace-id'),
+              workspaceName: 'Workspace A',
+              workspaceType: 'team',
+              workspaceMemberId: req.get('x-od-workspace-member-id'),
+              role: 'owner',
+              memberStatus: 'active',
+              lifecycleState: 'active',
+            }),
+          }),
+        }
+      : {}),
     http: {
       createSseResponse: () => undefined,
       getPublicBaseUrl: () => '',
@@ -177,6 +221,90 @@ function registerCreateRoute(
 }
 
 describe('design-system explicit Workspace request scope', () => {
+  it('rejects an install id already bound to another member before writing any directory entry', async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-ds-install-conflict-'));
+    const routePaths = commonPaths(tempDir);
+    const source = path.join(tempDir, 'source', 'owned-system');
+    mkdirSync(source, { recursive: true });
+    writeFileSync(path.join(source, 'DESIGN.md'), '# Original\n', 'utf8');
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    ensureWorkspaceResource(db, 'design_system', 'workspace-a', 'user:owned-system', {
+      visibility: 'personal',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-a',
+    });
+    const app = express();
+    app.use(express.json());
+    registerStaticResourceRoutes(app, {
+      db,
+      verifyWorkspaceRequestAuthority: async (req: any) => ({
+        ok: true as const,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: req.get('x-od-workspace-id'),
+          workspaceName: 'Workspace A',
+          workspaceType: 'team',
+          workspaceMemberId: req.get('x-od-workspace-member-id'),
+          role: 'owner',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      }),
+      http: {
+        createSseResponse: () => undefined,
+        getPublicBaseUrl: () => '',
+        isLocalSameOrigin: () => true,
+        requireLocalDaemonRequest: (_req: unknown, _res: unknown, next: () => void) => next(),
+        resolvedPortRef: { current: 0 },
+        sendApiError: (res: express.Response, status: number, code: string, message: string) =>
+          res.status(status).json({ error: code, message }),
+        sendLiveArtifactRouteError: () => undefined,
+        sendMulterError: () => undefined,
+      },
+      paths: routePaths,
+      resources: {
+        listAllDesignSystems: async () => [],
+        resolveWorkspaceScope: async () => 'workspace-a',
+        listAllSkills: async () => [],
+        listAllDesignTemplates: async () => [],
+        listAllSkillLikeEntries: async () => [],
+        mimeFor: () => 'application/octet-stream',
+      },
+    });
+    const baseUrl = await listen(app);
+    const response = await fetch(`${baseUrl}/api/design-systems/install`, {
+      method: 'POST',
+      headers: {
+        ...workspaceHeaders(),
+        'x-od-workspace-member-id': 'member-b',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ source: 'local', path: source }),
+    });
+
+    expect(response.status).toBe(409);
+    expect(readFileSync(path.join(source, 'DESIGN.md'), 'utf8')).toBe('# Original\n');
+    expect(existsSync(path.join(routePaths.USER_DESIGN_SYSTEMS_DIR, 'owned-system'))).toBe(false);
+  });
+
+  it('hides another member Personal system but keeps the exact Team catalog visible', async () => {
+    const teamSummary = { ...summary, id: 'user:team-system', title: 'Team' };
+    const baseUrl = await startListRoute({
+      resolveWorkspaceScope: async () => 'workspace-a',
+      listAllDesignSystems: async () => [summary, teamSummary],
+      exactMemberCatalog: true,
+    });
+    const response = await fetch(`${baseUrl}/api/design-systems`, {
+      headers: {
+        ...workspaceHeaders(),
+        'x-od-workspace-member-id': 'member-b',
+      },
+    });
+    expect(response.status).toBe(200);
+    const body = await response.json() as { designSystems: Array<{ id: string }> };
+    expect(body.designSystems.map((item) => item.id))
+      .toEqual(['user:team-system']);
+  });
+
   it('passes the list request into scope resolution and lists only that Workspace', async () => {
     const listAllDesignSystems = vi.fn(async (options?: { workspaceId?: string | null }) =>
       options?.workspaceId === 'workspace-a' ? [summary] : []);

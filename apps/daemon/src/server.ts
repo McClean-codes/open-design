@@ -5524,6 +5524,17 @@ export async function startServer({
   registerTeamResourceShareRoutes(app, {
     basePath: 'design-systems',
     resolveScope: resolveTeamResourceScope,
+    authorizeShare: (resourceId, scope) => {
+      const binding = getWorkspaceResourceByResourceId(
+        db,
+        'design_system',
+        resourceId,
+      );
+      return binding?.workspaceId === scope.principal.teamId
+        && binding.visibility === 'personal'
+        && binding.resourceState !== 'deleted'
+        && binding.createdByWorkspaceMemberId === scope.principal.memberId;
+    },
     syncSharedResource: syncSharedTeamDesignSystem,
     share: designSystemsTeamShare,
     listTeam: designSystemsTeamList,

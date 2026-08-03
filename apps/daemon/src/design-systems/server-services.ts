@@ -92,9 +92,9 @@ export function createDesignSystemServerServices({
   };
   designSystems: {
     listDesignSystems: (root: string, options?: DesignSystemListOptions) => Promise<DesignSystemSummary[]>;
-    readDesignSystem: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<string | null | undefined>;
-    readDesignSystemPackageInfo: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<unknown>;
-    readDesignSystemStaticFile: (root: string, id: string, filePath: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<DesignSystemStaticFile | null | undefined>;
+    readDesignSystem: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<string | null | undefined>;
+    readDesignSystemPackageInfo: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<unknown>;
+    readDesignSystemStaticFile: (root: string, id: string, filePath: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<DesignSystemStaticFile | null | undefined>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<Array<{ kind?: string; path: string }> | null | undefined>;
     readUserDesignSystemFile: (root: string, id: string, filePath: string) => Promise<{ path: string; content: string } | null | undefined>;
     linkUserDesignSystemProject: (root: string, id: string, projectId: string) => Promise<unknown>;
@@ -274,12 +274,15 @@ export function createDesignSystemServerServices({
       const scoped = await designSystems.readDesignSystem(
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,
-        { idPrefix: 'user:' },
+        { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, { idPrefix: 'user:' });
+      return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, {
+        idPrefix: 'user:',
+        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      });
     }
     return (
       (await designSystems.readDesignSystem(paths.DESIGN_SYSTEMS_DIR, id))
@@ -296,12 +299,15 @@ export function createDesignSystemServerServices({
       const scoped = await designSystems.readDesignSystemPackageInfo(
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,
-        { idPrefix: 'user:' },
+        { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, { idPrefix: 'user:' });
+      return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, {
+        idPrefix: 'user:',
+        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      });
     }
     return (
       (await designSystems.readDesignSystemPackageInfo(paths.DESIGN_SYSTEMS_DIR, id))
@@ -320,12 +326,15 @@ export function createDesignSystemServerServices({
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,
         filePath,
-        { idPrefix: 'user:' },
+        { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, { idPrefix: 'user:' });
+      return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, {
+        idPrefix: 'user:',
+        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      });
     }
     return (
       (await designSystems.readDesignSystemStaticFile(paths.DESIGN_SYSTEMS_DIR, id, filePath))

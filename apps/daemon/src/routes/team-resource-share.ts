@@ -27,6 +27,11 @@ export interface RegisterTeamResourceShareRoutesDeps {
   share: TeamResourceShareService;
   /** Resolve the request's explicit Workspace against authoritative membership. */
   resolveScope: (req: Request) => Promise<TeamResourceScopeResolution>;
+  /** Optional resource-owner gate applied after Workspace authority succeeds. */
+  authorizeShare?: (
+    resourceId: string,
+    scope: TeamResourceRequestScope,
+  ) => boolean | Promise<boolean>;
   /** Optional materialization hook for shared team resources. */
   syncSharedResource?: (
     resource: TeamResourceShareRecord,
@@ -125,6 +130,9 @@ export function registerTeamResourceShareRoutes(
     const scope = await resolveScope(req, res);
     if (!scope) return;
     try {
+      if (deps.authorizeShare && !await deps.authorizeShare(id, scope)) {
+        return res.status(403).json({ error: 'WORKSPACE_RESOURCE_SHARE_DENIED' });
+      }
       const result = await share.share(id, scope);
       if (!result) return res.json({ shared: false });
       // The cached `/team` listing is now stale by construction — drop it so

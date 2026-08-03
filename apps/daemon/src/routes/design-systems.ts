@@ -22,6 +22,7 @@ import {
   enforceVerifiedWorkspaceResourceRead,
   headerValue,
   isWorkspaceResourceLocked,
+  requestWithWorkspaceNavigationScope,
   resolveOptionalWorkspaceRequestAuthority,
   workspaceResourceContextFromRequest,
   type VerifyWorkspaceRequestAuthority,
@@ -222,6 +223,59 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     id: string,
     allowNavigationQuery = false,
   ): Promise<boolean> {
+    const binding = getDesignSystemBinding(db, id);
+    const scopedRequest = allowNavigationQuery
+      ? requestWithWorkspaceNavigationScope(req)
+      : req;
+    if (scopedRequest === 'conflict') {
+      res.status(400).json({
+        error: 'WORKSPACE_CONTEXT_CONFLICT',
+        message: 'workspace header and navigation scope must match',
+      });
+      return false;
+    }
+    const resolution = await resolveOptionalWorkspaceRequestAuthority(
+      scopedRequest,
+      ctx.verifyWorkspaceRequestAuthority,
+    );
+    if (!resolution.ok) {
+      res.status(resolution.status).json({
+        error: resolution.code,
+        message: resolution.message,
+        ...(resolution.retryable ? { retryable: true } : {}),
+      });
+      return false;
+    }
+    const isPublicBuiltIn = resolution.context && !binding
+      ? (await listAllDesignSystems({
+          workspaceId: resolution.context.workspaceId,
+        })).some((system) => system.id === id && system.source === 'built-in')
+      : false;
+    // Explicit Workspace requests never inherit ownerless legacy resources.
+    // A Personal design system is private to its exact persisted creator even
+    // when the caller is an owner/admin in the same Workspace. Team resources
+    // remain readable by every verified active member through the shared gate.
+    if (resolution.context && (
+      (!binding && !isPublicBuiltIn)
+      || (
+        binding
+        && binding.visibility !== 'team'
+        && binding.createdByWorkspaceMemberId !== resolution.context.workspaceMemberId
+      )
+    )) {
+      res.status(403).json({
+        error: 'WORKSPACE_DESIGN_SYSTEM_PERMISSION_DENIED',
+        message: 'workspace design_system read is not allowed',
+      });
+      return false;
+    }
+    if (binding && !resolution.context) {
+      res.status(400).json({
+        error: 'WORKSPACE_CONTEXT_REQUIRED',
+        message: 'an explicit workspace context is required',
+      });
+      return false;
+    }
     return enforceVerifiedWorkspaceResourceRead(
       'design_system',
       req,
@@ -232,7 +286,9 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       getDesignSystemBinding,
       db,
       id,
-      ctx.verifyWorkspaceRequestAuthority,
+      resolution.context
+        ? async () => ({ ok: true as const, context: resolution.context! })
+        : ctx.verifyWorkspaceRequestAuthority,
       { allowNavigationQuery },
     );
   }
@@ -242,6 +298,39 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     res: Response,
     id: string,
   ): Promise<boolean> {
+    const binding = getDesignSystemBinding(db, id);
+    const resolution = await resolveOptionalWorkspaceRequestAuthority(
+      req,
+      ctx.verifyWorkspaceRequestAuthority,
+    );
+    if (!resolution.ok) {
+      res.status(resolution.status).json({
+        error: resolution.code,
+        message: resolution.message,
+        ...(resolution.retryable ? { retryable: true } : {}),
+      });
+      return false;
+    }
+    if (resolution.context && (
+      !binding
+      || (
+        binding.visibility !== 'team'
+        && binding.createdByWorkspaceMemberId !== resolution.context.workspaceMemberId
+      )
+    )) {
+      res.status(403).json({
+        error: 'WORKSPACE_DESIGN_SYSTEM_PERMISSION_DENIED',
+        message: 'workspace design_system mutation is not allowed',
+      });
+      return false;
+    }
+    if (binding && !resolution.context) {
+      res.status(400).json({
+        error: 'WORKSPACE_CONTEXT_REQUIRED',
+        message: 'an explicit workspace context is required',
+      });
+      return false;
+    }
     return enforceVerifiedWorkspaceResourceMutation(
       'design_system',
       req,
@@ -253,7 +342,9 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       db,
       id,
       'writeFiles',
-      ctx.verifyWorkspaceRequestAuthority,
+      resolution.context
+        ? async () => ({ ok: true as const, context: resolution.context! })
+        : ctx.verifyWorkspaceRequestAuthority,
     );
   }
 
