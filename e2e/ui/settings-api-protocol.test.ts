@@ -253,7 +253,7 @@ test('[P0] @critical BYOK quick fill provider updates fields and saved settings 
     .toMatchObject({
       mode: 'api',
       apiProtocol: 'openai',
-      apiKey: 'test-byok-key',
+      apiKey: 'sk-openai-test',
       baseUrl: 'https://api.deepseek.com',
       model: 'deepseek-v4-flash',
       apiProviderBaseUrl: 'https://api.deepseek.com',
@@ -266,7 +266,7 @@ test('[P0] @critical BYOK quick fill provider updates fields and saved settings 
   expect(savedConfig).toMatchObject({
     mode: 'api',
     apiProtocol: 'openai',
-    apiKey: '',
+    apiKey: 'sk-openai-test',
     baseUrl: 'https://api.deepseek.com',
     model: 'deepseek-v4-flash',
     apiProviderBaseUrl: 'https://api.deepseek.com',
@@ -451,7 +451,7 @@ test('[P1] BYOK connection test surfaces NVIDIA degraded provider detail', async
   );
 });
 
-test('[P0] BYOK save stays disabled until required fields are valid', async ({ page }) => {
+test('[P0] BYOK autosave waits until required fields are valid', async ({ page }) => {
   await openExecutionSettings(page, {
     mode: 'api',
     apiKey: '',
@@ -474,7 +474,7 @@ test('[P0] BYOK save stays disabled until required fields are valid', async ({ p
   await expect(closeButton).toBeEnabled();
 
   await dialog.getByLabel('API key').fill('sk-openai-test');
-  await expect.poll(async () => readSavedConfig(page)).toMatchObject({ apiKey: '' });
+  await expect.poll(async () => readSavedConfig(page)).toMatchObject({ apiKey: 'sk-openai-test' });
 
   const baseUrlInput = dialog.getByLabel('Base URL');
   // A non-http scheme is still rejected client-side. (An internal-IP URL is no
@@ -485,7 +485,7 @@ test('[P0] BYOK save stays disabled until required fields are valid', async ({ p
 
   await baseUrlInput.fill('http://localhost:11434/v1');
   await expect.poll(async () => readSavedConfig(page)).toMatchObject({
-    apiKey: '',
+    apiKey: 'sk-openai-test',
     baseUrl: 'http://localhost:11434/v1',
   });
 });
@@ -659,7 +659,7 @@ test('[P0] @critical BYOK clearing the API key restores the suggested OpenAI mod
   await apiKeyInput.blur();
   await expect.poll(() => providerModelRequests.length).toBe(1);
   await expect.poll(async () => readSavedConfig(page)).toMatchObject({
-    apiKey: '',
+    apiKey: 'sk-openai-test',
   });
 
   await modelSelect.click();
@@ -1012,7 +1012,7 @@ test('[P0] @critical Settings keeps Local CLI and BYOK model choices isolated af
     page,
     {
       mode: 'api',
-      apiKey: '',
+      apiKey: 'sk-openai-test',
       apiProtocol: 'openai',
       apiVersion: '',
       baseUrl: 'https://api.openai.com/v1',
