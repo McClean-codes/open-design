@@ -22,6 +22,7 @@ import {
 import { releaseAppVersionArgs, resolvePackagedWinInstallIdentity } from '@/vitest/packaged-win-identity';
 import { resolvePackagedSmokeNamespace } from '@/vitest/suite';
 import { startToolsServeUpdaterFixture, type ToolsServeUpdaterFixture } from '@/vitest/tools-serve-updater-fixture';
+import { missingWorkingWinInstallerOverwriteMarkers } from '@/vitest/win-installer-log';
 
 const execFileAsync = promisify(execFile);
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -793,7 +794,9 @@ winDescribe('packaged windows runtime smoke', () => {
         );
         started = false;
         expect(reinstall.code).toBe(0);
-        assertTransactionalInPlaceInstallLog(reinstall.nsisLogTail);
+        assertWorkingWinInstallerOverwriteLog(reinstall.nsisLogTail);
+        expect(reinstall.nsisLogTail.join('\n')).toContain('running instances detected before silent install');
+        expect(reinstall.nsisLogTail.join('\n')).toMatch(/running instances close via (?:pwsh|powershell)\.exe exit=0/);
 
         start = await measureSmokeStep(timings, 'restart after direct reinstall', async () =>
           runToolsPackJson<WinStartResult>('start'),
@@ -1597,7 +1600,7 @@ async function runInstallerFallbackAcceptance(options: {
     join(fixtureNamespaceRoot, 'logs', 'nsis.log'),
   );
   expect(install.code).toBe(0);
-  assertTransactionalInPlaceInstallLog(install.nsisLogTail);
+  assertWorkingWinInstallerOverwriteLog(install.nsisLogTail);
   process.env.OD_UPDATE_CURRENT_VERSION = targetVersion;
 
   const start = await runToolsPackJsonForVersion<WinStartResult>('start', targetVersion);
@@ -1698,18 +1701,12 @@ async function runToolsPackJsonForVersion<T>(
   }
 }
 
-function assertTransactionalInPlaceInstallLog(lines: string[]): void {
-  const log = lines.join('\n');
-  expect(log).toContain('existing installation found; silent install will overwrite it');
-  // The installer closes running instances via pwsh.exe, falling back to
-  // powershell.exe (#2799), before quarantining the old tree and atomically
-  // committing the replacement. These lifecycle events are the stable
-  // transaction contract; the older "running instances detected" prose is no
-  // longer emitted by the current NSIS implementation.
-  expect(log).toMatch(/running instances close via (?:pwsh|powershell)\.exe exit=0/);
-  expect(log).toMatch(/event=install_dir_after_quarantine .* exists=1/);
-  expect(log).toMatch(/event=install_dir_after_commit .* exists=1/);
-  expect(log).toContain('install transaction cleanup exit=0');
+function assertWorkingWinInstallerOverwriteLog(lines: string[]): void {
+  // #6008 deliberately restored this working replace flow after the
+  // transactional installer failed fresh installs. Keep the full release
+  // smoke aligned with the generated installer until a transactional redesign
+  // lands together with real installer coverage.
+  expect(missingWorkingWinInstallerOverwriteMarkers(lines)).toEqual([]);
 }
 
 async function runDirectInstaller(
