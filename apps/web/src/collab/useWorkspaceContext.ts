@@ -40,6 +40,19 @@ import {
 // `packages/contracts/src/api/collab.ts` for the shape.
 export interface WorkspaceContextState {
   context: WorkspaceCollabContext | null;
+  /**
+   * Exact directory-backed identity that read-only Workspace catalogs may use
+   * while the richer `/api/workspace/context` projection is still loading.
+   *
+   * This is deliberately separate from `context`: writes, runs, comments and
+   * project mutations must continue to wait for the fully verified context.
+   * The provisional value is only published when this tab's session selection
+   * has an exact active row in the current account directory.
+   */
+  resourceReadIdentity?: {
+    context: WorkspaceCollabContext;
+    generation: string;
+  } | null;
   loading: boolean;
   /**
    * A deliberate identity change was announced, but its replacement context has
@@ -302,6 +315,7 @@ export async function resolveBoundProjectWorkspaceContext(
 // snapping to the real workspace. Seeding the remount from this cache shows the
 // last-known signed-in state instantly while the background read revalidates.
 let cachedWorkspaceContext: WorkspaceContextState['context'] = null;
+let cachedWorkspaceContextGeneration = 'initial';
 let workspaceContextRevision = 0;
 let workspaceContextIdentityChangePending = false;
 const WORKSPACE_SELECTION_SESSION_KEY = 'od.workspaceSelection.v1';
@@ -385,6 +399,7 @@ function explicitWorkspaceHeaders(selection: WorkspaceSelection): Record<string,
 /** Test seam: clear the module-level context cache between tests. */
 export function resetWorkspaceContextCache(): void {
   cachedWorkspaceContext = null;
+  cachedWorkspaceContextGeneration = 'initial';
   workspaceContextRevision = 0;
   workspaceContextRequestToken = 'initial';
   localIdentityChangeSeq = 0;
@@ -442,6 +457,13 @@ export function lastResolvedTeamProjects(
 export function useWorkspaceContext(): WorkspaceContextState {
   const [state, setState] = useState<WorkspaceContextState>(() => ({
     context: cachedWorkspaceContext,
+    resourceReadIdentity:
+      cachedWorkspaceContext && !workspaceContextIdentityChangePending
+        ? {
+            context: cachedWorkspaceContext,
+            generation: cachedWorkspaceContextGeneration,
+          }
+        : null,
     loading: cachedWorkspaceContext === null,
     identityChangePending: workspaceContextIdentityChangePending,
   }));
@@ -486,21 +508,47 @@ export function useWorkspaceContext(): WorkspaceContextState {
    */
   const loadContext = useCallback(async (options: { markLoading?: boolean } = {}) => {
     const requestEpoch = ++requestEpochRef.current;
+    const requestGeneration = workspaceContextRequestToken;
     if (options.markLoading && mountedRef.current) {
       setState((prev) => ({
         ...prev,
         // Keep a resolved context visible to shell-only consumers while marking
         // its workspace-owned data unsafe through identityChangePending.
         loading: prev.context === null ? true : prev.loading,
+        resourceReadIdentity: null,
         identityChangePending: true,
       }));
     }
     try {
+      const requestedSelection = readWorkspaceSelection();
+      const directory = options.markLoading
+        ? await readWorkspaceDirectoryForCurrentGeneration({ fresh: true })
+        : await readWorkspaceDirectoryForCurrentGeneration();
+      if (
+        !mountedRef.current
+        || requestEpochRef.current !== requestEpoch
+        || workspaceContextRequestToken !== requestGeneration
+      ) return;
+      const selected = chooseWorkspaceForTab(directory.items ?? []);
+      const exactSessionSelection = requestedSelection && selected
+        && selected.workspaceId === requestedSelection.workspaceId
+        && selected.workspaceMemberId === requestedSelection.workspaceMemberId
+        ? selected
+        : null;
+      const provisionalReadContext = exactSessionSelection
+        ? workspaceContextFromDirectoryItem(exactSessionSelection)
+        : null;
+      if (provisionalReadContext) {
+        setState((prev) => ({
+          ...prev,
+          resourceReadIdentity: {
+            context: provisionalReadContext,
+            generation: requestGeneration,
+          },
+        }));
+      }
+
       const fetchContext = async () => {
-        const directory = options.markLoading
-          ? await readWorkspaceDirectoryForCurrentGeneration({ fresh: true })
-          : await readWorkspaceDirectoryForCurrentGeneration();
-        const selected = chooseWorkspaceForTab(directory.items ?? []);
         if (!selected) {
           return { context: null } satisfies WorkspaceContextResponse;
         }
@@ -519,6 +567,15 @@ export function useWorkspaceContext(): WorkspaceContextState {
           throw error;
         }
         const body = (await res.json()) as WorkspaceContextResponse;
+        if (
+          body.context
+          && (
+            body.context.workspaceId !== selected.workspaceId
+            || body.context.workspaceMemberId !== selected.workspaceMemberId
+          )
+        ) {
+          throw new Error('workspace-context identity mismatch');
+        }
         if (!body.context || body.context.workspaceName?.trim()) return body;
         // Older Vela context payloads predate `workspaceName`, while the
         // membership directory already carries it. Reuse the name from the
@@ -542,7 +599,11 @@ export function useWorkspaceContext(): WorkspaceContextState {
       const body = options.markLoading
         ? await forceCoalescedGet(coalesceKey, fetchContext)
         : await coalescedGet(coalesceKey, fetchContext);
-      if (!mountedRef.current || requestEpochRef.current !== requestEpoch) return;
+      if (
+        !mountedRef.current
+        || requestEpochRef.current !== requestEpoch
+        || workspaceContextRequestToken !== requestGeneration
+      ) return;
       // A successful read is the only thing that redefines "signed in": persist it
       // (including an explicit null for a genuinely signed-out response) so the
       // next remount seeds from the truth, not a stale value.
@@ -551,20 +612,35 @@ export function useWorkspaceContext(): WorkspaceContextState {
         workspaceContextRevision += 1;
       }
       cachedWorkspaceContext = nextContext;
+      cachedWorkspaceContextGeneration = requestGeneration;
       workspaceContextIdentityChangePending = false;
       setState({
         context: cachedWorkspaceContext,
+        resourceReadIdentity: cachedWorkspaceContext
+          ? { context: cachedWorkspaceContext, generation: requestGeneration }
+          : null,
         loading: false,
         identityChangePending: false,
       });
     } catch (error) {
-      if (!mountedRef.current || requestEpochRef.current !== requestEpoch) return;
+      if (
+        !mountedRef.current
+        || requestEpochRef.current !== requestEpoch
+        || workspaceContextRequestToken !== requestGeneration
+      ) return;
       // Transient failure (offline, momentary daemon/hub hiccup): keep the
       // last-known context instead of flashing the signed-out state. A never-
       // signed-in / personal user has a null cache, so this still shows the local
       // state for them.
       setState({
         context: cachedWorkspaceContext,
+        resourceReadIdentity:
+          cachedWorkspaceContext && !workspaceContextIdentityChangePending
+            ? {
+                context: cachedWorkspaceContext,
+                generation: cachedWorkspaceContextGeneration,
+              }
+            : null,
         loading: false,
         identityChangePending: workspaceContextIdentityChangePending,
         failure:
@@ -624,6 +700,10 @@ export function useWorkspaceContext(): WorkspaceContextState {
         if (mountedRef.current) {
           setState({
             context: seeded,
+            resourceReadIdentity: {
+              context: seeded,
+              generation: workspaceContextRequestToken,
+            },
             loading: false,
             identityChangePending: false,
           });
@@ -766,6 +846,7 @@ export function notifyWorkspaceContextRefresh(
       workspaceContextRevision += 1;
     }
     cachedWorkspaceContext = seed.context;
+    cachedWorkspaceContextGeneration = workspaceContextRequestToken;
   } else {
     advanceWorkspaceAccountGeneration(stamp);
     workspaceContextIdentityChangePending = true;
@@ -1461,15 +1542,29 @@ export function notifyTeamProjectsChanged(): void {
 }
 
 export function useTeamProjects(): TeamProjectsState {
+  const workspaceState = useWorkspaceContext();
   const {
     context: workspaceContext,
     loading: workspaceContextLoading,
     identityChangePending,
-  } = useWorkspaceContext();
-  const workspaceContextRef = useRef(workspaceContext);
-  workspaceContextRef.current = workspaceContext;
-  const catalogIdentity = workspaceIdentityCacheKey(workspaceContext);
-  const teamCatalogIdentity = teamProjectsIdentity(workspaceContext);
+  } = workspaceState;
+  // Older test doubles predate resourceReadIdentity. Production state always
+  // defines it; the fallback keeps those tests describing the verified-context
+  // path without granting a runtime fallback to ambient/default/current state.
+  const resourceReadIdentity = workspaceState.resourceReadIdentity === undefined
+    ? workspaceContext
+      ? { context: workspaceContext, generation: 'verified-context' }
+      : null
+    : workspaceState.resourceReadIdentity;
+  const catalogContext = resourceReadIdentity?.context ?? null;
+  const catalogGeneration = resourceReadIdentity?.generation ?? null;
+  const catalogContextIdentity = workspaceIdentityCacheKey(catalogContext);
+  const catalogScopeKey = catalogGeneration
+    ? JSON.stringify([catalogGeneration, catalogContextIdentity])
+    : null;
+  const resourceReadIdentityRef = useRef(resourceReadIdentity);
+  resourceReadIdentityRef.current = resourceReadIdentity;
+  const teamCatalogIdentity = teamProjectsIdentity(catalogContext);
   const [catalog, setCatalog] = useState<{
     identity: string | null;
     projects: TeamProject[];
@@ -1478,7 +1573,7 @@ export function useTeamProjects(): TeamProjectsState {
       ? cachedTeamProjects.get(teamCatalogIdentity) ?? null
       : null;
     return {
-      identity: cached ? teamCatalogIdentity : null,
+      identity: cached ? catalogScopeKey : null,
       projects: cached ?? [],
     };
   });
@@ -1501,7 +1596,13 @@ export function useTeamProjects(): TeamProjectsState {
   // collapses the case where every mounted `useTeamProjects()` instance reacts
   // to that same change in one synchronous burst into a single fetch.
   const loadFull = useCallback(async (force = false) => {
-    const read = beginWorkspaceScopedRead(workspaceContextRef.current);
+    const issuedIdentity = resourceReadIdentityRef.current;
+    const read = beginWorkspaceScopedRead(issuedIdentity?.context);
+    const isStillCurrent = () => {
+      const current = resourceReadIdentityRef.current;
+      return current?.generation === issuedIdentity?.generation
+        && read.isStillCurrent(current?.context);
+    };
     if (!read.context) {
       if (mountedRef.current) {
         setCatalog({ identity: null, projects: [] });
@@ -1516,32 +1617,36 @@ export function useTeamProjects(): TeamProjectsState {
       const projects = await fetchTeamProjectsCatalog({
         context: read.context,
         force,
+        requestGeneration: issuedIdentity?.generation,
       });
-      if (!read.isStillCurrent(workspaceContextRef.current)) return;
+      if (!isStillCurrent()) return;
       const identity = teamProjectsIdentity(read.context);
       if (identity) cachedTeamProjects.set(identity, projects);
       if (mountedRef.current) {
-        setCatalog({ identity, projects });
+        setCatalog({ identity: catalogScopeKey, projects });
         setLoading(false);
       }
     } catch {
       // Personal / offline / daemon without the hub: no team-shared projects.
       // A request issued for the workspace the user just left must not clear a
       // newer workspace's successful catalog when it rejects late.
-      if (!read.isStillCurrent(workspaceContextRef.current)) return;
+      if (!isStillCurrent()) return;
       if (mountedRef.current) {
         setCatalog({
-          identity: teamProjectsIdentity(read.context),
+          identity: catalogScopeKey,
           projects: [],
         });
         setLoading(false);
       }
     }
-  }, [catalogIdentity]);
+  }, [catalogScopeKey]);
 
   // Initial load + manual reload (nonce bump).
   useEffect(() => {
-    if (workspaceContextLoading) return;
+    if (
+      (workspaceContextLoading || identityChangePending)
+      && !resourceReadIdentity
+    ) return;
     setLoading(true);
     void loadFull();
   }, [nonce, loadFull, workspaceContextLoading]);
@@ -1608,13 +1713,15 @@ export function useTeamProjects(): TeamProjectsState {
   }, [loadFull]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
-  const catalogMatchesIdentity = catalog.identity === teamCatalogIdentity;
+  const catalogMatchesIdentity = catalog.identity === catalogScopeKey;
   const projects =
-    !identityChangePending && catalogMatchesIdentity ? catalog.projects : [];
+    catalogMatchesIdentity ? catalog.projects : [];
   return {
     projects,
     loading:
-      loading || Boolean(identityChangePending) || !catalogMatchesIdentity,
+      loading
+      || !catalogMatchesIdentity
+      || Boolean(identityChangePending && !resourceReadIdentity),
     reload,
   };
 }

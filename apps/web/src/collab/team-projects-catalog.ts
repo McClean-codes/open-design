@@ -66,9 +66,12 @@ export async function fetchTeamProjectsCatalog(
     /** Explicit user refreshes own their request generation and must remain
      * independent so a newer response can supersede an older in-flight one. */
     coalesce?: boolean;
+    /** Account/selection generation for provisional directory-backed reads. */
+    requestGeneration?: string;
   },
 ): Promise<TeamProject[]> {
-  const cacheKey = `workspace-team-projects:${workspaceIdentityCacheKey(options.context)}`;
+  const cacheKey = `workspace-team-projects:${workspaceIdentityCacheKey(options.context)}`
+    + `:generation:${options.requestGeneration ?? 'verified'}`;
   const run = async (): Promise<TeamProject[]> => {
     const response = await fetch('/api/workspace/projects/team', {
       headers: workspaceProjectHeaders(options.context),

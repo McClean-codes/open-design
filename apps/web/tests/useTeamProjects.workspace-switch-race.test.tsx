@@ -44,6 +44,15 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function selectWorkspaceForSession(
+  context: Pick<typeof CONTEXTS.a, 'workspaceId' | 'workspaceMemberId'>,
+): void {
+  window.sessionStorage.setItem('od.workspaceSelection.v1', JSON.stringify({
+    workspaceId: context.workspaceId,
+    workspaceMemberId: context.workspaceMemberId,
+  }));
+}
+
 describe('useTeamProjects workspace-switch races', () => {
   let activeWorkspace: keyof typeof CONTEXTS;
   let rejectWorkspaceA!: (reason?: unknown) => void;
@@ -123,6 +132,218 @@ describe('useTeamProjects workspace-switch races', () => {
     expect(hook.result.current.loading).toBe(false);
     expect(hook.result.current.projects).toEqual([B_PROJECT]);
   });
+
+  it('starts the team catalog as soon as the directory establishes its read identity', async () => {
+    let resolveDirectory!: (response: Response) => void;
+    const directoryResponse = new Promise<Response>((resolve) => {
+      resolveDirectory = resolve;
+    });
+    let resolveWorkspaceContext!: (response: Response) => void;
+    const workspaceContextResponse = new Promise<Response>((resolve) => {
+      resolveWorkspaceContext = resolve;
+    });
+    const requested: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        requested.push(url);
+        if (url.includes('/api/workspace/directory')) {
+          return directoryResponse;
+        }
+        if (url.includes('/api/workspace/context')) {
+          return workspaceContextResponse;
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          return Promise.resolve(jsonResponse({ projects: [A_PROJECT] }));
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const hook = renderHook(() => useTeamProjects());
+
+    await waitFor(() => {
+      expect(requested).toEqual(['/api/workspace/directory']);
+    });
+
+    await act(async () => {
+      resolveDirectory(jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])));
+      await directoryResponse;
+    });
+
+    await waitFor(() => {
+      expect(requested).toContain('/api/workspace/context');
+      expect(requested).toContain('/api/workspace/projects/team');
+    });
+    expect(hook.result.current.projects).toEqual([A_PROJECT]);
+    expect(hook.result.current.loading).toBe(false);
+
+    await act(async () => {
+      resolveWorkspaceContext(jsonResponse({ context: CONTEXTS.a }));
+      await workspaceContextResponse;
+    });
+  });
+
+  it('discards an older session generation for the same workspace identity', async () => {
+    const catalogReads: Array<{
+      resolve: (response: Response) => void;
+      promise: Promise<Response>;
+    }> = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(
+            jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])),
+          );
+        }
+        if (url.includes('/api/workspace/context')) {
+          return new Promise<Response>(() => {});
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          let resolve!: (response: Response) => void;
+          const promise = new Promise<Response>((next) => {
+            resolve = next;
+          });
+          catalogReads.push({ resolve, promise });
+          return promise;
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const hook = renderHook(() => useTeamProjects());
+    await waitFor(() => expect(catalogReads).toHaveLength(1));
+
+    act(() => {
+      notifyWorkspaceContextRefresh();
+    });
+    await waitFor(() => expect(catalogReads).toHaveLength(2));
+
+    const currentProject = { ...A_PROJECT, name: 'Current session project' };
+    await act(async () => {
+      catalogReads[1]!.resolve(jsonResponse({ projects: [currentProject] }));
+      await catalogReads[1]!.promise;
+    });
+    await waitFor(() => {
+      expect(hook.result.current.projects).toEqual([currentProject]);
+      expect(hook.result.current.loading).toBe(false);
+    });
+
+    await act(async () => {
+      catalogReads[0]!.resolve(jsonResponse({ projects: [A_PROJECT] }));
+      await catalogReads[0]!.promise;
+    });
+    expect(hook.result.current.projects).toEqual([currentProject]);
+  });
+
+  it('does not start a provisional catalog when the selected directory row is missing', async () => {
+    let resolveWorkspaceContext!: (response: Response) => void;
+    const workspaceContextResponse = new Promise<Response>((resolve) => {
+      resolveWorkspaceContext = resolve;
+    });
+    const requested: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        requested.push(url);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(
+            jsonResponse(workspaceDirectoryFixture([CONTEXTS.b])),
+          );
+        }
+        if (url.includes('/api/workspace/context')) {
+          return workspaceContextResponse;
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          return Promise.resolve(jsonResponse({ projects: [B_PROJECT] }));
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const hook = renderHook(() => useTeamProjects());
+    await waitFor(() => {
+      expect(requested).toContain('/api/workspace/context');
+    });
+    expect(requested).not.toContain('/api/workspace/projects/team');
+
+    await act(async () => {
+      resolveWorkspaceContext(jsonResponse({ context: CONTEXTS.b }));
+      await workspaceContextResponse;
+    });
+    await waitFor(() => {
+      expect(hook.result.current.projects).toEqual([B_PROJECT]);
+      expect(hook.result.current.loading).toBe(false);
+    });
+  });
+
+  it.each(['request failure', 'identity mismatch'] as const)(
+    'clears provisional catalog authority after full context %s',
+    async (outcome) => {
+      let resolveWorkspaceContext!: (response: Response) => void;
+      let rejectWorkspaceContext!: (reason?: unknown) => void;
+      const workspaceContextResponse = new Promise<Response>((resolve, reject) => {
+        resolveWorkspaceContext = resolve;
+        rejectWorkspaceContext = reject;
+      });
+      let resolveCatalog!: (response: Response) => void;
+      const catalogResponse = new Promise<Response>((resolve) => {
+        resolveCatalog = resolve;
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn((input: RequestInfo | URL): Promise<Response> => {
+          const url = String(input);
+          if (url.includes('/api/workspace/directory')) {
+            return Promise.resolve(
+              jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])),
+            );
+          }
+          if (url.includes('/api/workspace/context')) {
+            return workspaceContextResponse;
+          }
+          if (url.includes('/api/workspace/projects/team')) {
+            return catalogResponse;
+          }
+          return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+        }),
+      );
+      selectWorkspaceForSession(CONTEXTS.a);
+
+      const hook = renderHook(() => useTeamProjects());
+      await waitFor(() => {
+        expect(resolveCatalog).toBeTypeOf('function');
+      });
+
+      await act(async () => {
+        if (outcome === 'request failure') {
+          rejectWorkspaceContext(new Error('context unavailable'));
+        } else {
+          resolveWorkspaceContext(jsonResponse({ context: CONTEXTS.b }));
+        }
+        await Promise.resolve();
+      });
+      await waitFor(() => {
+        expect(hook.result.current.projects).toEqual([]);
+        expect(hook.result.current.loading).toBe(false);
+      });
+
+      await act(async () => {
+        resolveCatalog(jsonResponse({ projects: [A_PROJECT] }));
+        await catalogResponse;
+      });
+      expect(hook.result.current.projects).toEqual([]);
+      expect(lastResolvedTeamProjects(CONTEXTS.a)).toBeNull();
+    },
+  );
 
   it('masks workspace A catalog while the workspace B identity read is pending', async () => {
     let holdWorkspaceContext = false;
