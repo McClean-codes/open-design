@@ -48,6 +48,10 @@ function attachOpenUrlListenerWhenHosted(): void {
 
 attachOpenUrlListenerWhenHosted();
 
+export function dispatchInviteDeeplink(url: string | null): void {
+  deeplinkDispatcher.dispatch(url);
+}
+
 /**
  * Register the `opendesign://` scheme and wire the OS deeplink events to
  * {@link continueInviteFromUrl}. macOS delivers via `open-url`; Windows/Linux via

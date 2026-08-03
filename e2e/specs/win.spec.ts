@@ -671,13 +671,19 @@ winDescribe('packaged windows runtime smoke', () => {
       // pointing at a versioned payload would break the scheme after cleanup.
       await assertWindowsInviteProtocolRegistration(install.installDir);
       const protocolHotPid = inspect.status?.pid ?? start.pid;
+      const protocolHotContinuationCount = await countInviteContinuationResults();
       await invokeWindowsInviteDeeplink();
-      const protocolHotInspect = await measureSmokeStep(
+      const [protocolHotInspect, protocolHotContinuation] = await measureSmokeStep(
         timings,
         'invite protocol hot delivery',
-        async () => waitForHealthyDesktop(),
+        async () => Promise.all([
+          waitForHealthyDesktop(),
+          waitForInviteContinuationResult(protocolHotContinuationCount),
+        ]),
       );
       expect(protocolHotInspect.status?.pid).toBe(protocolHotPid);
+      expect(protocolHotContinuation.reason).not.toBe('daemon_unavailable');
+      expect(protocolHotContinuation.reason).not.toBe('unreachable');
 
       if (verifyCoreOnly) {
         const protocolStop = await measureSmokeStep(
@@ -2582,6 +2588,59 @@ async function invokeWindowsInviteDeeplink(): Promise<void> {
     '-Command',
     `Start-Process -FilePath '${escaped}'`,
   ]);
+}
+
+type InviteContinuationResult = {
+  ok: boolean;
+  reason?: string;
+  status?: number;
+};
+
+async function countInviteContinuationResults(): Promise<number> {
+  return (await readInviteContinuationResults()).length;
+}
+
+async function waitForInviteContinuationResult(
+  priorCount: number,
+  timeoutMs = 30_000,
+): Promise<InviteContinuationResult> {
+  const startedAt = Date.now();
+  let lastCount = priorCount;
+  while (Date.now() - startedAt < timeoutMs) {
+    const results = await readInviteContinuationResults();
+    lastCount = results.length;
+    if (results.length > priorCount) return results.at(-1)!;
+    await delay(250);
+  }
+  throw new Error(
+    `invite deeplink did not produce a continuation result within ${timeoutMs}ms (before=${priorCount}, after=${lastCount})`,
+  );
+}
+
+async function readInviteContinuationResults(): Promise<InviteContinuationResult[]> {
+  const logPath = join(runtimeNamespaceRoot, 'logs', 'desktop', 'latest.log');
+  const content = await readFile(logPath, 'utf8').catch(() => '');
+  const results: InviteContinuationResult[] = [];
+  for (const line of content.split(/\r?\n/u)) {
+    if (line.trim().length === 0) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line) as unknown;
+    } catch {
+      continue;
+    }
+    if (!isRecord(entry) || entry.message !== 'console.info' || !isRecord(entry.meta)) continue;
+    const args = entry.meta.args;
+    if (!Array.isArray(args) || args[0] !== '[open-design desktop] invite deeplink continuation completed') continue;
+    const outcome = args[1];
+    if (!isRecord(outcome) || typeof outcome.ok !== 'boolean') continue;
+    results.push({
+      ok: outcome.ok,
+      ...(typeof outcome.reason === 'string' ? { reason: outcome.reason } : {}),
+      ...(typeof outcome.status === 'number' ? { status: outcome.status } : {}),
+    });
+  }
+  return results;
 }
 
 async function assertWindowsInviteProtocolRemoved(): Promise<void> {

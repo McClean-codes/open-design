@@ -55,7 +55,7 @@ import {
 } from "./logging.js";
 import { resolvePackagedNamespacePaths } from "./paths.js";
 import { createObsoleteInstalledOuterRetirement } from "./obsolete-installed-outer.js";
-import { launchPackagedPayloadDesktop } from "./payload-desktop-launch.js";
+import { findPackagedDeeplinkArg, launchPackagedPayloadDesktop } from "./payload-desktop-launch.js";
 import { packagedEntryUrl, registerOdProtocol } from "./protocol.js";
 import { startPackagedSidecars } from "./sidecars.js";
 import { reportStartupFailure, resolveStartupDistinctId } from "./startup-telemetry.js";
@@ -151,6 +151,7 @@ async function main(): Promise<void> {
     return;
   }
   const existingDesktop = await inspectExistingDesktopForLauncher(namespace, {
+    deeplinkUrl: findPackagedDeeplinkArg(process.argv),
     incomingVersion: namespaceConfig.appVersion,
     logger: console,
     paths: initialPaths,

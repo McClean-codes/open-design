@@ -13,6 +13,10 @@ import {
 
 const DEFAULT_DELEGATION_TIMEOUT_MS = 60_000;
 
+export function findPackagedDeeplinkArg(argv: readonly string[]): string | null {
+  return argv.find((arg) => arg.startsWith("opendesign://")) ?? null;
+}
+
 export type PackagedPayloadDesktopLaunchPlan = {
   args: string[];
   command: string;

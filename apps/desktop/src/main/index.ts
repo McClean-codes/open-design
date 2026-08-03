@@ -39,7 +39,7 @@ import {
 import { readProcessStamp } from "@open-design/platform";
 
 import { createDesktopRuntime, type DesktopRuntime } from "./runtime.js";
-import { registerInviteDeeplink, focusPrimaryWindow } from "./invite-deeplink.js";
+import { dispatchInviteDeeplink, registerInviteDeeplink, focusPrimaryWindow } from "./invite-deeplink.js";
 import { setUpDesktopCrashReporter, writeDesktopGpuInfo } from "./crash-diagnostics.js";
 import { beginDesktopSession, clearReportedCrash, endDesktopSessionCleanly, markDesktopSessionRunning } from "./session-lifecycle.js";
 import {
@@ -897,6 +897,7 @@ export async function runDesktopMain(
             return activeDesktop.console();
           case SIDECAR_MESSAGES.SHOW:
             activeDesktop.show();
+            dispatchInviteDeeplink(request.input?.deeplinkUrl ?? null);
             notifyDesktopExternalShow(options.onExternalShow);
             return { accepted: true };
           case SIDECAR_MESSAGES.CLICK:
@@ -1008,6 +1009,9 @@ export async function runDesktopMain(
   registerInviteDeeplink({
     resolveDaemonBaseUrl: resolveDaemonBaseUrl(runtime, options),
     focus: focusPrimaryWindow,
+    onCompleted: (outcome) => {
+      console.info("[open-design desktop] invite deeplink continuation completed", outcome);
+    },
     protocolClientPath: options.inviteProtocolClientPath,
   });
   const discoverUpdaterAppConfigBaseUrl = resolveDaemonBaseUrl(runtime, options);

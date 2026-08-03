@@ -27,11 +27,13 @@ describe("continueInviteFromUrl", () => {
     ) as unknown as typeof fetch;
     const focus = vi.fn();
     const onActivated = vi.fn();
+    const onCompleted = vi.fn();
     const out = await continueInviteFromUrl(VALID, {
       resolveDaemonBaseUrl: async () => "http://127.0.0.1:17456",
       fetch: fetchImpl,
       focus,
       onActivated,
+      onCompleted,
     });
     expect(out).toEqual({ ok: true });
     const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]!;
@@ -40,6 +42,7 @@ describe("continueInviteFromUrl", () => {
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({ nonce: "n-1" });
     expect(focus).toHaveBeenCalledTimes(1);
     expect(onActivated).toHaveBeenCalledWith({ workspaceMemberId: "wm-1" });
+    expect(onCompleted).toHaveBeenCalledWith({ ok: true });
   });
 
   it("ignores a url that is not an invite deeplink (no daemon call)", async () => {
