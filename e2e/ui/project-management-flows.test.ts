@@ -6,6 +6,7 @@ import type { Locator, Page, Request } from '@playwright/test';
 import { routeAgents, routeSuccessfulRuns } from '../lib/playwright/mock-factory.js';
 import {
   AMR_PERSONAL_WORKSPACE_CONTEXT,
+  AMR_PERSONAL_WORKSPACE_HEADERS,
   mockAmrPersonalWorkspace,
   settingsSurface,
 } from '../lib/playwright/amr.js';
@@ -1675,9 +1676,12 @@ test('[P0] project detail composer model and Plan mode switches carry into the n
   test.setTimeout(60_000);
   const runRequestBodies: Array<Record<string, unknown>> = [];
   await routeSuccessfulRuns(page, { bodies: runRequestBodies, runId: 'agent-model-run' });
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Composer agent switch run context');
+  await createProject(page, 'Composer agent switch run context', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
   await pickComposerModel(page, /^GPT 5\.5$/i);
@@ -1800,7 +1804,7 @@ test('[P1] project detail composer keeps the selected mode across consecutive tu
 
 test('[P0] @critical project detail composer opens Execution settings where BYOK model choice persists', async ({ page }) => {
   test.setTimeout(60_000);
-  const config = {
+  let config = {
     mode: 'daemon',
     apiKey: 'test-byok-key',
     apiProtocol: 'openai',
@@ -1828,10 +1832,11 @@ test('[P0] @critical project detail composer opens Execution settings where BYOK
   await page.route('**/api/app-config', async (route) => {
     if (route.request().method() === 'PUT') {
       const body = route.request().postDataJSON() as Record<string, unknown>;
+      config = { ...config, ...body };
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ config: body }),
+        body: JSON.stringify({ config }),
       });
       return;
     }
@@ -2819,12 +2824,17 @@ test('[P0] project detail share menu copies the current share link for uploaded 
       },
     });
   });
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Share link copy flow');
+  await createProject(page, 'Share link copy flow', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
-  uploadedName = await uploadTinyHtml(page, 'share-link-copy.html', '<!doctype html><html><body><h1>Share link copy</h1></body></html>');
+  uploadedName = await uploadTinyHtml(page, 'share-link-copy.html', '<!doctype html><html><body><h1>Share link copy</h1></body></html>', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
   await openShareExportTab(page);
@@ -2877,27 +2887,17 @@ test('[P0] project detail share menu opens the current share page for uploaded h
   // witness. Give the page an exact writable Personal/owner identity and bind
   // the project-scope bootstrap to that same identity. Do not make the share
   // control writable by weakening the shared-project authority gate.
-  await mockAmrPersonalWorkspace(page);
-  await page.route('**/api/projects/*/workspace-scope', async (route) => {
-    const projectId = getProjectIdFromApiPath(route.request().url());
-    await route.fulfill({
-      json: {
-        scope: {
-          kind: 'personal',
-          projectId,
-          workspaceId: AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
-          visibility: 'personal',
-          context: AMR_PERSONAL_WORKSPACE_CONTEXT,
-        },
-      },
-    });
-  });
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Open share page flow');
+  await createProject(page, 'Open share page flow', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
-  uploadedName = await uploadTinyHtml(page, 'share-page-open.html', '<!doctype html><html><body><h1>Open share page</h1></body></html>');
+  uploadedName = await uploadTinyHtml(page, 'share-page-open.html', '<!doctype html><html><body><h1>Open share page</h1></body></html>', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
   await openShareExportTab(page);
@@ -3537,8 +3537,9 @@ test('[P2] change pet opens pet settings and updates the custom companion draft'
 async function createProject(
   page: Page,
   projectName: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
 ) {
-  const response = await retryProjectCreate(page, projectName);
+  const response = await retryProjectCreate(page, projectName, options);
   const body = (await response.json()) as {
     project: { id: string };
     conversationId: string;
@@ -3549,12 +3550,14 @@ async function createProject(
 async function retryProjectCreate(
   page: Page,
   projectName: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
 ) {
   let lastError = '';
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const response = await page.request.post('/api/projects', {
         timeout: 15_000,
+        ...(options.headers ? { headers: { ...options.headers } } : {}),
         data: {
           id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           name: projectName,
@@ -4023,6 +4026,7 @@ async function uploadTinyHtml(
   page: Page,
   name: string,
   content: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
 ): Promise<string> {
   await page.getByTestId('design-files-upload-input').setInputFiles({
     name,
@@ -4033,7 +4037,7 @@ async function uploadTinyHtml(
   let uploadedName = '';
   await expect
     .poll(async () => {
-      const files = await listProjectFiles(page, projectId);
+      const files = await listProjectFiles(page, projectId, options);
       uploadedName = files.find((file) => file.name.endsWith(name))?.name ?? '';
       return uploadedName;
     })
@@ -4153,11 +4157,36 @@ async function listProjectsFromApi(page: Page) {
   return body.projects;
 }
 
-async function listProjectFiles(page: Page, projectId: string) {
-  const response = await page.request.get(`/api/projects/${projectId}/files`);
+async function listProjectFiles(
+  page: Page,
+  projectId: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
+) {
+  const response = await page.request.get(
+    `/api/projects/${projectId}/files`,
+    options.headers ? { headers: { ...options.headers } } : undefined,
+  );
   expect(response.ok()).toBeTruthy();
   const body = (await response.json()) as { files: Array<{ name: string }> };
   return body.files;
+}
+
+async function mockWritablePersonalProjectScope(page: Page) {
+  await mockAmrPersonalWorkspace(page);
+  await page.route('**/api/projects/*/workspace-scope', async (route) => {
+    const projectId = getProjectIdFromApiPath(route.request().url());
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'personal',
+          projectId,
+          workspaceId: AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: AMR_PERSONAL_WORKSPACE_CONTEXT,
+        },
+      },
+    });
+  });
 }
 
 function isCreateProjectRequest(request: Request): boolean {
