@@ -25,12 +25,10 @@ import {
   defaultScenarioPluginIdForProjectMetadata,
   PROFILE_MEMORY_ID,
   type AmrWalletSnapshot,
-  type ByokCredentialProfile,
   type ChatSessionMode,
   type ConnectorDetail,
   type InstalledPluginRecord,
   type RunContextSelection,
-  type UpsertByokCredentialProfileRequest,
   type UpsertMemoryRequest,
 } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
@@ -189,11 +187,7 @@ import {
   API_PROTOCOL_TABS,
   SUGGESTED_MODELS_BY_PROTOCOL,
 } from '../state/apiProtocols';
-import {
-  applySavedByokCredentialProfile,
-  defaultKnownProviderModel,
-  KNOWN_PROVIDERS,
-} from '../state/config';
+import { defaultKnownProviderModel, KNOWN_PROVIDERS } from '../state/config';
 import type { KnownProvider } from '../state/config';
 import { saveOnboardingProfile } from '../state/onboarding-profile';
 import { testAgent, testApiProvider } from '../providers/connection-test';
@@ -488,9 +482,6 @@ interface Props {
   onOpenDesignSystem?: (id: string) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
-  onPersistByokCredential?: (
-    input: UpsertByokCredentialProfileRequest,
-  ) => Promise<ByokCredentialProfile>;
   onOpenSettings: (section?: EntrySettingsSection) => void;
   onCompleteOnboarding: () => void;
   artifactUpgradeSlot?: ReactNode;
@@ -595,7 +586,6 @@ export function EntryShell({
   onOpenDesignSystem,
   onDesignSystemsRefresh,
   onPersistComposioKey,
-  onPersistByokCredential,
   onOpenSettings,
   onCompleteOnboarding,
   artifactUpgradeSlot,
@@ -1397,7 +1387,6 @@ export function EntryShell({
             onApiProtocolChange={onApiProtocolChange}
             onApiModelChange={onApiModelChange}
             onConfigPersist={onConfigPersist}
-            {...(onPersistByokCredential ? { onPersistByokCredential } : {})}
             onRefreshAgents={onRefreshAgents}
             onFinish={finishOnboarding}
             onGoBuild={() => {
@@ -1843,7 +1832,6 @@ function OnboardingView({
   onApiProtocolChange,
   onApiModelChange,
   onConfigPersist,
-  onPersistByokCredential,
   onRefreshAgents,
   onFinish,
   onGoBuild,
@@ -1863,9 +1851,6 @@ function OnboardingView({
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
   onConfigPersist: (cfg: AppConfig) => Promise<void> | void;
-  onPersistByokCredential?: (
-    input: UpsertByokCredentialProfileRequest,
-  ) => Promise<ByokCredentialProfile>;
   onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
   // `survey` is passed on the About-you completion paths (not on skip) so the
   // shell can build a personalized Home recommendation.
@@ -1882,7 +1867,6 @@ function OnboardingView({
   // straight from the landing's primary button.
   const [connectExpanded, setConnectExpanded] = useState<'local' | 'byok' | null>(null);
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
-  const [byokPersistPending, setByokPersistPending] = useState(false);
   const [cliScanStatus, setCliScanStatus] = useState<'idle' | 'scanning' | 'done'>('idle');
   const [amrStatus, setAmrStatus] = useState<VelaLoginStatus | null>(null);
   // Initial login status fetch has settled, whether signed in or not. The
@@ -2613,7 +2597,7 @@ function OnboardingView({
     setStep((current) => current - 1);
   }
   async function handlePrimaryAction() {
-    if (newsletterSubmitting || byokPersistPending) return;
+    if (newsletterSubmitting) return;
     // Connect gate: the button is `aria-disabled` (not natively disabled, so it
     // can still surface its tooltip on hover), so guard the click here — a
     // blocked Continue must not advance past the Connect step.
@@ -2629,72 +2613,6 @@ function OnboardingView({
         },
       );
       void handleAmrSignInToContinue(attribution);
-      return;
-    }
-    if (step === 0 && runtime === 'byok') {
-      if (!byokConnectionVerified) return;
-      if (apiProtocol === 'bedrock') {
-        setProviderTestState({
-          status: 'done',
-          inputKey: providerTestInputKey,
-          result: {
-            ok: false,
-            kind: 'unknown',
-            latencyMs: 0,
-            model: config.model,
-            detail: 'Secure BYOK profiles do not support the Bedrock protocol',
-          },
-        });
-        return;
-      }
-      if (!onPersistByokCredential) {
-        setProviderTestState({
-          status: 'done',
-          inputKey: providerTestInputKey,
-          result: {
-            ok: false,
-            kind: 'unknown',
-            latencyMs: 0,
-            model: config.model,
-            detail: 'Secure BYOK credential storage is unavailable',
-          },
-        });
-        return;
-      }
-      setByokPersistPending(true);
-      try {
-        const profile = await onPersistByokCredential({
-          ...(config.byokProfileId ? { id: config.byokProfileId } : {}),
-          label: selectedProvider?.label ?? apiProtocol,
-          protocol: apiProtocol,
-          baseUrl: config.baseUrl.trim(),
-          model: config.model.trim(),
-          ...(apiProtocol === 'azure' && config.apiVersion?.trim()
-            ? { apiVersion: config.apiVersion.trim() }
-            : {}),
-          requiresApiKey: true,
-          apiKey: config.apiKey.trim(),
-        });
-        await onConfigPersist(applySavedByokCredentialProfile(config, profile));
-        emitOnboardingClick('continue', 'continue');
-        setStep((current) => current + 1);
-      } catch (error) {
-        setProviderTestState({
-          status: 'done',
-          inputKey: providerTestInputKey,
-          result: {
-            ok: false,
-            kind: 'unknown',
-            latencyMs: 0,
-            model: config.model,
-            detail: error instanceof Error
-              ? error.message
-              : 'Secure BYOK credential storage is unavailable',
-          },
-        });
-      } finally {
-        setByokPersistPending(false);
-      }
       return;
     }
     if (isLastStep) {
@@ -3311,10 +3229,8 @@ function OnboardingView({
     step,
   ]);
 
-  const onboardingNavigationLocked = newsletterSubmitting || byokPersistPending;
-  const primaryActionLabel = byokPersistPending
-    ? t('common.loading')
-    : isLastStep && newsletterSubmitting
+  const onboardingNavigationLocked = newsletterSubmitting;
+  const primaryActionLabel = isLastStep && newsletterSubmitting
     ? t('common.loading')
     : step === 0 && amrLoginPending
     ? t('settings.amrSigningIn')

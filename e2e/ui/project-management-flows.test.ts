@@ -28,33 +28,6 @@ function projectDesignSystemTrigger(page: Page): Locator {
     .getByTestId('chat-composer')
     .getByTestId('composer-design-system-trigger');
 }
-
-async function routeByokProfile(
-  page: Page,
-  config: Record<string, unknown>,
-): Promise<void> {
-  await page.route('**/api/byok/profiles', async (route) => {
-    await route.fulfill({
-      json: {
-        available: true,
-        backend: 'test',
-        profiles: [{
-          id: config.byokProfileId,
-          label: 'OpenAI',
-          protocol: config.apiProtocol,
-          baseUrl: config.baseUrl,
-          model: config.model,
-          requiresApiKey: true,
-          configured: true,
-          keyTail: config.byokCredentialTail,
-          createdAt: 1,
-          updatedAt: 1,
-        }],
-      },
-    });
-  });
-}
-
 const AGENTS = [
   {
     id: 'codex',
@@ -1844,19 +1817,16 @@ test('[P1] project detail composer keeps the selected mode across consecutive tu
   );
 });
 
-test('[P0] @critical project detail composer reports the BYOK model read-only', async ({ page }) => {
+test('[P0] @critical project detail composer BYOK model switch persists from the agent menu', async ({ page }) => {
   test.setTimeout(60_000);
   const config = {
-    mode: 'api',
-    apiKey: '',
+    mode: 'daemon',
+    apiKey: 'test-byok-key',
     apiProtocol: 'openai',
     apiVersion: '',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-2024-05-13',
     apiProviderBaseUrl: 'https://api.openai.com/v1',
-    byokProfileId: 'byok-project-model-switch',
-    byokCredentialConfigured: true,
-    byokCredentialTail: 'test',
     agentId: 'codex',
     skillId: null,
     designSystemId: null,
@@ -1890,37 +1860,43 @@ test('[P0] @critical project detail composer reports the BYOK model read-only', 
       body: JSON.stringify({ config }),
     });
   });
-  await routeByokProfile(page, config);
 
   await page.goto('/');
   await createProject(page, 'Composer BYOK model switch');
   await expectWorkspaceReady(page);
 
   const { menu } = await openComposerAgentMenu(page);
+  await menu.getByRole('button', { name: /API · BYOK|Use API/i }).click();
 
-  // BYOK is provider configuration, not a per-message choice: the composer
-  // popover reports the active model read-only and offers no picker. Changing
-  // it lives in Settings → Execution.
-  const readout = menu.locator('.avatar-model-section .avatar-static-value').first();
-  await expect(readout).toHaveText('gpt-4o-2024-05-13');
-  await expect(menu.locator('.avatar-model-section [role="combobox"]')).toHaveCount(0);
-  await expect(menu.getByTestId('avatar-model-list')).toHaveCount(0);
-  await expect(menu.getByRole('button', { name: /API · BYOK|Use API/i })).toHaveCount(0);
+  const modelSelect = menu.locator('.avatar-model-section [role="combobox"]').first();
+  await expect(modelSelect).toContainText('gpt-4o-2024-05-13');
+  await modelSelect.click();
+  const modelPopover = page.getByTestId('avatar-byok-model-popover');
+  await expect(modelPopover.getByRole('option', { name: /^gpt-4o-mini$/i })).toBeVisible();
+  await expect(modelPopover.getByRole('option', { name: /deepseek/i })).toHaveCount(0);
+  await expect(modelPopover.getByRole('option', { name: /MiniMax/i })).toHaveCount(0);
+  await modelPopover.getByRole('option', { name: /^gpt-4o-mini$/i }).click();
+
+  await expect(modelSelect).toContainText('gpt-4o-mini');
+  await expect.poll(async () => page.evaluate((key) => {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  }, STORAGE_KEY)).toMatchObject({
+    mode: 'api',
+    model: 'gpt-4o-mini',
+  });
 });
 
 test('[P0] @critical project detail composer keeps Local CLI and BYOK model choices isolated', async ({ page }) => {
   test.setTimeout(60_000);
   const config = {
     mode: 'daemon',
-    apiKey: '',
+    apiKey: 'test-byok-key',
     apiProtocol: 'openai',
     apiVersion: '',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-2024-05-13',
     apiProviderBaseUrl: 'https://api.openai.com/v1',
-    byokProfileId: 'byok-project-model-isolation',
-    byokCredentialConfigured: true,
-    byokCredentialTail: 'test',
     agentId: 'codex',
     skillId: null,
     designSystemId: null,
@@ -1954,7 +1930,6 @@ test('[P0] @critical project detail composer keeps Local CLI and BYOK model choi
       body: JSON.stringify({ config }),
     });
   });
-  await routeByokProfile(page, config);
 
   await page.goto('/');
   await createProject(page, 'Composer model mode isolation');

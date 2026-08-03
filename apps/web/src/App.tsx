@@ -122,19 +122,14 @@ import { seedHomeComposerPrompt } from './components/HomeView';
 import { goBack, navigate, useRoute, type Route } from './router';
 import {
   fetchDaemonConfig,
-  fetchByokCredentialProfilesFromDaemon,
   DEFAULT_PET,
   fetchMediaProvidersFromDaemon,
   hasAnyConfiguredProvider,
   fetchComposioConfigFromDaemon,
-  legacyByokMigrationErrorPresentation,
   loadConfig,
-  migrateLegacyByokCredentialsToDaemon,
   mergeDaemonConfig,
-  mergeByokCredentialProfiles,
   mergeDaemonMediaProviders,
   saveConfig,
-  persistByokCredentialProfileToDaemon,
   shouldSyncLocalMediaProvidersToDaemon,
   syncComposioConfigToDaemon,
   syncConfigToDaemon,
@@ -887,8 +882,6 @@ function AppInner() {
     failure: 'missing' | 'materialization-failed';
   } | null>(null);
   const [deepLinkRetryRevision, setDeepLinkRetryRevision] = useState(0);
-  const [legacyByokMigrationError, setLegacyByokMigrationError] =
-    useState<Error | null>(null);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
   const [settingsHighlight, setSettingsHighlight] = useState<SettingsHighlight>(null);
@@ -1895,21 +1888,6 @@ function AppInner() {
         setAppVersionInfo(info);
       });
 
-      const legacyByokMigration =
-        await migrateLegacyByokCredentialsToDaemon(
-          latestPersistedConfigRef.current,
-        );
-      if (cancelled) return;
-      setLegacyByokMigrationError(
-        legacyByokMigration.status === 'failed'
-          ? legacyByokMigration.error
-          : null,
-      );
-      const migrationBaseConfig = legacyByokMigration.config;
-      if (legacyByokMigration.status === 'migrated') {
-        latestPersistedConfigRef.current = migrationBaseConfig;
-      }
-
       // Daemon-persisted config + composio config + media provider config land
       // together so the welcome-modal decision and daemon-backed settings
       // apply in one merge, avoiding a flash where local-only state is shown
@@ -1918,14 +1896,10 @@ function AppInner() {
         fetchDaemonConfig(),
         fetchComposioConfigFromDaemon(),
         fetchMediaProvidersFromDaemon(),
-        migrationBaseConfig.byokProfileId
-          ? fetchByokCredentialProfilesFromDaemon()
-          : Promise.resolve(null),
       ]).then(([
         daemonConfig,
         daemonComposioConfig,
         daemonMediaProvidersResult,
-        byokCredentialProfiles,
       ]) => {
         if (cancelled) return;
         const daemonMediaProvidersLoaded =
@@ -1947,23 +1921,18 @@ function AppInner() {
           baseConfig.mediaProviders,
           daemonMediaProvidersLoaded,
         );
-        const next = mergeByokCredentialProfiles(
-          mergeDaemonMediaProviders(
-            clearStaleAmrModelChoiceOnProfileChange(
-              baseConfig,
-              mergeDaemonConfig(baseConfig, daemonConfig),
-            ),
-            daemonMediaProvidersLoaded,
+        const next = mergeDaemonMediaProviders(
+          clearStaleAmrModelChoiceOnProfileChange(
+            baseConfig,
+            mergeDaemonConfig(baseConfig, daemonConfig),
           ),
-          byokCredentialProfiles,
+          daemonMediaProvidersLoaded,
         );
         const hasLocalComposioKey = Boolean(next.composio?.apiKey?.trim());
         if (!hasLocalComposioKey && daemonComposioConfig) {
           next.composio = daemonComposioConfig;
         }
-        if (legacyByokMigration.status !== 'failed') {
-          saveConfig(next);
-        }
+        saveConfig(next);
         if (
           daemonMediaProvidersResult.status === 'ok'
           && migratedLocalMediaProviders
@@ -4363,7 +4332,6 @@ function AppInner() {
       }
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
-      onPersistByokCredential={persistByokCredentialProfileToDaemon}
       onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
@@ -4679,7 +4647,6 @@ function AppInner() {
         onApiProtocolChange={handleApiProtocolChange}
         onApiModelChange={handleApiModelChange}
         onConfigPersist={handleConfigPersist}
-        onPersistByokCredential={persistByokCredentialProfileToDaemon}
         daemonAppConfigReady={daemonAppConfigReady}
         onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
         onSkillsRefresh={refreshSkills}
@@ -4751,12 +4718,6 @@ function AppInner() {
       />
     );
   }
-  const legacyByokMigrationErrorView = legacyByokMigrationError
-    ? legacyByokMigrationErrorPresentation(
-        legacyByokMigrationError,
-        t('settings.autosaveError'),
-      )
-    : null;
   return (
     <>
       <div
@@ -4844,21 +4805,6 @@ function AppInner() {
           role="alert"
           tone="error"
           onDismiss={() => setProjectOpenError(null)}
-        />
-      ) : null}
-      {legacyByokMigrationErrorView ? (
-        <Toast
-          message={legacyByokMigrationErrorView.message}
-          details={legacyByokMigrationErrorView.details}
-          actionLabel={t('settings.title')}
-          onAction={() => {
-            setLegacyByokMigrationError(null);
-            openSettings('execution');
-          }}
-          role="alert"
-          tone="error"
-          ttlMs={0}
-          onDismiss={() => setLegacyByokMigrationError(null)}
         />
       ) : null}
       {/* First-run privacy consent banner. It waits for daemon config

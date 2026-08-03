@@ -8,6 +8,7 @@ import {
   RUN_RESULT_PACKAGE_SCHEMA,
   type AppliedPluginSnapshot,
   type ArtifactManifest,
+  type ByokChatProviderConfig,
   type ChatRunStatus,
   type ChatRunStatusResponse,
   type ProjectMetadata as ContractProjectMetadata,
@@ -37,7 +38,6 @@ import {
   codexSessionIdFromRunEvents,
   readCodexRolloutFirstCall,
 } from '../codex-rollout-usage.js';
-import type { ByokCredentialService } from '../byok/credential-service.js';
 import type { ConnectorService } from '../connectors/service.js';
 import {
   conversationTurnIndexForRun,
@@ -106,6 +106,7 @@ import {
 } from '../run-tool-bundle.js';
 import type { DetectedAgent, RuntimeAgentDef } from '../runtimes/types.js';
 import {
+  buildOpenCodeByokProviderConfig,
   BYOK_OPENCODE_AGENT_ID,
   BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
 } from '../runtimes/byok-opencode.js';
@@ -476,7 +477,6 @@ export interface RegisterRunRoutesDeps {
   chat: {
     startChatRun: (meta: RunCreateMeta, run: ChatRun) => Promise<unknown>;
   };
-  byokCredentials: Pick<ByokCredentialService, 'has'>;
   lifecycle: {
     isDaemonShuttingDown: () => boolean;
   };
@@ -762,6 +762,7 @@ function routeParamId(req: ApiRequest): string | null {
 function withoutSensitiveRunInput(body: JsonRecord): JsonRecord {
   const sanitized = { ...body };
   delete sanitized.byokProvider;
+  delete sanitized.byokProfileId;
   delete sanitized.apiKey;
   delete sanitized.rechargeResumeCapability;
   return sanitized;
@@ -850,49 +851,12 @@ function externalPluginAttributionMismatch(
   );
 }
 
-const CREDENTIAL_FIELD_PATTERN =
-  /^(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret|password)$/iu;
-
-function containsCredentialShapedField(value: unknown, depth = 0): boolean {
-  // Over-complex structured input is rejected rather than allowed to outrun
-  // the secret scan. This keeps the credential boundary fail-closed.
-  if (depth > 20) return true;
-  if (value === null || typeof value !== 'object') return false;
-  if (Array.isArray(value)) {
-    return value.some((item) => containsCredentialShapedField(item, depth + 1));
-  }
-  return Object.entries(value as JsonRecord).some(([key, nested]) =>
-    CREDENTIAL_FIELD_PATTERN.test(key)
-    || containsCredentialShapedField(nested, depth + 1),
-  );
-}
-
-async function byokRunInputError(
-  meta: JsonRecord,
-  credentials: Pick<ByokCredentialService, 'has'>,
-): Promise<string | null> {
-  const isByokRequest =
-    meta.agentId === BYOK_OPENCODE_AGENT_ID
-    || typeof meta.byokProfileId === 'string';
-  if (
-    Object.prototype.hasOwnProperty.call(meta, 'byokProvider')
-    || Object.prototype.hasOwnProperty.call(meta, 'apiKey')
-    || (isByokRequest && containsCredentialShapedField(meta))
-  ) {
-    return 'Raw BYOK credentials are not accepted by run APIs; save a secure credential profile and pass byokProfileId.';
-  }
-  if (meta.agentId !== BYOK_OPENCODE_AGENT_ID) return null;
-  const profileId = typeof meta.byokProfileId === 'string'
-    ? meta.byokProfileId.trim()
-    : '';
-  if (!profileId) return BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE;
-  try {
-    return await credentials.has(profileId)
-      ? null
-      : BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE;
-  } catch {
-    return BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE;
-  }
+function hasCompleteByokOpenCodeConfig(meta: JsonRecord): boolean {
+  if (meta.agentId !== BYOK_OPENCODE_AGENT_ID) return true;
+  return buildOpenCodeByokProviderConfig(
+    meta.byokProvider as ByokChatProviderConfig | null | undefined,
+    typeof meta.model === 'string' ? meta.model : null,
+  ) !== null;
 }
 
 function toOdNativeEvent(record: RunEventRecord): OdNativeEvent | null {
@@ -1237,16 +1201,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (!toolBundle.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', toolBundle.message);
     }
-    const initialByokInputError = await byokRunInputError(
-      requestBody,
-      ctx.byokCredentials,
-    );
-    if (initialByokInputError) {
+    if (!hasCompleteByokOpenCodeConfig(requestBody)) {
       return sendApiError(
         res,
         400,
         'VALIDATION_FAILED',
-        initialByokInputError,
+        BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
       );
     }
     // Reject a client-supplied conversationId that is missing a projectId or
@@ -1415,16 +1375,39 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         throw err;
       }
     }
-    const resolvedByokInputError = await byokRunInputError(
-      meta,
-      ctx.byokCredentials,
-    );
-    if (resolvedByokInputError) {
+    if (typeof meta.agentId !== 'string' || !meta.agentId) {
+      try {
+        const appCfg = await readAppConfig(RUNTIME_DATA_DIR);
+        const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
+          ? appCfg.agentId
+          : null;
+        const agents = await detectAgents(
+          toJsonRecord(appCfg.agentCliEnv),
+        ).catch((): DetectedAgent[] => []);
+        const cfgAgentAvailable = cfgAgent
+          ? agents.some((agent) => agent.id === cfgAgent && agent.available)
+          : false;
+        if (cfgAgent && cfgAgentAvailable) {
+          meta.agentId = cfgAgent;
+        } else {
+          const firstAvailable = agents.find((agent) => agent.available)?.id ?? null;
+          if (firstAvailable) meta.agentId = firstAvailable;
+        }
+      } catch (err) {
+        console.warn('[runs] agent id fallback failed', err);
+      }
+    }
+    if (!hasCompleteByokOpenCodeConfig({
+      ...meta,
+      ...(requestBody.byokProvider !== undefined
+        ? { byokProvider: requestBody.byokProvider }
+        : {}),
+    })) {
       return sendApiError(
         res,
         400,
         'VALIDATION_FAILED',
-        resolvedByokInputError,
+        BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
       );
     }
     const toolBundleSupport = validateRunToolBundleForAgent(
@@ -1778,7 +1761,13 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[plugins] skill candidate hook setup failed', err);
       }
     }
-    design.runs.start(run, () => startChatRun(meta, run));
+    const executionMeta: RunCreateMeta = {
+      ...meta,
+      ...(requestBody.byokProvider !== undefined
+        ? { byokProvider: requestBody.byokProvider }
+        : {}),
+    };
+    design.runs.start(run, () => startChatRun(executionMeta, run));
 
     const reqBody = requestBody;
     const analyticsHints =
@@ -2847,16 +2836,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       if (!authorization.ok) return;
       authorizedBoundMutation = authorization.authorizedBoundMutation;
     }
-    const byokInputError = await byokRunInputError(
-      requestBody,
-      ctx.byokCredentials,
-    );
-    if (byokInputError) {
+    if (!hasCompleteByokOpenCodeConfig(requestBody)) {
       return sendApiError(
         res,
         400,
         'VALIDATION_FAILED',
-        byokInputError,
+        BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
       );
     }
     const meta: RunCreateMeta = {
@@ -2918,9 +2903,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     design.runs.stream(run, req, res);
     reconcileAssistantMessageOnRunEnd(db, design.runs, run);
-    design.runs.start(run, () => startChatRun(meta, run));
+    const executionMeta: RunCreateMeta = {
+      ...meta,
+      ...(requestBody.byokProvider !== undefined
+        ? { byokProvider: requestBody.byokProvider }
+        : {}),
+    };
+    design.runs.start(run, () => startChatRun(executionMeta, run));
   });
 }
 
-export const __forTestByokRunInputError = byokRunInputError;
+export const __forTestHasCompleteByokOpenCodeConfig = hasCompleteByokOpenCodeConfig;
 export const __forTestWithoutSensitiveRunInput = withoutSensitiveRunInput;

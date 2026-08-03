@@ -41,10 +41,6 @@ import {
   upsertMessage,
 } from '../src/db.js';
 import { renderCodexImagegenOverride } from '../src/prompts/system.js';
-import {
-  ByokCredentialService,
-  type ByokSecretBackend,
-} from '../src/byok/credential-service.js';
 import { teamResourceWorkspaceRoot } from '../src/collab/team-resource-materialization.js';
 import { workspaceTeamDesignSystemBindingResourceId } from '../src/design-systems/workspace-team-binding.js';
 
@@ -188,41 +184,9 @@ describe('/api/chat', () => {
         extraction: null,
       });
     }
-    const byokDataDir = mkdtempSync(join(tmpdir(), 'od-chat-route-byok-'));
-    tempDirs.push(byokDataDir);
-    const byokSecrets = new Map<string, string>();
-    const byokBackend: ByokSecretBackend = {
-      kind: 'test-memory',
-      async available() { return true; },
-      async set(profileId, secret) { byokSecrets.set(profileId, secret); },
-      async get(profileId) { return byokSecrets.get(profileId) ?? null; },
-      async delete(profileId) { return byokSecrets.delete(profileId); },
-    };
-    const byokCredentialService = new ByokCredentialService({
-      dataDir: byokDataDir,
-      backend: byokBackend,
-    });
-    await byokCredentialService.upsert({
-      id: 'byok-chat-route-keyful',
-      label: 'Chat route keyful fixture',
-      protocol: 'senseaudio',
-      apiKey: 'sk-test-byok',
-      baseUrl: 'https://api.senseaudio.cn',
-      model: 'deepseek-v4-flash',
-      requiresApiKey: true,
-    });
-    await byokCredentialService.upsert({
-      id: 'byok-chat-route-keyless',
-      label: 'Chat route keyless fixture',
-      protocol: 'openai',
-      baseUrl: 'http://127.0.0.1:8000/v1',
-      model: 'model',
-      requiresApiKey: false,
-    });
     const started = await startServer({
       port: 0,
       returnServer: true,
-      byokCredentialService,
     }) as {
       url: string;
       server: http.Server;
@@ -537,7 +501,13 @@ process.stdin.on('end', () => {
             projectId,
             message: 'hello',
             model: 'deepseek-v4-flash',
-            byokProfileId: 'byok-chat-route-keyful',
+            byokProvider: {
+              protocol: 'senseaudio',
+              apiKey: 'sk-test-byok',
+              baseUrl: 'https://api.senseaudio.cn',
+              model: 'deepseek-v4-flash',
+              requiresApiKey: true,
+            },
           }),
         });
         const body = await response.text();
@@ -624,7 +594,13 @@ process.stdin.on('end', () => {
             projectId,
             message: 'hello',
             model: 'model',
-            byokProfileId: 'byok-chat-route-keyless',
+            byokProvider: {
+              protocol: 'openai',
+              apiKey: '',
+              baseUrl: 'http://127.0.0.1:8000/v1',
+              model: 'model',
+              requiresApiKey: false,
+            },
           }),
         });
         const body = await response.text();
@@ -663,7 +639,7 @@ process.stdin.on('end', () => {
     );
   });
 
-  it('rejects forged BYOK provider config for other local runtimes', async () => {
+  it('does not pass BYOK provider config to other local runtimes', async () => {
     if (!process.env.OD_DATA_DIR) {
       throw new Error('OD_DATA_DIR is required for BYOK OpenCode config tests');
     }
@@ -713,10 +689,12 @@ process.stdin.on('end', () => {
         });
         const body = await response.text();
 
-        expect(response.status).toBe(400);
-        expect(body).toContain('Raw BYOK credentials are not accepted');
-        expect(existsSync(keyFile)).toBe(false);
-        expect(existsSync(envFile)).toBe(false);
+        expect(response.ok).toBe(true);
+        expect(body).toContain('opencode-ok');
+        expect(await fsp.readFile(keyFile, 'utf8')).toBe('');
+        const rawConfig = await fsp.readFile(envFile, 'utf8');
+        expect(rawConfig).not.toContain('open-design-byok');
+        expect(rawConfig).not.toContain('sk-test-byok');
       },
     );
   });
