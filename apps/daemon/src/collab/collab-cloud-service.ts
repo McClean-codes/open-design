@@ -169,6 +169,7 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
   // and a 304 costs nothing.
   const cursors = new Map<string, number>();
   const etags = new Map<string, string | null>();
+  const inFlightPulls = new Map<string, Promise<boolean>>();
   let timer: NodeJS.Timeout | null = null;
   let running = false;
   // The identity we last pushed to the member directory. Re-registering only
@@ -295,22 +296,45 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
     return true;
   }
 
+  function pullProjectSingleflight(
+    context: WorkspaceCollabContext,
+    identity: {
+      teamId: string;
+      memberId: string;
+    },
+    projectId: string,
+  ): Promise<boolean> {
+    const scopeKey = `${context.workspaceId}:${identity.memberId}`;
+    const inFlightKey = JSON.stringify([
+      context.workspaceId,
+      identity.teamId,
+      identity.memberId,
+      projectId,
+    ]);
+    const existing = inFlightPulls.get(inFlightKey);
+    if (existing) return existing;
+
+    const request = pollProject(identity.teamId, scopeKey, projectId)
+      .catch((error) => {
+        deps.onError?.(error);
+        return false;
+      });
+    inFlightPulls.set(inFlightKey, request);
+    void request.then(() => {
+      if (inFlightPulls.get(inFlightKey) === request) {
+        inFlightPulls.delete(inFlightKey);
+      }
+    });
+    return request;
+  }
+
   async function pullProject(
     projectId: string,
     context: WorkspaceCollabContext,
   ): Promise<boolean> {
     const identity = explicitTeamIdentity(context);
     if (!identity) return false;
-    try {
-      return await pollProject(
-        identity.teamId,
-        `${context.workspaceId}:${identity.memberId}`,
-        projectId,
-      );
-    } catch (error) {
-      deps.onError?.(error);
-      return false;
-    }
+    return pullProjectSingleflight(context, identity, projectId);
   }
 
   async function pollOnce(): Promise<void> {
@@ -333,11 +357,7 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
           });
           lastRegisteredKey = identityKey;
         }
-        await pollProject(
-          identity.teamId,
-          `${context.workspaceId}:${identity.memberId}`,
-          projectId,
-        );
+        await pullProjectSingleflight(context, identity, projectId);
       } catch (error) {
         deps.onError?.(error);
       }

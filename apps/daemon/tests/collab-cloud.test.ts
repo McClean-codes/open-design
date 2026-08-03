@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -668,6 +668,102 @@ describe('createCollabCloudService', () => {
       { teamId: 'workspace-b', sinceSeq: 0, etag: undefined },
       { teamId: 'workspace-a', sinceSeq: 7, etag: 'etag-workspace-a' },
     ]);
+    service.dispose();
+  });
+
+  it('coalesces concurrent pulls for the same workspace member and project', async () => {
+    let releasePull!: (value: {
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }) => void;
+    const pendingPull = new Promise<{
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }>((resolve) => {
+      releasePull = resolve;
+    });
+    const pullComments = vi.fn(() => pendingPull);
+    const client = { pullComments } as unknown as CollabCloudClient;
+    const service = createCollabCloudService({
+      client,
+      listProjectIds: () => [],
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+    });
+    const context = teamContext({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      teamId: 'team-a',
+    });
+
+    const first = service.pullProject('same-project', context);
+    const second = service.pullProject('same-project', context);
+
+    expect(pullComments).toHaveBeenCalledTimes(1);
+    releasePull({
+      comments: [],
+      latestSeq: 0,
+      etag: null,
+      notModified: true,
+    });
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    service.dispose();
+  });
+
+  it('shares one pull between the poll floor and a targeted hub/read pull', async () => {
+    let releasePull!: (value: {
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }) => void;
+    const pendingPull = new Promise<{
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }>((resolve) => {
+      releasePull = resolve;
+    });
+    const pullComments = vi.fn(() => pendingPull);
+    const context = teamContext({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      teamId: 'team-a',
+    });
+    const client = {
+      pullComments,
+      registerMember: async () => ({
+        memberId: 'member-a',
+        displayName: 'Member A',
+        role: 'member' as const,
+      }),
+    } as unknown as CollabCloudClient;
+    const service = createCollabCloudService({
+      client,
+      listProjectIds: () => ['same-project'],
+      resolveProjectWorkspaceContext: async () => context,
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+    });
+
+    const targeted = service.pullProject('same-project', context);
+    const poll = service.pollOnce();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pullComments).toHaveBeenCalledTimes(1);
+    releasePull({
+      comments: [],
+      latestSeq: 0,
+      etag: null,
+      notModified: true,
+    });
+    await expect(Promise.all([targeted, poll])).resolves.toEqual([true, undefined]);
     service.dispose();
   });
 
