@@ -488,4 +488,78 @@ describe('App skills list — workspace scope', () => {
     await waitFor(() => expect(screen.getByTestId('entry-skill-skill-from-b')).toBeTruthy());
     expect(screen.queryByTestId('entry-skill-skill-from-a')).toBeNull();
   });
+
+  it('hides the previous account catalog while an unseeded identity refresh is pending', async () => {
+    const sharedContext = workspaceContext('ws-same', 'member-same');
+    const directoryB = deferred<Response>();
+    const contextB = deferred<Response>();
+    const readB = deferred<SkillSummary[]>();
+    let accountPhase: 'a' | 'b' = 'a';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/directory')) {
+          return directoryB.promise;
+        }
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/context')) {
+          return contextB.promise;
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([sharedContext])
+              : pathname.endsWith('/workspace/context')
+                ? { context: sharedContext }
+                : {},
+        } as Response);
+      }),
+    );
+    vi.mocked(fetchSkills).mockImplementation(() =>
+      accountPhase === 'a'
+        ? Promise.resolve([skill('skill-from-account-a')])
+        : readB.promise,
+    );
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByTestId('entry-skill-skill-from-account-a')).toBeTruthy(),
+    );
+
+    accountPhase = 'b';
+    await act(async () => {
+      notifyWorkspaceContextRefresh();
+      await Promise.resolve();
+    });
+
+    // The next account deliberately resolves to the same Workspace/member
+    // fields. Account generation and the pending boundary must still hide A
+    // synchronously rather than treating those equal fields as one identity.
+    expect(screen.queryByTestId('entry-skill-skill-from-account-a')).toBeNull();
+    expect(screen.getByTestId('entry-skills-loading').textContent).toBe('true');
+    expect(vi.mocked(fetchSkills)).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      directoryB.resolve({
+        ok: true,
+        json: async () => workspaceDirectoryFixture([sharedContext]),
+      } as Response);
+      contextB.resolve({
+        ok: true,
+        json: async () => ({ context: sharedContext }),
+      } as Response);
+      await Promise.all([directoryB.promise, contextB.promise]);
+    });
+    await waitFor(() => expect(vi.mocked(fetchSkills)).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      readB.resolve([skill('skill-from-account-b')]);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('entry-skill-skill-from-account-b')).toBeTruthy(),
+    );
+    expect(screen.queryByTestId('entry-skill-skill-from-account-a')).toBeNull();
+  });
 });

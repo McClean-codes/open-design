@@ -409,4 +409,93 @@ describe('App design-system catalog loading race', () => {
     expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('false');
     expect(pendingReads).toBe(2);
   });
+
+  it('hides the previous account systems while an unseeded identity refresh is pending', async () => {
+    const sharedContext = {
+      ...workspaceContext('ws-same'),
+      workspaceMemberId: 'member-same',
+    };
+    const directoryB = deferred<Response>();
+    const contextB = deferred<Response>();
+    const readB = deferred<DesignSystemSummary[]>();
+    let accountPhase: 'a' | 'b' = 'a';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/directory')) {
+          return directoryB.promise;
+        }
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/context')) {
+          return contextB.promise;
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? {
+                  items: [{
+                    workspaceId: sharedContext.workspaceId,
+                    workspaceName: sharedContext.displayName,
+                    workspaceType: sharedContext.workspaceType,
+                    workspaceMemberId: sharedContext.workspaceMemberId,
+                    role: sharedContext.role,
+                    memberStatus: sharedContext.memberStatus,
+                    lifecycleState: sharedContext.lifecycleState,
+                  }],
+                }
+              : pathname.endsWith('/workspace/context')
+                ? { context: sharedContext }
+                : {},
+        } as Response);
+      }),
+    );
+    vi.mocked(fetchDesignSystems).mockImplementation(() =>
+      accountPhase === 'a'
+        ? Promise.resolve([designSystem('system-from-account-a')])
+        : readB.promise,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('system-from-account-a')).toBeTruthy());
+
+    accountPhase = 'b';
+    await act(async () => {
+      notifyWorkspaceContextRefresh();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('system-from-account-a')).toBeNull();
+    expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('true');
+
+    await act(async () => {
+      directoryB.resolve({
+        ok: true,
+        json: async () => ({
+          items: [{
+            workspaceId: sharedContext.workspaceId,
+            workspaceName: sharedContext.displayName,
+            workspaceType: sharedContext.workspaceType,
+            workspaceMemberId: sharedContext.workspaceMemberId,
+            role: sharedContext.role,
+            memberStatus: sharedContext.memberStatus,
+            lifecycleState: sharedContext.lifecycleState,
+          }],
+        }),
+      } as Response);
+      contextB.resolve({
+        ok: true,
+        json: async () => ({ context: sharedContext }),
+      } as Response);
+      await Promise.all([directoryB.promise, contextB.promise]);
+    });
+    await waitFor(() => expect(vi.mocked(fetchDesignSystems).mock.calls.length).toBeGreaterThan(1));
+
+    await act(async () => {
+      readB.resolve([designSystem('system-from-account-b')]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByText('system-from-account-b')).toBeTruthy());
+    expect(screen.queryByText('system-from-account-a')).toBeNull();
+  });
 });

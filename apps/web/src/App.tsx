@@ -783,6 +783,16 @@ function AppInner() {
     loading: workspaceContextLoading,
   } = workspaceContextState;
   const currentWorkspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
+  const workspaceAccountGeneration = currentWorkspaceAccountGeneration();
+  // Catalog display state is account-scoped in addition to Workspace-scoped.
+  // During an unseeded identity transition the hook intentionally retains the
+  // previous context while the replacement account is resolved; a pending
+  // sentinel makes that retained context unusable for display immediately.
+  const currentWorkspaceCatalogIdentity = JSON.stringify(
+    workspaceContextState.identityChangePending
+      ? ['pending-account', workspaceAccountGeneration]
+      : ['workspace-account', workspaceAccountGeneration, currentWorkspaceIdentity],
+  );
   const workspaceBilling = useWorkspaceBilling();
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
@@ -900,7 +910,7 @@ function AppInner() {
     identity: string;
     items: SkillSummary[];
   }>(() => ({
-    identity: currentWorkspaceIdentity,
+    identity: currentWorkspaceCatalogIdentity,
     items: [],
   }));
   // A workspace-scoped response is safe to render only under the exact
@@ -909,7 +919,7 @@ function AppInner() {
   // Derive the visible catalog during render instead: an identity mismatch is
   // a fail-closed empty list until B's own response commits.
   const skills =
-    workspaceSkills.identity === currentWorkspaceIdentity
+    workspaceSkills.identity === currentWorkspaceCatalogIdentity
       ? workspaceSkills.items
       : [];
   // Design templates (rendering catalogue: decks, prototypes, image/video/
@@ -920,7 +930,7 @@ function AppInner() {
     identity: string;
     items: DesignSystemSummary[];
   }>(() => ({
-    identity: currentWorkspaceIdentity,
+    identity: currentWorkspaceCatalogIdentity,
     items: [],
   }));
   // Like skills and projects, a design-system catalog belongs to one exact
@@ -929,7 +939,7 @@ function AppInner() {
   // check, switching A -> B paints A's systems under B until B's request
   // finishes. Fail closed during that gap; opening the picker still reuses the
   // already-loaded list instantly when the identity has not changed.
-  const designSystems = workspaceDesignSystems.identity === currentWorkspaceIdentity
+  const designSystems = workspaceDesignSystems.identity === currentWorkspaceCatalogIdentity
     ? workspaceDesignSystems.items
     : [];
   const [pendingDesignSystemRevisionJobs, setPendingDesignSystemRevisionJobs] = useState<
@@ -1837,17 +1847,24 @@ function AppInner() {
         markSkillRegistryReady('templates');
       });
 
-      const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(
-        workspaceContextRef.current,
-      );
-      void fetchDesignSystems(workspaceContextRef.current).then((list) => {
+      const designSystemsContext = workspaceContextRef.current;
+      const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(designSystemsContext);
+      const designSystemsAccountGeneration = currentWorkspaceAccountGeneration();
+      const designSystemsCatalogIdentity = JSON.stringify([
+        'workspace-account',
+        designSystemsAccountGeneration,
+        designSystemsWorkspaceIdentity,
+      ]);
+      void fetchDesignSystems(designSystemsContext).then((list) => {
         if (
           cancelled ||
+          workspaceContextStateRef.current.identityChangePending ||
+          currentWorkspaceAccountGeneration() !== designSystemsAccountGeneration ||
           workspaceIdentityCacheKey(workspaceContextRef.current)
             !== designSystemsWorkspaceIdentity
         ) return;
         setWorkspaceDesignSystems({
-          identity: designSystemsWorkspaceIdentity,
+          identity: designSystemsCatalogIdentity,
           items: list,
         });
         setDsLoading(false);
@@ -2176,11 +2193,22 @@ function AppInner() {
     // verifies that exact membership instead of consulting mutable ambient
     // Workspace state, and the same identity key prevents an A response from
     // committing after the UI has moved to B.
+    if (workspaceContextStateRef.current.identityChangePending) return;
     const issuedContext = workspaceContextRef.current;
     const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    const issuedCatalogIdentity = JSON.stringify([
+      'workspace-account',
+      issuedAccountGeneration,
+      issuedIdentity,
+    ]);
     const list = await fetchDesignSystems(issuedContext);
-    if (workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity) return;
-    setWorkspaceDesignSystems({ identity: issuedIdentity, items: list });
+    if (
+      workspaceContextStateRef.current.identityChangePending
+      || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
+      || workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity
+    ) return;
+    setWorkspaceDesignSystems({ identity: issuedCatalogIdentity, items: list });
     // Bootstrap and this workspace-scoped refresh can overlap on launch.
     // Either response is a complete catalog for the active daemon identity,
     // so do not leave a successful refresh hidden behind bootstrap's loader
@@ -2192,8 +2220,13 @@ function AppInner() {
   // identity. Re-read whenever either half changes; a role replacement can
   // reuse the Workspace id while changing the authoritative membership.
   useEffect(() => {
+    if (workspaceContextState.identityChangePending) return;
     void refreshDesignSystems();
-  }, [currentWorkspaceIdentity, refreshDesignSystems]);
+  }, [
+    currentWorkspaceCatalogIdentity,
+    refreshDesignSystems,
+    workspaceContextState.identityChangePending,
+  ]);
 
   const refreshSkills = useCallback(async () => {
     // Always scoped. `GET /api/skills` is fail-closed on a missing
@@ -2201,15 +2234,26 @@ function AppInner() {
     // headerless read is not the "unfiltered" list — it is the list with every
     // workspace-claimed skill removed, including the ones claimed by the
     // workspace the user is actually in.
+    if (workspaceContextStateRef.current.identityChangePending) return;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const read = beginWorkspaceScopedRead(workspaceContextRef.current);
+    const issuedCatalogIdentity = JSON.stringify([
+      'workspace-account',
+      issuedAccountGeneration,
+      workspaceIdentityCacheKey(read.context),
+    ]);
     const list = await fetchSkills(read.context);
     // A read for the workspace the user has since LEFT must not restore that
     // workspace's catalog over the current one — see `beginWorkspaceScopedRead`.
     // Skipping the gate too is deliberate: this response is not an answer about
     // the current identity, and the newer read that replaced it will mark it.
-    if (!read.isStillCurrent(workspaceContextRef.current)) return;
+    if (
+      workspaceContextStateRef.current.identityChangePending
+      || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
+      || !read.isStillCurrent(workspaceContextRef.current)
+    ) return;
     setWorkspaceSkills({
-      identity: workspaceIdentityCacheKey(read.context),
+      identity: issuedCatalogIdentity,
       items: list,
     });
     markSkillRegistryReady('functional');
@@ -2238,14 +2282,19 @@ function AppInner() {
   // startup, or holding A's list later. "Discarded and never replaced" is a
   // worse outcome than the staleness it replaced, so every transition that
   // invalidates a response must also start its successor.
-  const skillsReadIdentity = currentWorkspaceIdentity;
+  const skillsReadIdentity = currentWorkspaceCatalogIdentity;
   const skillsReadIdentityRef = useRef<string | null>(null);
   useEffect(() => {
-    if (workspaceContextLoading) return;
+    if (workspaceContextLoading || workspaceContextState.identityChangePending) return;
     if (skillsReadIdentityRef.current === skillsReadIdentity) return;
     skillsReadIdentityRef.current = skillsReadIdentity;
     void refreshSkills();
-  }, [workspaceContextLoading, skillsReadIdentity, refreshSkills]);
+  }, [
+    workspaceContextLoading,
+    workspaceContextState.identityChangePending,
+    skillsReadIdentity,
+    refreshSkills,
+  ]);
 
   const refreshTemplates = useCallback(async () => {
     const list = await listTemplates();
@@ -3640,14 +3689,26 @@ function AppInner() {
     (affectedSkillId?: string) => {
       // Scoped AND guarded on commit, like every other app-level skills read —
       // see `refreshSkills` and `beginWorkspaceScopedRead`.
-      const skillsRead = beginWorkspaceScopedRead(workspaceContextRef.current);
-      void fetchSkills(skillsRead.context).then((list) => {
-        if (!skillsRead.isStillCurrent(workspaceContextRef.current)) return;
-        setWorkspaceSkills({
-          identity: workspaceIdentityCacheKey(skillsRead.context),
-          items: list,
+      if (!workspaceContextStateRef.current.identityChangePending) {
+        const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+        const skillsRead = beginWorkspaceScopedRead(workspaceContextRef.current);
+        const issuedCatalogIdentity = JSON.stringify([
+          'workspace-account',
+          issuedAccountGeneration,
+          workspaceIdentityCacheKey(skillsRead.context),
+        ]);
+        void fetchSkills(skillsRead.context).then((list) => {
+          if (
+            workspaceContextStateRef.current.identityChangePending
+            || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
+            || !skillsRead.isStillCurrent(workspaceContextRef.current)
+          ) return;
+          setWorkspaceSkills({
+            identity: issuedCatalogIdentity,
+            items: list,
+          });
         });
-      });
+      }
       void fetchDesignTemplates().then((list) => setDesignTemplates(list));
       iframeKeepAlivePool.evictMatching(
         (entry) => {
@@ -4625,9 +4686,11 @@ function AppInner() {
         onSkillsChanged={handleSkillsChanged}
         onRefreshAgents={refreshAgents}
         skillsLoading={
-          workspaceSkills.identity !== currentWorkspaceIdentity || skillsLoading
+          workspaceSkills.identity !== currentWorkspaceCatalogIdentity || skillsLoading
         }
-        designSystemsLoading={dsLoading}
+        designSystemsLoading={
+          workspaceDesignSystems.identity !== currentWorkspaceCatalogIdentity || dsLoading
+        }
         projectsLoading={projectsLoading}
         promptTemplatesLoading={promptTemplatesLoading}
         onCreateProject={handleCreateProject}
