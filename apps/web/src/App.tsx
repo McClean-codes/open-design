@@ -164,6 +164,7 @@ import {
   getProject,
   importClaudeDesignZip,
   importFolderProject,
+  invalidateWorkspaceProjectLists,
   listWorkspaceProjectSummaries,
   listProjects,
   listTemplates,
@@ -1033,11 +1034,14 @@ function AppInner() {
       // Keep the last-good projection. Reconnect/poll performs full catch-up.
     }
   }, []);
+  const refreshProjectCatalogRef = useRef<() => void>(() => {});
   useWorkspaceInvalidation({
     'team-projects-changed': (payload) => {
       if (payload.kind === 'metadata' && payload.projectId) {
         void refreshTargetedProjectMetadata(payload);
+        return;
       }
+      refreshProjectCatalogRef.current();
     },
   }, { workspaceContext });
   const [petTaskCenter, setPetTaskCenter] = useState<PetTaskCenter>({
@@ -2099,6 +2103,23 @@ function AppInner() {
     });
     reconcileFetchedProjects(list, request);
   }, [beginProjectListRequest, listCurrentWorkspaceProjects, reconcileFetchedProjects, workspaceProjectView]);
+
+  const refreshProjectsAfterTeamCatalogChange = useCallback(() => {
+    const context = workspaceContextRef.current;
+    if (!context) return;
+    invalidateWorkspaceProjectLists(
+      context,
+      currentWorkspaceAccountGeneration(),
+    );
+    // Preserve the exact principal's last-good rows while the authoritative
+    // list reconciles. The request/reconcile pair independently captures and
+    // rechecks account + Workspace identity, so a late response cannot cross a
+    // switch boundary.
+    void refreshProjectsStrict().catch((error: unknown) => {
+      console.error('[projects] failed to refresh after team catalog change', error);
+    });
+  }, [refreshProjectsStrict]);
+  refreshProjectCatalogRef.current = refreshProjectsAfterTeamCatalogChange;
 
   useEffect(() => {
     // Bootstrap already reads this exact scope on mount. Only re-list after

@@ -30,6 +30,7 @@ import {
   type InstalledPluginRecord,
   type RunContextSelection,
   type UpsertMemoryRequest,
+  type WorkspaceProjectSummary,
 } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import type { DesignSystemGenerateSnapshot } from './DesignSystemFlow';
@@ -140,6 +141,7 @@ import {
   notifyTeamProjectsChanged,
   notifyWorkspaceBillingRefresh,
   notifyWorkspaceContextRefresh,
+  currentWorkspaceAccountGeneration,
   useTeamProjects,
   useWorkspaceBillingResponse,
   useWorkspaceContext,
@@ -158,6 +160,14 @@ import {
   createSharedProjectPredicate,
   reconcileSharedProjectCatalogFields,
 } from '../collab/all-projects-list';
+import {
+  forgetOptimisticProjectOwnership,
+  optimisticProjectOwnershipScopeKey,
+  projectOwnerMemberIdsWithOptimisticWitnesses,
+  reconcileOptimisticProjectOwnership,
+  recordOptimisticProjectOwnership,
+  type OptimisticProjectOwnershipWitnesses,
+} from '../collab/optimistic-project-ownership';
 import {
   getModelCapabilityTag,
   getModelCostTier,
@@ -645,13 +655,35 @@ export function EntryShell({
   const [unsharedThisSession, setUnsharedThisSession] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  const markProjectShared = useCallback((projectId: string) => {
-    setSharedThisSession((prev) => new Set(prev).add(projectId));
+  const optimisticOwnershipScopeKey = optimisticProjectOwnershipScopeKey(
+    workspaceContext,
+    currentWorkspaceAccountGeneration(),
+  );
+  const [optimisticOwnershipWitnesses, setOptimisticOwnershipWitnesses] = useState<
+    OptimisticProjectOwnershipWitnesses
+  >(() => new Map());
+  const markProjectShared = useCallback((project: WorkspaceProjectSummary) => {
+    setSharedThisSession((prev) => new Set(prev).add(project.id));
     setUnsharedThisSession((prev) => {
+      const next = new Set(prev);
+      next.delete(project.id);
+      return next;
+    });
+    setOptimisticOwnershipWitnesses((prev) => recordOptimisticProjectOwnership(prev, {
+      scopeKey: optimisticOwnershipScopeKey,
+      context: workspaceContext,
+      project,
+    }));
+  }, [optimisticOwnershipScopeKey, workspaceContext]);
+  const markProjectShareFailed = useCallback((projectId: string) => {
+    setSharedThisSession((prev) => {
+      if (!prev.has(projectId)) return prev;
       const next = new Set(prev);
       next.delete(projectId);
       return next;
     });
+    setOptimisticOwnershipWitnesses((prev) =>
+      forgetOptimisticProjectOwnership(prev, projectId));
   }, []);
   const markProjectUnshared = useCallback((projectId: string) => {
     setUnsharedThisSession((prev) => new Set(prev).add(projectId));
@@ -660,7 +692,22 @@ export function EntryShell({
       next.delete(projectId);
       return next;
     });
+    setOptimisticOwnershipWitnesses((prev) =>
+      forgetOptimisticProjectOwnership(prev, projectId));
   }, []);
+  useEffect(() => {
+    setOptimisticOwnershipWitnesses((prev) => reconcileOptimisticProjectOwnership(prev, {
+      scopeKey: optimisticOwnershipScopeKey,
+      teamProjects: teamProjects.projects,
+    }));
+    const catalogProjectIds = new Set(
+      teamProjects.projects.map((project) => project.projectId),
+    );
+    setSharedThisSession((prev) => {
+      if (![...prev].some((projectId) => catalogProjectIds.has(projectId))) return prev;
+      return new Set([...prev].filter((projectId) => !catalogProjectIds.has(projectId)));
+    });
+  }, [optimisticOwnershipScopeKey, teamProjects.projects]);
   // The single shared-state answer, handed to the grids AND to every strip.
   const isSharedProject = useMemo(
     () =>
@@ -697,8 +744,13 @@ export function EntryShell({
   // projectId → sharing member id, so a card in the 全部项目 / 草稿 grids can
   // resolve "{creator}创建" against the member directory. A project absent here
   // is the member's own local project → "我创建".
-  const teamProjectOwnerMemberIds = new Map(
-    teamProjects.projects.map((teamProject) => [teamProject.projectId, teamProject.ownerMemberId]),
+  const teamProjectOwnerMemberIds = useMemo(
+    () => projectOwnerMemberIdsWithOptimisticWitnesses({
+      scopeKey: optimisticOwnershipScopeKey,
+      teamProjects: teamProjects.projects,
+      witnesses: optimisticOwnershipWitnesses,
+    }),
+    [optimisticOwnershipScopeKey, optimisticOwnershipWitnesses, teamProjects.projects],
   );
   const contentReadyProjectIdsRef = useRef(new Set<string>());
   const pendingContentReadyProjectIdsRef = useRef(
@@ -1526,7 +1578,9 @@ export function EntryShell({
                 promptHandoff={homePromptHandoff}
                 isSharedProject={isSharedProject}
                 onProjectShared={markProjectShared}
+                onProjectShareFailed={markProjectShareFailed}
                 onProjectUnshared={markProjectUnshared}
+                projectOwnerMemberIds={teamProjectOwnerMemberIds}
                 skills={skills}
                 skillsLoading={skillsLoading}
                 connectors={connectors}
@@ -1729,6 +1783,7 @@ export function EntryShell({
                     space="drafts"
                     isSharedProject={isSharedProject}
                     onProjectShared={markProjectShared}
+                    onProjectShareFailed={markProjectShareFailed}
                     onProjectUnshared={markProjectUnshared}
                     projectOwnerMemberIds={teamProjectOwnerMemberIds}
                     onOpen={(id) => onOpenProject(id)}
@@ -1766,6 +1821,7 @@ export function EntryShell({
                     space="team"
                     isSharedProject={isSharedProject}
                     onProjectShared={markProjectShared}
+                    onProjectShareFailed={markProjectShareFailed}
                     onProjectUnshared={markProjectUnshared}
                     projectOwnerMemberIds={teamProjectOwnerMemberIds}
                     openingProjectId={pullingProjectId}

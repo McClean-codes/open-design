@@ -17,6 +17,7 @@ import type {
   McpServerConfig,
   InstalledPluginRecord,
   ProjectKind,
+  WorkspaceProjectSummary,
   AudioVoiceOption,
   WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -258,8 +259,11 @@ interface Props {
    *  because the SAME answer partitions its 全部项目 / 草稿 grids — a home share
    *  must move the project between those grids too, without a refetch. */
   isSharedProject?: SharedProjectPredicate;
-  onProjectShared?: (projectId: string) => void;
+  onProjectShared?: (project: WorkspaceProjectSummary) => void;
+  onProjectShareFailed?: (projectId: string) => void;
   onProjectUnshared?: (projectId: string) => void;
+  /** Authoritative catalog owners plus any exact successful-move witness. */
+  projectOwnerMemberIds?: ReadonlyMap<string, string>;
   skills?: SkillSummary[];
   skillsLoading?: boolean;
   connectors?: ConnectorDetail[];
@@ -409,7 +413,9 @@ export function HomeView({
   promptHandoff,
   isSharedProject,
   onProjectShared,
+  onProjectShareFailed,
   onProjectUnshared,
+  projectOwnerMemberIds,
   skills = EMPTY_SKILLS,
   skillsLoading = false,
   connectors = EMPTY_CONNECTORS,
@@ -441,14 +447,13 @@ export function HomeView({
   // teammate's shared project (a project absent here is the member's own local
   // project → "我创建").
   const homeProjectOwnerMemberIds = useMemo(
-    () =>
-      new Map(
-        homeTeamProjects.projects.map((teamProject) => [
-          teamProject.projectId,
-          teamProject.ownerMemberId,
-        ]),
-      ),
-    [homeTeamProjects.projects],
+    () => projectOwnerMemberIds ?? new Map(
+      homeTeamProjects.projects.map((teamProject) => [
+        teamProject.projectId,
+        teamProject.ownerMemberId,
+      ]),
+    ),
+    [homeTeamProjects.projects, projectOwnerMemberIds],
   );
   // P0 page_view page_name=home — fire once on mount. ref-keyed to survive
   // re-renders that flip parent state without remounting HomeView.
@@ -2550,6 +2555,7 @@ export function HomeView({
         heading={t('recentProjects.title')}
         {...(isSharedProject ? { isSharedProject } : {})}
         {...(onProjectShared ? { onProjectShared } : {})}
+        {...(onProjectShareFailed ? { onProjectShareFailed } : {})}
         {...(onProjectUnshared ? { onProjectUnshared } : {})}
         projectOwnerMemberIds={homeProjectOwnerMemberIds}
         limit={1000}

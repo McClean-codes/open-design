@@ -13,6 +13,7 @@ import {
   getProjectDetail,
   importClaudeDesignZip,
   importFolderProject,
+  invalidateWorkspaceProjectLists,
   installGeneratedPluginFolder,
   listPlugins,
   listPluginsFresh,
@@ -1357,6 +1358,24 @@ describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
     await expect(listWorkspaceProjectSummaries({ context, workspaceView: 'drafts' }))
       .resolves.toMatchObject([{ id: 'draft-after' }]);
     expect(fetchMock).toHaveBeenCalledTimes(5);
+  });
+
+  it('invalidates display snapshots only for the current account generation', () => {
+    const context = teamWorkspaceContext({
+      workspaceId: 'ws-external-catalog-invalidation',
+      workspaceMemberId: 'wm-external-catalog-invalidation',
+    });
+    const currentScope = { accountGeneration: 7, context, view: 'recent' as const };
+    const previousAccountScope = { accountGeneration: 6, context, view: 'recent' as const };
+    writeProjectDisplaySnapshot(currentScope, []);
+    writeProjectDisplaySnapshot(previousAccountScope, []);
+
+    invalidateWorkspaceProjectLists(context, 7);
+
+    expect(readProjectDisplaySnapshot(projectDisplaySnapshotKey(currentScope))?.dirty)
+      .toBe(true);
+    expect(readProjectDisplaySnapshot(projectDisplaySnapshotKey(previousAccountScope))?.dirty)
+      .toBe(false);
   });
 });
 

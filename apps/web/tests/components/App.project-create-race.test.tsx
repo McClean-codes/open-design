@@ -78,6 +78,7 @@ vi.mock('../../src/components/EntryView', () => ({
     agents,
     amrLoggedIn,
     projects,
+    projectsLoading,
   }: {
     onCreateProject: (input: unknown) => boolean | Promise<boolean>;
     onCreatePluginShareProject: (
@@ -106,10 +107,12 @@ vi.mock('../../src/components/EntryView', () => ({
     agents: AgentInfo[];
     amrLoggedIn?: boolean | null;
     projects: Project[];
+    projectsLoading?: boolean;
   }) => (
     <main>
       <div data-testid="entry-home-surface" />
       <div data-testid="amr-login-status">{String(amrLoggedIn)}</div>
+      <div data-testid="entry-projects-loading">{String(Boolean(projectsLoading))}</div>
       <button
         type="button"
         onClick={() => {
@@ -2471,6 +2474,65 @@ describe('App project creation routing', () => {
       expect(screen.getByTestId('workspace-tab-name-project-shared').textContent).toBe(
         'After rename',
       );
+    });
+  });
+
+  it('silently reconciles the active project list after a remote share or move', async () => {
+    const beforeMove: Project = {
+      ...existingProject,
+      id: 'project-before-move',
+      name: 'Before remote move',
+      workspaceId: 'ws-1',
+    };
+    const afterMove: Project = {
+      ...existingProject,
+      id: 'project-after-move',
+      name: 'After remote move',
+      workspaceId: 'ws-1',
+    };
+    const refreshed = deferred<Project[]>();
+    let reads = 0;
+    let catalogInvalidated = false;
+    mockedListProjects.mockImplementation(async () => {
+      reads += 1;
+      return catalogInvalidated ? refreshed.promise : [beforeMove];
+    });
+    stubWorkspaceContext('ws-1', 'wm-viewer');
+
+    render(<App />);
+    await screen.findByTestId(`entry-project-${beforeMove.id}`);
+    expect(screen.getByTestId('entry-projects-loading').textContent).toBe('false');
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const readsBeforeInvalidation = reads;
+
+    const catalogHandler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-projects-changed'])
+      .find((handler) => typeof handler === 'function');
+    expect(catalogHandler).toBeTypeOf('function');
+    act(() => {
+      catalogInvalidated = true;
+      catalogHandler!({
+        type: 'team-projects-changed',
+        projectId: beforeMove.id,
+        kind: 'catalog',
+      });
+    });
+
+    await waitFor(() => expect(reads).toBe(readsBeforeInvalidation + 1));
+    // A stale-while-revalidate refresh must not replace usable rows with a
+    // full-page loader while the exact Workspace identity is unchanged.
+    expect(screen.getByTestId(`entry-project-${beforeMove.id}`)).toBeTruthy();
+    expect(screen.getByTestId('entry-projects-loading').textContent).toBe('false');
+
+    await act(async () => {
+      refreshed.resolve([afterMove]);
+      await refreshed.promise;
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId(`entry-project-${beforeMove.id}`)).toBeNull();
+      expect(screen.getByTestId(`entry-project-${afterMove.id}`)).toBeTruthy();
     });
   });
 

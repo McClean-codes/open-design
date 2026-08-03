@@ -72,11 +72,14 @@ function workspaceProjectListCacheKey(
   ].join(':');
 }
 
-function evictWorkspaceProjectLists(context: WorkspaceCollabContext): void {
+export function invalidateWorkspaceProjectLists(
+  context: WorkspaceCollabContext,
+  accountGeneration?: number,
+): void {
   for (const workspaceView of WORKSPACE_PROJECT_LIST_VIEWS) {
     evictCoalescedGet(workspaceProjectListCacheKey(context, workspaceView));
   }
-  markProjectDisplaySnapshotsDirty({ context });
+  markProjectDisplaySnapshotsDirty({ context, accountGeneration });
 }
 
 export type WorkspaceContextForWrite = {
@@ -188,7 +191,7 @@ export async function moveWorkspaceProject(input: {
   // A share/unshare changes membership across several projections at once
   // (`recent`, `drafts`, `team`, and `all`). Do not let the coalescing window
   // replay the pre-move snapshot into the immediate refresh.
-  evictWorkspaceProjectLists(context);
+  invalidateWorkspaceProjectLists(context);
   const json = (await resp.json()) as { project: WorkspaceProjectSummary };
   return json.project;
 }
