@@ -476,6 +476,82 @@ describe('CollabClient', () => {
     expect(client.getSnapshot().present).toEqual([]);
   });
 
+  it('does not let a stopped session leave remove a replacement session for the same member', async () => {
+    const leases = new Map<string, string>();
+    const heartbeatBodies: Array<Record<string, unknown>> = [];
+    const pendingLeaves: Array<() => void> = [];
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+              { status: 200 },
+            ),
+          );
+        }
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        const memberId = String(body.memberId);
+        const clientId =
+          typeof body.clientId === 'string' ? body.clientId : memberId;
+        if (pathname.endsWith('/presence/heartbeat')) {
+          heartbeatBodies.push(body);
+          leases.set(clientId, memberId);
+          return Promise.resolve(
+            new Response(JSON.stringify({ present: [{ memberId }] }), {
+              status: 200,
+            }),
+          );
+        }
+        expect(pathname).toBe('/api/projects/p1/presence/leave');
+        return new Promise<Response>((resolve) => {
+          pendingLeaves.push(() => {
+            leases.delete(clientId);
+            resolve(
+              new Response(JSON.stringify({ ok: true, present: [] }), {
+                status: 200,
+              }),
+            );
+          });
+        });
+      },
+    ) as unknown as typeof fetch;
+    const member = { memberId: 'member-1' };
+    const oldClient = new CollabClient({
+      projectId: 'p1',
+      member,
+      fetch: fetchImpl,
+    });
+    const replacementClient = new CollabClient({
+      projectId: 'p1',
+      member,
+      fetch: fetchImpl,
+    });
+
+    oldClient.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heartbeatBodies).toHaveLength(1);
+
+    oldClient.stop();
+    expect(pendingLeaves).toHaveLength(1);
+    replacementClient.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(heartbeatBodies).toHaveLength(2);
+
+    pendingLeaves.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(heartbeatBodies[0]!.clientId).not.toBe(
+      heartbeatBodies[1]!.clientId,
+    );
+    expect(leases.size).toBe(1);
+
+    replacementClient.stop();
+    pendingLeaves.shift()!();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
   it('reports author changes and requests a publish through the sync routes', async () => {
     const { fetchImpl, calls } = makeFetch();
     const client = new CollabClient({ projectId: 'p9', member: { memberId: 'm1' }, fetch: fetchImpl });
@@ -501,31 +577,51 @@ describe('CollabClient', () => {
     client.stop();
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/presence/leave'))).toBe(true);
+    const heartbeat = calls.find((call) =>
+      call.url.endsWith('/presence/heartbeat'),
+    );
+    const leave = calls.find((call) => call.url.endsWith('/presence/leave'));
+    expect(leave?.method).toBe('POST');
+    expect(leave?.body).toMatchObject({
+      memberId: 'm1',
+      clientId: expect.any(String),
+    });
+    expect((leave?.body as { clientId: string }).clientId).toBe(
+      (heartbeat?.body as { clientId: string }).clientId,
+    );
 
     const afterStop = calls.length;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(calls.length).toBe(afterStop); // timers cleared — no further polling
   });
 
-  it('leaveBeacon delivers the leave via sendBeacon so it survives page unload', () => {
+  it('leaveBeacon delivers the same session lease via sendBeacon so it survives page unload', async () => {
     const { fetchImpl, calls } = makeFetch();
-    const beacons: Array<{ url: string; body: string }> = [];
+    const beacons: Array<{ url: string; body: Promise<string> }> = [];
     const sendBeacon = vi.fn((url: string, blob: Blob) => {
-      // Blob.text() is async; the daemon parses the JSON body, so record the URL
-      // and mark it delivered. Body shape is asserted via the fallback test.
-      beacons.push({ url, body: String((blob as unknown as { type: string }).type) });
+      beacons.push({ url, body: blob.text() });
       return true;
     });
     vi.stubGlobal('navigator', { sendBeacon });
     const client = new CollabClient({ projectId: 'p1', member: { memberId: 'm1' }, fetch: fetchImpl });
 
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
     client.leaveBeacon();
 
     expect(sendBeacon).toHaveBeenCalledTimes(1);
     expect(beacons[0]!.url).toBe('/api/projects/p1/presence/leave');
+    const heartbeat = calls.find((call) =>
+      call.url.endsWith('/presence/heartbeat'),
+    );
+    expect(JSON.parse(await beacons[0]!.body)).toEqual({
+      memberId: 'm1',
+      clientId: (heartbeat?.body as { clientId: string }).clientId,
+    });
     // Beacon path used — no keepalive fetch fallback.
     expect(calls.some((c) => c.url.endsWith('/presence/leave'))).toBe(false);
+    client.stop();
+    await vi.advanceTimersByTimeAsync(0);
     vi.unstubAllGlobals();
   });
 
@@ -538,7 +634,10 @@ describe('CollabClient', () => {
 
     const leave = calls.find((c) => c.url.endsWith('/presence/leave'));
     expect(leave?.method).toBe('POST');
-    expect(leave?.body).toEqual({ memberId: 'm-x' });
+    expect(leave?.body).toMatchObject({
+      memberId: 'm-x',
+      clientId: expect.any(String),
+    });
     vi.unstubAllGlobals();
   });
 

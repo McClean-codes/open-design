@@ -16,6 +16,7 @@ import type {
 // Presence identity is the shared contract DTO; re-export so collab consumers
 // keep importing it from the client module.
 import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
+import { randomUUID } from '../utils/uuid';
 import {
   workspaceIdentityCacheKey,
   workspaceProjectHeaders,
@@ -75,6 +76,13 @@ const DEFAULT_STATUS_POLL_MS = 5_000;
 
 export class CollabClient {
   private readonly projectId: string;
+  /**
+   * One lease identity for this mounted client session. A member can leave and
+   * immediately reopen the same project while the old leave request is still
+   * in flight; using the member id as the lease key would let that stale leave
+   * delete the replacement session's fresh heartbeat.
+   */
+  private readonly clientId = randomUUID();
   // Mutable — see setMember(). Status polling below never reads this; only
   // heartbeat/leave/leaveBeacon do, and all three no-op while it is null.
   private member: CollabPresenceMember | null;
@@ -240,7 +248,10 @@ export class CollabClient {
     }
     const requestGeneration = ++this.presenceRequestGeneration;
     try {
-      const body = await this.post('/presence/heartbeat', this.member);
+      const body = await this.post('/presence/heartbeat', {
+        ...this.member,
+        clientId: this.clientId,
+      });
       if (
         requestGeneration === this.presenceRequestGeneration
         && Array.isArray(body?.present)
@@ -363,7 +374,10 @@ export class CollabClient {
   private async leave(): Promise<void> {
     if (!this.member) return;
     try {
-      await this.post('/presence/leave', { memberId: this.member.memberId });
+      await this.post('/presence/leave', {
+        memberId: this.member.memberId,
+        clientId: this.clientId,
+      });
     } catch (error) {
       this.onError?.(error);
     }
@@ -379,7 +393,10 @@ export class CollabClient {
   leaveBeacon(): void {
     if (!this.member) return;
     const url = this.url('/presence/leave');
-    const body = JSON.stringify({ memberId: this.member.memberId });
+    const body = JSON.stringify({
+      memberId: this.member.memberId,
+      clientId: this.clientId,
+    });
     // sendBeacon cannot attach workspace headers. Retain it only for legacy
     // unscoped clients; real workspace sessions use keepalive fetch so the
     // daemon can authenticate the same captured identity as every other
