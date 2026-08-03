@@ -7423,6 +7423,41 @@ export async function startServer({
       typeof projectId === 'string' && projectId
         ? getProject(db, projectId)
         : null;
+    const projectWorkspaceBinding =
+      typeof projectId === 'string' && projectId
+        ? getWorkspaceProjectByProjectId(db, projectId)
+        : null;
+    const projectWorkspaceId =
+      typeof projectWorkspaceBinding?.workspaceId === 'string'
+        ? projectWorkspaceBinding.workspaceId.trim()
+        : '';
+    const projectCreatorMemberId =
+      typeof projectWorkspaceBinding?.createdByWorkspaceMemberId === 'string'
+        ? projectWorkspaceBinding.createdByWorkspaceMemberId.trim()
+        : '';
+    const designSystemVisibleToRun = (summary) => {
+      if (summary?.source === 'built-in') return true;
+      // A truly unbound local project is the legacy CLI/BYOK lane. Bound
+      // projects must resolve resources from their persisted project scope;
+      // shell/current Workspace state never participates.
+      if (!projectWorkspaceId) return true;
+      const binding = getWorkspaceResourceByResourceId(
+        db,
+        'design_system',
+        summary?.id,
+      );
+      if (
+        !binding
+        || binding.workspaceId?.trim() !== projectWorkspaceId
+        || binding.resourceState === 'deleted'
+      ) {
+        return false;
+      }
+      if (binding.visibility === 'team') return true;
+      return binding.visibility === 'personal'
+        && Boolean(projectCreatorMemberId)
+        && binding.createdByWorkspaceMemberId?.trim() === projectCreatorMemberId;
+    };
     let appConfigForPrompt = null;
     try {
       appConfigForPrompt = await readAppConfig(RUNTIME_DATA_DIR);
@@ -7739,12 +7774,23 @@ export async function startServer({
     let activeDesignSystemId = null;
     let designSystemDigest = null;
     if (effectiveDesignSystemId) {
-      let systems = await listAllDesignSystems();
-      let summary = systems.find((s) => s.id === effectiveDesignSystemId);
+      const designSystemListOptions = projectWorkspaceId
+        ? { workspaceId: projectWorkspaceId }
+        : {};
+      let systems = await listAllDesignSystems(designSystemListOptions);
+      let summary = systems.find(
+        (system) =>
+          system.id === effectiveDesignSystemId
+          && designSystemVisibleToRun(system),
+      );
       if (summary?.source === 'user') {
         await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId);
-        systems = await listAllDesignSystems();
-        summary = systems.find((s) => s.id === effectiveDesignSystemId);
+        systems = await listAllDesignSystems(designSystemListOptions);
+        summary = systems.find(
+          (system) =>
+            system.id === effectiveDesignSystemId
+            && designSystemVisibleToRun(system),
+        );
       }
       const editingOwnDraftDesignSystem =
         project?.metadata?.importedFrom === 'design-system'
@@ -7752,16 +7798,28 @@ export async function startServer({
       designSystemTitle = summary?.title;
       if (summary && (isProjectUsableDesignSystem(summary) || editingOwnDraftDesignSystem)) {
         const workspaceBody = await readDesignSystemWorkspaceTextFile(db, summary, 'DESIGN.md');
-        const registryBody = await readAvailableDesignSystem(effectiveDesignSystemId);
+        const registryBody = await readAvailableDesignSystem(
+          effectiveDesignSystemId,
+          designSystemListOptions,
+        );
         designSystemBody = (workspaceBody ?? registryBody) ?? undefined;
         // Single seam: env gate + built-in→user-installed fallback chain
         // live together inside `resolveDesignSystemAssets` so the whole
         // server-side asset-resolution path can be tested end-to-end
         // from real disk fixtures (see `tests/design-system-assets.test.ts`).
+        const resourceBinding = getWorkspaceResourceByResourceId(
+          db,
+          'design_system',
+          effectiveDesignSystemId,
+        );
+        const scopedUserDesignSystemsRoot =
+          projectWorkspaceId && resourceBinding?.visibility === 'team'
+            ? teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, projectWorkspaceId)
+            : USER_DESIGN_SYSTEMS_DIR;
         const assets = await resolveDesignSystemAssets(
           effectiveDesignSystemId,
           DESIGN_SYSTEMS_DIR,
-          USER_DESIGN_SYSTEMS_DIR,
+          scopedUserDesignSystemsRoot,
         );
         designSystemUsageMd = assets.usageMd;
         designSystemTokensCss = assets.tokensCss;

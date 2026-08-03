@@ -34,12 +34,17 @@ import { skillCwdAliasSegment } from '../src/cwd-aliases.js';
 import { getAgentDef } from '../src/agents.js';
 import { readAppConfig, writeAppConfig } from '../src/app-config.js';
 import { readMemoryConfig, writeMemoryConfig } from '../src/memory.js';
-import { ensureWorkspaceProject, upsertMessage } from '../src/db.js';
+import {
+  ensureWorkspaceProject,
+  ensureWorkspaceResource,
+  upsertMessage,
+} from '../src/db.js';
 import { renderCodexImagegenOverride } from '../src/prompts/system.js';
 import {
   ByokCredentialService,
   type ByokSecretBackend,
 } from '../src/byok/credential-service.js';
+import { teamResourceWorkspaceRoot } from '../src/collab/team-resource-materialization.js';
 
 const FAKE_VELA_FIXTURE = resolve(process.cwd(), 'tests', 'fixtures', 'fake-vela.mjs');
 
@@ -3414,6 +3419,295 @@ process.stdin.on('end', () => {
         expect(runsBody.runs[0]?.designSystemDigest).toMatch(/^[a-f0-9]{64}$/);
       },
     );
+  });
+
+  it('does not compose another member Personal design system from a persisted project id', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for Workspace design-system prompt tests');
+    }
+    const workspaceFixture =
+      await createPersonalWorkspaceBoundProjectFixture('Foreign Personal DS prompt fixture');
+    const workspaceId = workspaceFixture.headers['x-od-workspace-id'];
+    const foreignMemberId = `foreign-member-${randomUUID()}`;
+    const dirId = `foreign-prompt-${randomUUID()}`;
+    const designSystemId = `user:${dirId}`;
+    const secretMarker = `FOREIGN_PERSONAL_DS_${randomUUID()}`;
+    const designSystemDir = resolve(process.env.OD_DATA_DIR, 'design-systems', dirId);
+    await fsp.mkdir(designSystemDir, { recursive: true });
+    await fsp.writeFile(
+      resolve(designSystemDir, 'DESIGN.md'),
+      `# Foreign Personal design system\n\n${secretMarker}\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(designSystemDir, 'metadata.json'),
+      `${JSON.stringify({
+        title: 'Foreign Personal design system',
+        status: 'published',
+        workspaceId,
+      }, null, 2)}\n`,
+      'utf8',
+    );
+
+    const sqlite = new Database(resolve(process.env.OD_DATA_DIR, 'app.sqlite'));
+    try {
+      ensureWorkspaceResource(
+        sqlite as never,
+        'design_system',
+        workspaceId,
+        designSystemId,
+        {
+          visibility: 'personal',
+          resourceState: 'active',
+          createdByWorkspaceMemberId: foreignMemberId,
+          updatedByWorkspaceMemberId: foreignMemberId,
+        },
+      );
+      sqlite.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?')
+        .run(designSystemId, workspaceFixture.projectId);
+    } finally {
+      sqlite.close();
+    }
+
+    try {
+      await withFakeAgent(
+        'opencode',
+        `
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  const result = prompt.includes(${JSON.stringify(secretMarker)})
+    ? 'foreign-personal-design-system-leaked'
+    : 'foreign-personal-design-system-blocked';
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: result } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+        async () => {
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...workspaceFixture.headers,
+            },
+            body: JSON.stringify({
+              agentId: 'opencode',
+              projectId: workspaceFixture.projectId,
+              message: 'draft without reading another member private brand',
+            }),
+          });
+          const body = await response.text();
+
+          expect(response.ok).toBe(true);
+          expect(body).toContain('foreign-personal-design-system-blocked');
+          expect(body).not.toContain('foreign-personal-design-system-leaked');
+        },
+      );
+    } finally {
+      await fsp.rm(designSystemDir, { recursive: true, force: true });
+    }
+  });
+
+  it('composes the project creator Personal design system', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for Workspace design-system prompt tests');
+    }
+    const workspaceFixture =
+      await createPersonalWorkspaceBoundProjectFixture('Own Personal DS prompt fixture');
+    const workspaceId = workspaceFixture.headers['x-od-workspace-id'];
+    const workspaceMemberId = workspaceFixture.headers['x-od-workspace-member-id'];
+    const dirId = `own-personal-prompt-${randomUUID()}`;
+    const designSystemId = `user:${dirId}`;
+    const personalMarker = `OWN_PERSONAL_DS_${randomUUID()}`;
+    const designSystemDir = resolve(process.env.OD_DATA_DIR, 'design-systems', dirId);
+    await fsp.mkdir(designSystemDir, { recursive: true });
+    await fsp.writeFile(
+      resolve(designSystemDir, 'DESIGN.md'),
+      `# Own Personal design system\n\n${personalMarker}\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(designSystemDir, 'metadata.json'),
+      `${JSON.stringify({
+        title: 'Own Personal design system',
+        status: 'published',
+        workspaceId,
+      }, null, 2)}\n`,
+      'utf8',
+    );
+
+    const sqlite = new Database(resolve(process.env.OD_DATA_DIR, 'app.sqlite'));
+    try {
+      ensureWorkspaceResource(
+        sqlite as never,
+        'design_system',
+        workspaceId,
+        designSystemId,
+        {
+          visibility: 'personal',
+          resourceState: 'active',
+          createdByWorkspaceMemberId: workspaceMemberId,
+          updatedByWorkspaceMemberId: workspaceMemberId,
+        },
+      );
+      sqlite.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?')
+        .run(designSystemId, workspaceFixture.projectId);
+    } finally {
+      sqlite.close();
+    }
+
+    try {
+      await withFakeAgent(
+        'opencode',
+        `
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  const result = prompt.includes(${JSON.stringify(personalMarker)})
+    ? 'own-personal-design-system-visible'
+    : 'own-personal-design-system-missing';
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: result } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+        async () => {
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              ...workspaceFixture.headers,
+            },
+            body: JSON.stringify({
+              agentId: 'opencode',
+              projectId: workspaceFixture.projectId,
+              message: 'draft with my Personal brand',
+            }),
+          });
+          const body = await response.text();
+
+          expect(response.ok).toBe(true);
+          expect(body).toContain('own-personal-design-system-visible');
+          expect(body).not.toContain('own-personal-design-system-missing');
+        },
+      );
+    } finally {
+      await fsp.rm(designSystemDir, { recursive: true, force: true });
+    }
+  });
+
+  it('composes a Team design system from the persisted project Workspace', async () => {
+    if (!process.env.OD_DATA_DIR) {
+      throw new Error('OD_DATA_DIR is required for Workspace design-system prompt tests');
+    }
+    const projectId = `proj-${randomUUID()}`;
+    const workspaceId = `team-ws-${randomUUID()}`;
+    const workspaceMemberId = `team-member-${randomUUID()}`;
+    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: projectId, name: 'Team DS prompt fixture' }),
+    });
+    expect(createProjectResponse.ok).toBe(true);
+
+    const dirId = `team-prompt-${randomUUID()}`;
+    const designSystemId = `user:${dirId}`;
+    const teamMarker = `TEAM_DS_${randomUUID()}`;
+    const designSystemsRoot = resolve(process.env.OD_DATA_DIR, 'design-systems');
+    const designSystemDir = resolve(
+      teamResourceWorkspaceRoot(designSystemsRoot, workspaceId),
+      dirId,
+    );
+    await fsp.mkdir(designSystemDir, { recursive: true });
+    await fsp.writeFile(
+      resolve(designSystemDir, 'DESIGN.md'),
+      `# Team design system\n\n${teamMarker}\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(designSystemDir, 'metadata.json'),
+      `${JSON.stringify({
+        title: 'Team design system',
+        status: 'published',
+        workspaceId,
+      }, null, 2)}\n`,
+      'utf8',
+    );
+
+    const sqlite = new Database(resolve(process.env.OD_DATA_DIR, 'app.sqlite'));
+    try {
+      ensureWorkspaceProject(sqlite as never, {
+        projectId,
+        workspaceId,
+        visibility: 'team',
+        createdByWorkspaceMemberId: workspaceMemberId,
+      });
+      ensureWorkspaceResource(
+        sqlite as never,
+        'design_system',
+        workspaceId,
+        designSystemId,
+        {
+          visibility: 'team',
+          resourceState: 'active',
+          createdByWorkspaceMemberId: workspaceMemberId,
+          updatedByWorkspaceMemberId: workspaceMemberId,
+        },
+      );
+      sqlite.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?')
+        .run(designSystemId, projectId);
+    } finally {
+      sqlite.close();
+    }
+
+    try {
+      await withFakeAgent(
+        'opencode',
+        `
+let prompt = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => { prompt += chunk; });
+process.stdin.on('end', () => {
+  const result = prompt.includes(${JSON.stringify(teamMarker)})
+    ? 'team-design-system-visible'
+    : 'team-design-system-missing';
+  console.log(JSON.stringify({ type: 'step_start' }));
+  console.log(JSON.stringify({ type: 'text', part: { text: result } }));
+  console.log(JSON.stringify({ type: 'step_finish', part: { tokens: { input: 1, output: 1 } } }));
+  process.exit(0);
+});
+`,
+        async () => {
+          const response = await fetch(`${baseUrl}/api/chat`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-od-workspace-id': workspaceId,
+              'x-od-workspace-member-id': workspaceMemberId,
+              'x-od-workspace-type': 'team',
+              'x-od-workspace-role': 'owner',
+            },
+            body: JSON.stringify({
+              agentId: 'opencode',
+              projectId,
+              message: 'draft with the Team brand',
+            }),
+          });
+          const body = await response.text();
+
+          expect(response.ok).toBe(true);
+          expect(body).toContain('team-design-system-visible');
+          expect(body).not.toContain('team-design-system-missing');
+        },
+      );
+    } finally {
+      await fsp.rm(designSystemDir, { recursive: true, force: true });
+    }
   });
 
   it('keeps requested design systems separate from missing injected design systems', async () => {
