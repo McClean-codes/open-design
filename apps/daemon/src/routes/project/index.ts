@@ -2067,26 +2067,20 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
    * hub already knows this project is team-visible, whether or not this
    * exact daemon's local sqlite has caught up.
    *
-   * Reconciliation is itself authority-sensitive. A catalog reader who is
-   * neither the recorded project creator nor a Workspace owner/admin must not
-   * turn the orphan into a sticky Team binding: doing so would consume the
-   * only evidence that lets a later privileged caller repair the historical
-   * row. Creator identity keeps the ordinary creator-only path; owner/admin
-   * receives a request-local recovery witness returned to the move route
-   * below. The transient row is deleted if the remote unshare fails, and the
-   * witness itself is never retained as authority, so it cannot broaden later
-   * mutations on an ordinary already-bound Team project.
+   * Reconciliation is itself authority-sensitive. Only the member recorded
+   * as the remote project's creator may bind and unshare it. Workspace
+   * owner/admin governance never substitutes for project ownership, even for
+   * a historical row that this daemon has not seen before.
    *
-   * Deliberately best-effort: a catalog outage must not turn an unshare
-   * attempt into a 500. Falling through to the pre-existing personal default
-   * is exactly the answer this function would give anyway if the hub had no
-   * record for the project.
+   * A catalog outage is distinct from an authoritative "not shared" answer:
+   * callers receive a retryable 503 instead of guessing Personal and losing
+   * the only evidence that authorizes a later unshare.
    */
   type UnboundProjectMoveReconciliation =
     | 'none'
     | 'creator'
-    | 'privileged'
-    | 'denied';
+    | 'denied'
+    | 'unavailable';
 
   async function reconcileUnboundProjectBeforeMove(
     projectId: string,
@@ -2097,19 +2091,17 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     try {
       remoteProjects = await teamProjectCatalog.list(workspaceProjectPrincipal(ctx));
     } catch {
-      return 'none';
+      return 'unavailable';
     }
-    const remote = remoteProjects.find((item) => item.projectId === projectId && item.access.canView);
+    const remote = remoteProjects.find(
+      (item) =>
+        item.workspaceId === ctx.workspaceId
+        && item.projectId === projectId
+        && item.access.canView,
+    );
     if (!remote) return 'none';
     const creator = remote.ownerMemberId === ctx.workspaceMemberId;
-    const privilegedRecovery =
-      (ctx.role === 'owner' || ctx.role === 'admin')
-      && ctx.memberStatus === 'active'
-      && ctx.lifecycleState === 'active'
-      && ctx.canShareProjects
-      && ctx.canWriteSyncedFiles
-      && !remote.access.frozen;
-    if (!creator && !privilegedRecovery) return 'denied';
+    if (!creator || remote.access.frozen || !remote.access.canEdit) return 'denied';
     ensureWorkspaceProject(db, {
       projectId,
       workspaceId: ctx.workspaceId,
@@ -2121,18 +2113,82 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       cloudTombstonedAt: null,
       syncState: 'synced',
     });
-    // The normal creator check handles creator-owned rows. Only a privileged
-    // non-creator needs the ephemeral override, and a frozen catalog entry
-    // must remain immutable even during recovery.
-    if (creator) return 'creator';
-    return 'privileged';
+    return 'creator';
+  }
+
+  type CatalogOnlyOwnerMaterialization =
+    | 'missing'
+    | 'denied'
+    | 'materialized'
+    | 'unavailable';
+
+  /**
+   * A catalog entry may be visible before this daemon has either the project
+   * row or its files. The creator must pull that content before unsharing;
+   * otherwise removing the hub copy would discard the only copy this daemon
+   * can preserve as Personal. The pull path performs its own fresh exact-scope
+   * authority/catalog checks and commits content + rows atomically.
+   */
+  async function materializeCatalogOnlyOwnerProjectBeforeMove(
+    projectId: string,
+    ctx: WorkspaceProjectContext,
+  ): Promise<CatalogOnlyOwnerMaterialization> {
+    if (!teamProjectCatalog) return 'missing';
+    let remoteProjects: VelaTeamProjectRecord[];
+    try {
+      remoteProjects = await teamProjectCatalog.list(workspaceProjectPrincipal(ctx));
+    } catch {
+      return 'unavailable';
+    }
+    const remote = remoteProjects.find(
+      (item) =>
+        item.workspaceId === ctx.workspaceId
+        && item.projectId === projectId
+        && item.access.canView,
+    );
+    if (!remote) return 'missing';
+    if (
+      remote.ownerMemberId !== ctx.workspaceMemberId
+      || remote.access.frozen
+      || !remote.access.canEdit
+    ) {
+      return 'denied';
+    }
+    if (!collabSync.materializeTeamProject) return 'unavailable';
+    try {
+      await collabSync.materializeTeamProject(
+        projectId,
+        workspaceProjectPrincipal(ctx),
+      );
+    } catch {
+      return 'unavailable';
+    }
+    const project = getProject(db, projectId);
+    const binding = getWorkspaceProjectByProjectId(db, projectId);
+    if (
+      !project
+      || !binding
+      || binding.workspaceId !== ctx.workspaceId
+      || binding.visibility !== 'team'
+      || binding.createdByWorkspaceMemberId !== ctx.workspaceMemberId
+      || binding.resourceHubResourceId !== remote.resourceId
+    ) {
+      return 'unavailable';
+    }
+    return 'materialized';
   }
   function catalogEnrichedLocalTeamProjectSummary(
     summary: any,
     remote: VelaTeamProjectRecord,
     ctx: WorkspaceProjectContext,
   ) {
-    const name = remote.displayName?.trim();
+    const localProjectName = summary?.project?.name;
+    const localOwnerName =
+      remote.ownerMemberId === ctx.workspaceMemberId
+      && typeof localProjectName === 'string'
+        ? localProjectName.trim()
+        : '';
+    const name = localOwnerName || remote.displayName?.trim();
     const frozen = remote.access.frozen || isWorkspaceLocked(ctx);
     return {
       ...summary,
@@ -2941,13 +2997,34 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
     try {
       const ctx = await authoritativeWorkspaceProjectContext(req, res, req.params.workspaceId);
       if (!ctx) return;
-      const project = getProject(db, req.params.projectId);
-      const locations = await configuredProjectLocations();
-      if (!project || !projectVisibleForLocations(project, locations)) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       const visibility = req.body?.visibility;
       if (!validVisibility(visibility)) {
         return sendApiError(res, 400, 'BAD_REQUEST', 'visibility must be personal or team');
       }
+      let project = getProject(db, req.params.projectId);
+      if (!project && visibility === 'personal' && ctx.workspaceType === 'team') {
+        const materialization = await materializeCatalogOnlyOwnerProjectBeforeMove(
+          req.params.projectId,
+          ctx,
+        );
+        if (materialization === 'denied') {
+          return sendApiError(res, 403, 'PROJECT_DELETE_FORBIDDEN', 'project move forbidden');
+        }
+        if (materialization === 'unavailable') {
+          return sendApiError(
+            res,
+            503,
+            'UPSTREAM_UNAVAILABLE',
+            'team project content is temporarily unavailable',
+            { retryable: true },
+          );
+        }
+        if (materialization === 'materialized') {
+          project = getProject(db, req.params.projectId);
+        }
+      }
+      const locations = await configuredProjectLocations();
+      if (!project || !projectVisibleForLocations(project, locations)) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       if (visibility === 'team') {
         const refusal = teamShareRefusalFor(ctx, workspaceTypes);
         if (refusal) return sendTeamShareScopeRefused(res, ctx, refusal);
@@ -2964,37 +3041,28 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         if (orphanRecovery === 'denied') {
           return sendApiError(res, 403, 'PROJECT_DELETE_FORBIDDEN', 'project move forbidden');
         }
+        if (orphanRecovery === 'unavailable') {
+          return sendApiError(
+            res,
+            503,
+            'UPSTREAM_UNAVAILABLE',
+            'team project catalog is temporarily unavailable',
+            { retryable: true },
+          );
+        }
       }
       const wp = ensureWorkspaceProjection(project, ctx, 'personal');
       const row = listWorkspaceProjects(db, ctx.workspaceId).find((item: any) => item.id === project.id);
       if (!row || !wp) return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       const summary = normalizeWorkspaceProjectRow(row, ctx);
-      const privilegedOrphanRecoveryAllowed =
-        orphanRecovery === 'privileged'
-        && visibility === 'personal'
-        && ctx.memberStatus === 'active'
-        && ctx.lifecycleState === 'active'
-        && ctx.canShareProjects
-        && ctx.canWriteSyncedFiles;
-      if (
-        !workspaceMoveAllowed(summary, visibility)
-        && !privilegedOrphanRecoveryAllowed
-      ) {
+      if (!workspaceMoveAllowed(summary, visibility)) {
         return sendApiError(res, 403, 'PROJECT_DELETE_FORBIDDEN', 'project move forbidden');
       }
       updateWorkspaceProject(db, ctx.workspaceId, project.id, workspaceProjectMovePatch(project.id, summary, ctx, visibility));
       try {
         await requestTeamVisibility([project.id], ctx, visibility);
       } catch (error) {
-        if (orphanRecovery === 'privileged') {
-          // This request created the row solely as an ephemeral recovery
-          // witness. Keeping it after an unshare failure would turn the
-          // historical orphan into an ordinary creator-owned Team binding
-          // and permanently block the same owner/admin from retrying.
-          deleteWorkspaceProject(db, ctx.workspaceId, project.id);
-        } else {
-          restoreWorkspaceProjectRow(row);
-        }
+        restoreWorkspaceProjectRow(row);
         throw error;
       }
       const updatedRow = listWorkspaceProjects(db, ctx.workspaceId).find((item: any) => item.id === project.id);

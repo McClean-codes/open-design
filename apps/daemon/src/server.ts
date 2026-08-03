@@ -6433,6 +6433,17 @@ export async function startServer({
         invalidatePresenceReadCache(projectId);
         return result;
       },
+      materializeTeamProject: async (projectId, principal) => {
+        const outcome = await collabSyncRoutes.pullSharedProject(projectId, {
+          workspaceId: principal.teamId,
+          resourceTeamId: principal.teamId,
+          viewerMemberId: principal.memberId,
+          ownerMemberId: principal.memberId,
+        });
+        if (outcome.status !== 'pulled') {
+          throw new Error(`team project materialization ${outcome.status}`);
+        }
+      },
       refreshTeamProjectMetadata: (projectId) => collab.refreshTeamProjectMetadata(projectId),
       invalidateTeamProjectCatalog: () => teamProjectsDisplayCache.invalidate(),
     },

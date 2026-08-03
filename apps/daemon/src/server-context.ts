@@ -194,6 +194,12 @@ export interface ServerContext {
     requestTeamShare(projectId: string, share?: string | ResourceHubPrincipal): Promise<{ version: number | null }>;
     requestTeamUnshare(projectId: string, share?: string | ResourceHubPrincipal): Promise<void>;
     /**
+     * Pull and atomically register a catalog-only Team project before its
+     * creator removes the share. This prevents unpublishing the only durable
+     * copy before the current daemon has a Personal copy to keep.
+     */
+    materializeTeamProject?(projectId: string, principal: ResourceHubPrincipal): Promise<void>;
+    /**
      * Re-upsert the shared project's hub catalog entry after a metadata-only
      * change (rename). Without this a rename with no follow-up content
      * publish never reached teammates. Fire-and-forget; no-op for projects
