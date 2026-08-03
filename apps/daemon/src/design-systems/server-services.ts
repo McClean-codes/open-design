@@ -1,8 +1,12 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
 import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
-import { getWorkspaceResourceByResourceId } from '../db.js';
+import {
+  getWorkspaceProjectByProjectId,
+  getWorkspaceResourceByResourceId,
+} from '../db.js';
 
 type JsonRecord = Record<string, unknown>;
 type SkillEntry = { id: string } & JsonRecord;
@@ -57,6 +61,11 @@ type DesignSystemListOptions = {
   workspaceId?: string | null;
 };
 
+type DesignSystemWorkspaceOptions = {
+  workspaceId?: string | null;
+  workspaceMemberId?: string | null;
+};
+
 export type DesignSystemAssetSyncOutcome =
   | { ok: true; synced: string[] }
   | { ok: false; reason: 'not-found' | 'no-workspace-project' };
@@ -104,6 +113,7 @@ export function createDesignSystemServerServices({
     readDesignSystemStaticFile: (root: string, id: string, filePath: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<DesignSystemStaticFile | null | undefined>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<Array<{ kind?: string; path: string }> | null | undefined>;
     readUserDesignSystemFile: (root: string, id: string, filePath: string) => Promise<{ path: string; content: string } | null | undefined>;
+    readUserDesignSystemFileBytes: (root: string, id: string, filePath: string) => Promise<{ path: string; bytes: Buffer } | null | undefined>;
     linkUserDesignSystemProject: (root: string, id: string, projectId: string) => Promise<unknown>;
     // Physically copies real asset bytes (sourced from a workspace project's
     // editing mirror) into the canonical assets/ dir and un-fingerprints them
@@ -475,12 +485,98 @@ export function createDesignSystemServerServices({
     return userDesignSystemWorkspaceProjectId(id);
   }
 
-  async function ensureUserDesignSystemWorkspaceProject(dbHandle: Database.Database, id: string) {
-    const systems = await listAllDesignSystems();
+  function workspaceScopedDesignSystemProjectId(id: string, workspaceId: string) {
+    const dirId = userDesignSystemDirectoryId(id);
+    if (!dirId) return null;
+    const suffix = createHash('sha256')
+      .update(`${workspaceId}\0${id}`, 'utf8')
+      .digest('hex')
+      .slice(0, 16);
+    const prefix = `ds-${dirId}-`.slice(0, 128 - suffix.length);
+    return `${prefix}${suffix}`;
+  }
+
+  function isExactDesignSystemProjectBinding(
+    binding: ReturnType<typeof getWorkspaceProjectByProjectId>,
+    summary: DesignSystemSummary,
+    workspaceId: string,
+    workspaceMemberId: string,
+  ) {
+    if (!binding || binding.workspaceId !== workspaceId || binding.resourceState === 'deleted') {
+      return false;
+    }
+    if (summary.teamSynced === true) return binding.visibility === 'team';
+    return binding.visibility === 'personal'
+      && binding.createdByWorkspaceMemberId === workspaceMemberId;
+  }
+
+  async function resolveDesignSystemWorkspaceProject(
+    dbHandle: Database.Database,
+    id: string,
+    options: DesignSystemWorkspaceOptions = {},
+  ) {
+    const isScoped = options.workspaceId !== undefined
+      || options.workspaceMemberId !== undefined;
+    const workspaceId = options.workspaceId?.trim() ?? '';
+    const workspaceMemberId = options.workspaceMemberId?.trim() ?? '';
+    // A request that claims Workspace scope must carry the complete verified
+    // identity. Falling back to the legacy unscoped catalog here is precisely
+    // what allowed a Team operation to mutate a same-id Personal project.
+    if (isScoped && (!workspaceId || !workspaceMemberId)) return null;
+
+    const systems = await listAllDesignSystems(
+      isScoped ? { workspaceId, workspaceMemberId } : {},
+    );
     const summary = systems.find((s) => s.id === id && s.source === 'user');
     if (!summary) return null;
-    const projectId = projectBackedDesignSystemProjectId(id, summary);
+
+    const sourceRoot = summary.teamSynced === true
+      ? teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId)
+      : paths.USER_DESIGN_SYSTEMS_DIR;
+    let projectId = summary.teamSynced === true
+      ? workspaceScopedDesignSystemProjectId(id, workspaceId)
+      : projectBackedDesignSystemProjectId(id, summary);
     if (!projectId) return null;
+
+    if (isScoped) {
+      const existing = projects.getProject(dbHandle, projectId);
+      const binding = existing
+        ? getWorkspaceProjectByProjectId(dbHandle, projectId)
+        : undefined;
+      const exactBinding = isExactDesignSystemProjectBinding(
+        binding,
+        summary,
+        workspaceId,
+        workspaceMemberId,
+      );
+      if (existing && !exactBinding) {
+        projectId = workspaceScopedDesignSystemProjectId(id, workspaceId);
+        if (!projectId) return null;
+        const scopedExisting = projects.getProject(dbHandle, projectId);
+        const scopedBinding = scopedExisting
+          ? getWorkspaceProjectByProjectId(dbHandle, projectId)
+          : undefined;
+        if (scopedExisting && !isExactDesignSystemProjectBinding(
+          scopedBinding,
+          summary,
+          workspaceId,
+          workspaceMemberId,
+        )) {
+          return null;
+        }
+      }
+    }
+    return { summary, projectId, sourceRoot, workspaceId };
+  }
+
+  async function ensureUserDesignSystemWorkspaceProject(
+    dbHandle: Database.Database,
+    id: string,
+    options: DesignSystemWorkspaceOptions = {},
+  ) {
+    const resolved = await resolveDesignSystemWorkspaceProject(dbHandle, id, options);
+    if (!resolved) return null;
+    const { summary, projectId, sourceRoot } = resolved;
 
     const now = Date.now();
     const metadata = {
@@ -511,16 +607,16 @@ export function createDesignSystemServerServices({
     if (!project) return null;
     if (!existing) bindProjectToWorkspace?.(projectId, now, summary);
 
-    const files = await designSystems.listUserDesignSystemFiles(paths.USER_DESIGN_SYSTEMS_DIR, id);
+    const files = await designSystems.listUserDesignSystemFiles(sourceRoot, id);
     if (!files) return null;
     for (const file of files) {
       if (file.kind === 'folder') continue;
-      const detail = await designSystems.readUserDesignSystemFile(paths.USER_DESIGN_SYSTEMS_DIR, id, file.path);
+      const detail = await designSystems.readUserDesignSystemFileBytes(sourceRoot, id, file.path);
       if (!detail) continue;
       if (existing) {
         try {
-          const existingFile = await projects.readProjectFile(paths.PROJECTS_DIR, projectId, detail.path, project.metadata);
-          if (!isReplaceableDesignSystemWorkspaceFile(detail.path, existingFile)) continue;
+          const existingFile = await projects.readProjectFile(paths.PROJECTS_DIR, projectId, file.path, project.metadata);
+          if (!isReplaceableDesignSystemWorkspaceFile(file.path, existingFile)) continue;
         } catch (err: unknown) {
           if (!isNodeErrorCode(err, 'ENOENT')) throw err;
         }
@@ -528,14 +624,14 @@ export function createDesignSystemServerServices({
       await projects.writeProjectFile(
         paths.PROJECTS_DIR,
         projectId,
-        detail.path,
-        Buffer.from(detail.content, 'utf8'),
+        file.path,
+        detail.bytes,
         {},
         project.metadata,
       );
     }
     await removeLegacyDesignSystemWorkspaceArtifacts(project);
-    await designSystems.linkUserDesignSystemProject(paths.USER_DESIGN_SYSTEMS_DIR, id, project.id);
+    await designSystems.linkUserDesignSystemProject(sourceRoot, id, project.id);
     const projectFiles = await projects.listFiles(
       paths.PROJECTS_DIR,
       projectId,
@@ -620,12 +716,11 @@ export function createDesignSystemServerServices({
   async function syncUserDesignSystemAssetsFromWorkspace(
     dbHandle: Database.Database,
     id: string,
+    options: DesignSystemWorkspaceOptions = {},
   ): Promise<DesignSystemAssetSyncOutcome> {
-    const systems = await listAllDesignSystems();
-    const summary = systems.find((s) => s.id === id && s.source === 'user');
-    if (!summary) return { ok: false, reason: 'not-found' };
-    const projectId = projectBackedDesignSystemProjectId(id, summary);
-    if (!projectId) return { ok: false, reason: 'no-workspace-project' };
+    const resolved = await resolveDesignSystemWorkspaceProject(dbHandle, id, options);
+    if (!resolved) return { ok: false, reason: 'not-found' };
+    const { projectId, sourceRoot } = resolved;
     const project = projects.getProject(dbHandle, projectId);
     if (!project) return { ok: false, reason: 'no-workspace-project' };
 
@@ -658,7 +753,7 @@ export function createDesignSystemServerServices({
     }
 
     const result = await designSystems.syncUserDesignSystemAssetsFromFiles(
-      paths.USER_DESIGN_SYSTEMS_DIR,
+      sourceRoot,
       id,
       files,
     );

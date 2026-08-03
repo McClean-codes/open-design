@@ -315,6 +315,7 @@ import {
   readDesignSystemPackageInfo,
   readDesignSystemStaticFile,
   readUserDesignSystemFile,
+  readUserDesignSystemFileBytes,
   resolveDesignSystemAssets,
   stripPrefixAndValidateId,
   syncUserDesignSystemAssetsFromFiles,
@@ -2460,6 +2461,7 @@ export async function startServer({
       readDesignSystemStaticFile,
       listUserDesignSystemFiles,
       readUserDesignSystemFile,
+      readUserDesignSystemFileBytes,
       linkUserDesignSystemProject,
       syncUserDesignSystemAssetsFromFiles,
       LEGACY_DESIGN_SYSTEM_ARTIFACTS,
@@ -2481,14 +2483,16 @@ export async function startServer({
         db,
         'design_system',
         workspaceId,
-        designSystem.id,
+        designSystem.teamSynced === true
+          ? workspaceTeamDesignSystemBindingResourceId(workspaceId, designSystem.id)
+          : designSystem.id,
       );
       const memberId = binding?.createdByWorkspaceMemberId?.trim();
       if (!memberId) return;
       ensureWorkspaceProject(db, {
         projectId,
         workspaceId,
-        visibility: 'personal',
+        visibility: designSystem.teamSynced === true ? 'team' : 'personal',
         resourceState: 'active',
         createdByWorkspaceMemberId: memberId,
         updatedByWorkspaceMemberId: memberId,
@@ -4509,7 +4513,6 @@ export async function startServer({
         (item) =>
           item.workspaceId === workspaceId &&
           item.workspaceMemberId === workspaceMemberId &&
-          item.workspaceType === 'team' &&
           item.memberStatus === 'active' &&
           item.lifecycleState === 'active',
       );

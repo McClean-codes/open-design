@@ -1727,6 +1727,16 @@ export async function readUserDesignSystemFile(
   id: string,
   relativePath: string,
 ): Promise<DesignSystemFileDetail | null> {
+  const detail = await readUserDesignSystemFileBytes(root, id, relativePath);
+  if (!detail) return null;
+  return { ...detail, content: detail.bytes.toString('utf8') };
+}
+
+export async function readUserDesignSystemFileBytes(
+  root: string,
+  id: string,
+  relativePath: string,
+) {
   const dirId = stripPrefixAndValidateId(id, 'user:');
   const cleanPath = sanitizeRelativeFilePath(relativePath);
   if (!dirId || !cleanPath) return null;
@@ -1739,14 +1749,14 @@ export async function readUserDesignSystemFile(
   try {
     const stats = await stat(filePath);
     if (!stats.isFile()) return null;
-    const content = await readFile(filePath, 'utf8');
+    const bytes = await readFile(filePath);
     return {
       path: cleanPath,
       name: path.basename(cleanPath),
       kind: classifyDesignSystemFile(cleanPath, false),
       size: stats.size,
       updatedAt: stats.mtime.toISOString(),
-      content,
+      bytes,
     };
   } catch {
     return null;

@@ -32,6 +32,7 @@ import {
   readDesignSystemPackageInfo,
   readDesignSystemStaticFile,
   readUserDesignSystemFile,
+  readUserDesignSystemFileBytes,
   syncUserDesignSystemAssetsFromFiles,
   updateUserDesignSystem,
 } from '../../src/design-systems/index.js';
@@ -186,6 +187,7 @@ describe('createDesignSystemServerServices().syncUserDesignSystemAssetsFromWorks
         readDesignSystemStaticFile,
         listUserDesignSystemFiles,
         readUserDesignSystemFile,
+        readUserDesignSystemFileBytes,
         linkUserDesignSystemProject,
         syncUserDesignSystemAssetsFromFiles,
         LEGACY_DESIGN_SYSTEM_ARTIFACTS,

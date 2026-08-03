@@ -87,7 +87,11 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
       req: any,
     ) => Promise<DesignSystemSummary>;
     deleteUserDesignSystem: (root: string, id: string) => Promise<boolean>;
-    ensureUserDesignSystemWorkspaceProject: (db: DbHandle, id: string) => Promise<DesignSystemWorkspaceProject | null>;
+    ensureUserDesignSystemWorkspaceProject: (
+      db: DbHandle,
+      id: string,
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null },
+    ) => Promise<DesignSystemWorkspaceProject | null>;
     listAllDesignSystems: (options?: {
       workspaceId?: string | null;
       workspaceMemberId?: string | null;
@@ -127,6 +131,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     syncUserDesignSystemAssetsFromWorkspace: (
       db: DbHandle,
       id: string,
+      options?: { workspaceId?: string | null; workspaceMemberId?: string | null },
     ) => Promise<{ ok: true; synced: string[] } | { ok: false; reason: 'not-found' | 'no-workspace-project' }>;
     updateUserDesignSystem: (root: string, id: string, input: UserDesignSystemInput) => Promise<DesignSystemSummary | null>;
     updateUserDesignSystemRevisionStatus: (root: string, id: string, revisionId: string, status: 'accepted' | 'rejected') => Promise<DesignSystemRevision | null>;
@@ -731,7 +736,15 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
   app.post('/api/design-systems/:id/workspace', async (req, res) => {
     try {
       if (!(await authorizeDesignSystemMutation(req, res, req.params.id))) return;
-      const workspace = await ensureUserDesignSystemWorkspaceProject(db, req.params.id);
+      const workspaceId = headerValue(req, 'x-od-workspace-id');
+      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const workspace = await ensureUserDesignSystemWorkspaceProject(
+        db,
+        req.params.id,
+        workspaceId || workspaceMemberId
+          ? { workspaceId, workspaceMemberId }
+          : undefined,
+      );
       if (!workspace) {
         return res.status(404).json({ error: 'editable design system not found' });
       }
@@ -840,7 +853,15 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       if (!(await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, req.params.id, req))) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
       }
-      const outcome = await syncUserDesignSystemAssetsFromWorkspace(db, req.params.id);
+      const workspaceId = headerValue(req, 'x-od-workspace-id');
+      const workspaceMemberId = headerValue(req, 'x-od-workspace-member-id');
+      const outcome = await syncUserDesignSystemAssetsFromWorkspace(
+        db,
+        req.params.id,
+        workspaceId || workspaceMemberId
+          ? { workspaceId, workspaceMemberId }
+          : undefined,
+      );
       if (!outcome.ok) {
         if (outcome.reason === 'not-found') {
           return res.status(404).json({ error: 'editable design system not found' });

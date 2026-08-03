@@ -247,7 +247,10 @@ describe('workspace-scoped skill resources', () => {
               method: 'DELETE',
               headers: workspaceHeaders(TEAM_B),
             }),
-          ).toBe(403);
+          // Foreign Personal resources are deliberately undiscoverable. Both
+          // read/update and delete must stop at scoped lookup with 404 rather
+          // than disclose that another Workspace owns this id.
+          ).toBe(404);
 
           const shared = await requestJson<{ shared: boolean; version?: number }>(
             webUrl,
