@@ -1,3 +1,4 @@
+import { workspaceContextHasTeamIdentity } from '@open-design/contracts';
 import type {
   ConnectorAuthConfigPrepareResponse,
   ConnectorDetail,
@@ -542,16 +543,68 @@ export type DesignSystemsResult =
   | { ok: true; designSystems: DesignSystemSummary[] }
   | { ok: false };
 
+async function materializeTeamDesignSystems(
+  workspaceContext: WorkspaceCollabContext | null | undefined,
+): Promise<ReadonlySet<string>> {
+  if (!workspaceContext || !workspaceContextHasTeamIdentity(workspaceContext)) {
+    return new Set();
+  }
+
+  // Team systems live in a workspace-scoped materialization directory. Prime
+  // that directory before reading the unified catalog so Home and every other
+  // picker see team shares even when the user has never opened the Design
+  // Systems management tab.
+  //
+  // Never replace these explicit identity headers with a daemon/Vela "active
+  // workspace" lookup. One account can have multiple clients open in different
+  // Workspaces; a backend-global active Workspace would let either client
+  // retarget the other's catalog request.
+  const identity = workspaceIdentityCacheKey(workspaceContext);
+  try {
+    return await coalescedGet(
+      `design-system-team-materialization:${identity}`,
+      async () => {
+        const response = await fetch('/api/workspace/design-systems/team', {
+          cache: 'no-store',
+          headers: workspaceProjectHeaders(workspaceContext),
+        });
+        if (!response.ok) {
+          throw new Error(`design-systems-team ${response.status}`);
+        }
+        const body = (await response.json()) as { ids?: unknown };
+        return new Set(
+          Array.isArray(body.ids)
+            ? body.ids.filter((id): id is string => typeof id === 'string')
+            : [],
+        );
+      },
+    );
+  } catch {
+    // Keep personal/built-in systems usable while the remote team index is
+    // temporarily unavailable. The scoped catalog request below remains the
+    // authority and still fails closed for an invalid Workspace identity.
+    return new Set();
+  }
+}
+
 export async function fetchDesignSystemsResult(
   workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<DesignSystemsResult> {
   try {
+    const teamSharedIds = await materializeTeamDesignSystems(workspaceContext);
     const resp = await fetch('/api/design-systems', {
       ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
     });
     if (!resp.ok) return { ok: false };
     const json = (await resp.json()) as { designSystems?: DesignSystemSummary[] };
-    return { ok: true, designSystems: json.designSystems ?? [] };
+    return {
+      ok: true,
+      designSystems: (json.designSystems ?? []).map((system) => (
+        teamSharedIds.has(system.id)
+          ? { ...system, teamShared: true }
+          : system
+      )),
+    };
   } catch {
     return { ok: false };
   }

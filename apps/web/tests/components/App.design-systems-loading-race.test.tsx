@@ -247,8 +247,9 @@ describe('App design-system catalog loading race', () => {
   it('discards a late catalog response for the workspace the user has left', async () => {
     const readA = deferred<DesignSystemSummary[]>();
     const readB = deferred<DesignSystemSummary[]>();
+    const readC = deferred<DesignSystemSummary[]>();
     let activeContext = workspaceContext('ws-initial');
-    type ReadPhase = 'startup' | 'a' | 'b';
+    type ReadPhase = 'startup' | 'a' | 'b' | 'c';
     let phase: ReadPhase = 'startup';
     const readPhases: ReadPhase[] = [];
     vi.stubGlobal(
@@ -269,6 +270,7 @@ describe('App design-system catalog loading race', () => {
       readPhases.push(phase);
       if (phase === 'a') return readA.promise;
       if (phase === 'b') return readB.promise;
+      if (phase === 'c') return readC.promise;
       return Promise.resolve([]);
     });
 
@@ -312,8 +314,25 @@ describe('App design-system catalog loading race', () => {
 
     expect(screen.getByText('system-from-b')).toBeTruthy();
     expect(screen.queryByText('system-from-a')).toBeNull();
+
+    // Moving again must fail closed immediately: while C is still loading, B's
+    // catalog must not paint under the new Workspace identity.
+    phase = 'c';
+    await act(async () => {
+      activeContext = workspaceContext('ws-c');
+      notifyWorkspaceContextRefresh({ context: activeContext });
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(readPhases.filter((readPhase) => readPhase === 'c')).toHaveLength(1));
+    expect(screen.queryByText('system-from-b')).toBeNull();
+
+    await act(async () => {
+      readC.resolve([designSystem('system-from-c')]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByText('system-from-c')).toBeTruthy());
     // One request per switch; the guard does not add a retry or another read.
-    expect(readPhases.filter((readPhase) => readPhase !== 'startup')).toEqual(['a', 'b']);
+    expect(readPhases.filter((readPhase) => readPhase !== 'startup')).toEqual(['a', 'b', 'c']);
   });
 
   it('reissues and isolates catalog reads when membership identity changes', async () => {

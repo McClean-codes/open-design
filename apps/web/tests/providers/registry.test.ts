@@ -56,6 +56,15 @@ function personalWorkspaceContext(): WorkspaceCollabContext {
   };
 }
 
+function teamWorkspaceContext(): WorkspaceCollabContext {
+  return {
+    ...personalWorkspaceContext(),
+    workspaceId: 'ws-team-a',
+    workspaceType: 'team',
+    workspaceMemberId: 'wm-team-a',
+  };
+}
+
 function agentStreamResponse(text: string): Response {
   const encoder = new TextEncoder();
   return new Response(
@@ -89,12 +98,122 @@ describe('design-system Workspace scope', () => {
       designSystems: [],
     });
 
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
     expect(fetchMock).toHaveBeenCalledWith('/api/design-systems', {
       headers: expect.objectContaining({
         'x-od-workspace-id': context.workspaceId,
         'x-od-workspace-member-id': context.workspaceMemberId,
       }),
     });
+  });
+
+  it('materializes the exact team Workspace catalog before listing design systems', async () => {
+    const context = teamWorkspaceContext();
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === '/api/workspace/design-systems/team') {
+        return new Response(JSON.stringify({ ids: ['user:team-brand'] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        designSystems: [{
+          id: 'user:team-brand',
+          title: 'Team Brand',
+          category: 'Custom',
+          summary: 'Shared by the team.',
+          swatches: [],
+          surface: 'web',
+          source: 'user',
+          status: 'published',
+          isEditable: true,
+        }],
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchDesignSystemsResult(context)).resolves.toMatchObject({
+      ok: true,
+      designSystems: [expect.objectContaining({ id: 'user:team-brand', teamShared: true })],
+    });
+
+    expect(calls).toEqual([
+      '/api/workspace/design-systems/team',
+      '/api/design-systems',
+    ]);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/workspace/design-systems/team', {
+      cache: 'no-store',
+      headers: expect.objectContaining({
+        'x-od-workspace-id': context.workspaceId,
+        'x-od-workspace-member-id': context.workspaceMemberId,
+      }),
+    });
+  });
+
+  it('keeps personal and official systems available when team materialization fails', async () => {
+    const context = {
+      ...teamWorkspaceContext(),
+      workspaceId: 'ws-team-offline',
+    };
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) === '/api/workspace/design-systems/team') {
+        return new Response('unavailable', { status: 503 });
+      }
+      return new Response(JSON.stringify({
+        designSystems: [{
+          id: 'user:local-brand',
+          title: 'Local Brand',
+          category: 'Custom',
+          summary: 'Still available.',
+          swatches: [],
+          surface: 'web',
+          source: 'user',
+          status: 'published',
+          isEditable: true,
+        }],
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchDesignSystemsResult(context)).resolves.toMatchObject({
+      ok: true,
+      designSystems: [expect.objectContaining({
+        id: 'user:local-brand',
+      })],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('partitions team materialization when the Workspace changes', async () => {
+    const contexts = [
+      teamWorkspaceContext(),
+      {
+        ...teamWorkspaceContext(),
+        workspaceId: 'ws-team-b',
+        workspaceMemberId: 'wm-team-b',
+      },
+    ];
+    const teamRequestHeaders: Array<{ workspaceId: string | null; memberId: string | null }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input) === '/api/workspace/design-systems/team') {
+        const headers = new Headers(init?.headers);
+        teamRequestHeaders.push({
+          workspaceId: headers.get('x-od-workspace-id'),
+          memberId: headers.get('x-od-workspace-member-id'),
+        });
+        return new Response(JSON.stringify({ ids: [] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ designSystems: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await Promise.all(contexts.map((context) => fetchDesignSystemsResult(context)));
+
+    expect(teamRequestHeaders).toEqual([
+      { workspaceId: 'ws-team-a', memberId: 'wm-team-a' },
+      { workspaceId: 'ws-team-b', memberId: 'wm-team-b' },
+    ]);
   });
 
   it('attaches the same identity to design-system creation', async () => {
