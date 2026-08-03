@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildProjectRawFileUrl } from '@open-design/contracts';
 
-import { handleMcpToolCall } from '../src/mcp.js';
+import { handleMcpToolCall, localMcpToolDefinitions } from '../src/mcp.js';
 
 const originalFetch = globalThis.fetch;
 
@@ -32,74 +32,11 @@ describe('public MCP discovery + generation tools', () => {
     expect(JSON.parse(firstText(result))).toEqual({ skills: [{ id: 'deck', name: 'Deck' }] });
   });
 
-  it('list_byok_profiles returns daemon-owned non-secret profile metadata', async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      expect(url).toBe('http://127.0.0.1:17456/api/byok/profiles');
-      return new Response(JSON.stringify({
-        available: true,
-        backend: 'macos-keychain',
-        profiles: [{
-          id: 'byok-openrouter-1',
-          label: 'OpenRouter',
-          protocol: 'openai',
-          baseUrl: 'https://openrouter.ai/api/v1',
-          model: 'openai/gpt-5.4-mini',
-          requiresApiKey: true,
-          configured: true,
-          keyTail: '1234',
-          apiKey: 'must-never-cross-mcp',
-        }],
-      }), { status: 200 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await handleMcpToolCall(
-      'http://127.0.0.1:17456',
-      'list_byok_profiles',
-      {},
-    );
-    const payload = JSON.parse(firstText(result));
-    expect(payload.profiles[0]).toMatchObject({
-      id: 'byok-openrouter-1',
-      configured: true,
-      keyTail: '1234',
-    });
-    expect(JSON.stringify(payload)).not.toContain('apiKey');
-    expect(JSON.stringify(payload)).not.toContain('must-never-cross-mcp');
-  });
-
-  it('start_run selects secure Local BYOK through a profile reference', async () => {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      if (url.endsWith('/api/projects')) {
-        return new Response(JSON.stringify({
-          projects: [{ id: 'project-1', name: 'Demo' }],
-        }), { status: 200 });
-      }
-      return new Response(JSON.stringify({ runId: 'run-byok' }), { status: 200 });
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await handleMcpToolCall(
-      'http://127.0.0.1:17456',
-      'start_run',
-      {
-        project: '11111111-1111-4111-8111-111111111111',
-        prompt: 'Create a launch page',
-        byokProfile: 'byok-openrouter-1',
-      },
-    );
-
-    const runsCall = fetchMock.mock.calls.find(
-      ([url, init]) =>
-        String(url).endsWith('/api/runs')
-        && (init as RequestInit)?.method === 'POST',
-    );
-    expect(JSON.parse(String(runsCall?.[1]?.body))).toMatchObject({
-      projectId: '11111111-1111-4111-8111-111111111111',
-      agentId: 'byok-opencode',
-      byokProfileId: 'byok-openrouter-1',
-    });
-    expect(JSON.parse(firstText(result))).toMatchObject({ runId: 'run-byok' });
+  it('does not expose secure BYOK profiles or a BYOK start_run parameter', () => {
+    const definitions = localMcpToolDefinitions();
+    expect(definitions.some((tool) => tool.name === 'list_byok_profiles')).toBe(false);
+    const startRun = definitions.find((tool) => tool.name === 'start_run');
+    expect(startRun?.inputSchema.properties).not.toHaveProperty('byokProfile');
   });
 
   it('start_run rejects raw credential fields at any nesting depth', async () => {
@@ -113,7 +50,6 @@ describe('public MCP discovery + generation tools', () => {
       'start_run',
       {
         prompt: 'Create a launch page',
-        byokProfile: 'byok-openrouter-1',
         inputs: { provider: { api_key: 'must-never-cross-mcp' } },
       },
     );

@@ -135,28 +135,6 @@ async function openExecutionSettingsWithAgents(
   await page.route('**/api/health', async (route) => {
     await route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
   });
-  if (typeof config.byokProfileId === 'string') {
-    await page.route('**/api/byok/profiles', async (route) => {
-      await route.fulfill({
-        json: {
-          available: true,
-          backend: 'test',
-          profiles: [{
-            id: config.byokProfileId,
-            label: 'OpenAI',
-            protocol: config.apiProtocol ?? 'openai',
-            baseUrl: config.baseUrl ?? '',
-            model: config.model ?? '',
-            requiresApiKey: true,
-            configured: true,
-            keyTail: config.byokCredentialTail ?? 'test',
-            createdAt: 1,
-            updatedAt: 1,
-          }],
-        },
-      });
-    });
-  }
   await routeAgents(page, agents);
 
   await gotoEntryHome(page);
@@ -275,7 +253,7 @@ test('[P0] @critical BYOK quick fill provider updates fields and saved settings 
     .toMatchObject({
       mode: 'api',
       apiProtocol: 'openai',
-      apiKey: '',
+      apiKey: 'test-byok-key',
       baseUrl: 'https://api.deepseek.com',
       model: 'deepseek-v4-flash',
       apiProviderBaseUrl: 'https://api.deepseek.com',
@@ -1040,9 +1018,6 @@ test('[P0] @critical Settings keeps Local CLI and BYOK model choices isolated af
       baseUrl: 'https://api.openai.com/v1',
       model: 'gpt-4o-mini',
       apiProviderBaseUrl: 'https://api.openai.com/v1',
-      byokProfileId: 'byok-settings-model-isolation',
-      byokCredentialConfigured: true,
-      byokCredentialTail: 'test',
       agentId: null,
       skillId: null,
       designSystemId: null,
