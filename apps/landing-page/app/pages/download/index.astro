@@ -355,6 +355,9 @@ const jsonLd = [
           (navigator.userAgentData && navigator.userAgentData.platform) ||
           navigator.platform || ''
         ).toLowerCase();
+        // iPadOS desktop-mode Safari reports a Mac platform. Keep the hero CTA
+        // on the neutral release page instead of rewriting it to a macOS DMG.
+        if (isIpadOS || /iphone|ipad|ipod/.test(ua)) return null;
         const isWin = /win/.test(p) || /windows/.test(ua);
         const isMac = /mac/.test(p) || (/mac os x/.test(ua) && !/iphone|ipad|ipod/.test(ua));
         const isLinux = /linux/.test(p) || (/linux/.test(ua) && !/android/.test(ua));
