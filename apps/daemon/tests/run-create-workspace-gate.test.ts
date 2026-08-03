@@ -1,8 +1,10 @@
 // Run creation is a billing-address boundary, not a local project-file
 // mutation gate. The persisted `workspace_projects` row supplies the exact
-// Team or Personal Workspace id to Vela/AMR. Headerless local callers are
-// valid; an explicitly supplied pair is checked only for a Workspace mismatch.
-// Membership, balance, and subscription eligibility remain backend decisions.
+// Team or Personal Workspace id to Vela/AMR. Headerless local callers remain
+// valid for Personal-bound, unbound, and scratch projects; a shared Team
+// project requires the explicit project-owner identity because starting a run
+// mutates its files and conversation state. Membership, balance, and
+// subscription eligibility remain backend decisions.
 
 import http from 'node:http';
 import express from 'express';
@@ -580,6 +582,49 @@ describe('POST /api/runs — workspace mutation gate', () => {
     expect(typeof payload.runId).toBe('string');
   });
 
+  it('verifies AMR adoption before any plugin resolution side effects', async () => {
+    const loadPluginRegistryView = vi.fn(async () => ({}));
+    const baseUrl = await startServer({
+      isAmrSignedIn: () => true,
+      loadPluginRegistryView,
+      verifyWorkspaceRequestAuthority: async () => ({
+        ok: false,
+        status: 503,
+        code: 'WORKSPACE_DIRECTORY_UNAVAILABLE',
+        message: 'workspace directory temporarily unavailable',
+      }),
+    });
+    const db = openDatabase(tempDir!);
+    const beforeSnapshotCount = (db.prepare(
+      'SELECT COUNT(*) AS count FROM applied_plugin_snapshots',
+    ).get() as { count: number }).count;
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: UNBOUND_PROJECT,
+        agentId: 'amr',
+        pluginId: 'must-not-resolve-before-adoption',
+        message: 'must verify the historical project first',
+      }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'WORKSPACE_DIRECTORY_UNAVAILABLE' },
+    });
+    expect(loadPluginRegistryView).not.toHaveBeenCalled();
+    expect(createdRunCount).toBe(0);
+    expect(getWorkspaceProjectByProjectId(db, UNBOUND_PROJECT)).toBeUndefined();
+    expect((db.prepare(
+      'SELECT COUNT(*) AS count FROM applied_plugin_snapshots',
+    ).get() as { count: number }).count).toBe(beforeSnapshotCount);
+  });
+
   it('still allows a headerless run creation with no projectId at all (scratch / non-project usage)', async () => {
     const baseUrl = await startServer();
     const resp = await fetch(`${baseUrl}/api/runs`, {
@@ -617,6 +662,34 @@ describe('POST /api/runs — workspace mutation gate', () => {
     expect(snapshotProjectId(snapshot.snapshotId)).toBe(TEAM_PROJECT);
     expect(getProject(openDatabase(tempDir!), TEAM_PROJECT)?.appliedPluginSnapshotId)
       .toBe(snapshot.snapshotId);
+    expect(getProject(openDatabase(tempDir!), PERSONAL_PROJECT)?.appliedPluginSnapshotId ?? null)
+      .toBeNull();
+  });
+
+  it('rejects a cross-project snapshot on chat before creating a run', async () => {
+    const baseUrl = await startServer();
+    const snapshot = seedPluginSnapshot(TEAM_PROJECT);
+
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: PERSONAL_PROJECT,
+        agentId: 'claude',
+        appliedPluginSnapshotId: snapshot.snapshotId,
+        message: 'must not read another project plugin snapshot',
+      }),
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'snapshot-not-found' },
+    });
+    expect(createdRunCount).toBe(0);
+    expect(snapshotProjectId(snapshot.snapshotId)).toBe(TEAM_PROJECT);
     expect(getProject(openDatabase(tempDir!), PERSONAL_PROJECT)?.appliedPluginSnapshotId ?? null)
       .toBeNull();
   });

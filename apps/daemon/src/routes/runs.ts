@@ -953,6 +953,28 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     return { ok: true, authorizedBoundMutation: true };
   }
 
+  function requestedSnapshotBelongsToProject(
+    res: ApiResponse,
+    projectId: string,
+    snapshotId: unknown,
+  ): boolean {
+    if (typeof snapshotId !== 'string' || snapshotId.trim().length === 0) {
+      return true;
+    }
+    const normalizedSnapshotId = snapshotId.trim();
+    const row = db
+      .prepare('SELECT project_id AS projectId FROM applied_plugin_snapshots WHERE id = ?')
+      .get(normalizedSnapshotId) as { projectId?: unknown } | undefined;
+    if (row?.projectId === projectId) return true;
+    sendApiError(
+      res,
+      404,
+      'snapshot-not-found',
+      `Applied plugin snapshot ${normalizedSnapshotId} not found`,
+    );
+    return false;
+  }
+
   /**
    * Pin a run to its persisted project binding. The sole adoption branch is a
    * signed-in AMR request for a truly unbound historical project: a freshly
@@ -1253,6 +1275,41 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       if (!authorization.ok) return;
       authorizedBoundMutation = authorization.authorizedBoundMutation;
     }
+    let effectiveAgentId =
+      typeof requestBody.agentId === 'string' && requestBody.agentId
+        ? requestBody.agentId
+        : null;
+    if (!effectiveAgentId) {
+      try {
+        const appCfg = await readAppConfig(RUNTIME_DATA_DIR);
+        const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
+          ? appCfg.agentId
+          : null;
+        const agents = await detectAgents(
+          toJsonRecord(appCfg.agentCliEnv),
+        ).catch((): DetectedAgent[] => []);
+        const cfgAgentAvailable = cfgAgent
+          ? agents.some((agent) => agent.id === cfgAgent && agent.available)
+          : false;
+        effectiveAgentId = cfgAgent && cfgAgentAvailable
+          ? cfgAgent
+          : agents.find((agent) => agent.available)?.id ?? null;
+      } catch (err) {
+        console.warn('[runs] agent id fallback failed', err);
+      }
+    }
+    let preparedWorkspaceScope: PinnedRunWorkspaceScope | null = null;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      const prepared = await prepareRunWorkspaceScope(
+        req,
+        res,
+        requestBody.projectId,
+        effectiveAgentId,
+        authorizedBoundMutation,
+      );
+      if (!prepared.ok) return;
+      preparedWorkspaceScope = prepared.workspaceScope;
+    }
     let resolvedSnapshot = null;
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
       let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
@@ -1332,6 +1389,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       ...withoutSensitiveRunInput(requestBody),
       mediaExecution: mediaExecution.policy,
       toolBundle: toolBundle.bundle,
+      ...(effectiveAgentId ? { agentId: effectiveAgentId } : {}),
+      ...(preparedWorkspaceScope ? { workspaceScope: preparedWorkspaceScope } : {}),
     };
     if (resolvedSnapshot?.ok) {
       meta.appliedPluginSnapshotId = resolvedSnapshot.snapshotId;
@@ -1356,28 +1415,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         throw err;
       }
     }
-    if (typeof meta.agentId !== 'string' || !meta.agentId) {
-      try {
-        const appCfg = await readAppConfig(RUNTIME_DATA_DIR);
-        const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
-          ? appCfg.agentId
-          : null;
-        const agents = await detectAgents(
-          toJsonRecord(appCfg.agentCliEnv),
-        ).catch((): DetectedAgent[] => []);
-        const cfgAgentAvailable = cfgAgent
-          ? agents.some((agent) => agent.id === cfgAgent && agent.available)
-          : false;
-        if (cfgAgent && cfgAgentAvailable) {
-          meta.agentId = cfgAgent;
-        } else {
-          const firstAvailable = agents.find((agent) => agent.available)?.id ?? null;
-          if (firstAvailable) meta.agentId = firstAvailable;
-        }
-      } catch (err) {
-        console.warn('[runs] agent id fallback failed', err);
-      }
-    }
     const resolvedByokInputError = await byokRunInputError(
       meta,
       ctx.byokCredentials,
@@ -1389,18 +1426,6 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         'VALIDATION_FAILED',
         resolvedByokInputError,
       );
-    }
-    if (typeof meta.projectId === 'string' && meta.projectId) {
-      const preparedWorkspaceScope =
-        await prepareRunWorkspaceScope(
-          req,
-          res,
-          meta.projectId,
-          meta.agentId,
-          authorizedBoundMutation,
-        );
-      if (!preparedWorkspaceScope.ok) return;
-      meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
     const toolBundleSupport = validateRunToolBundleForAgent(
       toolBundle.bundle,
@@ -2862,6 +2887,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       if (!preparedWorkspaceScope.ok) return;
       meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
+    if (
+      typeof meta.projectId === 'string'
+      && meta.projectId
+      && !requestedSnapshotBelongsToProject(
+        res,
+        meta.projectId,
+        meta.appliedPluginSnapshotId,
+      )
+    ) return;
     meta.requestFingerprint = runRequestFingerprint(meta);
     const creation = design.runs.createOrReuse(meta);
     if (creation.kind === 'conflict') {
