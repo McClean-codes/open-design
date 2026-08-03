@@ -7534,20 +7534,41 @@ export async function startServer({
       typeof projectWorkspaceBinding?.createdByWorkspaceMemberId === 'string'
         ? projectWorkspaceBinding.createdByWorkspaceMemberId.trim()
         : '';
+    const projectDesignSystemBinding = (summary) => {
+      if (!projectWorkspaceId || summary?.source === 'built-in') return null;
+      const logicalResourceId =
+        typeof summary?.id === 'string' ? summary.id.trim() : '';
+      if (!logicalResourceId) return null;
+      if (summary?.teamSynced === true) {
+        const canonicalTeamBinding = getWorkspaceResource(
+          db,
+          'design_system',
+          projectWorkspaceId,
+          workspaceTeamDesignSystemBindingResourceId(
+            projectWorkspaceId,
+            logicalResourceId,
+          ),
+        );
+        if (canonicalTeamBinding) return canonicalTeamBinding;
+      }
+      // Keep legacy rows readable while old local data converges to the
+      // Workspace-qualified Team envelope id.
+      return getWorkspaceResource(
+        db,
+        'design_system',
+        projectWorkspaceId,
+        logicalResourceId,
+      ) ?? null;
+    };
     const designSystemVisibleToRun = (summary) => {
       if (summary?.source === 'built-in') return true;
       // A truly unbound local project is the legacy CLI/BYOK lane. Bound
       // projects must resolve resources from their persisted project scope;
       // shell/current Workspace state never participates.
       if (!projectWorkspaceId) return true;
-      const binding = getWorkspaceResourceByResourceId(
-        db,
-        'design_system',
-        summary?.id,
-      );
+      const binding = projectDesignSystemBinding(summary);
       if (
         !binding
-        || binding.workspaceId?.trim() !== projectWorkspaceId
         || binding.resourceState === 'deleted'
       ) {
         return false;
@@ -7909,11 +7930,7 @@ export async function startServer({
         // live together inside `resolveDesignSystemAssets` so the whole
         // server-side asset-resolution path can be tested end-to-end
         // from real disk fixtures (see `tests/design-system-assets.test.ts`).
-        const resourceBinding = getWorkspaceResourceByResourceId(
-          db,
-          'design_system',
-          effectiveDesignSystemId,
-        );
+        const resourceBinding = projectDesignSystemBinding(summary);
         const scopedUserDesignSystemsRoot =
           projectWorkspaceId && resourceBinding?.visibility === 'team'
             ? teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, projectWorkspaceId)

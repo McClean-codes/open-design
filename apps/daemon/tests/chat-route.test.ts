@@ -45,6 +45,7 @@ import {
   type ByokSecretBackend,
 } from '../src/byok/credential-service.js';
 import { teamResourceWorkspaceRoot } from '../src/collab/team-resource-materialization.js';
+import { workspaceTeamDesignSystemBindingResourceId } from '../src/design-systems/workspace-team-binding.js';
 
 const FAKE_VELA_FIXTURE = resolve(process.cwd(), 'tests', 'fixtures', 'fake-vela.mjs');
 
@@ -3618,15 +3619,25 @@ process.stdin.on('end', () => {
     const dirId = `team-prompt-${randomUUID()}`;
     const designSystemId = `user:${dirId}`;
     const teamMarker = `TEAM_DS_${randomUUID()}`;
+    const teamTokensMarker = `TEAM_TOKENS_${randomUUID()}`;
+    const globalMarker = `GLOBAL_DS_${randomUUID()}`;
+    const globalTokensMarker = `GLOBAL_TOKENS_${randomUUID()}`;
     const designSystemsRoot = resolve(process.env.OD_DATA_DIR, 'design-systems');
     const designSystemDir = resolve(
       teamResourceWorkspaceRoot(designSystemsRoot, workspaceId),
       dirId,
     );
+    const globalDesignSystemDir = resolve(designSystemsRoot, dirId);
     await fsp.mkdir(designSystemDir, { recursive: true });
+    await fsp.mkdir(globalDesignSystemDir, { recursive: true });
     await fsp.writeFile(
       resolve(designSystemDir, 'DESIGN.md'),
       `# Team design system\n\n${teamMarker}\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(designSystemDir, 'tokens.css'),
+      `:root { --team-marker: ${teamTokensMarker}; }\n`,
       'utf8',
     );
     await fsp.writeFile(
@@ -3634,7 +3645,26 @@ process.stdin.on('end', () => {
       `${JSON.stringify({
         title: 'Team design system',
         status: 'published',
+        teamSynced: true,
         workspaceId,
+      }, null, 2)}\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(globalDesignSystemDir, 'DESIGN.md'),
+      `# Global design system\n\n${globalMarker}\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(globalDesignSystemDir, 'tokens.css'),
+      `:root { --global-marker: ${globalTokensMarker}; }\n`,
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(globalDesignSystemDir, 'metadata.json'),
+      `${JSON.stringify({
+        title: 'Global design system',
+        status: 'published',
       }, null, 2)}\n`,
       'utf8',
     );
@@ -3651,7 +3681,7 @@ process.stdin.on('end', () => {
         sqlite as never,
         'design_system',
         workspaceId,
-        designSystemId,
+        workspaceTeamDesignSystemBindingResourceId(workspaceId, designSystemId),
         {
           visibility: 'team',
           resourceState: 'active',
@@ -3674,6 +3704,9 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { prompt += chunk; });
 process.stdin.on('end', () => {
   const result = prompt.includes(${JSON.stringify(teamMarker)})
+    && prompt.includes(${JSON.stringify(teamTokensMarker)})
+    && !prompt.includes(${JSON.stringify(globalMarker)})
+    && !prompt.includes(${JSON.stringify(globalTokensMarker)})
     ? 'team-design-system-visible'
     : 'team-design-system-missing';
   console.log(JSON.stringify({ type: 'step_start' }));
@@ -3707,6 +3740,7 @@ process.stdin.on('end', () => {
       );
     } finally {
       await fsp.rm(designSystemDir, { recursive: true, force: true });
+      await fsp.rm(globalDesignSystemDir, { recursive: true, force: true });
     }
   });
 
