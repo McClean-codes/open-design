@@ -29,6 +29,7 @@ import {
   listConversations,
   listMessages,
   loadTabs,
+  patchProject,
   ProjectConversationsHttpError,
 } from '../../src/state/projects';
 import {
@@ -202,8 +203,9 @@ vi.mock('../../src/components/Loading', () => ({
 }));
 
 vi.mock('../../src/components/ChatPane', () => ({
-  ChatPane: ({ error }: { error?: string | null }) => (
+  ChatPane: ({ error, projectHeader }: { error?: string | null; projectHeader?: ReactNode }) => (
     <div data-testid="chat-pane">
+      {projectHeader}
       {error ? <span data-testid="chat-error">{error}</span> : null}
     </div>
   ),
@@ -219,6 +221,7 @@ const mockedLoadTabs = vi.mocked(loadTabs);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
 const mockedInvalidateProjectFilesCache = vi.mocked(invalidateProjectFilesCache);
 const mockedGetProject = vi.mocked(getProject);
+const mockedPatchProject = vi.mocked(patchProject);
 
 const onProjectChangeMock = vi.fn();
 
@@ -289,6 +292,7 @@ function projectViewElement(
     workspaceContextOverride?: WorkspaceCollabContext | null;
     projectAuthorizationKey?: string;
     onProjectChange?: (next: Project) => void;
+    onProjectsRefresh?: () => Promise<void> | void;
   } = {},
 ) {
   return (
@@ -314,7 +318,7 @@ function projectViewElement(
       onClearPendingPrompt={vi.fn()}
       onTouchProject={vi.fn()}
       onProjectChange={options.onProjectChange ?? onProjectChangeMock}
-      onProjectsRefresh={vi.fn()}
+      onProjectsRefresh={options.onProjectsRefresh ?? vi.fn()}
     />
   );
 }
@@ -481,6 +485,51 @@ describe('ProjectView shared-project title refresh on project-metadata-changed',
         expect.objectContaining({ id: 'project-1', name: 'Q3 Marketing Site' }),
       );
     });
+  });
+
+  it('commits an owner rename before refreshing every list projection', async () => {
+    const workspace = teamWorkspaceContext();
+    const ownerProject = {
+      ...project,
+      name: 'Before rename',
+      workspaceId: workspace.workspaceId,
+    };
+    const persisted = {
+      ...ownerProject,
+      name: 'After rename',
+      updatedAt: 456,
+    };
+    mockedUseProjectCollab.mockReturnValue(sharedMemberCollab({
+      viewerOnly: false,
+      writerAuthority: 'allowed',
+      isOwner: true,
+      isEffectiveOwner: true,
+      isSharedNonOwner: false,
+      ownerDisplayName: null,
+      ownerRole: null,
+    }));
+    mockedPatchProject.mockResolvedValue(persisted);
+    const onProjectChange = vi.fn();
+    const onProjectsRefresh = vi.fn(async () => undefined);
+
+    render(projectViewElement(ownerProject, {
+      workspaceContextOverride: workspace,
+      onProjectChange,
+      onProjectsRefresh,
+    }));
+    const title = await screen.findByTestId('project-title');
+    title.textContent = 'After rename';
+    fireEvent.blur(title);
+
+    await waitFor(() => {
+      expect(mockedPatchProject).toHaveBeenCalledWith(
+        ownerProject.id,
+        expect.objectContaining({ name: 'After rename' }),
+        workspace,
+      );
+    });
+    await waitFor(() => expect(onProjectsRefresh).toHaveBeenCalledTimes(1));
+    expect(onProjectChange).toHaveBeenLastCalledWith(persisted);
   });
 
   it.each([

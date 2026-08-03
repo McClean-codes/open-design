@@ -8697,10 +8697,15 @@ export function ProjectView({
     ],
   );
 
+  const projectRenameGenerationRef = useRef(0);
   const handleProjectRename = useCallback(
     (newName: string) => {
       const trimmed = newName.trim();
       if (!trimmed || trimmed === project.name) return;
+      const previous = project;
+      const renameGeneration = ++projectRenameGenerationRef.current;
+      const renameContext = projectRunWorkspaceContextRef.current;
+      const renameWorkspaceIdentity = workspaceIdentityCacheKey(renameContext);
       const metadata = project.metadata
         ? { ...project.metadata, nameSource: 'user' as const }
         : undefined;
@@ -8711,12 +8716,46 @@ export function ProjectView({
         updatedAt: Date.now(),
       };
       onProjectChange(updated);
-      void patchProject(project.id, {
-        name: trimmed,
-        ...(metadata ? { metadata } : {}),
-      }, projectRunWorkspaceContext);
+      void (async () => {
+        const persisted = await patchProject(project.id, {
+          name: trimmed,
+          ...(metadata ? { metadata } : {}),
+        }, renameContext);
+        if (
+          projectRenameGenerationRef.current !== renameGeneration
+          || projectRef.current.id !== project.id
+          || workspaceIdentityCacheKey(projectRunWorkspaceContextRef.current)
+            !== renameWorkspaceIdentity
+          || (
+            projectRef.current.name !== previous.name
+            && projectRef.current.name !== trimmed
+          )
+        ) return;
+        if (!persisted) {
+          if (projectRef.current.name === trimmed) {
+            onProjectChange({
+              ...projectRef.current,
+              name: previous.name,
+              metadata: previous.metadata,
+            });
+          }
+          return;
+        }
+        onProjectChange({
+          ...projectRef.current,
+          name: persisted.name,
+          metadata: persisted.metadata,
+          updatedAt: persisted.updatedAt,
+        });
+        try {
+          await onProjectsRefresh();
+        } catch {
+          // The rename is already persisted. Existing list retry/reconnect
+          // paths will reconcile a transient projection refresh failure.
+        }
+      })();
     },
-    [project, onProjectChange],
+    [onProjectChange, onProjectsRefresh, project],
   );
 
   const activeConversationChatState = useMemo(

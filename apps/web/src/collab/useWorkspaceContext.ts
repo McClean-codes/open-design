@@ -16,9 +16,15 @@ import {
   buildWorkspaceSeatSummary,
 } from '@open-design/contracts';
 import { coalescedGet, forceCoalescedGet } from '../lib/coalesced-get';
-import { markProjectDisplaySnapshotsDirty } from '../state/project-display-cache';
+import {
+  markProjectDisplaySnapshotsDirty,
+  patchProjectDisplaySnapshots,
+} from '../state/project-display-cache';
 import { isTeamPlanTier } from './team-plan';
-import { fetchTeamProjectsCatalog } from './team-projects-catalog';
+import {
+  fetchTeamProjectCatalogEntry,
+  fetchTeamProjectsCatalog,
+} from './team-projects-catalog';
 import { useWorkspaceInvalidation } from './workspace-events';
 import {
   beginWorkspaceScopedRead,
@@ -1543,9 +1549,18 @@ const TEAM_PROJECTS_SSE_FLOOR_MS = 60_000;
 export const TEAM_PROJECTS_CHANGED_EVENT = 'od:team-projects-changed';
 const TEAM_PROJECTS_CHANGED_STORAGE_KEY = 'od.teamProjects.changedAt';
 
-export function notifyTeamProjectsChanged(): void {
+export function notifyTeamProjectsChanged(
+  detail?: Pick<
+    Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
+    'projectId' | 'kind'
+  >,
+): void {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new Event(TEAM_PROJECTS_CHANGED_EVENT));
+  window.dispatchEvent(detail
+    ? new CustomEvent(TEAM_PROJECTS_CHANGED_EVENT, {
+        detail: { type: 'team-projects-changed', ...detail },
+      })
+    : new Event(TEAM_PROJECTS_CHANGED_EVENT));
   try {
     window.localStorage.setItem(TEAM_PROJECTS_CHANGED_STORAGE_KEY, String(Date.now()));
   } catch {
@@ -1672,6 +1687,82 @@ export function useTeamProjects(): TeamProjectsState {
     }
   }, [catalogScopeKey]);
 
+  const loadProjectMetadata = useCallback(async (projectId: string) => {
+    const issuedIdentity = resourceReadIdentityRef.current;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    const read = beginWorkspaceScopedRead(issuedIdentity?.context);
+    const isStillCurrent = () => {
+      const current = resourceReadIdentityRef.current;
+      return currentWorkspaceAccountGeneration() === issuedAccountGeneration
+        && current?.generation === issuedIdentity?.generation
+        && read.isStillCurrent(current?.context);
+    };
+    if (!read.context) return;
+    try {
+      const project = await fetchTeamProjectCatalogEntry({
+        context: read.context,
+        projectId,
+        force: true,
+        requestGeneration: issuedIdentity?.generation,
+      });
+      if (!isStillCurrent()) return;
+      if (!project) {
+        // A metadata signal should name an existing row. Absence means it
+        // raced a share/unshare, so fall back to authoritative reconciliation.
+        void loadFull(true);
+        return;
+      }
+      const identity = teamProjectsIdentity(read.context, issuedAccountGeneration);
+      const cached = identity ? cachedTeamProjects.get(identity) ?? null : null;
+      const base = cached ?? (catalog.identity === catalogScopeKey ? catalog.projects : []);
+      if (!base.some((candidate) => candidate.projectId === projectId)) {
+        void loadFull(true);
+        return;
+      }
+      const patched = base.map((candidate) =>
+        candidate.projectId === projectId ? project : candidate
+      );
+      if (identity) cacheTeamProjects(identity, patched);
+      patchProjectDisplaySnapshots({
+        accountGeneration: issuedAccountGeneration,
+        context: read.context,
+        patch: (projects) => projects.map((candidate) =>
+          candidate.id === projectId
+            ? {
+                ...candidate,
+                ...(project.name ? { name: project.name } : {}),
+                ...(project.metadata ? { metadata: project.metadata } : {}),
+                ...(project.updatedAt !== undefined ? { updatedAt: project.updatedAt } : {}),
+              }
+            : candidate),
+      });
+      if (mountedRef.current) {
+        setCatalog((current) =>
+          current.identity === catalogScopeKey
+            ? {
+                ...current,
+                projects: current.projects.map((candidate) =>
+                  candidate.projectId === projectId ? project : candidate
+                ),
+              }
+            : current
+        );
+      }
+    } catch {
+      // Keep last-good rows. Poll/reconnect remains the bounded full recovery.
+    }
+  }, [catalog.identity, catalog.projects, catalogScopeKey, loadFull]);
+
+  const handleTeamProjectsChanged = useCallback((
+    payload?: Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
+  ) => {
+    if (payload?.kind === 'metadata' && payload.projectId) {
+      void loadProjectMetadata(payload.projectId);
+      return;
+    }
+    void loadFull(true);
+  }, [loadFull, loadProjectMetadata]);
+
   // Initial load + manual reload (nonce bump).
   useEffect(() => {
     if (
@@ -1702,14 +1793,14 @@ export function useTeamProjects(): TeamProjectsState {
   // on an actual change. `connected` drives poll-as-floor below.
   const { connected: sseConnected } = useWorkspaceInvalidation(
     {
-      'team-projects-changed': () => {
+      'team-projects-changed': (payload) => {
         if (workspaceContext) {
           markProjectDisplaySnapshotsDirty({
             accountGeneration: currentWorkspaceAccountGeneration(),
             context: workspaceContext,
           });
         }
-        void loadFull();
+        handleTeamProjectsChanged(payload);
       },
     },
     {
@@ -1745,7 +1836,7 @@ export function useTeamProjects(): TeamProjectsState {
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') void loadFull();
     };
-    const onTeamProjectsChanged = () => {
+    const onTeamProjectsChanged = (event: Event) => {
       if (workspaceContext) {
         markProjectDisplaySnapshotsDirty({
           accountGeneration: currentWorkspaceAccountGeneration(),
@@ -1756,7 +1847,13 @@ export function useTeamProjects(): TeamProjectsState {
       // EntryNavRail.tsx). Without forcing, an in-flight coalesced read
       // started just before the switch can resolve inside the new call's
       // coalescing window and hand back the PREVIOUS workspace's team list.
-      void loadFull(true);
+      const detail = event instanceof CustomEvent
+        ? event.detail as Extract<
+            WorkspaceInvalidationSsePayload,
+            { type: 'team-projects-changed' }
+          > | undefined
+        : undefined;
+      handleTeamProjectsChanged(detail);
     };
     const onStorage = (event: StorageEvent) => {
       if (event.key === TEAM_PROJECTS_CHANGED_STORAGE_KEY) void loadFull();
@@ -1771,7 +1868,7 @@ export function useTeamProjects(): TeamProjectsState {
       window.removeEventListener('storage', onStorage);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [loadFull, workspaceContext]);
+  }, [handleTeamProjectsChanged, loadFull, workspaceContext]);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
   const catalogMatchesIdentity = catalog.identity === catalogScopeKey;

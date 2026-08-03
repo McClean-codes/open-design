@@ -94,7 +94,11 @@ import {
   amrLoginStatusEventReason,
 } from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
-import { fetchTeamProjectsCatalog } from './collab/team-projects-catalog';
+import {
+  fetchTeamProjectCatalogEntry as fetchScopedTeamProjectCatalogEntry,
+  fetchTeamProjectsCatalog,
+} from './collab/team-projects-catalog';
+import { useWorkspaceInvalidation } from './collab/workspace-events';
 import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
@@ -949,6 +953,68 @@ function AppInner() {
   const authoritativeProjectNamesRef = useRef(authoritativeProjectNames);
   authoritativeProjectNamesRef.current = authoritativeProjectNames;
   const projectNameAuthorityRequestGenerationRef = useRef<Map<string, number>>(new Map());
+  const refreshTargetedProjectMetadata = useCallback(async (projectId: string) => {
+    const issuedContext = workspaceContextRef.current;
+    if (!issuedContext) return;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
+    try {
+      const catalogProject = await fetchScopedTeamProjectCatalogEntry({
+        context: issuedContext,
+        projectId,
+        force: true,
+      });
+      if (
+        !catalogProject
+        || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
+        || workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity
+      ) return;
+      const name = catalogProject.name?.trim();
+      if (!name) return;
+      setProjects((current) => current.map((project) =>
+        project.id === projectId
+        && project.workspaceId === issuedContext.workspaceId
+          ? { ...project, name }
+          : project
+      ));
+      patchProjectDisplaySnapshots({
+        accountGeneration: issuedAccountGeneration,
+        context: issuedContext,
+        patch: (projects) => projects.map((project) =>
+          project.id === projectId
+            ? {
+                ...project,
+                name,
+                ...(catalogProject.metadata ? { metadata: catalogProject.metadata } : {}),
+                ...(catalogProject.updatedAt !== undefined
+                  ? { updatedAt: catalogProject.updatedAt }
+                  : {}),
+              }
+            : project),
+      });
+      // Another member's catalog row is title authority over a stale local
+      // mirror. The creator's own local row remains authoritative, but still
+      // receives the exact hub-confirmed projection update above (for another
+      // window/device logged into the same member).
+      if (catalogProject.ownerMemberId !== issuedContext.workspaceMemberId) {
+        const authorityKey = projectViewAuthorizationLifetimeKey(projectId, issuedContext);
+        setAuthoritativeProjectNames((current) =>
+          current[authorityKey] === name
+            ? current
+            : { ...current, [authorityKey]: name }
+        );
+      }
+    } catch {
+      // Keep the last-good projection. Reconnect/poll performs full catch-up.
+    }
+  }, []);
+  useWorkspaceInvalidation({
+    'team-projects-changed': (payload) => {
+      if (payload.kind === 'metadata' && payload.projectId) {
+        void refreshTargetedProjectMetadata(payload.projectId);
+      }
+    },
+  }, { workspaceContext });
   const [petTaskCenter, setPetTaskCenter] = useState<PetTaskCenter>({
     running: [],
     queued: [],
@@ -979,6 +1045,7 @@ function AppInner() {
   }
   const locallyDeletedProjectIdsRef = useRef<Map<string, number>>(new Map());
   const projectListMutationVersionRef = useRef(0);
+  const projectRenameGenerationRef = useRef<Map<string, number>>(new Map());
   const projectListRequestGenerationRef = useRef(0);
   const latestAppliedProjectListGenerationRef = useRef(0);
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
@@ -3352,21 +3419,78 @@ function AppInner() {
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    const mutationContext = workspaceContextRef.current;
-    const mutationAccountGeneration = currentWorkspaceAccountGeneration();
+    const previous = projectsRef.current.find((project) => project.id === id) ?? null;
+    const renameContext = workspaceContextRef.current;
+    const renameAccountGeneration = currentWorkspaceAccountGeneration();
+    const renameScopeKey = projectListScopeKey(renameContext);
+    const renameGeneration = (projectRenameGenerationRef.current.get(id) ?? 0) + 1;
+    projectRenameGenerationRef.current.set(id, renameGeneration);
     setProjects((curr) =>
       curr.map((p) => (p.id === id ? { ...p, name: trimmed } : p)),
     );
-    if (mutationContext) {
+    if (renameContext) {
       patchProjectDisplaySnapshots({
-        accountGeneration: mutationAccountGeneration,
-        context: mutationContext,
+        accountGeneration: renameAccountGeneration,
+        context: renameContext,
         patch: (cachedProjects) => cachedProjects.map((project) =>
           project.id === id ? { ...project, name: trimmed } : project),
       });
     }
-    void patchProject(id, { name: trimmed }, mutationContext);
-  }, []);
+    const persisted = await patchProject(id, { name: trimmed }, renameContext);
+    if (projectRenameGenerationRef.current.get(id) !== renameGeneration) return;
+    if (currentWorkspaceAccountGeneration() !== renameAccountGeneration) return;
+    if (projectListScopeKey(workspaceContextRef.current) !== renameScopeKey) return;
+    if (!persisted) {
+      if (previous) {
+        setProjects((current) => current.map((project) =>
+          project.id === id && project.name === trimmed
+            ? {
+                ...project,
+                name: previous.name,
+                metadata: previous.metadata,
+              }
+            : project
+        ));
+        if (renameContext) {
+          patchProjectDisplaySnapshots({
+            accountGeneration: renameAccountGeneration,
+            context: renameContext,
+            patch: (cachedProjects) => cachedProjects.map((project) =>
+              project.id === id && project.name === trimmed
+                ? { ...project, name: previous.name, metadata: previous.metadata }
+                : project),
+          });
+        }
+      }
+      return;
+    }
+    setProjects((current) => current.map((project) =>
+      project.id === id
+        ? {
+            ...project,
+            name: persisted.name,
+            metadata: persisted.metadata,
+            updatedAt: persisted.updatedAt,
+          }
+        : project
+    ));
+    if (renameContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: renameAccountGeneration,
+        context: renameContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === id
+            ? {
+                ...project,
+                name: persisted.name,
+                metadata: persisted.metadata,
+                updatedAt: persisted.updatedAt,
+              }
+            : project),
+      });
+    }
+    await refreshProjects();
+  }, [refreshProjects]);
 
   // The project header back button is an escape hatch back to Home. Avoid
   // depending on browser history here: tab restores and template-create flows

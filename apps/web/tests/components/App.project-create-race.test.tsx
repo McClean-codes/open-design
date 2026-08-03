@@ -54,6 +54,17 @@ import type { AmrAuthRetryContinuation } from '../../src/runtime/amr-auth-retry-
 import type { VelaLoginStatus } from '../../src/providers/daemon';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    return { connected: false };
+  }),
+}));
+
 vi.mock('../../src/components/EntryView', () => ({
   EntryView: ({
     onCreateProject,
@@ -280,6 +291,7 @@ vi.mock('../../src/components/ProjectView', () => ({
     onCreateDesignSystemFromProject,
     onDuplicateProject,
     onProjectsRefresh,
+    onProjectChange,
     project,
     routeConversationId,
     authoritativeProjectName,
@@ -303,6 +315,7 @@ vi.mock('../../src/components/ProjectView', () => ({
       input?: { name?: string },
     ) => Promise<void> | void;
     onProjectsRefresh: () => Promise<void>;
+    onProjectChange: (project: Project) => void;
     project: Project;
     routeConversationId?: string | null;
     authoritativeProjectName?: string;
@@ -360,6 +373,16 @@ vi.mock('../../src/components/ProjectView', () => ({
       </button>
       <button type="button" onClick={() => void onProjectsRefresh()}>
         Refresh projects
+      </button>
+      <button
+        type="button"
+        onClick={() => onProjectChange({
+          ...project,
+          name: 'After local rename',
+          updatedAt: project.updatedAt + 1,
+        })}
+      >
+        Rename current project
       </button>
       <button
         type="button"
@@ -423,14 +446,23 @@ vi.mock('../../src/components/ProjectView', () => ({
 vi.mock('../../src/components/WorkspaceTabsBar', () => ({
   WorkspaceTabsBar: ({
     activeProjectWorkspaceId,
+    projects,
   }: {
     activeProjectWorkspaceId?: string | null;
+    projects: Project[];
   }) => (
-    <span data-testid="workspace-tabs-active-project-workspace">
-      {activeProjectWorkspaceId === undefined
-        ? 'unresolved'
-        : activeProjectWorkspaceId ?? 'personal'}
-    </span>
+    <>
+      <span data-testid="workspace-tabs-active-project-workspace">
+        {activeProjectWorkspaceId === undefined
+          ? 'unresolved'
+          : activeProjectWorkspaceId ?? 'personal'}
+      </span>
+      {projects.map((project) => (
+        <span key={project.id} data-testid={`workspace-tab-name-${project.id}`}>
+          {project.name}
+        </span>
+      ))}
+    </>
   ),
   openWorkspaceTab: () => {},
 }));
@@ -643,6 +675,7 @@ describe('App project creation routing', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
+    workspaceInvalidationHarness.handlers.length = 0;
     window.history.replaceState(null, '', '/');
     mockedDaemonIsLive.mockResolvedValue(true);
     mockedFetchAgentsStream.mockResolvedValue([]);
@@ -714,6 +747,7 @@ describe('App project creation routing', () => {
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
     resetCoalescedGet();
+    workspaceInvalidationHarness.handlers.length = 0;
   });
 
   it('auto-picks the first available agent in registry order after streamed probes settle', async () => {
@@ -2256,6 +2290,91 @@ describe('App project creation routing', () => {
       await Promise.resolve();
     });
     expect(screen.getByTestId('project-title').textContent).toBe('New catalog rename');
+  });
+
+  it('patches recent projects and the workspace tab from an exact remote rename signal', async () => {
+    const sharedProject: Project = {
+      ...existingProject,
+      id: 'project-shared',
+      name: 'Before rename',
+      workspaceId: 'ws-1',
+    };
+    mockedListProjects.mockResolvedValue([sharedProject]);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace/directory')) {
+        return new Response(JSON.stringify(workspaceDirectoryFixture([
+          workspaceContext('ws-1', 'wm-viewer'),
+        ])), { status: 200 });
+      }
+      if (pathname.endsWith('/workspace/context')) {
+        return new Response(JSON.stringify(
+          workspaceContextPayload('ws-1', 'wm-viewer'),
+        ), { status: 200 });
+      }
+      if (pathname.endsWith('/workspace/projects/team')) {
+        return new Response(JSON.stringify({
+          projects: [{
+            projectId: sharedProject.id,
+            ownerMemberId: 'wm-owner',
+            name: 'After rename',
+          }],
+        }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    render(<App />);
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-project-project-shared').textContent).toContain(
+        'Before rename',
+      );
+      expect(screen.getByTestId('workspace-tab-name-project-shared').textContent).toBe(
+        'Before rename',
+      );
+    });
+
+    const metadataHandler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-projects-changed'])
+      .find((handler) => typeof handler === 'function');
+    expect(metadataHandler).toBeTypeOf('function');
+    act(() => metadataHandler!({
+      type: 'team-projects-changed',
+      projectId: sharedProject.id,
+      kind: 'metadata',
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-project-project-shared').textContent).toContain(
+        'After rename',
+      );
+      expect(screen.getByTestId('workspace-tab-name-project-shared').textContent).toBe(
+        'After rename',
+      );
+    });
+  });
+
+  it('projects a current-view rename into the tab and recent list immediately', async () => {
+    mockedListProjects.mockResolvedValue([existingProject]);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename current project' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-title').textContent).toBe('After local rename');
+      expect(screen.getByTestId('workspace-tab-name-project-existing').textContent).toBe(
+        'After local rename',
+      );
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Back to projects' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('entry-project-project-existing').textContent).toContain(
+        'After local rename',
+      );
+    });
   });
 
   it('calibrates a deep-linked local placeholder from the other-owner hub catalog', async () => {

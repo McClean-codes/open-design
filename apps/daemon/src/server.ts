@@ -4656,18 +4656,25 @@ export async function startServer({
       });
     }
   };
-  // One hub write can legitimately fan out as two thin events (a display-name
-  // carrying catalog upsert emits team-projects-changed AND
-  // project-metadata-changed, ~1ms apart). Both map to the same workspace
-  // "list changed" signal here, so collapse repeats inside a short window —
-  // the signal is idempotent, but no reason to make every web client refetch
-  // twice for one write.
+  // One hub write can legitimately fan out as two thin events. Collapse
+  // repeats of the SAME semantic target while preserving a later targeted
+  // metadata signal: modern clients use its project id to patch one row.
   const lastTeamProjectsSignalAt = new Map<string, number>();
-  const emitTeamProjectsChangedDeduped = (workspaceId: string) => {
+  const emitTeamProjectsChangedDeduped = (
+    workspaceId: string,
+    change: { projectId?: string; kind?: 'catalog' | 'metadata' } = {},
+  ) => {
     const now = Date.now();
-    const lastSignalAt = lastTeamProjectsSignalAt.get(workspaceId) ?? 0;
+    const dedupeKey = `${workspaceId}:${change.kind ?? 'catalog'}:${change.projectId ?? '*'}`;
+    const lastSignalAt = lastTeamProjectsSignalAt.get(dedupeKey) ?? 0;
     if (now - lastSignalAt < 250) return;
-    lastTeamProjectsSignalAt.set(workspaceId, now);
+    lastTeamProjectsSignalAt.set(dedupeKey, now);
+    if (lastTeamProjectsSignalAt.size > 1_024) {
+      for (const key of lastTeamProjectsSignalAt.keys()) {
+        lastTeamProjectsSignalAt.delete(key);
+        if (lastTeamProjectsSignalAt.size <= 768) break;
+      }
+    }
     void resolveAuthoritativeTeamWorkspaceContext(workspaceId)
       .then((context) => {
         const scope = teamProjectsDisplayScopeFromContext(context);
@@ -4677,7 +4684,12 @@ export async function startServer({
       .catch(() => undefined);
     emitWorkspaceEvent(
       workspaceId,
-      { type: 'team-projects-changed', at: now },
+      {
+        type: 'team-projects-changed',
+        ...(change.projectId ? { projectId: change.projectId } : {}),
+        kind: change.kind ?? 'catalog',
+        at: now,
+      },
     );
   };
   const startWorkspaceHubSubscriber = (subscribedWorkspaceId: string) =>
@@ -4747,6 +4759,10 @@ export async function startServer({
           handleHubTeamProjectsChanged(
             () => emitTeamProjectsChangedDeduped(
               eventWorkspaceId,
+              {
+                ...(event.projectId ? { projectId: event.projectId } : {}),
+                kind: 'catalog',
+              },
             ),
             () => reconcileWorkspaceProjectsFromRemote(
               eventWorkspaceId,
@@ -4772,6 +4788,10 @@ export async function startServer({
           // a rename never changes WHICH projects are team-shared.
           emitTeamProjectsChangedDeduped(
             eventWorkspaceId,
+            {
+              ...(event.projectId ? { projectId: event.projectId } : {}),
+              kind: 'metadata',
+            },
           );
           if (event.projectId) {
             emitProjectEvent(event.projectId, {

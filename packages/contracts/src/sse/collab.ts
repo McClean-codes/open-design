@@ -77,6 +77,10 @@ export type CollabProjectInvalidationEventName =
 /** A project was shared / unshared / created / deleted in the team. */
 export interface TeamProjectsChangedSsePayload {
   type: 'team-projects-changed';
+  /** Optional invalidation target; consumers must still re-read exact scope. */
+  projectId?: string;
+  /** Metadata-only patches can update one row; catalog changes reconcile all. */
+  kind?: 'catalog' | 'metadata';
   at?: number;
 }
 

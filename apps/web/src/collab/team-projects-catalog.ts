@@ -68,10 +68,13 @@ export async function fetchTeamProjectsCatalog(
     coalesce?: boolean;
     /** Account/selection generation for provisional directory-backed reads. */
     requestGeneration?: string;
+    /** Keep independent invalidation targets from sharing one forced snapshot. */
+    cacheDiscriminator?: string;
   },
 ): Promise<TeamProject[]> {
   const cacheKey = `workspace-team-projects:${workspaceIdentityCacheKey(options.context)}`
-    + `:generation:${options.requestGeneration ?? 'verified'}`;
+    + `:generation:${options.requestGeneration ?? 'verified'}`
+    + `:target:${options.cacheDiscriminator ?? 'catalog'}`;
   const run = async (): Promise<TeamProject[]> => {
     const response = await fetch('/api/workspace/projects/team', {
       headers: workspaceProjectHeaders(options.context),
@@ -92,4 +95,24 @@ export async function fetchTeamProjectsCatalog(
   // (or by a future caller that reaches the coalescer some other way) must
   // still leave every consumer holding an array.
   return asTeamProjectRows(projects);
+}
+
+/**
+ * Re-read one catalog row through the exact Workspace/member scope.
+ * The transport is currently a compact list; callers apply only this row so
+ * an older unrelated row from the same snapshot cannot roll back newer UI.
+ */
+export async function fetchTeamProjectCatalogEntry(options: {
+  context: WorkspaceCollabContext;
+  projectId: string;
+  force?: boolean;
+  requestGeneration?: string;
+}): Promise<TeamProject | null> {
+  const projects = await fetchTeamProjectsCatalog({
+    context: options.context,
+    force: options.force,
+    requestGeneration: options.requestGeneration,
+    cacheDiscriminator: `project:${options.projectId}`,
+  });
+  return projects.find((project) => project.projectId === options.projectId) ?? null;
 }
