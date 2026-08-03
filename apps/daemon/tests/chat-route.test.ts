@@ -37,6 +37,7 @@ import { readMemoryConfig, writeMemoryConfig } from '../src/memory.js';
 import {
   ensureWorkspaceProject,
   ensureWorkspaceResource,
+  getProject,
   upsertMessage,
 } from '../src/db.js';
 import { renderCodexImagegenOverride } from '../src/prompts/system.js';
@@ -3602,19 +3603,27 @@ process.stdin.on('end', () => {
     }
   });
 
-  it('composes a Team design system from the persisted project Workspace', async () => {
+  it('composes a Team design system without touching same-slug Personal or foreign projects', async () => {
     if (!process.env.OD_DATA_DIR) {
       throw new Error('OD_DATA_DIR is required for Workspace design-system prompt tests');
     }
     const projectId = `proj-${randomUUID()}`;
     const workspaceId = `team-ws-${randomUUID()}`;
     const workspaceMemberId = `team-member-${randomUUID()}`;
-    const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: projectId, name: 'Team DS prompt fixture' }),
-    });
-    expect(createProjectResponse.ok).toBe(true);
+    const personalBackingProjectId = `personal-ds-project-${randomUUID()}`;
+    const foreignProjectId = `foreign-project-${randomUUID()}`;
+    for (const [id, name] of [
+      [projectId, 'Team DS prompt fixture'],
+      [personalBackingProjectId, 'Personal DS backing project'],
+      [foreignProjectId, 'Foreign project'],
+    ]) {
+      const createProjectResponse = await fetch(`${baseUrl}/api/projects`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, name }),
+      });
+      expect(createProjectResponse.ok).toBe(true);
+    }
 
     const dirId = `team-prompt-${randomUUID()}`;
     const designSystemId = `user:${dirId}`;
@@ -3622,6 +3631,7 @@ process.stdin.on('end', () => {
     const teamTokensMarker = `TEAM_TOKENS_${randomUUID()}`;
     const globalMarker = `GLOBAL_DS_${randomUUID()}`;
     const globalTokensMarker = `GLOBAL_TOKENS_${randomUUID()}`;
+    const foreignProjectMarker = `FOREIGN_PROJECT_DS_${randomUUID()}`;
     const designSystemsRoot = resolve(process.env.OD_DATA_DIR, 'design-systems');
     const designSystemDir = resolve(
       teamResourceWorkspaceRoot(designSystemsRoot, workspaceId),
@@ -3647,6 +3657,7 @@ process.stdin.on('end', () => {
         status: 'published',
         teamSynced: true,
         workspaceId,
+        projectId: foreignProjectId,
       }, null, 2)}\n`,
       'utf8',
     );
@@ -3665,17 +3676,48 @@ process.stdin.on('end', () => {
       `${JSON.stringify({
         title: 'Global design system',
         status: 'published',
+        projectId: personalBackingProjectId,
       }, null, 2)}\n`,
       'utf8',
     );
 
+    const projectsRoot = resolve(process.env.OD_DATA_DIR, 'projects');
+    await Promise.all([
+      fsp.mkdir(resolve(projectsRoot, personalBackingProjectId), { recursive: true }),
+      fsp.mkdir(resolve(projectsRoot, foreignProjectId), { recursive: true }),
+    ]);
+    await fsp.writeFile(
+      resolve(projectsRoot, personalBackingProjectId, 'DESIGN.md'),
+      '# Personal backing project\n\nMust remain untouched by a Team run.\n',
+      'utf8',
+    );
+    await fsp.writeFile(
+      resolve(projectsRoot, foreignProjectId, 'DESIGN.md'),
+      `# Foreign project\n\n${foreignProjectMarker}\n`,
+      'utf8',
+    );
+
     const sqlite = new Database(resolve(process.env.OD_DATA_DIR, 'app.sqlite'));
+    let personalBackingProjectBefore: ReturnType<typeof getProject>;
+    let projectCountBefore = 0;
     try {
       ensureWorkspaceProject(sqlite as never, {
         projectId,
         workspaceId,
         visibility: 'team',
         createdByWorkspaceMemberId: workspaceMemberId,
+      });
+      ensureWorkspaceProject(sqlite as never, {
+        projectId: personalBackingProjectId,
+        workspaceId: `personal-ws-${randomUUID()}`,
+        visibility: 'personal',
+        createdByWorkspaceMemberId: `personal-member-${randomUUID()}`,
+      });
+      ensureWorkspaceProject(sqlite as never, {
+        projectId: foreignProjectId,
+        workspaceId: `foreign-ws-${randomUUID()}`,
+        visibility: 'personal',
+        createdByWorkspaceMemberId: `foreign-member-${randomUUID()}`,
       });
       ensureWorkspaceResource(
         sqlite as never,
@@ -3691,6 +3733,13 @@ process.stdin.on('end', () => {
       );
       sqlite.prepare('UPDATE projects SET design_system_id = ? WHERE id = ?')
         .run(designSystemId, projectId);
+      personalBackingProjectBefore = getProject(
+        sqlite as never,
+        personalBackingProjectId,
+      );
+      projectCountBefore = (
+        sqlite.prepare('SELECT COUNT(*) AS count FROM projects').get() as { count: number }
+      ).count;
     } finally {
       sqlite.close();
     }
@@ -3707,6 +3756,7 @@ process.stdin.on('end', () => {
     && prompt.includes(${JSON.stringify(teamTokensMarker)})
     && !prompt.includes(${JSON.stringify(globalMarker)})
     && !prompt.includes(${JSON.stringify(globalTokensMarker)})
+    && !prompt.includes(${JSON.stringify(foreignProjectMarker)})
     ? 'team-design-system-visible'
     : 'team-design-system-missing';
   console.log(JSON.stringify({ type: 'step_start' }));
@@ -3733,9 +3783,25 @@ process.stdin.on('end', () => {
           });
           const body = await response.text();
 
-          expect(response.ok).toBe(true);
-          expect(body).toContain('team-design-system-visible');
-          expect(body).not.toContain('team-design-system-missing');
+          const verificationDb = new Database(
+            resolve(process.env.OD_DATA_DIR as string, 'app.sqlite'),
+          );
+          try {
+            expect.soft(
+              getProject(verificationDb as never, personalBackingProjectId),
+            ).toEqual(personalBackingProjectBefore);
+            expect.soft(
+              (verificationDb.prepare('SELECT COUNT(*) AS count FROM projects').get() as {
+                count: number;
+              }).count,
+            ).toBe(projectCountBefore);
+          } finally {
+            verificationDb.close();
+          }
+
+          expect.soft(response.ok).toBe(true);
+          expect.soft(body).toContain('team-design-system-visible');
+          expect.soft(body).not.toContain('team-design-system-missing');
         },
       );
     } finally {

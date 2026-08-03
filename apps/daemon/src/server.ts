@@ -7912,7 +7912,7 @@ export async function startServer({
           system.id === effectiveDesignSystemId
           && designSystemVisibleToRun(system),
       );
-      if (summary?.source === 'user') {
+      if (summary?.source === 'user' && summary.teamSynced !== true) {
         await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId);
         systems = await listAllDesignSystems(designSystemListOptions);
         summary = systems.find(
@@ -7926,7 +7926,13 @@ export async function startServer({
         && project.designSystemId === effectiveDesignSystemId;
       designSystemTitle = summary?.title;
       if (summary && (isProjectUsableDesignSystem(summary) || editingOwnDraftDesignSystem)) {
-        const workspaceBody = await readDesignSystemWorkspaceTextFile(db, summary, 'DESIGN.md');
+        // A pulled Team mirror is a canonical, read-only package. Its
+        // metadata may carry the author's local editing-project id, which is
+        // neither authority to mutate a same-slug Personal backing project nor
+        // a safe path to read an unrelated local project's DESIGN.md.
+        const workspaceBody = summary.teamSynced === true
+          ? null
+          : await readDesignSystemWorkspaceTextFile(db, summary, 'DESIGN.md');
         const registryBody = await readAvailableDesignSystem(
           effectiveDesignSystemId,
           designSystemListOptions,
