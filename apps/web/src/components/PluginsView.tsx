@@ -81,6 +81,7 @@ import { AnimatePresence } from 'motion/react';
 import { navigate } from '../router';
 import {
   beginWorkspaceScopedRead,
+  currentWorkspaceAccountGeneration,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
 } from '../collab/useWorkspaceContext';
@@ -929,7 +930,11 @@ export function ExtensionsMarketplace({
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
   // My own member id, to keep the Personal tab to resources I actually own.
-  const { context: workspaceContext, loading: workspaceContextLoading } = useWorkspaceContext();
+  const {
+    context: workspaceContext,
+    loading: workspaceContextLoading,
+    failure: workspaceContextFailure,
+  } = useWorkspaceContext();
   // The LATEST context, for `refresh()`'s commit guard. `refresh` is recreated
   // every render, but the mount effect below captures one closure — so the guard
   // must compare against a ref, not the captured prop, or it compares the
@@ -981,11 +986,15 @@ export function ExtensionsMarketplace({
   const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedMarketplaceIdentity, setLoadedMarketplaceIdentity] = useState<string | null>(null);
 
   const [sharedPluginIds, setSharedPluginIds] = useState<ReadonlySet<string>>(() => new Set());
   const [sharedSkillIds, setSharedSkillIds] = useState<ReadonlySet<string>>(() => new Set());
   const [sharedPluginMeta, setSharedPluginMeta] = useState<ReadonlyMap<string, SharedResourceCardMeta>>(() => new Map());
   const [sharedSkillMeta, setSharedSkillMeta] = useState<ReadonlyMap<string, SharedResourceCardMeta>>(() => new Map());
+  const [loadedSharedIdentity, setLoadedSharedIdentity] = useState<string | null>(null);
+  const loadedSharedIdentityRef = useRef(loadedSharedIdentity);
+  loadedSharedIdentityRef.current = loadedSharedIdentity;
   const [sharingId, setSharingId] = useState<string | null>(null);
   const [unsharingId, setUnsharingId] = useState<string | null>(null);
   const [uninstallingId, setUninstallingId] = useState<string | null>(null);
@@ -1145,11 +1154,21 @@ export function ExtensionsMarketplace({
   }
 
   async function refresh() {
+    if (
+      marketplaceReadModeRef.current === 'pending'
+      || marketplaceReadModeRef.current === 'blocked'
+    ) return;
     const read = beginWorkspaceScopedRead(emContextRef.current);
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const issuedIdentity = JSON.stringify([
+      accountGeneration,
+      workspaceIdentityCacheKey(read.context),
+      read.context ? 'scoped' : 'headerless',
+    ]);
     setLoading(true);
     const [rows, allRows, catalogs, skillRows] = await Promise.all([
-      listPlugins(),
-      listPlugins({ includeHidden: true }),
+      listPlugins({ workspaceContext: read.context }),
+      listPlugins({ includeHidden: true, workspaceContext: read.context }),
       listPluginMarketplaces(),
       // Carry the acting workspace so the daemon's `GET /api/skills` applies
       // its workspace-scoped filter — mirrors `listPlugins`'s
@@ -1161,17 +1180,37 @@ export function ExtensionsMarketplace({
     // deliberately skipped too: a stale response is not evidence that the CURRENT
     // identity's catalog has arrived, and the successor read the effect below
     // guarantees for every identity change owns clearing it.
-    if (!read.isStillCurrent(emContextRef.current)) return;
+    if (
+      currentWorkspaceAccountGeneration() !== accountGeneration
+      || !read.isStillCurrent(emContextRef.current)
+    ) return;
     setPlugins(rows);
     setAllInstalledPlugins(allRows);
     setMarketplaces(catalogs);
     setSkills(skillRows);
+    setLoadedMarketplaceIdentity(issuedIdentity);
     setLoading(false);
   }
 
   // `open-design:plugins-changed` re-reads on mutation. Re-registered per
   // identity so the handler always closes over a current `refresh`.
-  const marketplaceIdentity = workspaceIdentityCacheKey(workspaceContext);
+  const marketplaceAccountGeneration = currentWorkspaceAccountGeneration();
+  const marketplaceReadMode = workspaceContext
+    ? 'scoped'
+    : workspaceContextLoading
+      ? 'pending'
+      : workspaceContextFailure === 'unavailable'
+        ? 'blocked'
+        : 'headerless';
+  const marketplaceIdentity = JSON.stringify([
+    marketplaceAccountGeneration,
+    workspaceIdentityCacheKey(workspaceContext),
+    marketplaceReadMode,
+  ]);
+  const marketplaceIdentityRef = useRef(marketplaceIdentity);
+  marketplaceIdentityRef.current = marketplaceIdentity;
+  const marketplaceReadModeRef = useRef(marketplaceReadMode);
+  marketplaceReadModeRef.current = marketplaceReadMode;
   useEffect(() => {
     const onPluginsChanged = () => {
       void refresh();
@@ -1197,17 +1236,35 @@ export function ExtensionsMarketplace({
     if (workspaceContextLoading) return;
     if (refreshedIdentityRef.current === marketplaceIdentity) return;
     refreshedIdentityRef.current = marketplaceIdentity;
+    if (marketplaceReadMode === 'blocked') {
+      setPlugins([]);
+      setAllInstalledPlugins([]);
+      setMarketplaces([]);
+      setSkills([]);
+      setLoadedMarketplaceIdentity(marketplaceIdentity);
+      setLoading(false);
+      return;
+    }
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [workspaceContextLoading, marketplaceIdentity]);
+  }, [workspaceContextLoading, marketplaceIdentity, marketplaceReadMode]);
 
   const refreshSharedResources = useCallback(async () => {
     const read = beginWorkspaceScopedRead(emContextRef.current);
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const issuedIdentity = marketplaceIdentityRef.current;
+    const hadCurrentSharedData = loadedSharedIdentityRef.current === issuedIdentity;
+    const readIsStillCurrent = () =>
+      currentWorkspaceAccountGeneration() === accountGeneration
+      && marketplaceIdentityRef.current === issuedIdentity
+      && read.isStillCurrent(emContextRef.current);
     if (!read.context || !workspaceContextHasTeamIdentity(read.context)) {
+      if (!readIsStillCurrent()) return;
       setSharedPluginIds(new Set());
       setSharedSkillIds(new Set());
       setSharedPluginMeta(new Map());
       setSharedSkillMeta(new Map());
+      setLoadedSharedIdentity(issuedIdentity);
       return;
     }
     const context = read.context;
@@ -1215,15 +1272,15 @@ export function ExtensionsMarketplace({
       basePath: string,
       setter: Dispatch<SetStateAction<ReadonlySet<string>>>,
       metaSetter: Dispatch<SetStateAction<ReadonlyMap<string, SharedResourceCardMeta>>>,
-    ) => {
+    ): Promise<boolean> => {
       try {
         const res = await fetch(`/api/workspace/${basePath}/team`, {
           cache: 'no-store',
           headers: workspaceProjectHeaders(context),
         });
-        if (!res.ok) return;
+        if (!res.ok) return false;
         const body = (await res.json()) as { ids?: unknown; resources?: unknown };
-        if (!read.isStillCurrent(emContextRef.current)) return;
+        if (!readIsStillCurrent()) return false;
         if (Array.isArray(body.ids)) {
           const nextIds = new Set(body.ids.filter((id): id is string => typeof id === 'string'));
           setter((prev) => setsEqual(prev, nextIds) ? prev : nextIds);
@@ -1248,15 +1305,28 @@ export function ExtensionsMarketplace({
           }
           metaSetter((prev) => sharedResourceMetaEqual(prev, meta) ? prev : meta);
         }
+        return true;
       } catch {
         // Off-team / offline → keep the last known collection until the next
         // successful read, avoiding a flicker when the workspace proxy is slow.
+        return false;
       }
     };
-    await Promise.all([
+    const loaded = await Promise.all([
       loadShared('plugins', setSharedPluginIds, setSharedPluginMeta),
       loadShared('skills', setSharedSkillIds, setSharedSkillMeta),
     ]);
+    if (!readIsStillCurrent()) return;
+    if (!loaded.every(Boolean) && !hadCurrentSharedData) {
+      // A last-good snapshot may be retained only for the identity that produced
+      // it. A cold/new identity with an unavailable hub gets an empty safe view,
+      // never the previous account/workspace's shared-resource membership.
+      setSharedPluginIds(new Set());
+      setSharedSkillIds(new Set());
+      setSharedPluginMeta(new Map());
+      setSharedSkillMeta(new Map());
+    }
+    setLoadedSharedIdentity(issuedIdentity);
   }, []);
 
   // Team-shared ids per kind. Off-team / offline just leaves the set empty so
@@ -1422,6 +1492,11 @@ export function ExtensionsMarketplace({
   }
 
   const cards = useMemo<MarketCard[]>(() => {
+    // Catalog rows are display data, never an authority witness. Keep the last
+    // response in memory for its own identity, but do not render it during an
+    // account/workspace transition before the successor read commits.
+    if (loadedMarketplaceIdentity !== marketplaceIdentity) return [];
+    if (scope !== 'official' && loadedSharedIdentity !== marketplaceIdentity) return [];
     const pluginRecordCard = (record: InstalledPluginRecord, personal: boolean): MarketCard => {
       const title = localizePluginTitle(locale, record);
       const shared = sharedPluginIds.has(record.id);
@@ -1588,6 +1663,9 @@ export function ExtensionsMarketplace({
     sharedSkillMeta,
     skills,
     myMemberId,
+    loadedMarketplaceIdentity,
+    marketplaceIdentity,
+    loadedSharedIdentity,
   ]);
 
   // Category chips are built from the cards actually in this scope, so the row
@@ -1623,6 +1701,10 @@ export function ExtensionsMarketplace({
       return `${card.title} ${card.description}`.toLowerCase().includes(q);
     });
   }, [cards, category, query]);
+  const catalogLoading =
+    loading
+    || loadedMarketplaceIdentity !== marketplaceIdentity
+    || (scope !== 'official' && loadedSharedIdentity !== marketplaceIdentity);
 
   if (cardDetail?.kind === 'skill') {
     const selectedSkill = cardDetail.skill;
@@ -1763,7 +1845,7 @@ export function ExtensionsMarketplace({
       </div>
 
       <div className="plugin-marketplace__catalog">
-        {loading ? (
+        {catalogLoading ? (
           <div className="plugin-marketplace__empty">
             <Icon name="spinner" size={18} />
             <strong>{t('pluginsView.loading')}</strong>
