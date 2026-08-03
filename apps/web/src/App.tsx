@@ -770,6 +770,12 @@ function AppInner() {
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
   const projectRouteWorkspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
+  const projectOpenWorkspaceWitnessRef = useRef<{
+    projectId: string;
+    projectWorkspaceId: string;
+    context: WorkspaceCollabContext;
+    accountGeneration: number;
+  } | null>(null);
   workspaceContextRef.current = workspaceContext;
   workspaceContextStateRef.current = workspaceContextState;
   const listCurrentWorkspaceProjects = useCallback(
@@ -3053,6 +3059,7 @@ function AppInner() {
     const hintedProjectName = projectTitleHint?.name.trim() || null;
     const requiresBoundCatalogProject = projectTitleHint?.authoritative === true;
     const openingContext = workspaceContextRef.current;
+    const openingAccountGeneration = currentWorkspaceAccountGeneration();
     const openingAuthorizationGeneration = projectAuthorizationGenerationRef.current;
     const openingScopeKey = projectListScopeKey(openingContext);
     const expectedWorkspaceId = openingContext?.workspaceId ?? null;
@@ -3079,6 +3086,24 @@ function AppInner() {
     const canUseLocalProject = (project: Project) => {
       if (project.workspaceId) return project.workspaceId === expectedWorkspaceId;
       return !requiresBoundCatalogProject;
+    };
+    const navigateToOpenedProject = (project: Project) => {
+      const projectWorkspaceId = project.workspaceId?.trim() ?? '';
+      projectOpenWorkspaceWitnessRef.current =
+        projectWorkspaceId
+        && openingContext?.workspaceId === projectWorkspaceId
+        && openingContext.workspaceMemberId.trim().length > 0
+        && openingContext.memberStatus === 'active'
+        && openingContext.lifecycleState !== 'deleted'
+          ? {
+              projectId: project.id,
+              projectWorkspaceId,
+              context: openingContext,
+              accountGeneration: openingAccountGeneration,
+            }
+          : null;
+      navigate({ kind: 'project', projectId: id, fileName: routeFileName });
+      return true;
     };
     const rememberHintAuthority = () => {
       if (projectTitleHint?.authoritative && catalogName && openingScopeIsCurrent()) {
@@ -3127,8 +3152,10 @@ function AppInner() {
         return next;
       });
       rememberHintAuthority();
-      navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-      return true;
+      const localProject = projectsRef.current.find(
+        (project) => project.id === id && canUseLocalProject(project),
+      );
+      return localProject ? navigateToOpenedProject(localProject) : false;
     }
     if (
       !catalogName
@@ -3136,8 +3163,10 @@ function AppInner() {
         (project) => project.id === id && canUseLocalProject(project),
       )
     ) {
-      navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-      return true;
+      const localProject = projectsRef.current.find(
+        (project) => project.id === id && canUseLocalProject(project),
+      );
+      return localProject ? navigateToOpenedProject(localProject) : false;
     }
     try {
       const project = await getProject(id, openingContext);
@@ -3151,8 +3180,7 @@ function AppInner() {
             ]
           : curr);
         rememberHintAuthority();
-        navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-        return true;
+        return navigateToOpenedProject(openedProject);
       }
       const { pulled } = await pullTeamSharedProjectIfAvailable(id, openingContext);
       if (!openingScopeIsCurrent()) return false;
@@ -3170,8 +3198,7 @@ function AppInner() {
               ]
             : curr);
           rememberHintAuthority();
-          navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-          return true;
+          return navigateToOpenedProject(openedProject);
         }
       }
       const request = beginProjectListRequest('all');
@@ -3191,8 +3218,7 @@ function AppInner() {
           );
       if (fetchedProject) {
         rememberHintAuthority();
-        navigate({ kind: 'project', projectId: id, fileName: routeFileName });
-        return true;
+        return navigateToOpenedProject(fetchedProject);
       }
     } catch {
       // Fall through to the same visible missing-project state. The daemon can
@@ -3397,6 +3423,7 @@ function AppInner() {
     capturedAfterListGeneration: number;
     workspaceScope?: ProjectWorkspaceScope;
     resolvedDir?: string | null;
+    workspaceContext?: WorkspaceCollabContext;
   } | null>(null);
   const [, setRouteProjectSnapshotRevision] = useState(0);
   const activeAccountGeneration = currentWorkspaceAccountGeneration();
@@ -3405,6 +3432,13 @@ function AppInner() {
     const listedProject = projects.find((project) => project.id === route.projectId);
     if (listedProject) {
       const previous = routeProjectSnapshotRef.current;
+      const openingWitness = projectOpenWorkspaceWitnessRef.current;
+      const exactOpeningContext =
+        openingWitness?.projectId === listedProject.id
+        && openingWitness.projectWorkspaceId === listedProject.workspaceId
+        && openingWitness.accountGeneration === activeAccountGeneration
+          ? openingWitness.context
+          : null;
       const preservesBootstrapWitness =
         previous?.project.id === listedProject.id
         && previous.accountGeneration === activeAccountGeneration
@@ -3419,7 +3453,13 @@ function AppInner() {
         ...(preservesBootstrapWitness && previous.resolvedDir !== undefined
           ? { resolvedDir: previous.resolvedDir }
           : {}),
+        ...(preservesBootstrapWitness && previous.workspaceContext
+          ? { workspaceContext: previous.workspaceContext }
+          : exactOpeningContext
+            ? { workspaceContext: exactOpeningContext }
+            : {}),
       };
+      if (exactOpeningContext) projectOpenWorkspaceWitnessRef.current = null;
     } else if (
       routeProjectSnapshotRef.current?.project.id !== route.projectId
       || routeProjectSnapshotRef.current.accountGeneration !== activeAccountGeneration
@@ -3450,7 +3490,8 @@ function AppInner() {
     loadedActiveProject?.workspaceId,
     workspaceContextState,
     routeProjectSnapshotRef.current?.project.id === loadedActiveProject?.id
-      ? routeProjectSnapshotRef.current?.workspaceScope?.context
+      ? routeProjectSnapshotRef.current?.workspaceContext
+        ?? routeProjectSnapshotRef.current?.workspaceScope?.context
       : null,
   );
   // Never mount ProjectView around the synthetic "Untitled" placeholder. Its
@@ -3592,7 +3633,16 @@ function AppInner() {
     const accountChanged = () =>
       currentWorkspaceAccountGeneration() !== accountGeneration;
     void (async () => {
-      const bootstrap = await bootstrapProjectRoute(projectId, { accountGeneration });
+      const openingWitness = projectOpenWorkspaceWitnessRef.current;
+      const exactOpenContext =
+        openingWitness?.projectId === projectId
+        && openingWitness.accountGeneration === accountGeneration
+          ? openingWitness.context
+          : null;
+      const bootstrap = await bootstrapProjectRoute(projectId, {
+        accountGeneration,
+        exactContext: exactOpenContext,
+      });
       // This scope came from the project's persisted binding, not the shell's
       // selection. Ambient null -> B settlement and A -> B navigation cannot
       // invalidate it; only a real account boundary can.

@@ -10,6 +10,11 @@ const CONTEXT_A = workspaceContextFixture({
   workspaceMemberId: 'member-a',
   role: 'owner',
 });
+const CONTEXT_B = workspaceContextFixture({
+  workspaceId: 'workspace-b',
+  workspaceMemberId: 'member-b',
+  role: 'member',
+});
 const PROJECT_A = {
   id: PROJECT_ID,
   name: 'Project A',
@@ -26,7 +31,7 @@ afterEach(() => {
 });
 
 describe('bootstrapProjectRoute', () => {
-  it('uses a headerless scope witness followed by one exact-scoped project detail read', async () => {
+  it('revalidates a headerless team discovery with exact scope and detail reads', async () => {
     const calls: Array<{ url: string; init?: RequestInit }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -60,13 +65,83 @@ describe('bootstrapProjectRoute', () => {
       },
     });
 
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
     expect(new Headers(calls[0]?.init?.headers).has('x-od-workspace-id')).toBe(false);
     expect(new Headers(calls[1]?.init?.headers).get('x-od-workspace-id'))
       .toBe(CONTEXT_A.workspaceId);
     expect(new Headers(calls[1]?.init?.headers).get('x-od-workspace-member-id'))
       .toBe(CONTEXT_A.workspaceMemberId);
+    expect(calls[1]?.url).toContain('/workspace-scope');
+    expect(new Headers(calls[2]?.init?.headers).get('x-od-workspace-id'))
+      .toBe(CONTEXT_A.workspaceId);
+    expect(new Headers(calls[2]?.init?.headers).get('x-od-workspace-member-id'))
+      .toBe(CONTEXT_A.workspaceMemberId);
+    expect(calls[2]?.url).not.toContain('/workspace-scope');
     expect(calls.every((call) => call.init?.cache === 'no-store')).toBe(true);
+  });
+
+  it('uses an exact opening witness for the first scope read and partitions coalescing by identity', async () => {
+    const calls: Array<{ url: string; headers: Headers }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const headers = new Headers(init?.headers);
+      calls.push({ url, headers });
+      const context = headers.get('x-od-workspace-id') === CONTEXT_B.workspaceId
+        ? CONTEXT_B
+        : CONTEXT_A;
+      if (url.endsWith('/workspace-scope')) {
+        return new Response(JSON.stringify({
+          scope: {
+            kind: 'team',
+            projectId: PROJECT_ID,
+            workspaceId: context.workspaceId,
+            visibility: 'team',
+            context,
+          },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        project: { ...PROJECT_A, workspaceId: context.workspaceId },
+      }), { status: 200 });
+    }));
+
+    await Promise.all([
+      bootstrapProjectRoute(PROJECT_ID, {
+        accountGeneration: 7,
+        exactContext: CONTEXT_A,
+      }),
+      bootstrapProjectRoute(PROJECT_ID, {
+        accountGeneration: 7,
+        exactContext: CONTEXT_B,
+      }),
+    ]);
+
+    expect(calls).toHaveLength(4);
+    expect(calls.filter((call) => call.url.endsWith('/workspace-scope'))).toHaveLength(2);
+    expect(calls.filter(
+      (call) => call.headers.get('x-od-workspace-id') === CONTEXT_A.workspaceId,
+    )).toHaveLength(2);
+    expect(calls.filter(
+      (call) => call.headers.get('x-od-workspace-id') === CONTEXT_B.workspaceId,
+    )).toHaveLength(2);
+  });
+
+  it('fails closed when an exact opening witness is not re-confirmed', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(bootstrapProjectRoute(PROJECT_ID, {
+      accountGeneration: 7,
+      exactContext: CONTEXT_A,
+    })).resolves.toEqual({ kind: 'forbidden' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -102,6 +177,15 @@ describe('bootstrapProjectRoute', () => {
 
     resetCoalescedGet();
     vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        scope: {
+          kind: 'team',
+          projectId: PROJECT_ID,
+          workspaceId: CONTEXT_A.workspaceId,
+          visibility: 'team',
+          context: CONTEXT_A,
+        },
+      }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         scope: {
           kind: 'team',

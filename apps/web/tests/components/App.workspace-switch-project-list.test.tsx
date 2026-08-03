@@ -595,7 +595,7 @@ describe('App project list across a workspace switch', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('project-view')).toBeTruthy();
-      expect(scopeReads).toBe(1);
+      expect(scopeReads).toBe(2);
       expect(projectViewLifecycle.mounts).toHaveBeenCalledTimes(1);
       expect(projectResourceRequests).toHaveLength(1);
     });
@@ -607,7 +607,7 @@ describe('App project list across a workspace switch', () => {
     });
 
     expect(screen.getByTestId('project-view')).toBeTruthy();
-    expect(scopeReads).toBe(1);
+    expect(scopeReads).toBe(2);
     expect(projectViewLifecycle.mounts).toHaveBeenCalledTimes(1);
     expect(projectViewLifecycle.unmounts).not.toHaveBeenCalled();
     expect(projectResourceRequests).toHaveLength(1);
@@ -634,7 +634,21 @@ describe('App project list across a workspace switch', () => {
         const headers = new Headers(init?.headers);
         if (pathname === `/api/projects/${boundProjectA.id}/workspace-scope`) {
           scopeReads += 1;
-          return scopeResponse.promise;
+          if (scopeReads === 1) return scopeResponse.promise;
+          expect(headers.get('x-od-workspace-id')).toBe('ws-a');
+          expect(headers.get('x-od-workspace-member-id')).toBe('member-ws-a');
+          return new Response(JSON.stringify({
+            scope: {
+              kind: 'team',
+              projectId: boundProjectA.id,
+              workspaceId: 'ws-a',
+              visibility: 'team',
+              context: workspaceContext('ws-a'),
+            },
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
         }
         if (
           pathname === `/api/projects/${boundProjectA.id}`
@@ -709,7 +723,7 @@ describe('App project list across a workspace switch', () => {
       expect(projectViewLifecycle.mounts).toHaveBeenCalledTimes(1);
     });
     expect(window.location.pathname).toBe(`/projects/${boundProjectA.id}`);
-    expect(scopeReads).toBe(1);
+    expect(scopeReads).toBe(2);
     expect(rejectedHeaderlessReads).toEqual([]);
     expect(
       projectDataRequests.filter(
@@ -787,7 +801,7 @@ describe('App project list across a workspace switch', () => {
     render(<App />);
 
     await waitFor(() => {
-      expect(scopeReads).toBe(1);
+      expect(scopeReads).toBe(2);
       expect(detailReads).toBe(1);
       expect(screen.getByTestId('project-view')).toBeTruthy();
     });
@@ -805,6 +819,97 @@ describe('App project list across a workspace switch', () => {
       initialProjectDetail: {
         project: boundProjectA,
         resolvedDir: '/tmp/project-in-a',
+      },
+    });
+  });
+
+  it('adopts a newly completed bootstrap after an earlier workspace refresh while directory stays pending', async () => {
+    const boundProjectA: Project = {
+      ...WORKSPACE_A_PROJECT,
+      workspaceId: 'ws-a',
+    };
+    const health = deferred<boolean>();
+    const directory = deferred<Response>();
+    const scopeResponse = deferred<Response>();
+    let scopeReads = 0;
+    let detailReads = 0;
+    vi.mocked(daemonIsLive).mockReturnValue(health.promise);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname === '/api/workspace/directory') return directory.promise;
+      if (pathname === `/api/projects/${boundProjectA.id}/workspace-scope`) {
+        scopeReads += 1;
+        if (scopeReads === 1) return scopeResponse.promise;
+        const headers = new Headers(init?.headers);
+        expect(headers.get('x-od-workspace-id')).toBe('ws-a');
+        expect(headers.get('x-od-workspace-member-id')).toBe('member-ws-a');
+        return new Response(JSON.stringify({
+          scope: {
+            kind: 'team',
+            projectId: boundProjectA.id,
+            workspaceId: 'ws-a',
+            visibility: 'team',
+            context: workspaceContext('ws-a'),
+          },
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (pathname === `/api/projects/${boundProjectA.id}`) {
+        detailReads += 1;
+        const headers = new Headers(init?.headers);
+        expect(headers.get('x-od-workspace-id')).toBe('ws-a');
+        expect(headers.get('x-od-workspace-member-id')).toBe('member-ws-a');
+        return new Response(JSON.stringify({
+          project: boundProjectA,
+          resolvedDir: '/tmp/project-in-a',
+        }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }));
+    vi.mocked(listProjects).mockImplementation(() => new Promise<Project[]>(() => {}));
+    window.history.replaceState(null, '', `/projects/${boundProjectA.id}`);
+
+    render(<App />);
+
+    await waitFor(() => expect(scopeReads).toBe(1));
+    await act(async () => {
+      notifyWorkspaceContextRefresh({ context: workspaceContext('ws-b') });
+      await Promise.resolve();
+    });
+    await act(async () => {
+      scopeResponse.resolve(new Response(JSON.stringify({
+        scope: {
+          kind: 'team',
+          projectId: boundProjectA.id,
+          workspaceId: 'ws-a',
+          visibility: 'team',
+          context: workspaceContext('ws-a'),
+        },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }));
+      await scopeResponse.promise;
+    });
+
+    await waitFor(() => {
+      expect(scopeReads).toBe(2);
+      expect(detailReads).toBe(1);
+      expect(screen.getByTestId('project-view')).toBeTruthy();
+    });
+    expect(projectViewLifecycle.renders.mock.lastCall?.[0]).toMatchObject({
+      project: boundProjectA,
+      workspaceContextOverride: {
+        workspaceId: 'ws-a',
+        workspaceMemberId: 'member-ws-a',
       },
     });
   });

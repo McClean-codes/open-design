@@ -61,7 +61,7 @@ export function useProjectRouteWorkspaceContext(
   const exactBootstrapIdentity = workspaceIdentityCacheKey(exactBootstrapContext);
   const initialExactContext = exactAmbientContext ?? exactBootstrapContext;
   const requestEpochRef = useRef(0);
-  const consumedBootstrapIdentityRef = useRef<string | null>(null);
+  const consumedBootstrapContextRef = useRef<WorkspaceCollabContext | null>(null);
   const [refreshRevision, setRefreshRevision] = useState(0);
   const retry = useCallback(() => {
     setRefreshRevision((current) => current + 1);
@@ -140,11 +140,16 @@ export function useProjectRouteWorkspaceContext(
       return;
     }
     if (
-      refreshRevision === 0
-      && exactBootstrapContext
-      && consumedBootstrapIdentityRef.current !== exactBootstrapIdentity
+      exactBootstrapContext
+      && consumedBootstrapContextRef.current !== exactBootstrapContext
     ) {
-      consumedBootstrapIdentityRef.current = exactBootstrapIdentity;
+      // The object is a newly completed route/open witness. Accept it once even
+      // if this long-lived hook observed focus or Workspace refresh events before
+      // the project route existed; those revisions predate this exact witness.
+      // Remember the object, not just its identity key, so a later refresh cannot
+      // reuse the same snapshot while a genuinely new verification for the same
+      // member remains adoptable.
+      consumedBootstrapContextRef.current = exactBootstrapContext;
       setIdentityRefreshPending(false);
       setResolved({
         workspaceId,
