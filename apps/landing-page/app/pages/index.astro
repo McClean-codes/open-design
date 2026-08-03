@@ -984,6 +984,16 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
           );
           if (buttons.length === 0) return;
           const ua = navigator.userAgent || '';
+          const platform = (
+            navigator.userAgentData?.platform ||
+            navigator.platform ||
+            ''
+          ).toLowerCase();
+          // The engagement prompt runs before this legacy homepage enhancer.
+          // Desktop-mode iPadOS reports a Macintosh UA/platform, so stop here
+          // before a later pass can undo the prompt's neutral download fallback.
+          const isIpadOS = navigator.maxTouchPoints > 1 && /mac/.test(platform);
+          if (isIpadOS || /iPhone|iPad|iPod/i.test(ua)) return;
           const isWin = /Windows|Win32|Win64|WOW64/i.test(ua);
           const isMac = /Macintosh|Mac OS X/i.test(ua) && !/iPhone|iPad|iPod/i.test(ua);
 

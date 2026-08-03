@@ -13,6 +13,7 @@ const componentSource = readFileSync(
   'utf8',
 );
 const homePageSource = readFileSync(new URL('../app/page.tsx', import.meta.url), 'utf8');
+const homeIndexSource = readFileSync(new URL('../app/pages/index.astro', import.meta.url), 'utf8');
 const homeStylesSource = readFileSync(new URL('../app/globals.css', import.meta.url), 'utf8');
 const downloadPageSource = readFileSync(
   new URL('../app/pages/download/index.astro', import.meta.url),
@@ -27,6 +28,21 @@ const enhancerSource = componentSource.slice(
   enhancerStart,
   enhancerEnd + enhancerEndMarker.length,
 );
+const homeDownloadEnhancerStart = homeIndexSource.indexOf(
+  '        const enhanceDownloadCta = () => {',
+);
+const homeDownloadEnhancerEnd = homeIndexSource.indexOf(
+  '        // Labs artifact switcher.',
+  homeDownloadEnhancerStart,
+);
+assert.ok(
+  homeDownloadEnhancerStart >= 0 && homeDownloadEnhancerEnd > homeDownloadEnhancerStart,
+  'homepage download enhancer not found',
+);
+const homeDownloadEnhancerSource = `${homeIndexSource.slice(
+  homeDownloadEnhancerStart,
+  homeDownloadEnhancerEnd,
+)}\n        enhanceDownloadCta();`;
 
 function createMemoryStorage() {
   const values = new Map<string, string>();
@@ -61,13 +77,24 @@ function runPromptEnhancer(options: {
     href: '/download/',
     setAttribute(name: string, value: string) { linkAttributes.set(name, value); },
     removeAttribute(name: string) { linkAttributes.delete(name); },
+    hasAttribute(name: string) { return linkAttributes.has(name); },
+    querySelector() { return null; },
+    appendChild() {},
   };
   const document = {
     visibilityState: 'visible',
     documentElement: { classList: { add() {}, remove() {} } },
     querySelector: () => dialog,
-    querySelectorAll: () => [directLink],
-    createElement: () => { throw new Error('iPadOS must not probe macOS WebGL'); },
+    querySelectorAll: (selector: string) =>
+      selector === '[data-direct-download]' || selector.startsWith('[data-download-cta]')
+        ? [directLink]
+        : [],
+    createElement: () => ({
+      getContext: () => ({
+        getExtension: () => ({ UNMASKED_RENDERER_WEBGL: 1 }),
+        getParameter: () => 'Apple GPU',
+      }),
+    }),
   };
   const window = {
     location: { search: '' },
@@ -121,7 +148,41 @@ function runPromptEnhancer(options: {
     class Element {},
   );
 
-  return { dialog, ctaAttributes: attributes, directLink, linkAttributes };
+  return {
+    dialog,
+    ctaAttributes: attributes,
+    directLink,
+    linkAttributes,
+    document,
+    navigator,
+    window,
+  };
+}
+
+async function runHomepageDownloadEnhancerAfterPrompt(
+  result: ReturnType<typeof runPromptEnhancer>,
+) {
+  const fetch = async () => ({
+    ok: true,
+    json: async () => ({
+      assets: [{
+        name: 'open-design-0.16.1-mac-arm64.dmg',
+        browser_download_url: 'https://example.com/open-design-mac-arm64.dmg',
+      }],
+    }),
+  });
+
+  // Execute the production homepage enhancer after the production prompt
+  // enhancer, matching their document order on the generated homepage.
+  // eslint-disable-next-line no-new-func
+  new Function('window', 'document', 'navigator', 'fetch', homeDownloadEnhancerSource)(
+    result.window,
+    result.document,
+    result.navigator,
+    fetch,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  return result;
 }
 
 test('download prompt: every active locale has complete, localized copy', () => {
@@ -255,6 +316,15 @@ test('download prompt: production rules and suppression windows stay explicit', 
 
 test('download prompt: wide iPadOS keeps the neutral download-page fallback', () => {
   const result = runPromptEnhancer({ sessionStorage: createMemoryStorage() });
+
+  assert.equal(result.directLink.href, '/download/');
+  assert.equal(result.linkAttributes.has('download'), false);
+  assert.equal(result.linkAttributes.has('data-download-platform-label'), false);
+});
+
+test('download prompt: later homepage enhancement preserves the wide-iPadOS fallback', async () => {
+  const promptResult = runPromptEnhancer({ sessionStorage: createMemoryStorage() });
+  const result = await runHomepageDownloadEnhancerAfterPrompt(promptResult);
 
   assert.equal(result.directLink.href, '/download/');
   assert.equal(result.linkAttributes.has('download'), false);
