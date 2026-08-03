@@ -124,6 +124,7 @@ import { RecentProjectsStrip } from './RecentProjectsStrip';
 import type { Recommendation } from '../onboarding/recommendation';
 import type { OnboardingEntry } from '../onboarding/onboarding-entry';
 import { AnimatePresence } from 'motion/react';
+import { DeepSeekV4FlashCampaign } from './DeepSeekV4FlashCampaign';
 
 export interface ActivePlugin {
   record: InstalledPluginRecord;
@@ -2390,6 +2391,7 @@ export function HomeView({
       data-testid="home-view"
       ref={homeViewRef}
     >
+      <DeepSeekV4FlashCampaign />
       {isActive ? <AppWashKineticGrid clipBottomTo=".home-hero" /> : null}
       <HomeHero
         workspaceContext={workspaceContext}

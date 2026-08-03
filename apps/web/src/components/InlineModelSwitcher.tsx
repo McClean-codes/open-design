@@ -91,6 +91,10 @@ import {
   providerModelsCacheKey,
   type ProviderModelsCache,
 } from './providerModelsCache';
+import {
+  DEEPSEEK_V4_FLASH_CAMPAIGN,
+  isDeepSeekV4FlashCampaignModel,
+} from '../campaigns/deepseek-v4-flash';
 
 interface Props {
   config: AppConfig;
@@ -1085,6 +1089,9 @@ export function InlineModelSwitcher({
               aria-hidden="true"
             />
             <span className="inline-switcher__chip-model-name">{chipModel}</span>
+            {isDeepSeekV4FlashCampaignModel(currentModelId) ? (
+              <span className="inline-switcher__campaign-badge">{DEEPSEEK_V4_FLASH_CAMPAIGN.badge}</span>
+            ) : null}
           </>
         ) : (
           <>
@@ -1259,6 +1266,9 @@ export function InlineModelSwitcher({
                           <span className="inline-switcher__agent-name">
                             {m.label}
                           </span>
+                          {isDeepSeekV4FlashCampaignModel(m.id) ? (
+                            <span className="inline-switcher__campaign-badge">免费 · {DEEPSEEK_V4_FLASH_CAMPAIGN.badge}</span>
+                          ) : null}
                           {lockedHint ? (
                             <span
                               className="inline-switcher__agent-lock"

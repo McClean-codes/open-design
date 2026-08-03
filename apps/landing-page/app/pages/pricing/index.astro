@@ -116,6 +116,21 @@ const FREE_PREMIUM_MODELS = [...PREMIUM_MODELS].sort(
   (a, b) => Number(b.trial === true) - Number(a.trial === true),
 );
 const renderCatalogLabel = (label: string) => fillTemplate(label, catalogLabelVars);
+const deepSeekCampaign = locale.startsWith('zh')
+  ? {
+      badge: '不限次',
+      headline: '这次，别省着用。DeepSeek V4 Flash 放开跑。',
+      body: '需求、文案、脚本、代码，想改就改，跑到满意为止。',
+      timing: '活动期间，产品内使用不计入小时及每日次数。',
+      modelBenefit: 'DeepSeek V4 Flash · 免费不限次',
+    }
+  : {
+      badge: 'Unlimited',
+      headline: 'Stop rationing. Let DeepSeek V4 Flash run.',
+      body: 'Requirements, copy, scripts, or code—iterate until it is right.',
+      timing: 'During the campaign, in-product runs do not count toward hourly or daily limits.',
+      modelBenefit: 'DeepSeek V4 Flash · Free unlimited runs',
+    };
 
 // Vela's grant already includes the advertised Pro/Max uplift. The percentage
 // is a presentation badge only; applying it again would inflate $120/$300 to
@@ -221,6 +236,14 @@ const jsonLd = [
   </nav>
 
   <article class="info-page pr-page" data-pricing-root data-audience="creator" data-interval="yearly">
+    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign">
+      <span class="pr-campaign-badge">{deepSeekCampaign.badge}</span>
+      <div>
+        <strong>{deepSeekCampaign.headline}</strong>
+        <p>{deepSeekCampaign.body}</p>
+      </div>
+      <small>{deepSeekCampaign.timing}</small>
+    </aside>
     <header class="pr-hero">
       <h1 class="pr-hero-heading">{L.heroTitle}</h1>
       <div class="pr-audience-toggle" role="tablist" aria-label={teamContent.audienceTabsLabel}>
@@ -295,6 +318,7 @@ const jsonLd = [
         </a>
 
         <ul class="pr-feats">
+          <li class="pr-feat pr-campaign-model-benefit">{deepSeekCampaign.modelBenefit}</li>
           {/* The trial-credit row and both model lists only exist through the
               signup credit grant; they vanish while that promotion is offline
               (TRIAL_CREDIT_PROMO_ENABLED, mirrors the vela modal). */}
@@ -382,6 +406,7 @@ const jsonLd = [
             {/* Fully-expanded benefits — credit + concurrency lead the list,
                 then every included benefit; no "includes all <tier>" heading. */}
             <ul class="pr-feats">
+              <li class="pr-feat pr-campaign-model-benefit">{deepSeekCampaign.modelBenefit}</li>
               <li class="pr-feat pr-feat-lead pr-feat-strong">
                 <span data-od-credit>{v.credits}</span>
                 {v.bonusPct != null && (
@@ -1010,6 +1035,36 @@ const jsonLd = [
 </Layout>
 
 <style>
+  .pr-campaign {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 0 auto 36px;
+    padding: 16px 18px;
+    border: 1px solid color-mix(in srgb, #68f22e 45%, var(--border));
+    border-radius: 16px;
+    background: color-mix(in srgb, #68f22e 8%, transparent);
+  }
+  .pr-campaign-badge {
+    flex: 0 0 auto;
+    padding: 4px 9px;
+    border-radius: 999px;
+    color: #102b05;
+    background: #68f22e;
+    font-size: .75rem;
+    font-weight: 800;
+  }
+  .pr-campaign > div { flex: 1; }
+  .pr-campaign strong { font-size: 1rem; }
+  .pr-campaign p { margin: 4px 0 0; color: var(--muted); font-size: .82rem; }
+  .pr-campaign small { max-width: 260px; color: var(--muted); line-height: 1.45; }
+  .pr-campaign-model-benefit { color: #225f0c; font-weight: 750; }
+  .pr-campaign-model-benefit::before { background: #68f22e !important; }
+  @media (max-width: 760px) {
+    .pr-campaign { align-items: flex-start; flex-wrap: wrap; }
+    .pr-campaign small { width: 100%; max-width: none; }
+  }
+
   /* ---- Hero ---- */
   .pr-hero {
     display: flex;

@@ -1,0 +1,49 @@
+.banner {
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 24px 0;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, #68f22e 45%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, #68f22e 9%, var(--bg));
+}
+
+.badge, .modalBadge, .free {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-radius: 999px;
+  color: #102b05;
+  background: #68f22e;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.bannerCopy { display: flex; flex: 1; gap: 8px; align-items: baseline; min-width: 0; }
+.bannerCopy strong { font-size: 13px; }
+.bannerCopy span, .timing { color: var(--text-muted); font-size: 11px; }
+.timing { white-space: nowrap; }
+
+.modalRoot { position: fixed; inset: 0; z-index: 1200; display: grid; place-items: center; pointer-events: none; opacity: 0; transition: opacity 140ms cubic-bezier(0.23, 1, 0.32, 1); }
+.modalOpen { pointer-events: auto; opacity: 1; }
+.backdrop { position: absolute; inset: 0; border: 0; background: rgb(0 0 0 / 64%); }
+.modal { position: relative; width: min(520px, calc(100vw - 32px)); padding: 28px; overflow: hidden; border: 1px solid rgb(255 255 255 / 12%); border-top: 3px solid #68f22e; border-radius: 16px; color: #f5f7f3; background: #20221f; box-shadow: 0 28px 80px rgb(0 0 0 / 40%); transform: translateY(10px) scale(.98); transition: transform 200ms cubic-bezier(0.23, 1, 0.32, 1); }
+.modalOpen .modal { transform: translateY(0) scale(1); }
+.close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; border: 0; border-radius: 8px; color: #a8aca5; background: rgb(255 255 255 / 7%); font-size: 22px; cursor: pointer; }
+.modalBadge { display: inline-flex; margin-bottom: 14px; }
+.modal h2 { max-width: 430px; margin: 0; font-size: 28px; line-height: 1.15; letter-spacing: -.03em; }
+.lead { margin: 12px 0 20px; color: #bdc2b9; line-height: 1.55; }
+.modelCard { display: flex; align-items: center; gap: 12px; padding: 14px; border: 1px solid rgb(255 255 255 / 11%); border-radius: 12px; background: rgb(255 255 255 / 5%); }
+.modelMark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; color: #102b05; background: #68f22e; font-size: 12px; font-weight: 900; }
+.modelCard > span:nth-child(2) { display: flex; flex: 1; flex-direction: column; gap: 4px; }
+.modelCard small { color: #989d95; }
+.boundary { margin: 14px 0 20px; color: #8f958b; font-size: 12px; line-height: 1.55; }
+.actions { display: flex; gap: 8px; }
+
+@media (max-width: 840px) {
+  .banner { align-items: flex-start; margin-inline: 12px; }
+  .bannerCopy { flex-direction: column; gap: 2px; }
+  .timing { display: none; }
+}
