@@ -47,10 +47,16 @@ import {
   notifyWorkspaceContextRefresh,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
+  currentWorkspaceAccountGeneration,
   workspaceIdentityCacheKey,
 } from '../../src/collab/useWorkspaceContext';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
-import { resetProjectDisplaySnapshots } from '../../src/state/project-display-cache';
+import {
+  projectDisplaySnapshotKey,
+  readProjectDisplaySnapshot,
+  resetProjectDisplaySnapshots,
+  writeProjectDisplaySnapshot,
+} from '../../src/state/project-display-cache';
 import type { AmrAuthRetryContinuation } from '../../src/runtime/amr-auth-retry-continuation';
 import type { VelaLoginStatus } from '../../src/providers/daemon';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
@@ -2659,6 +2665,41 @@ describe('App project creation routing', () => {
         'After local rename',
       );
     });
+  });
+
+  it('projects a current-view rename into inactive Personal and Team snapshots', async () => {
+    const context = workspaceContext('ws-1', 'wm-1');
+    const scopedProject = {
+      ...existingProject,
+      workspaceId: context.workspaceId,
+    };
+    mockedListProjects.mockResolvedValue([scopedProject]);
+    stubWorkspaceContext(context.workspaceId, context.workspaceMemberId);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Open Existing project' }));
+    await screen.findByTestId('project-view');
+
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    for (const view of ['drafts', 'team'] as const) {
+      writeProjectDisplaySnapshot({ accountGeneration, context, view }, [scopedProject]);
+    }
+
+    fireEvent.click(screen.getByRole('button', { name: 'Rename current project' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('project-title').textContent).toBe('After local rename');
+    });
+
+    for (const view of ['drafts', 'team'] as const) {
+      expect(readProjectDisplaySnapshot(projectDisplaySnapshotKey({
+        accountGeneration,
+        context,
+        view,
+      }))).toMatchObject({
+        projects: [{ id: scopedProject.id, name: 'After local rename' }],
+        dirty: true,
+      });
+    }
   });
 
   it('calibrates a deep-linked local placeholder from the other-owner hub catalog', async () => {

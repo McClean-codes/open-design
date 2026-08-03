@@ -3650,6 +3650,12 @@ function AppInner() {
   }, [route]);
 
   const handleProjectChange = useCallback((updated: Project) => {
+    // ProjectView is pinned to the opened project's persisted Workspace, which
+    // can differ from the shell's ambient selection while a switch settles.
+    // Patch every list projection for that exact principal so an inline rename
+    // cannot restore an old title when the user next opens Personal or Team.
+    const projectContext = projectRouteWorkspaceContextRef.current;
+    const accountGeneration = currentWorkspaceAccountGeneration();
     setProjects((curr) => {
       const previous = curr.find((p) => p.id === updated.id);
       if (
@@ -3664,6 +3670,14 @@ function AppInner() {
       }
       return curr.map((p) => (p.id === updated.id ? updated : p));
     });
+    if (projectContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration,
+        context: projectContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === updated.id ? { ...project, ...updated } : project),
+      });
+    }
   }, [iframeKeepAlivePool]);
 
   // ProjectView's prompt-context signature derives from SkillSummary /
