@@ -90,6 +90,7 @@ export interface RegisterDesignSystemRoutesDeps extends RouteDeps<'db' | 'paths'
     ensureUserDesignSystemWorkspaceProject: (db: DbHandle, id: string) => Promise<DesignSystemWorkspaceProject | null>;
     listAllDesignSystems: (options?: {
       workspaceId?: string | null;
+      workspaceMemberId?: string | null;
     }) => Promise<AvailableDesignSystemSummary[]>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<DesignSystemFileSummary[] | null>;
     listUserDesignSystemRevisions: (root: string, id: string) => Promise<DesignSystemRevision[] | null>;
