@@ -30,7 +30,7 @@ const MEMBER = {
 
 test.describe.configure({ timeout: T.xlong * 5 });
 
-test('[P0] a Team design system materializes in the picker, retracts live, and clears on switch', async ({
+test('[P0] a Team design system materializes, catches up a missed retraction, and clears on switch', async ({
   browser,
 }, testInfo) => {
   const hubRoot = testInfo.outputPath('fake-team-design-system-hub');
@@ -182,16 +182,23 @@ test('[P0] a Team design system materializes in the picker, retracts live, and c
       { timeout: T.long },
     ).toBe(true);
 
-    // Keep the member's real picker open while the owner retracts the Team
-    // resource. The already-running member daemon and browser must converge
-    // from the hub event; reopening Home or visiting Design Systems would hide
-    // the stale-catalog bug this witness is intended to catch.
+    // Keep the member's real picker open while its upstream event stream is
+    // unavailable and the owner retracts the Team resource. Restoring only the
+    // daemon-to-hub stream must reconcile the missed change and invalidate the
+    // continuously connected browser; reopening Home or visiting Design
+    // Systems would hide the stale-catalog bug this witness is intended to
+    // catch.
     await memberPage.getByTestId('home-hero-design-system-trigger').click();
     const openPicker = memberPage.getByTestId('project-ds-picker-popover');
     await expect(
       openPicker.getByTestId(`project-ds-picker-option-${designSystemId}`),
     ).toBeVisible();
     const catalogRequestsBeforeRetraction = memberCatalogRequests.designSystems;
+    hub.setEventsAvailable(MEMBER.memberId, false);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.long },
+    ).toBe(0);
     const retractResponse = await ownerPage.request.delete(
       `/api/workspace/design-systems/${encodeURIComponent(designSystemId!)}/share`,
       {
@@ -207,6 +214,11 @@ test('[P0] a Team design system materializes in the picker, retracts live, and c
         && event.resourceStatus === 'retracted',
       T.long,
     );
+    hub.setEventsAvailable(MEMBER.memberId, true);
+    await expect.poll(
+      () => hub.eventSubscriberCount(MEMBER.memberId),
+      { timeout: T.xlong },
+    ).toBeGreaterThan(0);
     await expect.poll(
       () => memberCatalogRequests.designSystems,
       { timeout: T.long },

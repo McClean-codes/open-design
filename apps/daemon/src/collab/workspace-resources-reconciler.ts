@@ -131,6 +131,7 @@ export interface WorkspaceResourcesReconcilerDeps {
 }
 
 export interface WorkspaceResourcesReconcileResult {
+  /** Number of retire actions successfully persisted. */
   retired: number;
 }
 
@@ -169,13 +170,15 @@ export async function reconcileWorkspaceResourcesWithRemote(
     localActiveTeamRows,
   });
 
+  let retired = 0;
   for (const action of actions) {
     try {
       deps.applyRetire(action.workspaceId, action.resourceId);
+      retired += 1;
     } catch (error) {
       deps.onError?.(error);
     }
   }
 
-  return { retired: actions.length };
+  return { retired };
 }

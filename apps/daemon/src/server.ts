@@ -4827,27 +4827,16 @@ export async function startServer({
           // 'published' ref) or retracted (removed) on the resource hub.
           // `resourceKind` routes to just that kind's reconciler instead of
           // re-checking all of them on every event — see
-          // `reconcileTeamResourcesFromRemote` below (declared later in this
-          // function; referencing it here is safe because this callback only
-          // ever RUNS once an actual SSE event arrives, well after the rest
-          // of `startServer`'s synchronous setup — including that
-          // declaration — has completed).
-          void reconcileTeamResourcesFromRemote(
+          // `reconcileAndInvalidateTeamResourcesFromRemote` below (declared
+          // later in this function; referencing it here is safe because this
+          // callback only ever RUNS once an actual SSE event arrives, well
+          // after the rest of `startServer`'s synchronous setup — including
+          // that declaration — has completed).
+          void reconcileAndInvalidateTeamResourcesFromRemote(
             event.resourceKind,
             eventWorkspaceId,
-          ).then(() => {
-            if (
-              event.resourceKind === 'design_system'
-              || event.resourceKind === 'plugin'
-              || event.resourceKind === 'skill'
-            ) {
-              emitWorkspaceEvent(eventWorkspaceId, {
-                type: 'team-resources-changed',
-                resourceKind: event.resourceKind,
-                at: Date.now(),
-              });
-            }
-          }).catch(() => undefined);
+            { invalidateRequestedKind: true },
+          ).catch(() => undefined);
           break;
         }
       }
@@ -4869,11 +4858,14 @@ export async function startServer({
         .catch(() => undefined);
       void collabCloud?.pollOnce().catch(() => undefined);
       workspaceBillingRuntime.reconnect(subscribedWorkspaceId);
-      // Same catch-up principle for the design-system/skill resource
+      // Same catch-up principle for the design-system/plugin/skill resource
       // reconciler: a missed 'team-resources-changed' push during the
       // disconnect window is closed by one full re-check across every kind
       // this daemon drives it for (no resourceKind => reconcile all).
-      void reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId)
+      void reconcileAndInvalidateTeamResourcesFromRemote(
+        undefined,
+        subscribedWorkspaceId,
+      )
         .catch(() => undefined);
     },
     onSourceGap: ({ workspaceId, listenerEpoch }) => {
@@ -4891,7 +4883,10 @@ export async function startServer({
         .catch(() => undefined);
       workspaceBillingRuntime.reconnect(exactWorkspaceId);
       void collabCloud?.pollOnce().catch(() => undefined);
-      void reconcileTeamResourcesFromRemote(undefined, exactWorkspaceId)
+      void reconcileAndInvalidateTeamResourcesFromRemote(
+        undefined,
+        exactWorkspaceId,
+      )
         .catch(() => undefined);
     },
     onError: (error) => {
@@ -5663,15 +5658,15 @@ export async function startServer({
   const reconcileTeamResourcesFromRemote = async (
     resourceKind?: string,
     workspaceId?: string,
-  ): Promise<void> => {
+  ): Promise<Array<{ resourceKind: ReconciledTeamResourceKind; retired: number }>> => {
     const requestedWorkspaceId = workspaceId?.trim();
-    if (!requestedWorkspaceId) return;
+    if (!requestedWorkspaceId) return [];
     // Background events carry only a Workspace id, not an HTTP request. Resolve
     // that exact membership from the directory at execution time rather than
     // relying on whichever resource request happened to run first in this
     // process (or on the daemon's mutable active context).
     const scope = await resolveTeamResourceScopeForWorkspaceId(requestedWorkspaceId);
-    if (!scope) return;
+    if (!scope) return [];
     const kinds = resourceKind
       ? RECONCILED_TEAM_RESOURCE_KINDS.filter((kind) => kind === resourceKind)
       : RECONCILED_TEAM_RESOURCE_KINDS;
@@ -5686,9 +5681,45 @@ export async function startServer({
       invalidateSharedCommand: (exactWorkspaceId) =>
         sharedTeamResourcesCommand.invalidate(exactWorkspaceId),
     });
-    await Promise.all(
-      kinds.map((kind) => reconcileTeamResourceKind(kind, scope)),
+    return Promise.all(
+      kinds.map(async (kind) => ({
+        resourceKind: kind,
+        ...(await reconcileTeamResourceKind(kind, scope)),
+      })),
     );
+  };
+  const reconcileAndInvalidateTeamResourcesFromRemote = async (
+    resourceKind?: string,
+    workspaceId?: string,
+    options: { invalidateRequestedKind?: boolean } = {},
+  ): Promise<Array<{ resourceKind: ReconciledTeamResourceKind; retired: number }>> => {
+    const results = await reconcileTeamResourcesFromRemote(resourceKind, workspaceId);
+    const requestedKind = RECONCILED_TEAM_RESOURCE_KINDS.find(
+      (kind) => kind === resourceKind,
+    );
+    const changedKinds = new Set(
+      results
+        .filter((result) => result.retired > 0)
+        .map((result) => result.resourceKind),
+    );
+    // A named hub event is itself authoritative evidence of a share, update,
+    // or retraction, including changes that do not alter a binding row. Gap
+    // catch-ups and polls lack that signal, so they notify only for successful
+    // retirements reported by reconciliation.
+    if (options.invalidateRequestedKind && requestedKind) {
+      changedKinds.add(requestedKind);
+    }
+    const exactWorkspaceId = workspaceId?.trim();
+    if (exactWorkspaceId) {
+      for (const changedKind of changedKinds) {
+        emitWorkspaceEvent(exactWorkspaceId, {
+          type: 'team-resources-changed',
+          resourceKind: changedKind,
+          at: Date.now(),
+        });
+      }
+    }
+    return results;
   };
   const teamResourceBackgroundWorkspaceIds = (): string[] => {
     const ids = new Set<string>();
@@ -5720,12 +5751,13 @@ export async function startServer({
   // instead of piggybacking on that poller's change-detection.
   const teamResourcesPollTimer = setInterval(() => {
     for (const workspaceId of teamResourceBackgroundWorkspaceIds()) {
-      void reconcileTeamResourcesFromRemote(undefined, workspaceId).catch((error) =>
-        console.warn(
-          `[od] workspace ${workspaceId} resources poll error:`,
-          error,
-        ),
-      );
+      void reconcileAndInvalidateTeamResourcesFromRemote(undefined, workspaceId)
+        .catch((error) =>
+          console.warn(
+            `[od] workspace ${workspaceId} resources poll error:`,
+            error,
+          ),
+        );
     }
   }, 15_000);
   teamResourcesPollTimer.unref?.();

@@ -156,7 +156,7 @@ describe('reconcileWorkspaceResourcesWithRemote (orchestrator)', () => {
         onError,
       }),
     );
-    expect(result).toEqual({ retired: 2 });
+    expect(result).toEqual({ retired: 1 });
     expect(onError).toHaveBeenCalledTimes(1);
     expect(applied).toEqual(['b']);
   });
