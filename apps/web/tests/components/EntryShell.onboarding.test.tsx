@@ -703,6 +703,7 @@ describe('EntryShell onboarding Open Design AMR runtime', () => {
     await clickSignedInCloudContinue();
 
     expect(screen.getByRole('radio', { name: /Open Design Hosted/i }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('Recommended')).toBeTruthy();
     expect(screen.getByRole('radio', { name: /Local Agent/i })).toBeTruthy();
     expect(screen.getByRole('radio', { name: /Bring Your Own Key/i })).toBeTruthy();
   });

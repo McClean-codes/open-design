@@ -3517,7 +3517,10 @@ function OnboardingView({
               >
                 <span className={onboardingSourceStyles.optionIcon}><Icon name="sparkles" size={17} /></span>
                 <span className={onboardingSourceStyles.optionCopy}>
-                  <strong className={onboardingSourceStyles.optionTitle}>{t('settings.onboardingAmrModelSourceLabel')}</strong>
+                  <span className={onboardingSourceStyles.optionHeading}>
+                    <strong className={onboardingSourceStyles.optionTitle}>{t('settings.onboardingAmrModelSourceLabel')}</strong>
+                    <span className={onboardingSourceStyles.recommendedBadge}>{t('settings.onboardingRecommended')}</span>
+                  </span>
                   <span className={onboardingSourceStyles.optionBody}>{t('settings.onboardingAmrCloudBenefitModels')}</span>
                 </span>
                 <span className={onboardingSourceStyles.radio} aria-hidden="true" />
