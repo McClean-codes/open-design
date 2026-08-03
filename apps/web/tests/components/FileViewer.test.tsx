@@ -229,10 +229,16 @@ function deferredResponse() {
 function srcDocActivationMessages(calls: readonly (readonly unknown[])[]) {
   return calls
     .map(([message]) => message)
-    .filter((message): message is { type: 'od:srcdoc-transport-activate'; html: string } => {
+    .filter((message): message is {
+      type: 'od:srcdoc-transport-activate';
+      html: string;
+      generation: string;
+    } => {
       if (typeof message !== 'object' || message === null) return false;
-      const data = message as { type?: unknown; html?: unknown };
-      return data.type === 'od:srcdoc-transport-activate' && typeof data.html === 'string';
+      const data = message as { type?: unknown; html?: unknown; generation?: unknown };
+      return data.type === 'od:srcdoc-transport-activate'
+        && typeof data.html === 'string'
+        && typeof data.generation === 'string';
     });
 }
 
@@ -2216,7 +2222,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(screen.getByRole('menuitem', { name: /export as image/i })).toBeTruthy();
   });
 
-  it('restores captured URL preview state once when activating a prewarmed edit transport', async () => {
+  it('restores captured URL preview state once after the matching prewarmed document is ready', async () => {
     const file = baseFile({
       name: 'page.html',
       path: 'page.html',
@@ -2264,6 +2270,29 @@ describe('FileViewer SVG artifacts', () => {
     expect(srcDocFrame?.getAttribute('data-od-active')).toBe('false');
     expect(srcDocFrame?.srcdoc).toContain('__odArtifactBootCount');
     fireEvent.load(srcDocFrame!);
+
+    const readyGeneration = srcDocFrame?.srcdoc.match(
+      /data-od-srcdoc-transport-activation>[\s\S]*?var generation = "([^"]+)";/,
+    )?.[1];
+    expect(readyGeneration).toBeTruthy();
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: srcDocFrame?.contentWindow,
+        data: {
+          type: 'od:srcdoc-transport-activated',
+          generation: readyGeneration,
+        },
+      }));
+      // A late acknowledgement from the document this frame replaced must not
+      // overwrite the matching prewarm witness.
+      window.dispatchEvent(new MessageEvent('message', {
+        source: srcDocFrame?.contentWindow,
+        data: {
+          type: 'od:srcdoc-transport-activated',
+          generation: `${readyGeneration}-stale`,
+        },
+      }));
+    });
 
     const urlPostSpy = vi.spyOn(urlFrame.contentWindow!, 'postMessage');
     const srcDocPostSpy = vi.spyOn(srcDocFrame!.contentWindow!, 'postMessage');
@@ -2318,29 +2347,37 @@ describe('FileViewer SVG artifacts', () => {
     expect(srcDocFrameAfter).toBe(srcDocFrame);
     expect(srcDocFrameAfter?.srcdoc).toContain('__odArtifactBootCount');
     expect(srcDocFrameAfter?.srcdoc).toContain('data-od-edit-bridge');
-    // Switching transport can update the iframe ref before the activated
-    // srcDoc has installed its runtime-state listener. Keep the snapshot until
-    // the iframe load confirms the activated document is ready.
-    expect(srcDocPostSpy).not.toHaveBeenCalledWith(
-      { type: 'od:preview-runtime-state-restore', state: capturedState },
-      '*',
-    );
+    await waitFor(() => {
+      expect(srcDocPostSpy).toHaveBeenCalledWith(
+        { type: 'od:preview-runtime-state-restore', state: capturedState },
+        '*',
+      );
+    });
+
+    const restoreCalls = () => srcDocPostSpy.mock.calls.filter(([message]) => (
+      typeof message === 'object'
+      && message !== null
+      && (message as { type?: unknown }).type === 'od:preview-runtime-state-restore'
+    ));
+    expect(restoreCalls()).toHaveLength(1);
 
     srcDocPostSpy.mockClear();
-    fireEvent.load(srcDocFrameAfter!);
-
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        source: srcDocFrameAfter?.contentWindow,
+        data: {
+          type: 'od:srcdoc-transport-activated',
+          generation: readyGeneration,
+        },
+      }));
+    });
     expect(srcDocPostSpy).toHaveBeenCalledWith(
-      { type: 'od:preview-runtime-state-restore', state: capturedState },
+      { type: 'od-edit-mode', enabled: true },
       '*',
     );
-
-    srcDocPostSpy.mockClear();
     fireEvent.load(srcDocFrameAfter!);
 
-    expect(srcDocPostSpy).not.toHaveBeenCalledWith(
-      { type: 'od:preview-runtime-state-restore', state: capturedState },
-      '*',
-    );
+    expect(restoreCalls()).toHaveLength(0);
   });
 
   it('keeps the srcDoc edit transport active after canceling manual edit', async () => {

@@ -4,7 +4,11 @@ import { openAllProjectFiles } from '@/playwright/workspace';
 import { T } from '@/timeouts';
 import type { Locator, Page, Request } from '@playwright/test';
 import { routeAgents, routeSuccessfulRuns } from '../lib/playwright/mock-factory.js';
-import { settingsSurface } from '../lib/playwright/amr.js';
+import {
+  AMR_PERSONAL_WORKSPACE_CONTEXT,
+  mockAmrPersonalWorkspace,
+  settingsSurface,
+} from '../lib/playwright/amr.js';
 
 // The `/projects` view in `EntryShell` renders a `CenteredLoader` until
 // `projectsLoading || skillsLoading || designSystemsLoading` all clear
@@ -1851,7 +1855,9 @@ test('[P0] @critical project detail composer opens Execution settings where BYOK
   await settings.getByRole('tab', { name: 'API providers' }).click();
   await settings.getByRole('tab', { name: 'OpenAI', exact: true }).click();
   const modelSelect = settings.getByRole('combobox', { name: 'Model', exact: true });
-  await expect(modelSelect).toContainText('gpt-4o-2024-05-13');
+  await expect(modelSelect).toContainText('Custom (type below)…');
+  await expect(settings.getByRole('textbox', { name: 'Custom model id', exact: true }))
+    .toHaveValue('gpt-4o-2024-05-13');
   await modelSelect.click();
   const modelPopover = page.getByTestId('settings-byok-model-popover');
   await expect(modelPopover.getByRole('option', { name: /^gpt-4o-mini$/i })).toBeVisible();
@@ -2862,6 +2868,27 @@ test('[P0] project detail share menu opens the current share page for uploaded h
               updatedAt: 2,
             }]
           : [],
+      },
+    });
+  });
+
+  // This scenario creates through Playwright's APIRequestContext rather than
+  // the browser UI, so the Web cannot inherit its normal same-session creation
+  // witness. Give the page an exact writable Personal/owner identity and bind
+  // the project-scope bootstrap to that same identity. Do not make the share
+  // control writable by weakening the shared-project authority gate.
+  await mockAmrPersonalWorkspace(page);
+  await page.route('**/api/projects/*/workspace-scope', async (route) => {
+    const projectId = getProjectIdFromApiPath(route.request().url());
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'personal',
+          projectId,
+          workspaceId: AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: AMR_PERSONAL_WORKSPACE_CONTEXT,
+        },
       },
     });
   });

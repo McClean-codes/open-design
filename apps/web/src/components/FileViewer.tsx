@@ -605,6 +605,7 @@ const MAX_CACHED_PREVIEW_CONTENT_WIDTHS = 128;
 const PREVIEW_CONTENT_WIDTH_CACHE_VERSION = 2;
 let previewContentMeasurementDocumentEpochSequence = 0;
 let previewContentMeasurementHostInstanceSequence = 0;
+let previewTransportGenerationSequence = 0;
 function nextPreviewContentMeasurementDocumentEpoch(): string {
   previewContentMeasurementDocumentEpochSequence += 1;
   return `preview-document-${previewContentMeasurementDocumentEpochSequence}`;
@@ -612,6 +613,10 @@ function nextPreviewContentMeasurementDocumentEpoch(): string {
 function nextPreviewContentMeasurementHostInstance(): string {
   previewContentMeasurementHostInstanceSequence += 1;
   return `preview-host-${previewContentMeasurementHostInstanceSequence}`;
+}
+function nextPreviewTransportGeneration(): string {
+  previewTransportGenerationSequence += 1;
+  return `preview-transport-${previewTransportGenerationSequence}`;
 }
 type PreviewContentWidthCacheEntry = {
   version: typeof PREVIEW_CONTENT_WIDTH_CACHE_VERSION;
@@ -9679,6 +9684,18 @@ function HtmlViewer({
     workspaceContext,
   ]);
 
+  const srcDocTransportGeneration = useMemo(
+    () => nextPreviewTransportGeneration(),
+    [
+      previewSource,
+      effectiveDeck,
+      projectId,
+      file.name,
+      reloadKey,
+      transportPreviewMeasurementDocumentEpoch,
+      workspaceContext,
+    ],
+  );
   const srcDoc = useMemo(
     () => (previewSource ? buildSrcdoc(previewSource, {
       deck: effectiveDeck,
@@ -9702,6 +9719,7 @@ function HtmlViewer({
       // even when the fetched HTML bytes are identical (issue #4650).
       reloadKey,
       previewMeasurementEpoch: transportPreviewMeasurementDocumentEpoch,
+      transportActivationGeneration: srcDocTransportGeneration,
     }) : ''),
     [
       previewSource,
@@ -9711,9 +9729,48 @@ function HtmlViewer({
       previewStateKey,
       reloadKey,
       transportPreviewMeasurementDocumentEpoch,
+      srcDocTransportGeneration,
       workspaceContext,
     ],
   );
+  const expectedSrcDocTransportGenerationRef = useRef(srcDocTransportGeneration);
+  expectedSrcDocTransportGenerationRef.current = srcDocTransportGeneration;
+  const readySrcDocTransportRef = useRef<{
+    frame: HTMLIFrameElement;
+    generation: string;
+  } | null>(null);
+  const replayPreviewBridgeModes = useCallback((target: HTMLIFrameElement | null) => {
+    if (!workspaceActive) return;
+    const win = target?.contentWindow;
+    if (!win) return;
+    const ready = readySrcDocTransportRef.current;
+    if (
+      target === srcDocPreviewIframeRef.current
+      && ready?.frame === target
+      && ready.generation === expectedSrcDocTransportGenerationRef.current
+    ) {
+      postAndConsumePreviewRuntimeState(target);
+    }
+    win.postMessage({
+      type: 'od:comment-mode',
+      enabled: boardMode,
+      mode: boardTool,
+    }, '*');
+    win.postMessage({ type: 'od-edit-mode', enabled: manualEditMode }, '*');
+    win.postMessage({
+      type: 'od-edit-selected-target',
+      id: manualEditMode ? selectedManualEditTarget?.id ?? null : null,
+    }, '*');
+    win.postMessage({ type: 'od:inspect-mode', enabled: inspectMode }, '*');
+  }, [
+    boardMode,
+    boardTool,
+    inspectMode,
+    manualEditMode,
+    postAndConsumePreviewRuntimeState,
+    selectedManualEditTarget?.id,
+    workspaceActive,
+  ]);
   // Only materialized while the in-tab presentation overlay is up — building
   // it eagerly would re-run buildSrcdoc on every source edit for a document
   // nobody is presenting.
@@ -9825,6 +9882,29 @@ function HtmlViewer({
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [workspaceActive]);
+  // A frame `load` only proves that some document finished loading. It cannot
+  // distinguish the lazy shell from the real artifact written into that shell,
+  // and a prewarmed real artifact may have loaded before Edit is activated.
+  // Trust only the artifact bridge's exact generation acknowledgement.
+  useEffect(() => {
+    if (!workspaceActive) return;
+    function onMessage(ev: MessageEvent) {
+      const frame = srcDocPreviewIframeRef.current;
+      if (ev.source !== frame?.contentWindow) return;
+      const data = ev.data as { type?: unknown; generation?: unknown } | null;
+      if (
+        data?.type !== 'od:srcdoc-transport-activated'
+        || typeof data.generation !== 'string'
+        || data.generation !== expectedSrcDocTransportGenerationRef.current
+      ) {
+        return;
+      }
+      readySrcDocTransportRef.current = { frame, generation: data.generation };
+      if (frame === iframeRef.current) replayPreviewBridgeModes(frame);
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [replayPreviewBridgeModes, workspaceActive]);
   useEffect(() => {
     if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
@@ -9955,10 +10035,14 @@ function HtmlViewer({
     }
     const win = target?.contentWindow;
     if (!win) return false;
-    win.postMessage({ type: 'od:srcdoc-transport-activate', html: srcDoc }, '*');
+    win.postMessage({
+      type: 'od:srcdoc-transport-activate',
+      html: srcDoc,
+      generation: srcDocTransportGeneration,
+    }, '*');
     activatedSrcDocTransportHtmlRef.current = srcDoc;
     return true;
-  }, [srcDoc, useLazySrcDocTransport, useUrlLoadPreview, srcDocShellReady, boardMode]);
+  }, [srcDoc, srcDocTransportGeneration, useLazySrcDocTransport, useUrlLoadPreview, srcDocShellReady, boardMode]);
   const activateLoadedSrcDocTransport = useCallback((target: HTMLIFrameElement | null = srcDocPreviewIframeRef.current) => {
     if (!canActivateSrcDocTransport({
       srcDoc,
@@ -9969,17 +10053,25 @@ function HtmlViewer({
     })) return false;
     const win = target?.contentWindow;
     if (!win) return false;
-    win.postMessage({ type: 'od:srcdoc-transport-activate', html: srcDoc }, '*');
+    win.postMessage({
+      type: 'od:srcdoc-transport-activate',
+      html: srcDoc,
+      generation: srcDocTransportGeneration,
+    }, '*');
     activatedSrcDocTransportHtmlRef.current = srcDoc;
     return true;
-  }, [srcDoc, useLazySrcDocTransport, useUrlLoadPreview]);
+  }, [srcDoc, srcDocTransportGeneration, useLazySrcDocTransport, useUrlLoadPreview]);
   const activateSrcDocSnapshotTransport = useCallback((target: HTMLIFrameElement | null = srcDocPreviewIframeRef.current) => {
     if (!srcDoc) return false;
     const win = target?.contentWindow;
     if (!win) return false;
-    win.postMessage({ type: 'od:srcdoc-transport-activate', html: srcDoc }, '*');
+    win.postMessage({
+      type: 'od:srcdoc-transport-activate',
+      html: srcDoc,
+      generation: srcDocTransportGeneration,
+    }, '*');
     return true;
-  }, [srcDoc]);
+  }, [srcDoc, srcDocTransportGeneration]);
   useEffect(() => {
     if (useUrlLoadPreview) {
       activatedSrcDocTransportHtmlRef.current = null;
@@ -10218,11 +10310,27 @@ function HtmlViewer({
 
   useEffect(() => {
     if (!workspaceActive) return;
-    const win = iframeRef.current?.contentWindow;
+    const target = iframeRef.current;
+    const win = target?.contentWindow;
     if (!win) return;
+    const ready = readySrcDocTransportRef.current;
+    if (
+      target === srcDocPreviewIframeRef.current
+      && ready?.frame === target
+      && ready.generation === expectedSrcDocTransportGenerationRef.current
+    ) {
+      postAndConsumePreviewRuntimeState(target);
+    }
     win.postMessage({ type: 'od-edit-mode', enabled: manualEditMode }, '*');
     postSelectedManualEditTargetToIframe(manualEditMode ? selectedManualEditTarget?.id ?? null : null);
-  }, [manualEditMode, selectedManualEditTarget?.id, srcDoc, useUrlLoadPreview, workspaceActive]);
+  }, [
+    manualEditMode,
+    selectedManualEditTarget?.id,
+    srcDoc,
+    useUrlLoadPreview,
+    postAndConsumePreviewRuntimeState,
+    workspaceActive,
+  ]);
 
   const previewStyleToIframe = useCallback((id: string, styles: Partial<ManualEditStyles>, version: number) => {
     if (!workspaceActive) return false;
@@ -10240,18 +10348,7 @@ function HtmlViewer({
   }
 
   function syncBridgeModes(target: HTMLIFrameElement | null = iframeRef.current) {
-    if (!workspaceActive) return;
-    const win = target?.contentWindow;
-    if (!win) return;
-    postAndConsumePreviewRuntimeState(target);
-    win.postMessage({
-      type: 'od:comment-mode',
-      enabled: boardMode,
-      mode: boardTool,
-    }, '*');
-    win.postMessage({ type: 'od-edit-mode', enabled: manualEditMode }, '*');
-    postSelectedManualEditTargetToIframe(manualEditMode ? selectedManualEditTarget?.id ?? null : null, target);
-    win.postMessage({ type: 'od:inspect-mode', enabled: inspectMode }, '*');
+    replayPreviewBridgeModes(target);
   }
 
   useEffect(() => {
@@ -15220,18 +15317,16 @@ function HtmlViewer({
                           }
                           if (useLazySrcDocTransport) setSrcDocShellReady(true);
                           activateLoadedSrcDocTransport(frame);
+                          frame?.contentWindow?.postMessage({
+                            type: 'od:srcdoc-transport-ready-probe',
+                            generation: srcDocTransportGeneration,
+                          }, '*');
                           dcViewportRestoreAtRef.current = Date.now();
                           frame?.contentWindow?.postMessage({
                             type: '__dc_set_viewport',
                             ...dcViewportRef.current,
                           }, '*');
                           replayInspectOverridesToIframe(frame);
-                          // Restore the URL preview snapshot only after the
-                          // activated srcDoc has loaded and installed its
-                          // bridge. Consuming it during the earlier ref swap
-                          // can post into the pre-activation document, which
-                          // is then overwritten before it can preserve the
-                          // runtime-rendered page.
                           syncBridgeModes(frame);
                           syncCachedSlideStateToIframe(frame);
                           if (!useUrlLoadPreview) restorePreviewScrollPosition();
