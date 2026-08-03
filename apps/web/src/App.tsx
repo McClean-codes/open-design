@@ -889,7 +889,22 @@ function AppInner() {
   // audio templates) — sourced from /api/design-templates and shown in the
   // EntryView Templates tab. See specs/current/skills-and-design-templates.md.
   const [designTemplates, setDesignTemplates] = useState<SkillSummary[]>([]);
-  const [designSystems, setDesignSystems] = useState<DesignSystemSummary[]>([]);
+  const [workspaceDesignSystems, setWorkspaceDesignSystems] = useState<{
+    identity: string;
+    items: DesignSystemSummary[];
+  }>(() => ({
+    identity: currentWorkspaceIdentity,
+    items: [],
+  }));
+  // Like skills and projects, a design-system catalog belongs to one exact
+  // Workspace membership. Effects refresh after React commits, so merely
+  // guarding late responses is not enough: without this render-time identity
+  // check, switching A -> B paints A's systems under B until B's request
+  // finishes. Fail closed during that gap; opening the picker still reuses the
+  // already-loaded list instantly when the identity has not changed.
+  const designSystems = workspaceDesignSystems.identity === currentWorkspaceIdentity
+    ? workspaceDesignSystems.items
+    : [];
   const [pendingDesignSystemRevisionJobs, setPendingDesignSystemRevisionJobs] = useState<
     Record<string, DesignSystemGenerationJob>
   >({});
@@ -1690,7 +1705,10 @@ function AppInner() {
           workspaceIdentityCacheKey(workspaceContextRef.current)
             !== designSystemsWorkspaceIdentity
         ) return;
-        setDesignSystems(list);
+        setWorkspaceDesignSystems({
+          identity: designSystemsWorkspaceIdentity,
+          items: list,
+        });
         setDsLoading(false);
       });
 
@@ -1995,7 +2013,7 @@ function AppInner() {
     const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
     const list = await fetchDesignSystems(issuedContext);
     if (workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity) return;
-    setDesignSystems(list);
+    setWorkspaceDesignSystems({ identity: issuedIdentity, items: list });
     // Bootstrap and this workspace-scoped refresh can overlap on launch.
     // Either response is a complete catalog for the active daemon identity,
     // so do not leave a successful refresh hidden behind bootstrap's loader

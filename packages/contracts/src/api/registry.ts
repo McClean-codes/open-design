@@ -306,6 +306,13 @@ export interface DesignSystemSummary {
   projectId?: string;
   teamSynced?: boolean;
   /**
+   * This system's id is present in the current caller's explicitly scoped
+   * team-resource index. Unlike `teamSynced`, this also covers the original
+   * local copy owned by the member who shared it. It is display/catalog
+   * membership only and must never be used as mutation authority.
+   */
+  teamShared?: boolean;
+  /**
    * Whether the current caller may mutate (edit / publish-toggle / delete)
    * this design system, mirroring the daemon's own `canMutateUserDesignSystem`
    * gate exactly (recvqb6mfyqXLD): true for anything the caller authored
