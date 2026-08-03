@@ -32,6 +32,9 @@ import { createWorkspaceContextProviderFromEnv } from './vela-workspace-context.
 
 type TeamProjectCatalogSyncState = 'pending_upload' | 'synced' | 'failed';
 
+const TEAM_PROJECT_METADATA_RETRY_BASE_MS = 1_000;
+const TEAM_PROJECT_METADATA_RETRY_MAX_MS = 30_000;
+
 interface TeamProjectCatalogSink {
   upsert(
     input: {
@@ -95,13 +98,19 @@ export interface CollabRuntime {
   /** Move a project out of the team space. */
   requestTeamUnshare(projectId: string, principal?: ResourceHubPrincipal | null): Promise<void>;
   /** Restore a persisted team share into runtime bookkeeping without publishing. */
-  rememberTeamShare(projectId: string, share: ResourceHubPrincipal, syncState?: ProjectSyncState): void;
+  rememberTeamShare(
+    projectId: string,
+    share: ResourceHubPrincipal,
+    syncState?: ProjectSyncState,
+    restore?: { metadataRefreshPending?: boolean },
+  ): void;
   /**
    * Re-upsert the shared project's catalog entry so metadata-only changes
    * (rename today) reach teammates without waiting for the next content
    * publish — before this, a rename with no follow-up file edit NEVER
    * converged on member clients. No-op for projects that are not shared
-   * from this daemon. Fire-and-forget; failures land on `onError`.
+   * from this daemon. Fire-and-forget; failures land on the metadata-only
+   * retry hooks and never mutate content `syncState`.
    */
   refreshTeamProjectMetadata(projectId: string): void;
   /** The member who shared this project, or null if not shared here. */
@@ -136,6 +145,25 @@ export interface CreateCollabRuntimeOptions {
   /** Fired when a project's presence set changes (join/leave). */
   onPresenceChange?: (result: { projectId: string; present: PresenceMember[] }) => void;
   onError?: (result: { projectId: string; error: unknown; principal: ResourceHubPrincipal | null }) => void;
+  /**
+   * Metadata-only catalog refresh failures have their own retry loop and must
+   * not mark already-published project content as `sync_failed`.
+   */
+  onMetadataRefreshError?: (result: {
+    projectId: string;
+    error: unknown;
+    principal: ResourceHubPrincipal;
+  }) => void;
+  /** Persist the exact Team/project repair intent before its async upsert. */
+  onMetadataRefreshPending?: (result: {
+    projectId: string;
+    principal: ResourceHubPrincipal;
+  }) => void;
+  /** Clear the durable repair intent after the final upsert or unshare wins. */
+  onMetadataRefreshComplete?: (result: {
+    projectId: string;
+    principal: ResourceHubPrincipal;
+  }) => void;
   /**
    * Gate for SCHEDULER-driven publishes (file watcher, `/collab/changed`,
    * `/collab/publish`, run boundaries): return false and the flush becomes a
@@ -185,6 +213,18 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
   >();
   const SCOPED_PROJECT_SEPARATOR = '\u0000';
 
+  type PendingMetadataRefresh = {
+    projectId: string;
+    principal: ResourceHubPrincipal;
+    syncState: TeamProjectCatalogSyncState;
+    revision: number;
+    attempt: number;
+    timer: ReturnType<typeof setTimeout> | null;
+    inFlight: Promise<void> | null;
+    cancelled: boolean;
+  };
+  const pendingMetadataRefreshes = new Map<string, PendingMetadataRefresh>();
+
   const scopedProjectKey = (projectId: string, principal: ResourceHubPrincipal) =>
     `${principal.teamId}${SCOPED_PROJECT_SEPARATOR}${projectId}`;
 
@@ -220,6 +260,7 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
     projectId: string,
     share: ResourceHubPrincipal,
     syncState?: ProjectSyncState,
+    restore?: { metadataRefreshPending?: boolean },
   ) {
     knownScopedPrincipals.set(scopedProjectKey(projectId, share), share);
     owners.set(projectId, share.memberId);
@@ -233,6 +274,18 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
     if (syncState) {
       syncStates.set(projectId, syncState);
       syncStates.set(scopedProjectKey(projectId, share), syncState);
+    }
+    // Only replay the small durable dirty set. Re-upserting every shared
+    // project on daemon startup would create a catalog thundering herd.
+    if (
+      restore?.metadataRefreshPending
+      && (syncState === 'synced' || syncState === 'sync_failed')
+    ) {
+      scheduleTeamProjectMetadataRefresh(
+        projectId,
+        syncState === 'synced' ? 'synced' : 'failed',
+        share,
+      );
     }
   }
 
@@ -323,6 +376,120 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
         target,
       );
     }
+  }
+
+  function startTeamProjectMetadataRefresh(
+    key: string,
+    pending: PendingMetadataRefresh,
+  ) {
+    if (pending.cancelled || pending.inFlight || pendingMetadataRefreshes.get(key) !== pending) {
+      return;
+    }
+    const revision = pending.revision;
+    const operation = markTeamProject(
+      pending.projectId,
+      pending.syncState,
+      pending.principal,
+    );
+    pending.inFlight = operation;
+    void operation.then(
+      () => {
+        if (pending.inFlight === operation) pending.inFlight = null;
+        if (pending.cancelled || pendingMetadataRefreshes.get(key) !== pending) return;
+        pending.attempt = 0;
+        if (pending.revision !== revision) {
+          startTeamProjectMetadataRefresh(key, pending);
+          return;
+        }
+        try {
+          options.onMetadataRefreshComplete?.({
+            projectId: pending.projectId,
+            principal: pending.principal,
+          });
+        } catch (error) {
+          options.onMetadataRefreshError?.({
+            projectId: pending.projectId,
+            error,
+            principal: pending.principal,
+          });
+        }
+        pendingMetadataRefreshes.delete(key);
+      },
+      (error: unknown) => {
+        if (pending.inFlight === operation) pending.inFlight = null;
+        if (pending.cancelled || pendingMetadataRefreshes.get(key) !== pending) return;
+        options.onMetadataRefreshError?.({
+          projectId: pending.projectId,
+          error,
+          principal: pending.principal,
+        });
+        if (pending.revision !== revision) {
+          pending.attempt = 0;
+          startTeamProjectMetadataRefresh(key, pending);
+          return;
+        }
+        const delay = Math.min(
+          TEAM_PROJECT_METADATA_RETRY_BASE_MS * (2 ** pending.attempt),
+          TEAM_PROJECT_METADATA_RETRY_MAX_MS,
+        );
+        pending.attempt += 1;
+        pending.timer = setTimeout(() => {
+          pending.timer = null;
+          startTeamProjectMetadataRefresh(key, pending);
+        }, delay);
+      },
+    );
+  }
+
+  function scheduleTeamProjectMetadataRefresh(
+    projectId: string,
+    syncState: TeamProjectCatalogSyncState,
+    principal: ResourceHubPrincipal,
+  ) {
+    try {
+      options.onMetadataRefreshPending?.({ projectId, principal });
+    } catch (error) {
+      options.onMetadataRefreshError?.({ projectId, error, principal });
+    }
+    const key = scopedProjectKey(projectId, principal);
+    const existing = pendingMetadataRefreshes.get(key);
+    if (existing) {
+      existing.syncState = syncState;
+      existing.revision += 1;
+      existing.attempt = 0;
+      if (existing.timer) {
+        clearTimeout(existing.timer);
+        existing.timer = null;
+      }
+      startTeamProjectMetadataRefresh(key, existing);
+      return;
+    }
+    const pending: PendingMetadataRefresh = {
+      projectId,
+      principal,
+      syncState,
+      revision: 1,
+      attempt: 0,
+      timer: null,
+      inFlight: null,
+      cancelled: false,
+    };
+    pendingMetadataRefreshes.set(key, pending);
+    startTeamProjectMetadataRefresh(key, pending);
+  }
+
+  async function cancelTeamProjectMetadataRefresh(
+    projectId: string,
+    principal: ResourceHubPrincipal,
+  ) {
+    const key = scopedProjectKey(projectId, principal);
+    const pending = pendingMetadataRefreshes.get(key);
+    if (!pending) return;
+    pending.cancelled = true;
+    if (pending.timer) clearTimeout(pending.timer);
+    pending.timer = null;
+    pendingMetadataRefreshes.delete(key);
+    await pending.inFlight?.catch(() => undefined);
   }
 
   function markTeamProjectSoon(
@@ -664,9 +831,14 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
       }
       for (const target of targets) {
         const key = scopedProjectKey(projectId, target);
+        // An already-running metadata upsert may still land after cancellation.
+        // Drain it before removing the catalog row so unshare is the final
+        // authoritative write and a retry can never resurrect this project.
+        await cancelTeamProjectMetadataRefresh(projectId, target);
         unshared.add(key);
         await baseAdapter.unpublish?.({ projectId, principal: target });
         await options.teamProjectCatalog?.remove?.(projectId, target);
+        options.onMetadataRefreshComplete?.({ projectId, principal: target });
         published.delete(key);
         syncStates.set(key, 'local_only');
         scopedOwners.delete(key);
@@ -698,8 +870,12 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
       // per-principal sync state so a pending upload stays pending.
       for (const principal of principalsForProject(projectId)) {
         const state = syncStates.get(scopedProjectKey(projectId, principal));
-        if (state !== 'synced' && state !== 'pending_upload') continue;
-        markTeamProjectSoon(projectId, state, principal);
+        if (state !== 'synced' && state !== 'pending_upload' && state !== 'sync_failed') continue;
+        scheduleTeamProjectMetadataRefresh(
+          projectId,
+          state === 'sync_failed' ? 'failed' : state,
+          principal,
+        );
       }
     },
     async pullLatest(projectId, principal) {
@@ -716,6 +892,11 @@ export function createCollabRuntime(options: CreateCollabRuntimeOptions = {}): C
       return { version: head?.version ?? null };
     },
     dispose() {
+      for (const pending of pendingMetadataRefreshes.values()) {
+        pending.cancelled = true;
+        if (pending.timer) clearTimeout(pending.timer);
+      }
+      pendingMetadataRefreshes.clear();
       scheduler.dispose();
       presence.dispose();
     },

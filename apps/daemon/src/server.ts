@@ -643,6 +643,7 @@ import {
   updatePreviewCommentStatus,
   updateProject,
   updateWorkspaceProject,
+  setWorkspaceProjectMetadataRefreshPending,
   updateWorkspaceResource,
   rebindWorkspaceProject,
   updateRoutine,
@@ -3252,6 +3253,18 @@ export async function startServer({
     onError: ({ projectId, principal }) => {
       persistWorkspaceProjectSyncState(projectId, principal?.teamId, 'sync_failed');
     },
+    onMetadataRefreshError: ({ projectId, principal, error }) => {
+      console.warn(
+        `[od] team project metadata refresh will retry (${principal.teamId}/${projectId}):`,
+        error,
+      );
+    },
+    onMetadataRefreshPending: ({ projectId, principal }) => {
+      setWorkspaceProjectMetadataRefreshPending(db, principal.teamId, projectId, true);
+    },
+    onMetadataRefreshComplete: ({ projectId, principal }) => {
+      setWorkspaceProjectMetadataRefreshPending(db, principal.teamId, projectId, false);
+    },
     // Collab realtime hop-2: a member joined/left this project's presence set
     // (fires only on explicit join/leave, not on every heartbeat). Push a thin
     // `presence-changed` onto the project's existing events SSE so the open
@@ -3270,6 +3283,7 @@ export async function startServer({
       share.syncState === 'synced' || share.syncState === 'sync_failed' || share.syncState === 'pending_upload'
         ? share.syncState
         : 'pending_upload',
+      { metadataRefreshPending: Boolean(share.metadataRefreshPending) },
     );
   }
   /**

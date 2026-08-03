@@ -88,6 +88,7 @@ function migrate(db: SqliteDb): void {
       resource_hub_resource_id TEXT,
       cloud_tombstoned_at INTEGER,
       sync_state TEXT,
+      metadata_refresh_pending INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -364,6 +365,14 @@ function migrate(db: SqliteDb): void {
     db.exec(`ALTER TABLE workspace_projects ADD COLUMN cloud_tombstoned_at INTEGER`);
   }
   migrateWorkspaceProjectsSingleHome(db);
+  const migratedWorkspaceProjectCols = db
+    .prepare(`PRAGMA table_info(workspace_projects)`)
+    .all() as DbRow[];
+  if (!migratedWorkspaceProjectCols.some((c: DbRow) => c.name === 'metadata_refresh_pending')) {
+    db.exec(
+      `ALTER TABLE workspace_projects ADD COLUMN metadata_refresh_pending INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
   const conversationCols = db.prepare(`PRAGMA table_info(conversations)`).all() as DbRow[];
   if (!conversationCols.some((c: DbRow) => c.name === 'session_mode')) {
     db.exec(`ALTER TABLE conversations ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'design'`);
@@ -613,6 +622,7 @@ function migrateWorkspaceProjectsSingleHome(db: SqliteDb): void {
       resource_hub_resource_id TEXT,
       cloud_tombstoned_at INTEGER,
       sync_state TEXT,
+      metadata_refresh_pending INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -1089,12 +1099,31 @@ export function listTeamWorkspaceProjectShares(db: SqliteDb) {
               visibility,
               created_by_workspace_member_id AS createdByWorkspaceMemberId,
               updated_by_workspace_member_id AS updatedByWorkspaceMemberId,
-              sync_state AS syncState
+              sync_state AS syncState,
+              metadata_refresh_pending AS metadataRefreshPending
          FROM workspace_projects
         WHERE visibility = 'team'
           AND resource_state != 'deleted'`,
     )
     .all() as DbRow[];
+}
+
+/**
+ * Durable metadata-only catalog repair marker. This is intentionally separate
+ * from `sync_state`: a failed rename upsert does not mean the project's
+ * published content failed to sync.
+ */
+export function setWorkspaceProjectMetadataRefreshPending(
+  db: SqliteDb,
+  workspaceId: string,
+  projectId: string,
+  pending: boolean,
+): void {
+  db.prepare(
+    `UPDATE workspace_projects
+        SET metadata_refresh_pending = ?
+      WHERE workspace_id = ? AND project_id = ?`,
+  ).run(pending ? 1 : 0, workspaceId, projectId);
 }
 
 /**
