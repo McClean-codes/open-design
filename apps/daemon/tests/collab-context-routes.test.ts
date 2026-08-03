@@ -292,6 +292,12 @@ describe('workspace billing routes', () => {
     memberStatus: 'active' as const,
     lifecycleState: 'active' as const,
   }];
+  const personalDirectory = (workspaceId = 'personal-1') => [{
+    ...teamDirectory(workspaceId)[0]!,
+    workspaceType: 'personal' as const,
+    workspaceMemberId: 'personal-owner',
+    role: 'owner' as const,
+  }];
 
   it('authorizes and atomically replaces a renderer full billing interest set', async () => {
     const api = await startContextServer({
@@ -454,6 +460,48 @@ describe('workspace billing routes', () => {
     expect(res.body.workspaceBalance).toMatchObject({
       workspaceId: 'wm-1',
       balanceUsd: '7.89',
+      billingScopeVersion: 2,
+    });
+  });
+
+  it('returns a Personal Workspace balance only after exact directory authorization', async () => {
+    const workspaceCalls: string[] = [];
+    const api = await startContextServer({
+      listWorkspaceDirectory: async () => personalDirectory(),
+      fetchBilling: async () => ({
+        workspaceId: null,
+        membershipTier: 'plus',
+        totalAvailableCredits: 999_000,
+        subscriptionCredits: 999_000,
+        rechargeCredits: 0,
+        balanceUsd: '99.90',
+        subscriptionStatus: 'active',
+        availableActions: [],
+        workspaceBalance: null,
+      }),
+      fetchWorkspaceBalance: async (workspaceId) => {
+        workspaceCalls.push(workspaceId);
+        return {
+          workspaceId,
+          workspaceMemberId: 'personal-owner',
+          balanceUsd: '12.34',
+          billingScopeVersion: 2,
+          expiresAt: null,
+          updatedAt: null,
+        };
+      },
+    });
+
+    const res = await api.req(
+      '/api/workspace/billing?scope=workspace&workspaceId=personal-1',
+    );
+
+    expect(res.status).toBe(200);
+    expect(workspaceCalls).toEqual(['personal-1']);
+    expect(res.body.workspaceBalance).toMatchObject({
+      workspaceId: 'personal-1',
+      workspaceMemberId: 'personal-owner',
+      balanceUsd: '12.34',
       billingScopeVersion: 2,
     });
   });

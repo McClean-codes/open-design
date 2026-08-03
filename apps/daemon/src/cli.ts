@@ -6781,7 +6781,7 @@ async function runWorkspace(args) {
   od workspace projects batch-delete --workspace <id> --member <id> --project <id> [--project <id> ...] [--json]
   od workspace projects batch-move --workspace <id> --member <id> --visibility personal|team --project <id> [--project <id> ...] [--json]
   od workspace members list --workspace <id> --member <id> [--json]
-  od workspace billing [--workspace-type personal|team] [--workspace <id>] [--json]
+  od workspace billing [--workspace-type personal|team --workspace <id>] [--json]
 
 Common options:
   --daemon-url <url>   Open Design daemon HTTP base.
@@ -6860,17 +6860,16 @@ Common options:
       typeof flags.workspace === 'string' ? flags.workspace.trim() : '';
     if (
       (workspaceType && workspaceType !== 'personal' && workspaceType !== 'team') ||
-      (workspaceType === 'team' && !workspaceId) ||
-      (workspaceType === 'personal' && workspaceId) ||
+      (workspaceType && !workspaceId) ||
       (!workspaceType && workspaceId)
     ) {
       console.error(
-        'Usage: od workspace billing [--workspace-type personal|team] [--workspace <id>] [--json]',
+        'Usage: od workspace billing [--workspace-type personal|team --workspace <id>] [--json]',
       );
       process.exit(2);
     }
     const billingPath =
-      workspaceType === 'team'
+      workspaceType
         ? `/api/workspace/billing?scope=workspace&workspaceId=${encodeURIComponent(workspaceId)}`
         : '/api/workspace/billing?scope=account';
     const data = await workspaceContextRequest(billingPath);

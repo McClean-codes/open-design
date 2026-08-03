@@ -554,10 +554,11 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
   });
 
   // Billing reads are explicit at the HTTP boundary:
-  // - scope=account is the personal/account summary;
-  // - scope=workspace requires a workspaceId that resolves to an active team
-  //   membership in the directory, then reads Vela's independently scoped v2
-  //   wallet response.
+  // - scope=account is retained only for old callers that cannot name a
+  //   Workspace;
+  // - scope=workspace requires a workspaceId that resolves to an active
+  //   Personal or Team membership in the directory, then reads Vela's
+  //   independently scoped v2 wallet response.
   //
   // The URL is the selection source. Authorization is an independent
   // membership lookup — never daemon-global active/current state — so two
@@ -600,7 +601,6 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
             (item) =>
               item.workspaceId === interest.workspaceId &&
               item.workspaceMemberId === interest.workspaceMemberId &&
-              item.workspaceType === 'team' &&
               item.memberStatus === 'active' &&
               item.lifecycleState === 'active',
           ),
@@ -686,7 +686,6 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
     const membership = directory.find(
       (item) =>
         item.workspaceId === requestedWorkspaceId &&
-        item.workspaceType === 'team' &&
         item.memberStatus === 'active' &&
         item.lifecycleState === 'active',
     );

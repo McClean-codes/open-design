@@ -78,6 +78,21 @@ async function startCollabStubServer(): Promise<StubServer> {
         res.end(JSON.stringify({ ok: true, version: 3 }));
         return;
       }
+      if (
+        method === 'GET' &&
+        url === '/api/workspace/billing?scope=workspace&workspaceId=personal-1'
+      ) {
+        res.end(JSON.stringify({
+          summary: { membershipTier: 'plus', subscriptionStatus: 'active' },
+          workspaceBalance: {
+            workspaceId: 'personal-1',
+            workspaceMemberId: 'personal-owner',
+            balanceUsd: '12.34',
+            billingScopeVersion: 2,
+          },
+        }));
+        return;
+      }
       res.statusCode = 404;
       res.end(JSON.stringify({ error: { code: 'unexpected-request', message: url } }));
     });
@@ -113,6 +128,30 @@ async function runCli(args: string[]): Promise<{ stdout: string; stderr: string;
 }
 
 describe('od collab CLI', () => {
+  it('reads Personal billing through an explicit Workspace id', async () => {
+    stub = await startCollabStubServer();
+    const result = await runCli([
+      'workspace', 'billing',
+      '--workspace-type', 'personal',
+      '--workspace', 'personal-1',
+      '--json',
+      '--daemon-url', stub.baseUrl,
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      workspaceBalance: {
+        workspaceId: 'personal-1',
+        balanceUsd: '12.34',
+      },
+    });
+    expect(stub.requests).toHaveLength(1);
+    expect(stub.requests[0]).toMatchObject({
+      method: 'GET',
+      url: '/api/workspace/billing?scope=workspace&workspaceId=personal-1',
+    });
+  });
+
   it('lists the present member set as JSON', async () => {
     stub = await startCollabStubServer();
     const result = await runCli([

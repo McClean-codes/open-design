@@ -211,6 +211,41 @@ describe('workspaceBillingSummaryForContext — plan is partitioned like money',
     );
     expect(projected?.membershipTier).toBe('plus');
   });
+
+  it('requires exact v2 Workspace proof for personal money too', () => {
+    const personalContext = {
+      workspaceId: 'personal-a',
+      workspaceType: 'personal',
+      workspaceMemberId: 'member-personal',
+    } as WorkspaceCollabContext;
+    const response = {
+      summary: { ...personalPlusAccount, balanceUsd: '999.00' },
+      workspaceBalance: {
+        workspaceId: 'personal-a',
+        workspaceMemberId: 'member-personal',
+        balanceUsd: '12.34',
+        billingScopeVersion: 2,
+        expiresAt: null,
+        updatedAt: null,
+      },
+    } as WorkspaceBillingResponse;
+
+    expect(workspaceBillingBalanceUsd(response, personalContext)).toBe('12.34');
+    expect(workspaceBillingBalanceUsd(
+      { ...response, workspaceBalance: null },
+      personalContext,
+    )).toBeNull();
+    expect(workspaceBillingBalanceUsd(
+      {
+        ...response,
+        workspaceBalance: {
+          ...response.workspaceBalance!,
+          workspaceMemberId: 'different-member',
+        },
+      },
+      personalContext,
+    )).toBeNull();
+  });
 });
 
 describe('useWorkspaceBilling explicit scope', () => {
@@ -353,6 +388,42 @@ describe('useWorkspaceBilling explicit scope', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     resetWorkspaceBillingCache();
+  });
+
+  it('does not request billing before an exact Workspace identity exists', async () => {
+    const billingCalls: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/workspace/directory') {
+          return new Response(JSON.stringify(workspaceDirectoryFixture([])), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url === '/api/workspace/context') {
+          return new Response(JSON.stringify({ context: null }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (url.startsWith('/api/workspace/billing?')) {
+          billingCalls.push(url);
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }),
+    );
+
+    const hook = renderHook(() =>
+      useWorkspaceBillingResponse({ context: null, loading: false }),
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(hook.result.current).toBeNull();
+    expect(billingCalls).toEqual([]);
   });
 
   it('accepts only v2 invalidations for the selected workspace and member', () => {
@@ -1679,7 +1750,7 @@ describe('useWorkspaceBilling explicit scope', () => {
     expect(billingMembers).toEqual(['member-old', 'member-new']);
   });
 
-  it('uses the explicit account route for a personal workspace', async () => {
+  it('uses the exact Workspace route for a personal workspace', async () => {
     const billingCalls: string[] = [];
     vi.stubGlobal(
       'fetch',
@@ -1712,7 +1783,14 @@ describe('useWorkspaceBilling explicit scope', () => {
                 ...billingResponse('unused', '0').summary,
                 workspaceBalance: null,
               },
-              workspaceBalance: null,
+              workspaceBalance: {
+                workspaceId: 'personal-a',
+                workspaceMemberId: 'member-personal',
+                balanceUsd: '12.34',
+                billingScopeVersion: 2,
+                expiresAt: null,
+                updatedAt: null,
+              },
             }),
             { status: 200, headers: { 'content-type': 'application/json' } },
           );
@@ -1724,6 +1802,8 @@ describe('useWorkspaceBilling explicit scope', () => {
     const hook = renderHook(() => useWorkspaceBilling());
     await waitFor(() => expect(hook.result.current).not.toBeNull());
 
-    expect(billingCalls).toEqual(['/api/workspace/billing?scope=account']);
+    expect(billingCalls).toEqual([
+      '/api/workspace/billing?scope=workspace&workspaceId=personal-a',
+    ]);
   });
 });
