@@ -151,6 +151,63 @@ describe('design-system Workspace scope', () => {
     });
   });
 
+  it('forces a fresh Team materialization after a remote resource invalidation', async () => {
+    const context = {
+      ...teamWorkspaceContext(),
+      workspaceId: 'ws-team-force-refresh',
+    };
+    let teamReadCount = 0;
+    let sharedIds = ['user:old-team-brand'];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/workspace/design-systems/team') {
+        teamReadCount += 1;
+        return new Response(JSON.stringify({ ids: sharedIds }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        designSystems: [
+          {
+            id: 'user:old-team-brand',
+            title: 'Old Team Brand',
+            category: 'Custom',
+            summary: 'Removed remotely.',
+            source: 'user',
+            status: 'published',
+          },
+          {
+            id: 'user:new-team-brand',
+            title: 'New Team Brand',
+            category: 'Custom',
+            summary: 'Shared remotely.',
+            source: 'user',
+            status: 'published',
+          },
+        ],
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchDesignSystemsResult(context)).resolves.toMatchObject({
+      ok: true,
+      designSystems: [
+        expect.objectContaining({ id: 'user:old-team-brand', teamShared: true }),
+        expect.objectContaining({ id: 'user:new-team-brand' }),
+      ],
+    });
+
+    sharedIds = ['user:new-team-brand'];
+    await expect(fetchDesignSystemsResult(context, {
+      forceTeamMaterialization: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      designSystems: [
+        expect.not.objectContaining({ teamShared: true }),
+        expect.objectContaining({ id: 'user:new-team-brand', teamShared: true }),
+      ],
+    });
+    expect(teamReadCount).toBe(2);
+  });
+
   it('keeps personal and official systems available when team materialization fails', async () => {
     const context = {
       ...teamWorkspaceContext(),

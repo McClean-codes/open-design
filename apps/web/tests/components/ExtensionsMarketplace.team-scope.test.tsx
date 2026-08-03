@@ -19,6 +19,17 @@ import { ExtensionsMarketplace } from '../../src/components/PluginsView';
 import { I18nProvider } from '../../src/i18n';
 import { fetchSkills } from '../../src/providers/registry';
 
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    return { connected: false };
+  }),
+}));
+
 vi.mock('../../src/analytics/provider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
   return { ...actual, useAnalytics: () => ({ track: vi.fn() }) };
@@ -106,6 +117,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  workspaceInvalidationHarness.handlers.length = 0;
   vi.mocked(fetchSkills).mockResolvedValue([]);
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : input.toString();
@@ -183,6 +195,126 @@ describe('ExtensionsMarketplace 团队 scope visibility', () => {
       expect(container.querySelector('.plugin-marketplace__filters')).toBeTruthy();
     });
     expect(scopeLabels(container)).toContain('Team');
+  });
+
+  it('refreshes the Team shared index immediately after a remote plugin event', async () => {
+    let teamIndexReads = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/plugins') return jsonResponse({ plugins: [plugin('remote-plugin')] });
+      if (url.startsWith('/api/marketplaces')) return jsonResponse({ marketplaces: [] });
+      if (url.endsWith('/plugins/team')) {
+        teamIndexReads += 1;
+        return jsonResponse({
+          ids: teamIndexReads === 1 ? [] : ['remote-plugin'],
+          resources: teamIndexReads === 1 ? [] : [{ id: 'remote-plugin', canUnshare: true }],
+        });
+      }
+      if (url.endsWith('/skills/team')) return jsonResponse({ ids: [], resources: [] });
+      return jsonResponse({});
+    }) as typeof fetch;
+    renderMarketplace();
+    await waitFor(() => expect(teamIndexReads).toBe(1));
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(handler).toBeTypeOf('function');
+    act(() => handler!({
+      type: 'team-resources-changed',
+      resourceKind: 'plugin',
+      resourceId: 'remote-plugin',
+    }));
+    await waitFor(() => expect(teamIndexReads).toBe(2));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Team' }));
+    expect(await screen.findByText('remote-plugin')).toBeTruthy();
+  });
+
+  it('keeps the event-refreshed Team index when the older same-identity read resolves late', async () => {
+    const initialIndex = deferred<Response>();
+    const eventIndex = deferred<Response>();
+    let teamIndexReads = 0;
+    globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/plugins') {
+        return Promise.resolve(jsonResponse({ plugins: [plugin('fresh-team-plugin')] }));
+      }
+      if (url.startsWith('/api/marketplaces')) {
+        return Promise.resolve(jsonResponse({ marketplaces: [] }));
+      }
+      if (url.endsWith('/plugins/team')) {
+        teamIndexReads += 1;
+        return teamIndexReads === 1 ? initialIndex.promise : eventIndex.promise;
+      }
+      if (url.endsWith('/skills/team')) {
+        return Promise.resolve(jsonResponse({ ids: [], resources: [] }));
+      }
+      return Promise.resolve(jsonResponse({}));
+    }) as typeof fetch;
+    renderMarketplace();
+    await waitFor(() => expect(teamIndexReads).toBe(1));
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    act(() => handler!({
+      type: 'team-resources-changed',
+      resourceKind: 'plugin',
+      resourceId: 'fresh-team-plugin',
+    }));
+    await waitFor(() => expect(teamIndexReads).toBe(2));
+
+    eventIndex.resolve(jsonResponse({
+      ids: ['fresh-team-plugin'],
+      resources: [{ id: 'fresh-team-plugin', canUnshare: true }],
+    }));
+    fireEvent.click(screen.getByRole('button', { name: 'Team' }));
+    expect(await screen.findByText('fresh-team-plugin')).toBeTruthy();
+
+    initialIndex.resolve(jsonResponse({ ids: [], resources: [] }));
+    await act(async () => Promise.resolve());
+    expect(screen.getByText('fresh-team-plugin')).toBeTruthy();
+  });
+
+  it('refreshes both the skills catalog and shared index after a remote skill event', async () => {
+    let teamSkillReads = 0;
+    vi.mocked(fetchSkills)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([skill('remote-skill')]);
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/plugins') return jsonResponse({ plugins: [] });
+      if (url.startsWith('/api/marketplaces')) return jsonResponse({ marketplaces: [] });
+      if (url.endsWith('/plugins/team')) return jsonResponse({ ids: [], resources: [] });
+      if (url.endsWith('/skills/team')) {
+        teamSkillReads += 1;
+        return jsonResponse({
+          ids: teamSkillReads === 1 ? [] : ['remote-skill'],
+          resources: teamSkillReads === 1 ? [] : [{ id: 'remote-skill', canUnshare: true }],
+        });
+      }
+      return jsonResponse({});
+    }) as typeof fetch;
+    renderMarketplace();
+    await waitFor(() => expect(teamSkillReads).toBe(1));
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(handler).toBeTypeOf('function');
+    act(() => handler!({
+      type: 'team-resources-changed',
+      resourceKind: 'skill',
+      resourceId: 'remote-skill',
+    }));
+    await waitFor(() => {
+      expect(teamSkillReads).toBe(2);
+      expect(fetchSkills).toHaveBeenCalledTimes(2);
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Skills' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Team' }));
+    expect(await screen.findByTestId('plugins-card-remote-skill')).toBeTruthy();
   });
 
   it('does not offer the Team scope for a personal workspace', async () => {

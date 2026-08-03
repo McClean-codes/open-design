@@ -346,6 +346,35 @@ describe('PluginsView Team panel workspace scope', () => {
     expect(screen.queryByText('plugin-from-a')).toBeNull();
   });
 
+  it('keeps the event-refreshed plugin rows when a same-identity read resolves late', async () => {
+    const initialRead = deferred<InstalledPluginRecord[]>();
+    const eventRead = deferred<InstalledPluginRecord[]>();
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    vi.mocked(listPlugins).mockImplementation(() => (
+      vi.mocked(listPlugins).mock.calls.length <= 2
+        ? initialRead.promise
+        : eventRead.promise
+    ));
+
+    renderPluginsView();
+    await waitFor(() => expect(vi.mocked(listPlugins)).toHaveBeenCalledTimes(2));
+    act(() => window.dispatchEvent(new CustomEvent('open-design:plugins-changed')));
+    await waitFor(() => expect(vi.mocked(listPlugins)).toHaveBeenCalledTimes(4));
+
+    await act(async () => {
+      eventRead.resolve([plugin('fresh-plugin')]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getAllByText('fresh-plugin').length).toBeGreaterThan(0));
+
+    await act(async () => {
+      initialRead.resolve([plugin('stale-plugin')]);
+      await Promise.resolve();
+    });
+    expect(screen.getAllByText('fresh-plugin').length).toBeGreaterThan(0);
+    expect(screen.queryAllByText('stale-plugin')).toHaveLength(0);
+  });
+
   it('discards late shared IDs issued for the previous workspace', async () => {
     const sharedA = {
       plugins: deferred<Response>(),

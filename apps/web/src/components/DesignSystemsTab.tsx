@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
+import { coalescedGet, forceCoalescedGet } from '../lib/coalesced-get';
 import { Button, VisuallyHidden } from '@open-design/components';
 import { useAnalytics } from '../analytics/provider';
 import {
@@ -21,6 +21,9 @@ import {
   workspaceIdentityCacheKey,
   workspaceProjectHeaders,
 } from '../collab/workspace-identity';
+import {
+  useWorkspaceInvalidation,
+} from '../collab/workspace-events';
 import {
   workspaceContextHasTeamIdentity,
   type WorkspaceCollabContext,
@@ -224,6 +227,7 @@ export function DesignSystemsTab({
     ids: new Set(),
     meta: new Map(),
   }));
+  const teamSharedRequestGenerationRef = useRef(0);
   // Never render a previous Workspace's Team index while the next scoped read
   // is still in flight. The cached response is partitioned by Workspace too,
   // but React state survives the context switch itself.
@@ -407,6 +411,7 @@ export function DesignSystemsTab({
   const refreshTeamShared = useCallback(async (
     options: { refreshSystems?: boolean; invalidate?: boolean } = {},
   ) => {
+    const requestGeneration = ++teamSharedRequestGenerationRef.current;
     const read = beginWorkspaceScopedRead(workspaceContextRef.current);
     if (!read.context || !workspaceContextHasTeamIdentity(read.context)) {
       setTeamSharedState({
@@ -432,12 +437,16 @@ export function DesignSystemsTab({
         if (!res.ok) throw new Error(`design-systems-team ${res.status}`);
         return (await res.json()) as { ids?: unknown; resources?: unknown };
       };
-      // A completed share/unshare invalidates the previous index answer. This
-      // component is the single mutation initiator, so evict exactly this key
-      // before re-entering the normal single-flight read.
-      if (options.invalidate) evictCoalescedGet(cacheKey);
-      const body = await coalescedGet(cacheKey, readTeamIndex);
-      if (!read.isStillCurrent(workspaceContextRef.current)) return;
+      // A local mutation or remote SSE event invalidates the previous index.
+      // `forceCoalescedGet` makes every listener in the same broadcast burst
+      // join one replacement request instead of evicting each other's fetch.
+      const body = await (options.invalidate
+        ? forceCoalescedGet(cacheKey, readTeamIndex)
+        : coalescedGet(cacheKey, readTeamIndex));
+      if (
+        requestGeneration !== teamSharedRequestGenerationRef.current
+        || !read.isStillCurrent(workspaceContextRef.current)
+      ) return;
       if (Array.isArray(body.ids)) {
         const next = new Set(body.ids.filter((id): id is string => typeof id === 'string'));
         const meta = new Map<string, { canUnshare?: boolean }>();
@@ -464,6 +473,19 @@ export function DesignSystemsTab({
       // Non-fatal: leave the team collection empty on a transient failure.
     }
   }, [onSystemsRefresh, workspaceIdentity]);
+
+  useWorkspaceInvalidation(
+    {
+      'team-resources-changed': (payload) => {
+        if (payload.resourceKind !== 'design_system') return;
+        void refreshTeamShared({ invalidate: true });
+      },
+    },
+    {
+      workspaceContext: hasTeamWorkspace ? workspaceContext : null,
+      enabled: hasTeamWorkspace,
+    },
+  );
 
   useEffect(() => {
     void refreshTeamShared();

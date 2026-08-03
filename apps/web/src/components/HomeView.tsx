@@ -715,6 +715,7 @@ export function HomeView({
   const consumedHandoffIdRef = useRef<number | null>(null);
   const pendingPromptFocusEndRef = useRef(false);
   const activePluginApplyRequestRef = useRef(0);
+  const pluginCatalogRequestGenerationRef = useRef(0);
   const desiredPluginCatalogKeyRef = useRef(desiredPluginCatalogKey);
   desiredPluginCatalogKeyRef.current = desiredPluginCatalogKey;
   const scrollHomeToTop = useCallback(() => {
@@ -731,11 +732,13 @@ export function HomeView({
     // On mount use the cache-aware loader (skips the network when warm); an
     // explicit plugins-changed event forces a fresh fetch.
     const load = (force = false) => {
+      const requestGeneration = ++pluginCatalogRequestGenerationRef.current;
       void (force
         ? listPlugins(pluginCatalogOptions)
         : listPluginsFresh(pluginCatalogOptions)).then((rows) => {
         if (
           cancelled
+          || requestGeneration !== pluginCatalogRequestGenerationRef.current
           || desiredPluginCatalogKeyRef.current !== issuedCatalogKey
         ) return;
         setPluginCatalogKey(issuedCatalogKey);

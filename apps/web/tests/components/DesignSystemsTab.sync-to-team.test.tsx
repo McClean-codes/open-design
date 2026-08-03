@@ -15,12 +15,23 @@
 // a plain member who merely has a teammate's pulled copy can never overwrite
 // the real owner's shared entry.
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
 import { DesignSystemsTab } from '../../src/components/DesignSystemsTab';
 import { I18nProvider } from '../../src/i18n';
+
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    return { connected: false };
+  }),
+}));
 
 vi.mock('../../src/analytics/provider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
@@ -119,6 +130,14 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 let shareCalls: string[] = [];
 let teamReadHeaders: Headers[] = [];
 let unshareCalls: Array<{ url: string; headers: Headers }> = [];
@@ -162,6 +181,7 @@ beforeEach(() => {
   shareCalls = [];
   teamReadHeaders = [];
   unshareCalls = [];
+  workspaceInvalidationHarness.handlers.length = 0;
 });
 
 afterEach(() => {
@@ -227,6 +247,40 @@ describe('DesignSystemsTab — repeat share reads as "sync" once already team-sh
     await openTeamTabAndSelect('user:my-ds');
     expect(screen.getAllByTestId('design-kit-view-user:my-ds')).toHaveLength(1);
     expect(teamReadHeaders).toHaveLength(2);
+  });
+
+  it('applies a remote Team index event immediately and ignores the older in-flight snapshot', async () => {
+    const initial = deferred<Response>();
+    const refreshed = deferred<Response>();
+    let reads = 0;
+    globalThis.fetch = vi.fn(() => {
+      reads += 1;
+      return reads === 1 ? initial.promise : refreshed.promise;
+    }) as typeof fetch;
+    renderTab([MY_SHARED_SYSTEM]);
+    await waitFor(() => expect(reads).toBe(1));
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(handler).toBeTypeOf('function');
+    act(() => handler!({
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+      resourceId: MY_SHARED_SYSTEM.id,
+    }));
+    await waitFor(() => expect(reads).toBe(2));
+
+    refreshed.resolve(jsonResponse({
+      ids: [MY_SHARED_SYSTEM.id],
+      resources: [{ id: MY_SHARED_SYSTEM.id, canUnshare: true }],
+    }));
+    fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
+    expect(await screen.findByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+
+    initial.resolve(jsonResponse({ ids: [], resources: [] }));
+    await waitFor(() => expect(reads).toBe(2));
+    expect(screen.getByTestId('design-kit-view-user:my-ds')).toBeTruthy();
   });
 
   it('keeps the action visible (relabeled "Sync to team") for the owner, and re-POSTs the same /share route on click', async () => {

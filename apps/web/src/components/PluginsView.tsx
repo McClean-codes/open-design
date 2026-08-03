@@ -85,8 +85,12 @@ import {
   useWorkspaceContext,
   workspaceIdentityCacheKey,
 } from '../collab/useWorkspaceContext';
+import {
+  useWorkspaceInvalidation,
+} from '../collab/workspace-events';
 
 type PluginsTab = 'installed' | 'available' | 'sources' | 'team';
+
 type PluginWorkspaceReadMode = 'scoped' | 'headerless' | 'pending' | 'blocked';
 
 const USER_SOURCE_KINDS = new Set<PluginSourceKind>([
@@ -263,6 +267,7 @@ export function PluginsView({
   const [marketplaces, setMarketplaces] = useState<PluginMarketplace[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedIdentity, setLoadedIdentity] = useState<string | null>(null);
+  const pluginCatalogRequestGenerationRef = useRef(0);
   const [activeTab, setActiveTab] = useState<PluginsTab>('installed');
   const [importOpen, setImportOpen] = useState(false);
   const [pendingApplyId, setPendingApplyId] = useState<string | null>(null);
@@ -287,11 +292,13 @@ export function PluginsView({
   const [notice, setNotice] = useState<PluginInstallOutcome | { ok: boolean; message: string } | null>(null);
 
   async function refresh() {
+    const requestGeneration = ++pluginCatalogRequestGenerationRef.current;
     const issuedIdentity = pluginsIdentityRef.current;
     const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const issuedReadMode = pluginsReadModeRef.current;
     const isStillCurrent = () =>
-      currentWorkspaceAccountGeneration() === issuedAccountGeneration
+      pluginCatalogRequestGenerationRef.current === requestGeneration
+      && currentWorkspaceAccountGeneration() === issuedAccountGeneration
       && pluginsIdentityRef.current === issuedIdentity;
     if (issuedReadMode === 'pending' || issuedReadMode === 'blocked') {
       if (!isStillCurrent()) return;
@@ -1045,6 +1052,8 @@ export function ExtensionsMarketplace({
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadedMarketplaceIdentity, setLoadedMarketplaceIdentity] = useState<string | null>(null);
+  const marketplaceCatalogRequestGenerationRef = useRef(0);
+  const sharedResourcesRequestGenerationRef = useRef(0);
 
   const [sharedPluginIds, setSharedPluginIds] = useState<ReadonlySet<string>>(() => new Set());
   const [sharedSkillIds, setSharedSkillIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -1212,6 +1221,7 @@ export function ExtensionsMarketplace({
   }
 
   async function refresh() {
+    const requestGeneration = ++marketplaceCatalogRequestGenerationRef.current;
     if (
       marketplaceReadModeRef.current === 'pending'
       || marketplaceReadModeRef.current === 'blocked'
@@ -1239,7 +1249,8 @@ export function ExtensionsMarketplace({
     // identity's catalog has arrived, and the successor read the effect below
     // guarantees for every identity change owns clearing it.
     if (
-      currentWorkspaceAccountGeneration() !== accountGeneration
+      marketplaceCatalogRequestGenerationRef.current !== requestGeneration
+      || currentWorkspaceAccountGeneration() !== accountGeneration
       || !read.isStillCurrent(emContextRef.current)
     ) return;
     setPlugins(rows);
@@ -1308,12 +1319,14 @@ export function ExtensionsMarketplace({
   }, [workspaceContextLoading, marketplaceIdentity, marketplaceReadMode]);
 
   const refreshSharedResources = useCallback(async () => {
+    const requestGeneration = ++sharedResourcesRequestGenerationRef.current;
     const read = beginWorkspaceScopedRead(emContextRef.current);
     const accountGeneration = currentWorkspaceAccountGeneration();
     const issuedIdentity = marketplaceIdentityRef.current;
     const hadCurrentSharedData = loadedSharedIdentityRef.current === issuedIdentity;
     const readIsStillCurrent = () =>
-      currentWorkspaceAccountGeneration() === accountGeneration
+      sharedResourcesRequestGenerationRef.current === requestGeneration
+      && currentWorkspaceAccountGeneration() === accountGeneration
       && marketplaceIdentityRef.current === issuedIdentity
       && read.isStillCurrent(emContextRef.current);
     if (!read.context || !workspaceContextHasTeamIdentity(read.context)) {
@@ -1386,6 +1399,24 @@ export function ExtensionsMarketplace({
     }
     setLoadedSharedIdentity(issuedIdentity);
   }, []);
+
+  useWorkspaceInvalidation(
+    {
+      'team-resources-changed': (payload) => {
+        if (payload.resourceKind === 'plugin') {
+          void refreshSharedResources();
+          return;
+        }
+        if (payload.resourceKind === 'skill') {
+          void Promise.all([refresh(), refreshSharedResources()]);
+        }
+      },
+    },
+    {
+      workspaceContext: hasTeamWorkspace ? workspaceContext : null,
+      enabled: hasTeamWorkspace,
+    },
+  );
 
   // Team-shared ids per kind. Off-team / offline just leaves the set empty so
   // the 团队 scope shows a clean empty state instead of erroring. Re-read while

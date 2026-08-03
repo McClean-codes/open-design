@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   buildWorkspacePermissions,
@@ -239,5 +239,42 @@ describe('HomeView workspace-scoped plugin catalog', () => {
     expect(screen.getByTestId('plugin-catalog').textContent).not.toContain('account-1');
     await waitFor(() => expect(screen.getByTestId('plugin-catalog').textContent).toBe('account-2'));
     expect(requestCount).toBe(2);
+  });
+
+  it('keeps the event-refreshed catalog when the same-identity mount read resolves late', async () => {
+    const mountRead = deferred<Response>();
+    const eventRead = deferred<Response>();
+    let requestCount = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === '/api/plugins') {
+        requestCount += 1;
+        return requestCount === 1 ? mountRead.promise : eventRead.promise;
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+    workspaceMock.state = {
+      context: teamContext('workspace-a', 'member-a'),
+      loading: false,
+      identityChangePending: false,
+      failure: undefined,
+    };
+
+    renderHome();
+    await waitFor(() => expect(requestCount).toBe(1));
+    act(() => window.dispatchEvent(new CustomEvent('open-design:plugins-changed')));
+    await waitFor(() => expect(requestCount).toBe(2));
+
+    eventRead.resolve(new Response(JSON.stringify({ plugins: [plugin('fresh-plugin')] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    await waitFor(() => expect(screen.getByTestId('plugin-catalog').textContent).toBe('fresh-plugin'));
+
+    mountRead.resolve(new Response(JSON.stringify({ plugins: [plugin('stale-plugin')] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    await act(async () => Promise.resolve());
+    expect(screen.getByTestId('plugin-catalog').textContent).toBe('fresh-plugin');
   });
 });

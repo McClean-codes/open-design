@@ -80,7 +80,11 @@ import {
   isOpenDesignHostAvailable,
   openHostExternalUrl,
 } from '@open-design/host';
-import { coalescedGet, evictCoalescedGet } from '../lib/coalesced-get';
+import {
+  coalescedGet,
+  evictCoalescedGet,
+  forceCoalescedGet,
+} from '../lib/coalesced-get';
 import {
   evictSharedCancellableGet,
   forceSharedCancellableGet,
@@ -529,8 +533,9 @@ export async function fetchSkill(
 
 export async function fetchDesignSystems(
   workspaceContext?: WorkspaceCollabContext | null,
+  options?: FetchDesignSystemsOptions,
 ): Promise<DesignSystemSummary[]> {
-  const result = await fetchDesignSystemsResult(workspaceContext);
+  const result = await fetchDesignSystemsResult(workspaceContext, options);
   return result.ok ? result.designSystems : [];
 }
 
@@ -543,8 +548,14 @@ export type DesignSystemsResult =
   | { ok: true; designSystems: DesignSystemSummary[] }
   | { ok: false };
 
+export interface FetchDesignSystemsOptions {
+  /** Bypass a Team index snapshot invalidated by a realtime resource event. */
+  forceTeamMaterialization?: boolean;
+}
+
 async function materializeTeamDesignSystems(
   workspaceContext: WorkspaceCollabContext | null | undefined,
+  options?: FetchDesignSystemsOptions,
 ): Promise<ReadonlySet<string>> {
   if (!workspaceContext || !workspaceContextHasTeamIdentity(workspaceContext)) {
     return new Set();
@@ -561,24 +572,25 @@ async function materializeTeamDesignSystems(
   // retarget the other's catalog request.
   const identity = workspaceIdentityCacheKey(workspaceContext);
   try {
-    return await coalescedGet(
-      `design-system-team-materialization:${identity}`,
-      async () => {
-        const response = await fetch('/api/workspace/design-systems/team', {
-          cache: 'no-store',
-          headers: workspaceProjectHeaders(workspaceContext),
-        });
-        if (!response.ok) {
-          throw new Error(`design-systems-team ${response.status}`);
-        }
-        const body = (await response.json()) as { ids?: unknown };
-        return new Set(
-          Array.isArray(body.ids)
-            ? body.ids.filter((id): id is string => typeof id === 'string')
-            : [],
-        );
-      },
-    );
+    const cacheKey = `design-system-team-materialization:${identity}`;
+    const readTeamIndex = async () => {
+      const response = await fetch('/api/workspace/design-systems/team', {
+        cache: 'no-store',
+        headers: workspaceProjectHeaders(workspaceContext),
+      });
+      if (!response.ok) {
+        throw new Error(`design-systems-team ${response.status}`);
+      }
+      const body = (await response.json()) as { ids?: unknown };
+      return new Set(
+        Array.isArray(body.ids)
+          ? body.ids.filter((id): id is string => typeof id === 'string')
+          : [],
+      );
+    };
+    return await (options?.forceTeamMaterialization
+      ? forceCoalescedGet(cacheKey, readTeamIndex)
+      : coalescedGet(cacheKey, readTeamIndex));
   } catch {
     // Keep personal/built-in systems usable while the remote team index is
     // temporarily unavailable. The scoped catalog request below remains the
@@ -589,9 +601,10 @@ async function materializeTeamDesignSystems(
 
 export async function fetchDesignSystemsResult(
   workspaceContext?: WorkspaceCollabContext | null,
+  options?: FetchDesignSystemsOptions,
 ): Promise<DesignSystemsResult> {
   try {
-    const teamSharedIds = await materializeTeamDesignSystems(workspaceContext);
+    const teamSharedIds = await materializeTeamDesignSystems(workspaceContext, options);
     const resp = await fetch('/api/design-systems', {
       ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
     });
