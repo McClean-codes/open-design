@@ -38,6 +38,7 @@ import {
   workspaceProjectHeaders,
   workspaceResourceUrl,
 } from '../collab/workspace-identity';
+import { currentWorkspaceAccountGeneration } from '../collab/useWorkspaceContext';
 import type {
   ChatMessage,
   Conversation,
@@ -81,6 +82,7 @@ function evictWorkspaceProjectLists(context: WorkspaceCollabContext): void {
 export type WorkspaceContextForWrite = {
   context: WorkspaceCollabContext | null;
   loading: boolean;
+  identityChangePending?: boolean;
   failure?: 'unsupported' | 'unavailable';
 };
 
@@ -101,7 +103,11 @@ export function resolvedWorkspaceContextForWrite(
   state: WorkspaceContextForWrite,
   options: WorkspaceContextWriteResolutionOptions = {},
 ): WorkspaceCollabContext | null {
-  if (state.loading || state.failure === 'unavailable') {
+  if (
+    state.loading
+    || state.identityChangePending === true
+    || state.failure === 'unavailable'
+  ) {
     if (options.unavailablePolicy === 'unscoped') return null;
     throw new Error('Workspace context is unavailable. Try again when workspace sync finishes.');
   }
@@ -1357,27 +1363,60 @@ export interface ListPluginsOptions {
    * already carry (`workspaceProjectHeaders`) so the daemon's `GET /api/plugins`
    * can apply its workspace-scoped filter (routes/plugins/index.ts +
    * `listInstalledPlugins`'s one-way "unclaimed visible everywhere, claimed
-   * elsewhere hidden" rule). Omit for callers that want the unfiltered,
-   * pre-workspace-isolation list — this also skips the shared
-   * `cachedVisiblePlugins` write below, so a workspace-scoped read here can
-   * never leak into `listPluginsFresh()`'s unscoped cache.
+   * elsewhere hidden" rule). Omit for callers that genuinely need the
+   * headerless compatibility catalogue. The complete Workspace/member
+   * identity is part of the cache key below, so a scoped read can never leak
+   * into that headerless partition or a differently scoped caller.
    */
   workspaceContext?: WorkspaceCollabContext | null;
+  /**
+   * Account boundary paired with the complete Workspace identity below. Tests
+   * and callers holding a captured generation may pass it explicitly; normal
+   * UI callers use the current generation.
+   */
+  accountGeneration?: number;
 }
 
-// Module-level cache of the visible plugin list. The `/api/plugins` payload is
-// large (all bundled manifests), so re-fetching + parsing it on every Home
-// remount left the create rail greyed for 1-2s each time. `listPluginsFresh`
-// serves this cache without a network round trip while it is warm, so a Home
-// remount clears `pluginsLoading` within a frame instead of after the heavy
-// fetch+parse.
-let cachedVisiblePlugins: InstalledPluginRecord[] | null = null;
-let cachedVisibleAt = 0;
+interface CachedVisiblePlugins {
+  plugins: InstalledPluginRecord[];
+  cachedAt: number;
+}
+
+// The plugin catalogue is filtered by the request's Workspace headers. Keep
+// the warm snapshot that avoids Home's 1-2s remount stall, but partition it by
+// BOTH the signed-in account generation and every identity field carried on
+// the wire. A display cache is never an authorization witness: callers still
+// pass the verified context to mutations independently.
+const cachedVisiblePlugins = new Map<string, CachedVisiblePlugins>();
 const PLUGINS_CACHE_TTL_MS = 10_000;
+const MAX_PLUGIN_CATALOG_CACHE_ENTRIES = 24;
+
+export function pluginCatalogCacheKey(
+  options: Pick<ListPluginsOptions, 'workspaceContext' | 'accountGeneration'> = {},
+): string {
+  return JSON.stringify([
+    options.accountGeneration ?? currentWorkspaceAccountGeneration(),
+    workspaceIdentityCacheKey(options.workspaceContext ?? null),
+  ]);
+}
+
+function cacheVisiblePlugins(
+  key: string,
+  plugins: InstalledPluginRecord[],
+): void {
+  cachedVisiblePlugins.delete(key);
+  cachedVisiblePlugins.set(key, { plugins, cachedAt: Date.now() });
+  while (cachedVisiblePlugins.size > MAX_PLUGIN_CATALOG_CACHE_ENTRIES) {
+    const oldest = cachedVisiblePlugins.keys().next().value as string | undefined;
+    if (!oldest) break;
+    cachedVisiblePlugins.delete(oldest);
+  }
+}
 
 export async function listPlugins(
   options: ListPluginsOptions = {},
 ): Promise<InstalledPluginRecord[]> {
+  const cacheKey = pluginCatalogCacheKey(options);
   try {
     const resp = await fetch(
       '/api/plugins',
@@ -1387,13 +1426,7 @@ export async function listPlugins(
     const json = (await resp.json()) as { plugins?: InstalledPluginRecord[] };
     const plugins = json.plugins ?? [];
     const visible = plugins.filter(isVisiblePlugin);
-    // Only the UNSCOPED read populates the shared cache `listPluginsFresh()`
-    // serves — a workspace-scoped read must never leak its filtered result
-    // into that cache for an unscoped (or differently-scoped) caller.
-    if (!options.workspaceContext) {
-      cachedVisiblePlugins = visible;
-      cachedVisibleAt = Date.now();
-    }
+    cacheVisiblePlugins(cacheKey, visible);
     return options.includeHidden ? plugins : visible;
   } catch {
     return [];
@@ -1404,11 +1437,14 @@ export async function listPlugins(
 // is still within its TTL; otherwise fetch (which refreshes the cache). Used by
 // surfaces that mount often (Home) where a slightly stale list is fine and the
 // heavy `/api/plugins` round trip per mount is not.
-export async function listPluginsFresh(): Promise<InstalledPluginRecord[]> {
-  if (cachedVisiblePlugins !== null && Date.now() - cachedVisibleAt < PLUGINS_CACHE_TTL_MS) {
-    return cachedVisiblePlugins;
+export async function listPluginsFresh(
+  options: Pick<ListPluginsOptions, 'workspaceContext' | 'accountGeneration'> = {},
+): Promise<InstalledPluginRecord[]> {
+  const cached = cachedVisiblePlugins.get(pluginCatalogCacheKey(options));
+  if (cached && Date.now() - cached.cachedAt < PLUGINS_CACHE_TTL_MS) {
+    return cached.plugins;
   }
-  return listPlugins();
+  return listPlugins(options);
 }
 
 /**
@@ -1419,8 +1455,10 @@ export async function listPluginsFresh(): Promise<InstalledPluginRecord[]> {
  * guard: once a catalog has loaded, network latency must not make known plugin
  * actions temporarily unactionable again.
  */
-export function readCachedVisiblePlugins(): InstalledPluginRecord[] | null {
-  return cachedVisiblePlugins;
+export function readCachedVisiblePlugins(
+  options: Pick<ListPluginsOptions, 'workspaceContext' | 'accountGeneration'> = {},
+): InstalledPluginRecord[] | null {
+  return cachedVisiblePlugins.get(pluginCatalogCacheKey(options))?.plugins ?? null;
 }
 
 // Test-only: drop the warm visible-plugins cache so each case starts cold. The
@@ -1429,8 +1467,7 @@ export function readCachedVisiblePlugins(): InstalledPluginRecord[] | null {
 // `/api/plugins` payload would satisfy the next case via `listPluginsFresh`).
 // The web vitest setup calls this in a global `afterEach`.
 export function resetPluginsCache(): void {
-  cachedVisiblePlugins = null;
-  cachedVisibleAt = 0;
+  cachedVisiblePlugins.clear();
 }
 
 export function isVisiblePlugin(plugin: InstalledPluginRecord): boolean {

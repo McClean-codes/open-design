@@ -15,6 +15,7 @@ import {
   importFolderProject,
   installGeneratedPluginFolder,
   listPlugins,
+  listPluginsFresh,
   listProjects,
   listWorkspaceProjectSummaries,
   loadTabs,
@@ -449,6 +450,12 @@ describe('createProject', () => {
       loading: false,
       failure: 'unavailable',
     })).toThrow('Workspace context is unavailable');
+
+    expect(() => resolvedWorkspaceContextForWrite({
+      context: teamWorkspaceContext(),
+      loading: false,
+      identityChangePending: true,
+    })).toThrow('Workspace context is unavailable');
   });
 
   it('allows an explicitly local project-create caller to remain unscoped while workspace sync is unresolved', () => {
@@ -459,6 +466,15 @@ describe('createProject', () => {
 
     expect(resolvedWorkspaceContextForWrite(
       { context: null, loading: false, failure: 'unavailable' },
+      { unavailablePolicy: 'unscoped' },
+    )).toBeNull();
+
+    expect(resolvedWorkspaceContextForWrite(
+      {
+        context: teamWorkspaceContext(),
+        loading: false,
+        identityChangePending: true,
+      },
       { unavailablePolicy: 'unscoped' },
     )).toBeNull();
   });
@@ -707,6 +723,76 @@ describe('listPlugins', () => {
     const rows = await listPlugins({ includeHidden: true });
 
     expect(rows.map((row) => row.id)).toEqual(['od-default', 'od-new-generation']);
+  });
+
+  it('keeps a settled signed-out catalog request headerless', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ plugins: [] }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listPluginsFresh({ workspaceContext: null, accountGeneration: 3 });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/plugins', undefined);
+  });
+
+  it('partitions the warm visible catalog by account generation and full workspace identity', async () => {
+    const requestedHeaders: Array<Record<string, string>> = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_url, init) => {
+      requestedHeaders.push(Object.fromEntries(new Headers(init?.headers).entries()));
+      const workspaceId = new Headers(init?.headers).get('x-od-workspace-id');
+      const memberId = new Headers(init?.headers).get('x-od-workspace-member-id');
+      return new Response(JSON.stringify({
+        plugins: [{ id: `${workspaceId}:${memberId}:${requestedHeaders.length}`, manifest: {} }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const firstIdentity = teamWorkspaceContext({
+      workspaceId: 'workspace-shared',
+      workspaceMemberId: 'member-shared',
+    });
+    const secondIdentity = teamWorkspaceContext({
+      workspaceId: 'workspace-b',
+      workspaceMemberId: 'member-b',
+    });
+
+    const first = await listPluginsFresh({
+      workspaceContext: firstIdentity,
+      accountGeneration: 7,
+    });
+    const firstAgain = await listPluginsFresh({
+      workspaceContext: firstIdentity,
+      accountGeneration: 7,
+    });
+    const second = await listPluginsFresh({
+      workspaceContext: secondIdentity,
+      accountGeneration: 7,
+    });
+    const nextAccountSameFields = await listPluginsFresh({
+      workspaceContext: firstIdentity,
+      accountGeneration: 8,
+    });
+
+    expect(firstAgain).toEqual(first);
+    expect(second[0]?.id).toContain('workspace-b:member-b');
+    expect(nextAccountSameFields).not.toEqual(first);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(requestedHeaders).toEqual([
+      expect.objectContaining({
+        'x-od-workspace-id': 'workspace-shared',
+        'x-od-workspace-member-id': 'member-shared',
+      }),
+      expect.objectContaining({
+        'x-od-workspace-id': 'workspace-b',
+        'x-od-workspace-member-id': 'member-b',
+      }),
+      expect.objectContaining({
+        'x-od-workspace-id': 'workspace-shared',
+        'x-od-workspace-member-id': 'member-shared',
+      }),
+    ]);
   });
 });
 

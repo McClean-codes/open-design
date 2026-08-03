@@ -41,6 +41,7 @@ import {
   duplicatePluginAsProject,
   listPlugins,
   listPluginsFresh,
+  pluginCatalogCacheKey,
   readCachedVisiblePlugins,
   patchProject,
   resolvedWorkspaceContextForWrite,
@@ -91,7 +92,11 @@ import { consumePendingHomeChip, HOME_CHIP_INTENT_EVENT } from '../runtime/home-
 import { navigate } from '../router';
 import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { workspaceContextLinkedDirs } from './workspace-context';
-import { useTeamProjects, useWorkspaceContext } from '../collab/useWorkspaceContext';
+import {
+  currentWorkspaceAccountGeneration,
+  useTeamProjects,
+  useWorkspaceContext,
+} from '../collab/useWorkspaceContext';
 import {
   buildHomeMediaComposer,
   homeMediaSurfaceForChipId,
@@ -419,6 +424,14 @@ export function HomeView({
   const analytics = useAnalytics();
   const workspaceContextState = useWorkspaceContext();
   const { context: workspaceContext } = workspaceContextState;
+  const pluginAccountGeneration = currentWorkspaceAccountGeneration();
+  const pluginCatalogOptions = {
+    workspaceContext,
+    accountGeneration: pluginAccountGeneration,
+  };
+  const desiredPluginCatalogKey = workspaceContextState.identityChangePending
+    ? null
+    : pluginCatalogCacheKey(pluginCatalogOptions);
   // Team-wide catalog from the resource hub via the daemon; empty off-team / when
   // the hub is unconfigured. Only the creator attribution is derived here — the
   // shared/not-shared answer arrives as `isSharedProject` from EntryShell, which
@@ -450,13 +463,30 @@ export function HomeView({
   // not become disabled merely because the 10-second refresh TTL elapsed while
   // the user was in a project. The effect below still revalidates an expired
   // catalog; only a true cold start (no successful catalog yet) stays guarded.
-  const initialPluginsRef = useRef<InstalledPluginRecord[] | null>(readCachedVisiblePlugins());
+  const initialPluginsRef = useRef<InstalledPluginRecord[] | null>(
+    desiredPluginCatalogKey ? readCachedVisiblePlugins(pluginCatalogOptions) : null,
+  );
+  const [pluginCatalogKey, setPluginCatalogKey] = useState<string | null>(
+    desiredPluginCatalogKey,
+  );
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>(
     () => initialPluginsRef.current ?? [],
   );
   const [pluginsLoading, setPluginsLoading] = useState(
     () => initialPluginsRef.current === null,
   );
+  // Home stays mounted while entry-shell views and Workspaces change. Never
+  // commit one render with the previous identity's plugin catalogue: switch to
+  // the exact new cache partition synchronously, or mask the old rows while a
+  // deliberate identity change is unresolved.
+  if (pluginCatalogKey !== desiredPluginCatalogKey) {
+    const cached = desiredPluginCatalogKey
+      ? readCachedVisiblePlugins(pluginCatalogOptions)
+      : null;
+    setPluginCatalogKey(desiredPluginCatalogKey);
+    setPlugins(cached ?? []);
+    setPluginsLoading(cached === null);
+  }
   const [pendingApplyId, setPendingApplyId] = useState<string | null>(null);
   const [pendingChipId, setPendingChipId] = useState<string | null>(null);
   const [pendingAuthoringChipId, setPendingAuthoringChipId] = useState<string | null>(null);
@@ -680,6 +710,8 @@ export function HomeView({
   const consumedHandoffIdRef = useRef<number | null>(null);
   const pendingPromptFocusEndRef = useRef(false);
   const activePluginApplyRequestRef = useRef(0);
+  const desiredPluginCatalogKeyRef = useRef(desiredPluginCatalogKey);
+  desiredPluginCatalogKeyRef.current = desiredPluginCatalogKey;
   const scrollHomeToTop = useCallback(() => {
     requestAnimationFrame(() => {
       const scrollContainer = homeViewRef.current?.closest('.entry-main--scroll');
@@ -688,12 +720,20 @@ export function HomeView({
     });
   }, []);
   useEffect(() => {
+    if (!desiredPluginCatalogKey) return;
     let cancelled = false;
+    const issuedCatalogKey = desiredPluginCatalogKey;
     // On mount use the cache-aware loader (skips the network when warm); an
     // explicit plugins-changed event forces a fresh fetch.
     const load = (force = false) => {
-      void (force ? listPlugins() : listPluginsFresh()).then((rows) => {
-        if (cancelled) return;
+      void (force
+        ? listPlugins(pluginCatalogOptions)
+        : listPluginsFresh(pluginCatalogOptions)).then((rows) => {
+        if (
+          cancelled
+          || desiredPluginCatalogKeyRef.current !== issuedCatalogKey
+        ) return;
+        setPluginCatalogKey(issuedCatalogKey);
         setPlugins(rows);
         setPluginsLoading(false);
       });
@@ -705,7 +745,7 @@ export function HomeView({
       cancelled = true;
       window.removeEventListener('open-design:plugins-changed', onChanged);
     };
-  }, []);
+  }, [desiredPluginCatalogKey]);
 
   useEffect(() => {
     let cancelled = false;
