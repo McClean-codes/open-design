@@ -233,6 +233,23 @@ test('[P0] Team design systems catch up missed shares, updates, and retractions'
       () => hub.eventSubscriberCount(MEMBER.memberId),
       { timeout: T.xlong },
     ).toBeGreaterThan(0);
+    // Split daemon convergence from browser invalidation in the failure
+    // witness. This read does not materialize Team resources; it only observes
+    // the unified local catalog that reconnect reconciliation must have
+    // committed before emitting the downstream design_system invalidation.
+    await expect.poll(async () => {
+      const response = await memberPage.request.get('/api/design-systems', {
+        headers: workspaceHeaders(MEMBER),
+        timeout: T.long,
+      });
+      if (!response.ok()) return null;
+      const body = await response.json() as {
+        designSystems?: Array<{ id?: string; title?: string }>;
+      };
+      return body.designSystems?.find(
+        (system) => system.id === missedDesignSystemId,
+      )?.title ?? null;
+    }, { timeout: T.xlong }).toBe('Missed Shared Language');
     await expect(
       openPicker.getByTestId(`project-ds-picker-option-${missedDesignSystemId}`),
     ).toContainText('Missed Shared Language', { timeout: T.xlong });

@@ -431,6 +431,20 @@ describe('server.ts wiring (source boundary)', () => {
     expect(source.slice(reconcileKindStart, readinessStart)).toContain(
       'if (reconciliationError) throw reconciliationError;',
     );
+    const designSystemAdoptionStart = source.indexOf(
+      'const adoptLegacyWorkspaceTeamDesignSystemBindings = async (',
+    );
+    const skillAdoptionStart = source.indexOf(
+      'const adoptLegacyWorkspaceTeamSkillBindings = async (',
+      designSystemAdoptionStart,
+    );
+    const designSystemAdoptionBody = source.slice(
+      designSystemAdoptionStart,
+      skillAdoptionStart,
+    );
+    expect(designSystemAdoptionBody).toContain(
+      'workspaceId,\n          `user:${entry.name}`,\n          entry.name,',
+    );
 
     const pollStart = source.indexOf(
       'const teamResourceBackgroundWorkspaceIds = (): string[] => {',

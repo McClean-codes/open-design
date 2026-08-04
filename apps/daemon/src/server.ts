@@ -5870,8 +5870,8 @@ export async function startServer({
         const marker = await readTeamResourceMaterialization(
           USER_DESIGN_SYSTEMS_DIR,
           workspaceId,
-          entry.name,
           `user:${entry.name}`,
+          entry.name,
         );
         if (!marker || marker.kind !== 'design_system') return;
         ensureWorkspaceResource(
