@@ -186,8 +186,13 @@ async function createUpdaterFixture(options: {
       }
       if (artifactRequests <= failArtifactAttempts) {
         const failedChunkLength = Math.max(1, Math.floor(body.byteLength / 2));
-        response.write(body.subarray(0, failedChunkLength));
-        setTimeout(() => response.destroy(new Error("terminated")), 5);
+        // Sequence the destroy after write's flush callback, not concurrently
+        // with it: an unconfirmed write racing an independent timer can fire
+        // the destroy before the chunk reaches the socket, so the client sees
+        // zero bytes and retries without a Range header instead of resuming.
+        response.write(body.subarray(0, failedChunkLength), () => {
+          setTimeout(() => response.destroy(new Error("terminated")), 5);
+        });
         return;
       }
       response.end(body);
