@@ -5153,6 +5153,27 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     return filePath.split('/').map((segment) => encodeURIComponent(segment)).join('/');
   }
 
+  function injectProjectPreviewBase(
+    html: string,
+    projectId: string,
+    ownerFilePath: string,
+    scope: string,
+  ): string {
+    // Respect an artifact-authored base URL. Only generated documents without
+    // one need the containment base that keeps runtime-created relative URLs
+    // (for example `img.src = payload.logo`) on the minted preview scope.
+    if (/<base\b/i.test(html)) return html;
+    const ownerDir = path.posix.dirname(ownerFilePath);
+    const dirSuffix = ownerDir === '.'
+      ? ''
+      : `${encodeProjectPathForUrl(ownerDir)}/`;
+    const baseTag = `<base href="/api/projects/${encodeURIComponent(projectId)}`
+      + `/preview/${encodeURIComponent(scope)}/${dirSuffix}">`;
+    const head = /<head\b[^>]*>/i;
+    if (head.test(html)) return html.replace(head, (tag) => `${tag}${baseTag}`);
+    return `${baseTag}${html}`;
+  }
+
   function rewriteWorkspaceScopedHtmlAssetUrls(
     html: string,
     projectId: string,
@@ -5735,15 +5756,38 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
           const workspaceMemberId = typeof req.query.workspaceMemberId === 'string'
             ? req.query.workspaceMemberId
             : null;
-          if (!workspaceId || !workspaceMemberId || !/^text\/html(?:;|$)/i.test(file.mime)) {
+          if (!/^text\/html(?:;|$)/i.test(file.mime)) {
             return bridged;
           }
-          return rewriteWorkspaceScopedHtmlAssetUrls(
-            Buffer.isBuffer(bridged) ? bridged.toString('utf8') : String(bridged),
+          let html = Buffer.isBuffer(bridged) ? bridged.toString('utf8') : String(bridged);
+          if (workspaceId && workspaceMemberId) {
+            html = rewriteWorkspaceScopedHtmlAssetUrls(
+              html,
+              projectId,
+              relPath,
+              workspaceId,
+              workspaceMemberId,
+            );
+          }
+          // Plain raw-file reads (code view, download, API clients) must keep
+          // returning the same bytes as before. The containment base is only a
+          // URL-preview transport detail requested by FileViewer.
+          if (req.query.odPreviewBridge === undefined) return html;
+          const headerContext = workspaceProjectContextFromRequest(req);
+          const previewWorkspace = workspaceId && workspaceMemberId
+            ? { workspaceId, workspaceMemberId }
+            : headerContext && headerContext !== 'missing'
+              ? {
+                  workspaceId: headerContext.workspaceId,
+                  workspaceMemberId: headerContext.workspaceMemberId,
+                }
+              : null;
+          const scope = projectPreviewScopes.mint(projectId, previewWorkspace);
+          return injectProjectPreviewBase(
+            html,
             projectId,
             relPath,
-            workspaceId,
-            workspaceMemberId,
+            scope,
           );
         },
         true, // revalidate: emit ETag/Last-Modified so covers/preview/export reuse cached assets
