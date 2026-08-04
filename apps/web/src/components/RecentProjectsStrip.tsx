@@ -12,7 +12,11 @@ import { Dialog, DialogDescription, DialogFooter, DialogTitle } from '@open-desi
 
 const MOVE_CONFIRM_SKIP_KEY = 'od.projects.moveConfirmSkip';
 import { useT } from '../i18n';
-import { fetchProjectFiles, fetchProjectFileText } from '../providers/registry';
+import {
+  fetchProjectFiles,
+  fetchProjectFileText,
+  invalidateProjectFilesCache,
+} from '../providers/registry';
 import type { DesignSystemSummary, Project, ProjectDisplayStatus, ProjectFile } from '../types';
 import { Icon } from './Icon';
 import { InviteDialog } from './InviteDialog';
@@ -650,6 +654,7 @@ export function RecentProjectsStrip({
     project: Project,
     signal: AbortSignal,
     requestWorkspaceContext: WorkspaceCollabContext | null,
+    freshFiles = false,
   ): Promise<ProjectCoverOverride | null | undefined> => {
     // Catalog-only Team projects intentionally have no local directory until
     // the first open materializes them. Probing `/files` here can only produce
@@ -664,6 +669,7 @@ export function RecentProjectsStrip({
       files = await fetchProjectFiles(project.id, {
         signal,
         workspaceContext: requestWorkspaceContext,
+        ...(freshFiles ? { fresh: true } : {}),
       });
     } catch {
       return undefined;
@@ -759,7 +765,12 @@ export function RecentProjectsStrip({
     const controller = new AbortController();
     const promise = coverQueue.schedule(
       controller,
-      () => loadProjectCover(project, controller.signal, requestWorkspaceContext),
+      () => loadProjectCover(
+        project,
+        controller.signal,
+        requestWorkspaceContext,
+        options.force === true,
+      ),
       options.force,
     )
       .then((cover) => {
@@ -845,8 +856,12 @@ export function RecentProjectsStrip({
 
   const refreshProjectCover = useCallback((projectId: string) => {
     // A content-ready event is authoritative: the stored cover decision (any
-    // version) is void even if the card is currently offscreen or unlisted.
+    // version) and any pre-materialization file-list read are void even if the
+    // card is currently offscreen or unlisted. Invalidate the exact Workspace
+    // authority before the forced scan so another force refresh in the same
+    // burst cannot make the file-list layer reuse its earlier [] response.
     invalidateProjectCoverSnapshots(projectId);
+    invalidateProjectFilesCache(projectId, workspaceContextRef.current);
     const project = visibleProjectsRef.current.get(projectId);
     if (!project) return;
     if (!coverSentinelSeenRef.current.has(projectId)) return;

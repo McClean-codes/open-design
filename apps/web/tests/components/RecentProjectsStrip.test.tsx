@@ -5,7 +5,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RecentProjectsStrip } from '../../src/components/RecentProjectsStrip';
-import { fetchProjectFiles, fetchProjectFileText } from '../../src/providers/registry';
+import {
+  fetchProjectFiles,
+  fetchProjectFileText,
+  invalidateProjectFilesCache,
+} from '../../src/providers/registry';
 import type { Project } from '../../src/types';
 
 const recentWorkspaceState = vi.hoisted(() => ({
@@ -75,6 +79,7 @@ vi.mock('../../src/providers/registry', () => ({
     }
     return [];
   }),
+  invalidateProjectFilesCache: vi.fn(),
   projectFileUrl: (
     projectId: string,
     fileName: string,
@@ -91,6 +96,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.mocked(invalidateProjectFilesCache).mockClear();
   vi.mocked(fetchProjectFiles).mockReset().mockImplementation(async (projectId: string) => {
     if (projectId === 'project-ds') {
       return [
@@ -321,7 +327,29 @@ describe('RecentProjectsStrip', () => {
     expect(
       (container.querySelector('iframe') as HTMLIFrameElement | null)?.getAttribute('src'),
     ).toContain('workspaceId=ws-1');
-    expect(vi.mocked(fetchProjectFiles).mock.calls.filter(([id]) => id === 'project-ready')).toHaveLength(2);
+    const readyProjectCalls = vi.mocked(fetchProjectFiles).mock.calls.filter(
+      ([id]) => id === 'project-ready',
+    );
+    expect(readyProjectCalls).toHaveLength(2);
+    // The first scan can settle with [] immediately before proactive Team
+    // materialization emits content-ready. A force cover refresh that only
+    // bypasses the thumbnail snapshot still reuses fetchProjectFiles' 1s
+    // settled cache and misses the freshly-promoted files. The authoritative
+    // ready event must force the exact Workspace file list too.
+    expect(readyProjectCalls[1]?.[1]).toEqual(expect.objectContaining({
+      fresh: true,
+      workspaceContext: expect.objectContaining({
+        workspaceId: 'ws-1',
+        workspaceMemberId: 'wm-1',
+      }),
+    }));
+    expect(invalidateProjectFilesCache).toHaveBeenCalledWith(
+      'project-ready',
+      expect.objectContaining({
+        workspaceId: 'ws-1',
+        workspaceMemberId: 'wm-1',
+      }),
+    );
     expect(vi.mocked(fetchProjectFiles).mock.calls.filter(([id]) => id === 'project-other')).toHaveLength(1);
   });
 
