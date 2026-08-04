@@ -127,6 +127,14 @@ export class CollabClient {
   private presenceAppliedRequestGeneration = 0;
   /** Suppresses the status-transition echo of an optimistic Team heartbeat. */
   private presenceAttemptedForMember = false;
+  /**
+   * Cancels cold-start work queued by an obsolete start/stop lifecycle. React
+   * StrictMode replays mount effects as setup -> cleanup -> setup; launching
+   * the first status read synchronously made both the discarded and surviving
+   * clients hit `/collab/status`. The status ordering counters remain
+   * untouched: this fence only decides whether a queued first poll launches.
+   */
+  private lifecycleGeneration = 0;
   private running = false;
   private onVisibilityChange: (() => void) | null = null;
 
@@ -184,7 +192,22 @@ export class CollabClient {
   start(): void {
     if (this.running) return;
     this.running = true;
-    void this.pollStatus();
+    const lifecycleGeneration = ++this.lifecycleGeneration;
+    const statusRequestGeneration =
+      this.contentTransferStatusRequestGeneration;
+    // Let a same-turn teardown cancel a discarded StrictMode lifecycle before
+    // it spends a cold status request. This is deliberately not request
+    // single-flight: explicit polls retain their transfer-ordering semantics.
+    queueMicrotask(() => {
+      if (
+        this.running
+        && lifecycleGeneration === this.lifecycleGeneration
+        && statusRequestGeneration
+          === this.contentTransferStatusRequestGeneration
+      ) {
+        void this.pollStatus();
+      }
+    });
     // The daemon keeps a short-lived, authority-checked presence roster cache.
     // Consume that hot path before issuing the write heartbeat: the latter may
     // still need a slow Vela round trip, but a teammate already known to the
@@ -225,6 +248,7 @@ export class CollabClient {
   stop(): void {
     if (!this.running) return;
     this.running = false;
+    this.lifecycleGeneration += 1;
     this.presenceRequestGeneration += 1;
     this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
     for (const timer of this.timers) clearInterval(timer);

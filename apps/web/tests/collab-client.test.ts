@@ -269,6 +269,51 @@ describe('CollabClient', () => {
     client.stop();
   });
 
+  it('does not launch a stopped lifecycle\'s queued cold status read after restart', async () => {
+    const { fetchImpl, calls } = makeFetch({ publishedVersion: 4 });
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: null,
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    client.stop();
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      calls.filter(
+        ({ method, url }) =>
+          method === 'GET' && url.endsWith('/collab/status'),
+      ),
+    ).toHaveLength(1);
+
+    client.stop();
+  });
+
+  it('does not duplicate the queued cold read when the same client is polled explicitly', async () => {
+    const { fetchImpl, calls } = makeFetch({ publishedVersion: 4 });
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: null,
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    await client.pollStatus();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      calls.filter(
+        ({ method, url }) =>
+          method === 'GET' && url.endsWith('/collab/status'),
+      ),
+    ).toHaveLength(1);
+
+    client.stop();
+  });
+
   it('starts a scoped Team heartbeat without waiting for a slow status response', async () => {
     let resolveStatus!: (response: Response) => void;
     const fetchMock = vi.fn(

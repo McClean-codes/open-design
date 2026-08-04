@@ -237,7 +237,9 @@ describe('useCollab', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0);
     });
-    expect(pendingStatus.length).toBeGreaterThanOrEqual(1);
+    // React StrictMode replays the mount effect as setup -> cleanup -> setup.
+    // Only the surviving client may launch its cold status request.
+    expect(pendingStatus).toHaveLength(1);
 
     await act(async () => {
       for (const resolve of pendingStatus.splice(0)) {
