@@ -1,10 +1,10 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Dialog } from '@open-design/components';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN as campaign,
   DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM,
-  formatDeepSeekV4FlashCampaignCountdown,
+  formatDeepSeekV4FlashCampaignMockRemaining,
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
@@ -15,6 +15,7 @@ import {
 import styles from './DeepSeekV4FlashCampaign.module.css';
 
 const SEEN_KEY = `open-design:campaign-seen:${campaign.id}`;
+const REVIEW_COUNTDOWN_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface Props {
   audience: DeepSeekV4FlashCampaignAudience;
@@ -57,6 +58,7 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
   const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
+  const countdownEndsAtRef = useRef(Date.now() + REVIEW_COUNTDOWN_DURATION_MS);
   const dialogId = useId();
   const titleId = useId();
   const descriptionId = useId();
@@ -84,7 +86,9 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
 
   useEffect(() => {
     if (!modalOpen) return;
-    setCountdownNow(Date.now());
+    const openedAt = Date.now();
+    countdownEndsAtRef.current = openedAt + REVIEW_COUNTDOWN_DURATION_MS;
+    setCountdownNow(openedAt);
     const countdownTimer = window.setInterval(() => setCountdownNow(Date.now()), 1_000);
     return () => window.clearInterval(countdownTimer);
   }, [modalOpen]);
@@ -137,7 +141,9 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
         <div className={styles.countdown} aria-label="活动倒计时">
           <span className={styles.countdownLabel}>活动倒计时</span>
           <strong data-testid="deepseek-v4-flash-campaign-countdown">
-            {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
+            {formatDeepSeekV4FlashCampaignMockRemaining(
+              countdownEndsAtRef.current - countdownNow,
+            )}
           </strong>
           <small>{campaign.window.label} · 一周免费用</small>
         </div>

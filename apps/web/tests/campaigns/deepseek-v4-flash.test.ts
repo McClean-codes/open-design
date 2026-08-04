@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
   formatDeepSeekV4FlashCampaignCountdown,
+  formatDeepSeekV4FlashCampaignMockRemaining,
   isDeepSeekV4FlashCampaignWindowOpen,
   resolveDeepSeekV4FlashCampaignAudience,
   isDeepSeekV4FlashCampaignModel,
@@ -97,8 +98,13 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).toContain('距开始');
     expect(formatDeepSeekV4FlashCampaignCountdown(start)).toContain('活动剩余');
     expect(formatDeepSeekV4FlashCampaignCountdown(end)).toBe('活动已结束');
+    expect(formatDeepSeekV4FlashCampaignMockRemaining(7 * 24 * 60 * 60 * 1000)).toBe(
+      '7天 00:00:00',
+    );
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-countdown');
     expect(campaignDialogSource).toContain('一周免费用');
+    expect(campaignDialogSource).toContain('REVIEW_COUNTDOWN_DURATION_MS');
+    expect(campaignDialogSource).not.toContain('formatDeepSeekV4FlashCampaignCountdown(countdownNow)');
     expect(campaignDialogSource.indexOf('styles.countdown')).toBeLessThan(
       campaignDialogSource.indexOf('styles.footer'),
     );
