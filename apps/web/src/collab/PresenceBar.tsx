@@ -85,10 +85,10 @@ export function PresenceBar({
     const directoryEntry = resolveMember?.(member.memberId);
     const memberName = member.name?.trim();
     const directoryName = directoryEntry?.displayName.trim();
-    const resolvedName = memberName && memberName !== member.memberId
-      ? memberName
-      : directoryName && directoryName !== member.memberId
-        ? directoryName
+    const resolvedName = directoryName && directoryName !== member.memberId
+      ? directoryName
+      : memberName && memberName !== member.memberId
+        ? memberName
         : undefined;
     const next = { ...member };
     if (resolvedName) next.name = resolvedName;

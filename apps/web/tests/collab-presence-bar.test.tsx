@@ -98,6 +98,30 @@ describe('PresenceBar', () => {
     expect(avatar.getAttribute('data-role')).toBe('admin');
   });
 
+  it('prefers the authoritative directory name over stale heartbeat metadata', () => {
+    render(
+      <PresenceBar
+        members={[
+          {
+            memberId: 'member-renamed',
+            name: 'Old Heartbeat Name',
+            role: 'member',
+          },
+        ]}
+        resolveMember={(memberId) => ({
+          memberId,
+          displayName: 'New Directory Name',
+          role: 'admin',
+        })}
+      />,
+    );
+
+    const avatar = screen.getByText('ND');
+    expect(avatar.getAttribute('title')).toBe('New Directory Name');
+    expect(avatar.getAttribute('data-role')).toBe('admin');
+    expect(screen.queryByText('OH')).toBeNull();
+  });
+
   it('hides a sparse other member until the directory resolves it', () => {
     const { container, rerender } = render(
       <PresenceBar
