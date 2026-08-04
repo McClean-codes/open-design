@@ -7096,6 +7096,86 @@ describe('FileViewer tweaks toolbar', () => {
     ))).toHaveLength(1);
   });
 
+  it('preserves an authored base without minting a project-scoped preview capability', async () => {
+    const context = teamWorkspaceContext();
+    const authoredBase = '<base href="https://cdn.example/assets/">';
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => (
+      new Response(JSON.stringify({ deployments: [] }), { status: 200 })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(
+      <CollabProvider value={projectWorkspaceCollabValue(context)}>
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={htmlPreviewFile({ name: 'brand.html', path: 'brand.html' })}
+          liveHtml={`<!doctype html><html><head>${authoredBase}</head><body><script>location.reload()</script></body></html>`}
+        />
+      </CollabProvider>,
+    );
+
+    await waitFor(() => {
+      const activeFrame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+      expect(activeFrame.getAttribute('data-od-render-mode')).toBe('srcdoc');
+      expect(activeFrame.srcdoc).toContain(authoredBase);
+      expect(fetchMock.mock.calls.some(([input]) => (
+        String(input).includes('/api/projects/project-1/files')
+      ))).toBe(true);
+    });
+    expect(fetchMock.mock.calls.some(([input]) => (
+      String(input).includes('/api/projects/project-1/preview-url')
+    ))).toBe(false);
+  });
+
+  it('does not mint from the previous file source while switching to an authored-base srcDoc', async () => {
+    const context = teamWorkspaceContext();
+    const authoredBase = '<base href="https://cdn.example/brand/">';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/api/projects/project-1/preview-url')) {
+        return new Response(JSON.stringify({
+          url: '/api/projects/project-1/preview/scope-1/first.html',
+          file: 'first.html',
+          csp: "default-src 'none'",
+          iframeSandbox: 'allow-scripts allow-forms',
+          opaqueOrigin: true,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const renderViewer = (fileName: string, liveHtml: string) => (
+      <CollabProvider value={projectWorkspaceCollabValue(context)}>
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={htmlPreviewFile({ name: fileName, path: fileName })}
+          liveHtml={liveHtml}
+        />
+      </CollabProvider>
+    );
+    const firstHtml = '<!doctype html><html><body><script>location.reload()</script></body></html>';
+    const secondHtml = `<!doctype html><html><head>${authoredBase}</head><body><script>location.reload()</script></body></html>`;
+    const { rerender } = render(renderViewer('first.html', firstHtml));
+
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.filter(([input]) => (
+        String(input).includes('/api/projects/project-1/preview-url')
+      ))).toHaveLength(1);
+    });
+    fetchMock.mockClear();
+
+    rerender(renderViewer('second.html', secondHtml));
+    await waitFor(() => {
+      const activeFrame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+      expect(activeFrame.srcdoc).toContain(authoredBase);
+    });
+    expect(fetchMock.mock.calls.some(([input]) => (
+      String(input).includes('/api/projects/project-1/preview-url')
+    ))).toBe(false);
+  });
+
   it('keeps the URL-loaded iframe active when opening Draw after the URL preview bridge is ready', async () => {
     const { container } = render(
       <FileViewer projectId="project-1" projectKind="prototype" file={htmlPreviewFile()}

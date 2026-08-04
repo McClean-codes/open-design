@@ -1283,8 +1283,12 @@ function injectBeforeBodyEnd(doc: string, payload: string): string {
   return doc + payload;
 }
 
+export function htmlHasAuthoredBase(doc: string): boolean {
+  return /<base\b/i.test(doc);
+}
+
 function injectBaseHref(doc: string, baseHref: string): string {
-  if (/<base\b/i.test(doc)) return doc;
+  if (htmlHasAuthoredBase(doc)) return doc;
   const safeHref = escapeAttr(baseHref);
   const tag = `<base href="${safeHref}">`;
   if (/<head[^>]*>/i.test(doc)) {

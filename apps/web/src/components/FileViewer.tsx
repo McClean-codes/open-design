@@ -159,6 +159,7 @@ import {
   buildRedirectLoopBlockedDoc,
   buildSrcdoc,
   canActivateSrcDocTransport,
+  htmlHasAuthoredBase,
   PREVIEW_REDIRECT_LOOP_MESSAGE,
 } from '../runtime/srcdoc';
 import { DeckThumbnailRail } from './DeckThumbnailRail';
@@ -7579,6 +7580,11 @@ function HtmlViewer({
   const [routingSource, setRoutingSource] = useState<string | null>(initialSource);
   const srcDocPreviewBaseIdentity =
     `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}`;
+  const currentSourceIdentity =
+    `${srcDocPreviewBaseIdentity}\0${liveHtml === undefined ? 'raw' : 'live'}`;
+  const [routingSourceIdentity, setRoutingSourceIdentity] = useState<string | null>(
+    initialSource !== null ? currentSourceIdentity : null,
+  );
   const [scopedSrcDocPreviewBase, setScopedSrcDocPreviewBase] = useState<{
     identity: string;
     href: string;
@@ -8444,9 +8450,7 @@ function HtmlViewer({
   // a new file never inherits the previous file's routing predicates.
   const lastGoodSourceForRoutingRef = useRef<string | null>(null);
   const sourceFileKeyRef = useRef<string | null>(
-    source !== null
-      ? `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${liveHtml === undefined ? 'raw' : 'live'}`
-      : null,
+    source !== null ? currentSourceIdentity : null,
   );
   const renderedSourceAuthorizationScopeKeyRef = useRef(sourceAuthorizationScopeKey);
   if (renderedSourceAuthorizationScopeKeyRef.current !== sourceAuthorizationScopeKey) {
@@ -8456,6 +8460,7 @@ function HtmlViewer({
     // publication, deployment, or edit state proven under the prior scope.
     setSource(null);
     setRoutingSource(null);
+    setRoutingSourceIdentity(null);
     setServerPoweredPreviewRequired(false);
     sourceRef.current = null;
     sourceFileKeyRef.current = null;
@@ -8908,14 +8913,14 @@ function HtmlViewer({
     // Workspace witness resolves, which reruns this effect with scoped URL and
     // headers. Only an explicit daemon `unbound` result receives the local key.
     if (projectResourceReadBlocked) return;
-    const sourceFileKey =
-      `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${liveHtml === undefined ? 'raw' : 'live'}`;
+    const sourceFileKey = currentSourceIdentity;
     if (liveHtml !== undefined) {
       sourceFileKeyRef.current = sourceFileKey;
       sourceEverLoadedRef.current = true;
       sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
       setSource(liveHtml);
       setRoutingSource(liveHtml);
+      setRoutingSourceIdentity(sourceFileKey);
       setServerPoweredPreviewRequired(false);
       sourceRef.current = liveHtml;
       return;
@@ -8934,6 +8939,7 @@ function HtmlViewer({
       const cachedSource = cachedSnapshot?.source ?? null;
       setSource(cachedSource);
       setRoutingSource(cachedSource);
+      setRoutingSourceIdentity(cachedSource === null ? null : sourceFileKey);
       setServerPoweredPreviewRequired(false);
       sourceRef.current = cachedSource;
       if (cachedSource !== null) {
@@ -8964,6 +8970,7 @@ function HtmlViewer({
       !previewTextNeedsFullSourceForSafeInline(sourceRef.current)
     ) {
       setRoutingSource(sourceRef.current);
+      setRoutingSourceIdentity(sourceFileKey);
       sourceEverLoadedRef.current = true;
       sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
       return () => {
@@ -9025,6 +9032,7 @@ function HtmlViewer({
           sourceEverLoadedRef.current = true;
       sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
           setRoutingSource('');
+          setRoutingSourceIdentity(sourceFileKey);
           setServerPoweredPreviewRequired(false);
           return;
         }
@@ -9047,6 +9055,7 @@ function HtmlViewer({
         ) {
           setSource(snap.source);
           setRoutingSource(snap.source);
+          setRoutingSourceIdentity(sourceFileKey);
           sourceRef.current = snap.source;
           prevSourceBeforeReloadRef.current = null;
         } else if (snap != null) {
@@ -9063,6 +9072,7 @@ function HtmlViewer({
       sourceLoadedKeysRef.current.add(sourceLoadedFileKey);
       lastGoodSourceForRoutingRef.current = text;
       setRoutingSource(text);
+      setRoutingSourceIdentity(sourceFileKey);
       if (sourceLoadMode === 'routing-preview') {
         sourceRef.current = null;
       } else {
@@ -9091,6 +9101,7 @@ function HtmlViewer({
     filesRefreshKey,
     sourceSnapshotRefreshKey,
     sourceAuthorizationScopeKey,
+    currentSourceIdentity,
     shouldDeferPassivePreviewSource,
     workspaceActive,
     projectResourceReadBlocked,
@@ -9503,9 +9514,21 @@ function HtmlViewer({
     projectRootAssetRefs: projectRootAssetRefs || scopedRelativeAssetRefs,
   };
   const useUrlLoadPreview = shouldUrlLoadHtmlPreview(urlLoadDecision) && !manualEditRequiresSrcDoc;
+  // Wait for source discovery before minting. A committed file switch can
+  // still carry the previous file's state until the source-loading effect
+  // clears/replaces it, so only inspect bytes witnessed for this identity.
+  const authoredSrcDocBase = useMemo(
+    () => (
+      routingSourceIdentity !== currentSourceIdentity || routingHtmlSource == null
+        ? null
+        : htmlHasAuthoredBase(routingHtmlSource)
+    ),
+    [currentSourceIdentity, routingHtmlSource, routingSourceIdentity],
+  );
   useEffect(() => {
     if (
       useUrlLoadPreview
+      || authoredSrcDocBase !== false
       || effectiveScopedSrcDocPreviewBase
       || !workspaceActive
       || projectResourceReadBlocked
@@ -9521,6 +9544,7 @@ function HtmlViewer({
       cancelled = true;
     };
   }, [
+    authoredSrcDocBase,
     effectiveScopedSrcDocPreviewBase,
     file.name,
     projectId,
