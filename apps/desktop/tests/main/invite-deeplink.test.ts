@@ -4,6 +4,7 @@ import {
   continueInviteFromUrl,
   createInviteDeeplinkDispatcher,
   findDeeplinkArg,
+  WORKSPACE_OPEN_FOCUS_REASON,
 } from "../../src/main/invite-deeplink-core.js";
 
 const VALID =
@@ -55,20 +56,44 @@ describe("continueInviteFromUrl", () => {
       focus,
       onCompleted,
     });
-    expect(out).toEqual({ ok: true });
+    expect(out).toEqual({ ok: true, reason: WORKSPACE_OPEN_FOCUS_REASON });
     expect(focus).toHaveBeenCalledTimes(1);
-    expect(onCompleted).toHaveBeenCalledWith({ ok: true });
+    expect(onCompleted).toHaveBeenCalledWith({ ok: true, reason: WORKSPACE_OPEN_FOCUS_REASON });
     expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
   it("accepts workspace/open with query params and trailing slash", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
     const focus = vi.fn();
     const out = await continueInviteFromUrl(
       "opendesign://workspace/open/?source=cli_activate",
-      { resolveDaemonBaseUrl: async () => "http://x", focus },
+      { resolveDaemonBaseUrl: async () => "http://x", fetch: fetchImpl, focus },
     );
-    expect(out).toEqual({ ok: true });
+    expect(out).toEqual({ ok: true, reason: WORKSPACE_OPEN_FOCUS_REASON });
     expect(focus).toHaveBeenCalledTimes(1);
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  // Any web page can fire the `opendesign://` scheme, so pin where the focus
+  // match stops: a loosened matcher (e.g. `pathname.startsWith("/open")`) must
+  // not silently turn neighbouring urls into a foreground grab.
+  it.each([
+    "opendesign://workspace/openx",
+    "opendesign://workspace/open/extra",
+    "opendesign://other/open",
+    "opendesign://workspace/OPEN",
+    "opendesign://Workspace/open",
+  ])("does not focus for %s", async (url) => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const focus = vi.fn();
+    const out = await continueInviteFromUrl(url, {
+      resolveDaemonBaseUrl: async () => "http://x",
+      fetch: fetchImpl,
+      focus,
+    });
+    expect(out).toEqual({ ok: false, reason: "not_an_invite_deeplink" });
+    expect(focus).not.toHaveBeenCalled();
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
   it("ignores a url that is not an invite deeplink (no daemon call)", async () => {

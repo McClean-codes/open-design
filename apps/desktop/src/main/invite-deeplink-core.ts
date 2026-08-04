@@ -5,6 +5,8 @@ export const INVITE_DEEPLINK_SCHEME = "opendesign";
 const INVITE_DEEPLINK_HOST = "workspace";
 const INVITE_DEEPLINK_PATH = "/invite/continue";
 const WORKSPACE_OPEN_DEEPLINK_PATH = "/open";
+/** Outcome discriminator for the payload-free `workspace/open` focus hand-off. */
+export const WORKSPACE_OPEN_FOCUS_REASON = "workspace_open_focus";
 
 interface ParsedInviteDeeplink {
   workspaceId: string;
@@ -134,7 +136,10 @@ export async function continueInviteFromUrl(
 ): Promise<{ ok: boolean; reason?: string; status?: number }> {
   if (isWorkspaceOpenDeeplink(url)) {
     deps.focus?.();
-    return completeInvite(deps, { ok: true });
+    // Carries its own reason so the completion log (and any future consumer)
+    // can tell a payload-free focus hand-off apart from a real invite
+    // continuation, which is the only other `ok: true` outcome here.
+    return completeInvite(deps, { ok: true, reason: WORKSPACE_OPEN_FOCUS_REASON });
   }
   const parsed = parseInviteDeeplink(url);
   if (!parsed) return completeInvite(deps, { ok: false, reason: "not_an_invite_deeplink" });
