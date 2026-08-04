@@ -74,6 +74,13 @@ export interface CollabClientOptions {
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_STATUS_POLL_MS = 5_000;
 
+class CollabRequestError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = 'CollabRequestError';
+  }
+}
+
 export class CollabClient {
   private readonly projectId: string;
   /**
@@ -125,6 +132,8 @@ export class CollabClient {
    */
   private presenceRequestGeneration = 0;
   private presenceAppliedRequestGeneration = 0;
+  /** First successful self-bearing response that omitted each known peer. */
+  private readonly presenceMissingSince = new Map<string, number>();
   /** Suppresses the status-transition echo of an optimistic Team heartbeat. */
   private presenceAttemptedForMember = false;
   /**
@@ -176,6 +185,7 @@ export class CollabClient {
     if (nextMemberId !== previousMemberId) {
       this.presenceRequestGeneration += 1;
       this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
+      this.clearPresenceRoster();
       this.presenceAttemptedForMember = false;
     }
     if (
@@ -255,6 +265,7 @@ export class CollabClient {
     this.lifecycleGeneration += 1;
     this.presenceRequestGeneration += 1;
     this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
+    this.presenceMissingSince.clear();
     for (const timer of this.timers) clearInterval(timer);
     this.timers.length = 0;
     if (this.onVisibilityChange && typeof document !== 'undefined') {
@@ -303,7 +314,7 @@ export class CollabClient {
       && Boolean(this.workspaceContext.workspaceId.trim())
       && Boolean(this.workspaceContext.workspaceMemberId.trim());
     if (!this.isSharedProject() && !explicitTeamStatusPending) {
-      if (this.snapshot.present.length > 0) this.update({ present: [] });
+      this.clearPresenceRoster();
       return;
     }
     this.presenceAttemptedForMember = true;
@@ -326,6 +337,9 @@ export class CollabClient {
         );
       }
     } catch (error) {
+      if (isForbiddenCollabRequest(error)) {
+        this.applyPresenceAuthorityRevocation(requestGeneration);
+      }
       this.presenceAttemptedForMember = false;
       this.onError?.(error);
     }
@@ -354,6 +368,9 @@ export class CollabClient {
         );
       }
     } catch (error) {
+      if (isForbiddenCollabRequest(error)) {
+        this.applyPresenceAuthorityRevocation(requestGeneration);
+      }
       this.onError?.(error);
     }
   }
@@ -369,7 +386,10 @@ export class CollabClient {
           body.present as CollabPresenceMember[],
         );
       }
-    } catch {
+    } catch (error) {
+      if (isForbiddenCollabRequest(error)) {
+        this.applyPresenceAuthorityRevocation(requestGeneration);
+      }
       // This is a best-effort latency optimization. The immediately following
       // heartbeat (or later authoritative status) owns failure reporting; do
       // not surface the same cold-start authority/network failure twice.
@@ -545,7 +565,62 @@ export class CollabClient {
   ): void {
     if (requestGeneration <= this.presenceAppliedRequestGeneration) return;
     this.presenceAppliedRequestGeneration = requestGeneration;
-    this.update({ present });
+    this.update({ present: this.stabilizePresenceRoster(present) });
+  }
+
+  private applyPresenceAuthorityRevocation(requestGeneration: number): void {
+    if (requestGeneration <= this.presenceAppliedRequestGeneration) return;
+    this.presenceAppliedRequestGeneration = requestGeneration;
+    this.clearPresenceRoster();
+  }
+
+  private clearPresenceRoster(): void {
+    this.presenceMissingSince.clear();
+    if (this.snapshot.present.length > 0) this.update({ present: [] });
+  }
+
+  private stabilizePresenceRoster(
+    incoming: CollabPresenceMember[],
+  ): CollabPresenceMember[] {
+    const selfMemberId = this.member?.memberId;
+    const incomingIds = new Set(incoming.map((member) => member.memberId));
+    // Only the relay's known self-bearing partial roster gets display grace.
+    // Empty and caller-less responses can signal revoked project authority.
+    if (
+      !this.running
+      || !selfMemberId
+      || incoming.length === 0
+      || !incomingIds.has(selfMemberId)
+    ) {
+      this.presenceMissingSince.clear();
+      return incoming;
+    }
+
+    const now = Date.now();
+    for (const memberId of incomingIds) {
+      this.presenceMissingSince.delete(memberId);
+    }
+
+    const retained: CollabPresenceMember[] = [];
+    const previousIds = new Set(
+      this.snapshot.present.map((member) => member.memberId),
+    );
+    for (const member of this.snapshot.present) {
+      if (incomingIds.has(member.memberId)) continue;
+      const missingSince = this.presenceMissingSince.get(member.memberId);
+      if (missingSince === undefined) {
+        this.presenceMissingSince.set(member.memberId, now);
+        retained.push(member);
+      } else if (now - missingSince < this.heartbeatMs) {
+        retained.push(member);
+      } else {
+        this.presenceMissingSince.delete(member.memberId);
+      }
+    }
+    for (const memberId of this.presenceMissingSince.keys()) {
+      if (!previousIds.has(memberId)) this.presenceMissingSince.delete(memberId);
+    }
+    return retained.length > 0 ? [...incoming, ...retained] : incoming;
   }
 
   private isSharedProject(): boolean {
@@ -564,7 +639,12 @@ export class CollabClient {
         ? { headers: workspaceProjectHeaders(this.workspaceContext) }
         : {}),
     });
-    if (!response.ok) throw new Error(`collab GET ${path} failed: ${response.status}`);
+    if (!response.ok) {
+      throw new CollabRequestError(
+        `collab GET ${path} failed: ${response.status}`,
+        response.status,
+      );
+    }
     return (await response.json()) as Record<string, unknown>;
   }
 
@@ -585,7 +665,12 @@ export class CollabClient {
       init.body = JSON.stringify(body);
     }
     const response = await this.fetchImpl(this.url(path), init);
-    if (!response.ok) throw new Error(`collab POST ${path} failed: ${response.status}`);
+    if (!response.ok) {
+      throw new CollabRequestError(
+        `collab POST ${path} failed: ${response.status}`,
+        response.status,
+      );
+    }
     return (await response.json()) as Record<string, unknown>;
   }
 
@@ -671,6 +756,10 @@ function retainPresenceDisplayMetadata(
         : {}),
     };
   });
+}
+
+function isForbiddenCollabRequest(error: unknown): boolean {
+  return error instanceof CollabRequestError && error.status === 403;
 }
 
 function parseProjectContentTransferState(

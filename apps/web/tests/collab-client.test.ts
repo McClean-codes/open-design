@@ -627,6 +627,163 @@ describe('CollabClient', () => {
     client.stop();
   });
 
+  it('retains a peer for one heartbeat window when one self-bearing roster omits it', async () => {
+    const { fetchImpl, state } = makeFetch({
+      present: [
+        { memberId: 'viewer', name: 'Viewer' },
+        { memberId: 'peer', name: 'Peer' },
+      ],
+    });
+    const client = new CollabClient({
+      projectId: 'p-transient-roster',
+      member: { memberId: 'viewer', name: 'Viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+      statusPollMs: 5_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toHaveLength(2);
+
+    state.present = [{ memberId: 'viewer', name: 'Viewer' }];
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'viewer', name: 'Viewer' },
+      { memberId: 'peer', name: 'Peer' },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(client.getSnapshot().present).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'viewer', name: 'Viewer' },
+    ]);
+
+    client.stop();
+  });
+
+  it.each([
+    ['an empty roster', []],
+    ['a caller-less roster', [{ memberId: 'other-peer' }]],
+  ])('clears retained peers immediately for %s', async (_label, present) => {
+    const { fetchImpl, state } = makeFetch({
+      present: [{ memberId: 'viewer' }, { memberId: 'peer' }],
+    });
+    const client = new CollabClient({
+      projectId: 'p-fail-closed-roster',
+      member: { memberId: 'viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    state.present = [{ memberId: 'viewer' }];
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'viewer' },
+      { memberId: 'peer' },
+    ]);
+
+    state.present = present;
+    await client.refreshPresence();
+    expect(client.getSnapshot().present).toEqual(present);
+    client.stop();
+  });
+
+  it('clears the roster immediately when heartbeat authority is revoked', async () => {
+    let heartbeatCount = 0;
+    const errors: unknown[] = [];
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return Promise.resolve(Response.json({ syncState: 'synced' }));
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          heartbeatCount += 1;
+          if (heartbeatCount === 1) {
+            return Promise.resolve(Response.json({
+              present: [{ memberId: 'viewer' }, { memberId: 'peer' }],
+            }));
+          }
+          return Promise.resolve(Response.json(
+            { error: 'WORKSPACE_ACCESS_DENIED' },
+            { status: 403 },
+          ));
+        }
+        if (pathname.endsWith('/presence/leave')) {
+          return Promise.resolve(Response.json({ ok: true }));
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p-revoked-roster',
+      member: { memberId: 'viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+      onError: (error) => errors.push(error),
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toHaveLength(2);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(client.getSnapshot().present).toEqual([]);
+    expect(errors).toHaveLength(1);
+
+    client.stop();
+  });
+
+  it('does not carry a retained roster across member identities or projects', async () => {
+    const projectA = makeFetch({
+      present: [{ memberId: 'member-a' }, { memberId: 'peer-a' }],
+    });
+    const projectB = makeFetch({
+      present: [{ memberId: 'member-b' }, { memberId: 'peer-b' }],
+    });
+    const clientA = new CollabClient({
+      projectId: 'project-a',
+      member: { memberId: 'member-a' },
+      fetch: projectA.fetchImpl,
+      heartbeatMs: 10_000,
+    });
+    const clientB = new CollabClient({
+      projectId: 'project-b',
+      member: { memberId: 'member-b' },
+      fetch: projectB.fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    clientA.start();
+    clientB.start();
+    await vi.advanceTimersByTimeAsync(0);
+    projectA.state.present = [{ memberId: 'member-a' }];
+    projectB.state.present = [{ memberId: 'member-b' }];
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(clientA.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['member-a', 'peer-a']);
+    expect(clientB.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['member-b', 'peer-b']);
+
+    projectA.state.present = [{ memberId: 'member-a-2' }];
+    clientA.setMember({ memberId: 'member-a-2' });
+    expect(clientA.getSnapshot().present).toEqual([]);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(clientA.getSnapshot().present).toEqual([
+      { memberId: 'member-a-2' },
+    ]);
+    expect(clientB.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['member-b', 'peer-b']);
+
+    clientA.stop();
+    clientB.stop();
+  });
+
   it('keeps heartbeats and roster convergence alive while hidden, then refreshes fresh on visibility', async () => {
     const visibilityListeners = new Set<() => void>();
     const fakeDocument = {
@@ -747,6 +904,20 @@ describe('CollabClient', () => {
     ]);
 
     pendingHeartbeats[1]!(
+      new Response(
+        JSON.stringify({ present: [{ memberId: 'viewer' }] }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'viewer' },
+      { memberId: 'teammate' },
+    ]);
+
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pendingHeartbeats).toHaveLength(3);
+    pendingHeartbeats[2]!(
       new Response(
         JSON.stringify({ present: [{ memberId: 'viewer' }] }),
         { status: 200 },
