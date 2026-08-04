@@ -803,6 +803,10 @@ import {
 import { createPersistentSyncCache } from './collab/persistent-sync-cache.js';
 import { createSwrCache } from './collab/swr-cache.js';
 import { invalidateTeamResourceListingCaches } from './collab/team-resource-list-cache.js';
+import {
+  createRememberedTeamResourceScopes,
+  type RememberedTeamResourceScopeLease,
+} from './collab/remembered-team-resource-scopes.js';
 import { readVelaControlApiContext } from './integrations/vela.js';
 import { fetchVelaWorkspaceBillingProjection } from './integrations/vela-billing.js';
 import { createCollabPublishWatcher } from './collab/collab-publish-watcher.js';
@@ -5124,15 +5128,11 @@ export async function startServer({
   // directory supplies the principal and permissions. Never consult the
   // daemon-wide active Workspace here: another tab may switch it while this
   // request is awaiting the hub.
-  const rememberedTeamResourceScopes = new Map<
-    string,
-    TeamResourceRequestScope
-  >();
+  const rememberedTeamResourceScopes = createRememberedTeamResourceScopes();
   const rememberTeamResourceScope = (
     scope: TeamResourceRequestScope,
   ): TeamResourceRequestScope => {
-    rememberedTeamResourceScopes.set(scope.principal.teamId, scope);
-    return scope;
+    return rememberedTeamResourceScopes.remember(scope);
   };
   const resolveTeamResourceScope = async (req: any) => {
     const verified = await verifyExplicitWorkspaceRequestContext({
@@ -5168,7 +5168,7 @@ export async function startServer({
       directory.items,
       requestedWorkspaceId,
     );
-    return scope ? rememberTeamResourceScope(scope) : null;
+    return scope;
   };
   const teamResourceScopeStillAuthorized = async (
     scope: TeamResourceRequestScope,
@@ -6140,6 +6140,7 @@ export async function startServer({
     workspaceId?: string,
     reason: WorkspaceTeamResourceRefreshReason = 'poll',
     resourceId?: string,
+    rememberedLease?: RememberedTeamResourceScopeLease,
   ): Promise<void> => {
     const requestedWorkspaceId = workspaceId?.trim();
     if (!requestedWorkspaceId) return;
@@ -6149,6 +6150,14 @@ export async function startServer({
     // process (or on the daemon's mutable active context).
     const scope = await resolveTeamResourceScopeForWorkspaceId(requestedWorkspaceId);
     if (!scope) return;
+    // The authority read above may finish after an offscreen compatibility
+    // lease expired or was LRU-evicted. Do not let that late completion keep
+    // prewarming the scope. Subscribed and persisted workspace polls do not
+    // carry this token and therefore retain their existing correctness floor.
+    if (
+      rememberedLease &&
+      !rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease)
+    ) return;
     const kinds = resourceKind
       ? RECONCILED_TEAM_RESOURCE_KINDS.filter((kind) => kind === resourceKind)
       : RECONCILED_TEAM_RESOURCE_KINDS;
@@ -6172,11 +6181,8 @@ export async function startServer({
       reason,
     });
   };
-  const teamResourceBackgroundWorkspaceIds = (): string[] => {
+  const persistentTeamResourceBackgroundWorkspaceIds = (): string[] => {
     const ids = new Set<string>();
-    for (const workspaceId of rememberedTeamResourceScopes.keys()) {
-      if (workspaceId.trim()) ids.add(workspaceId.trim());
-    }
     for (const workspaceId of workspaceHubSubscriptions?.activeWorkspaceIds() ?? []) {
       if (workspaceId.trim()) ids.add(workspaceId.trim());
     }
@@ -6189,10 +6195,19 @@ export async function startServer({
     }
     return [...ids];
   };
+  const teamResourceBackgroundWorkspaceIds = (
+    rememberedLeases = rememberedTeamResourceScopes.activeWorkspaceLeases(),
+    persistentWorkspaceIds = persistentTeamResourceBackgroundWorkspaceIds(),
+  ): string[] => {
+    const ids = new Set(persistentWorkspaceIds);
+    for (const lease of rememberedLeases) ids.add(lease.workspaceId);
+    return [...ids];
+  };
   // Dedicated ~15s poll fallback — the "poll-as-floor" half of the same
   // architecture principle `workspaceInvalidationPoller` follows for
   // project/member/context signals (push accelerates delivery; the poll
-  // never stops running). Kept as its own timer rather than folded into that
+  // remains a floor for subscribed, persisted, or briefly prewarmed scopes).
+  // Kept as its own timer rather than folded into that
   // poller's deps: `workspaceInvalidationPoller` decides whether to emit by
   // diffing a cheap SIGNATURE against the previous one (see its
   // `emitIfChanged`), and there is no equivalent cheap "did the team-shared
@@ -6200,8 +6215,26 @@ export async function startServer({
   // this re-reads on its own cadence. The coordinator derives a stable
   // id+version signature after materialization and suppresses unchanged emits.
   const teamResourcesPollTimer = setInterval(() => {
-    for (const workspaceId of teamResourceBackgroundWorkspaceIds()) {
-      void reconcileTeamResourcesFromRemote(undefined, workspaceId, 'poll').catch((error) =>
+    const rememberedLeases = rememberedTeamResourceScopes.activeWorkspaceLeases();
+    const rememberedLeasesByWorkspace = new Map(
+      rememberedLeases.map((lease) => [lease.workspaceId, lease]),
+    );
+    const persistentWorkspaceIds = persistentTeamResourceBackgroundWorkspaceIds();
+    const persistentWorkspaceIdSet = new Set(persistentWorkspaceIds);
+    for (const workspaceId of teamResourceBackgroundWorkspaceIds(
+      rememberedLeases,
+      persistentWorkspaceIds,
+    )) {
+      const rememberedLease = persistentWorkspaceIdSet.has(workspaceId)
+        ? undefined
+        : rememberedLeasesByWorkspace.get(workspaceId);
+      void reconcileTeamResourcesFromRemote(
+        undefined,
+        workspaceId,
+        'poll',
+        undefined,
+        rememberedLease,
+      ).catch((error) =>
         console.warn(
           `[od] workspace ${workspaceId} resources poll error:`,
           error,

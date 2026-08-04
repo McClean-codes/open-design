@@ -417,23 +417,29 @@ describe('server.ts wiring (source boundary)', () => {
     expect(sourceGapBody).toContain("'catch-up'");
   });
 
-  it('polls remembered, subscribed, and persisted Team resource Workspaces instead of only ambient', () => {
+  it('polls leased, subscribed, and persisted Team resource Workspaces instead of only ambient', () => {
+    const persistentIdsStart = source.indexOf(
+      'const persistentTeamResourceBackgroundWorkspaceIds = (): string[] => {',
+    );
     const idsStart = source.indexOf(
-      'const teamResourceBackgroundWorkspaceIds = (): string[] => {',
+      'const teamResourceBackgroundWorkspaceIds = (',
+      persistentIdsStart,
     );
     const timerStart = source.indexOf(
       'const teamResourcesPollTimer = setInterval(() => {',
       idsStart,
     );
+    expect(persistentIdsStart).toBeGreaterThan(-1);
     expect(idsStart).toBeGreaterThan(-1);
     expect(timerStart).toBeGreaterThan(idsStart);
+    const persistentIdsBody = source.slice(persistentIdsStart, idsStart);
     const idsBody = source.slice(idsStart, timerStart);
-    expect(idsBody).toContain('rememberedTeamResourceScopes.keys()');
-    expect(idsBody).toContain(
+    expect(idsBody).toContain('rememberedTeamResourceScopes.activeWorkspaceLeases()');
+    expect(persistentIdsBody).toContain(
       'workspaceHubSubscriptions?.activeWorkspaceIds()',
     );
-    expect(idsBody).toContain('listTeamWorkspaceProjectShares(db)');
-    expect(idsBody).toContain(
+    expect(persistentIdsBody).toContain('listTeamWorkspaceProjectShares(db)');
+    expect(persistentIdsBody).toContain(
       'listTeamWorkspaceResourceWorkspaceIds(db)',
     );
 
@@ -444,10 +450,37 @@ describe('server.ts wiring (source boundary)', () => {
     const body = source.slice(start, end);
 
     expect(body).not.toContain('activeWorkspace.get()');
-    expect(body).toContain('teamResourceBackgroundWorkspaceIds()');
+    expect(body).toContain('teamResourceBackgroundWorkspaceIds(');
     expect(body).toContain(
-      "reconcileTeamResourcesFromRemote(undefined, workspaceId, 'poll')",
+      'const rememberedLease = persistentWorkspaceIdSet.has(workspaceId)',
     );
+    expect(body).toContain('rememberedLease,');
+
+    const refreshStart = source.indexOf(
+      'const reconcileTeamResourcesFromRemote = async (',
+    );
+    const refreshBody = source.slice(refreshStart, persistentIdsStart);
+    expect(refreshBody).toContain(
+      '!rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease)',
+    );
+  });
+
+  it('keeps background authority fail-closed without renewing an expired remembered scope', () => {
+    const resolverStart = source.indexOf(
+      'const resolveTeamResourceScopeForWorkspaceId = async (',
+    );
+    const authorizationStart = source.indexOf(
+      'const teamResourceScopeStillAuthorized = async (',
+      resolverStart,
+    );
+    expect(resolverStart).toBeGreaterThan(-1);
+    expect(authorizationStart).toBeGreaterThan(resolverStart);
+    const resolverBody = source.slice(resolverStart, authorizationStart);
+
+    expect(resolverBody).toContain('if (!directory.ok) return null;');
+    expect(resolverBody).toContain('teamResourceRequestScopeForWorkspaceId(');
+    expect(resolverBody).toContain('return scope;');
+    expect(resolverBody).not.toContain('rememberTeamResourceScope(scope)');
   });
 
   it('materializes and reconciles Team resources before exact-scope invalidation', () => {
@@ -522,7 +555,7 @@ describe('server.ts wiring (source boundary)', () => {
     );
 
     const pollStart = source.indexOf(
-      'const teamResourceBackgroundWorkspaceIds = (): string[] => {',
+      'const persistentTeamResourceBackgroundWorkspaceIds = (): string[] => {',
       refreshStart,
     );
     const refreshBody = source.slice(refreshStart, pollStart);
@@ -540,9 +573,7 @@ describe('server.ts wiring (source boundary)', () => {
     expect(source).toContain(
       "reconcileTeamResourcesFromRemote(undefined, subscribedWorkspaceId, 'catch-up')",
     );
-    expect(source).toContain(
-      "reconcileTeamResourcesFromRemote(undefined, workspaceId, 'poll')",
-    );
+    expect(source).toContain("workspaceId,\n        'poll',");
   });
 
   it('has no ambient active-workspace invalidation poller or hub subscription', () => {
