@@ -1138,8 +1138,8 @@ process.stdin.on("end", () => {
     expect(e2eVitest).not.toContain('"od-persistent-ci"');
     expect(preflight).toContain("fromJSON(needs.runners.outputs.runs_on).general_medium");
     expect(preflight).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).general_medium)");
-    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_hot");
-    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_hot)");
+    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0");
+    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_p0)");
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
@@ -1235,6 +1235,7 @@ process.stdin.on("end", () => {
       "general_medium",
       "js_hot",
       "ui_hot",
+      "ui_p0",
       "visual_hot",
       "windows_tools",
       "workspace_unit",
@@ -1250,6 +1251,7 @@ process.stdin.on("end", () => {
     expect(defaultRunsOn.workspace_unit).toEqual(["ubuntu-24.04"]);
     expect(defaultRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(defaultRunsOn.js_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
+    expect(defaultRunsOn.ui_p0).toEqual(["nexu-runners-small"]);
     expect(defaultRunsOn.ui_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
     expect(defaultRunsOn.visual_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
     expect(defaultProfiles).not.toHaveProperty("contabo_control");
@@ -1264,6 +1266,7 @@ process.stdin.on("end", () => {
     expect(performanceRunsOn.workspace_unit).toEqual(["ubuntu-24.04"]);
     expect(performanceRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(performanceRunsOn.js_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
+    expect(performanceRunsOn.ui_p0).toEqual(["nexu-runners-small"]);
     expect(performanceRunsOn.ui_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
     expect(performanceRunsOn.visual_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
 
@@ -1275,6 +1278,7 @@ process.stdin.on("end", () => {
     expect(economicRunsOn.workspace_unit).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(economicRunsOn.js_hot).toEqual(["ubuntu-24.04"]);
+    expect(economicRunsOn.ui_p0).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.ui_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.visual_hot).toEqual(["ubuntu-24.04"]);
   });
