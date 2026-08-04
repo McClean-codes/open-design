@@ -106,11 +106,6 @@ import { UpdaterPopup } from './UpdaterPopup';
 import { WhatsNewPopup } from './WhatsNewPopup';
 import { AmrBalanceDialog } from './AmrBalanceDialog';
 import { AmrLowBalanceDialog, type AmrLowBalanceDecision } from './AmrLowBalanceDialog';
-import { AmrArtifactUpgradeDialog } from './AmrArtifactUpgradeDialog';
-import {
-  AmrDialogDemoControl,
-  type AmrDialogDemoKind,
-} from './AmrDialogDemoControl';
 import {
   amrBalanceGateScopeForWorkspaceContext,
   amrBalanceGateScopesMatch,
@@ -983,21 +978,6 @@ export function EntryShell({
       resolve: (decision: AmrLowBalanceDecision) => void;
     } | null
   >(null);
-  const [reviewModalDemoEnabled] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    const params = new URLSearchParams(window.location.search);
-    return process.env.NODE_ENV !== 'production'
-      || params.get('demo-control') === '1'
-      || params.has('review-modal');
-  });
-  const [reviewModalPreview, setReviewModalPreview] = useState<AmrDialogDemoKind | null>(() => {
-    if (typeof window === 'undefined') return null;
-    const value = new URLSearchParams(window.location.search).get('review-modal');
-    return value === 'balance' || value === 'low-balance' || value === 'artifact-upgrade'
-      ? value
-      : null;
-  });
-  const [reviewModalControlOpen, setReviewModalControlOpen] = useState(false);
   // The entry nav rail is collapsed by default (Manus-style) so the entry
   // view opens clean and full-width; the panel toggle in the topbar opens it
   // as an overlay that dismisses on selection / backdrop click / Escape.
@@ -1543,44 +1523,6 @@ export function EntryShell({
               lives in the rail footer, and everything below is fixed-position
               or portalled so it occupies no layout space here. */}
           <WhatsNewPopup active={view === 'home'} />
-          {reviewModalDemoEnabled ? (
-            <AmrDialogDemoControl
-              open={reviewModalControlOpen}
-              onOpenChange={setReviewModalControlOpen}
-              onOpen={setReviewModalPreview}
-            />
-          ) : null}
-          {reviewModalPreview === 'balance' ? (
-            <AmrBalanceDialog
-              reason="insufficient"
-              balanceUsd="0.18"
-              profile={null}
-              entrySource="home_balance_gate_upgrade"
-              metricsConsent={false}
-              installationId={null}
-              onClose={() => setReviewModalPreview(null)}
-              onResolved={() => setReviewModalPreview(null)}
-            />
-          ) : null}
-          {reviewModalPreview === 'low-balance' ? (
-            <AmrLowBalanceDialog
-              balanceUsd="0.80"
-              profile={null}
-              entrySource="home_low_balance_warn_recharge"
-              metricsConsent={false}
-              installationId={null}
-              onDecision={() => setReviewModalPreview(null)}
-            />
-          ) : null}
-          {reviewModalPreview === 'artifact-upgrade' ? (
-            <AmrArtifactUpgradeDialog
-              profile={null}
-              metricsConsent={false}
-              installationId={null}
-              onClose={() => setReviewModalPreview(null)}
-              onContinue={() => setReviewModalPreview(null)}
-            />
-          ) : null}
           {amrBalanceGateBlock ? (
             <AmrBalanceDialog
               reason={amrBalanceGateBlock.reason}
