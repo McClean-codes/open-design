@@ -712,10 +712,12 @@ export function EntryShell({
     () =>
       createSharedProjectPredicate({
         teamProjects: teamProjects.projects,
+        localProjects: projects,
+        workspaceContext,
         sharedThisSession,
         unsharedThisSession,
       }),
-    [teamProjects.projects, sharedThisSession, unsharedThisSession],
+    [projects, teamProjects.projects, workspaceContext, sharedThisSession, unsharedThisSession],
   );
   // 草稿 is the complement of 全部项目: sharing moves a project from one to the
   // other, so a shared project must stop appearing here (acceptance #78).

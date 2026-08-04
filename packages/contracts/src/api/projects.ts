@@ -242,6 +242,16 @@ export interface Project {
   appliedPluginSnapshotId?: string;
   customInstructions?: string;
   /**
+   * The daemon-authoritative visibility from this project's
+   * `workspace_projects` row.
+   *
+   * This is a read projection, not project storage. It lets clients classify a
+   * local project even when that resource is synchronized through a non-project
+   * hub (for example, a Design System backing project). Absent means the reader
+   * did not carry workspace visibility and must be treated as "no opinion".
+   */
+  workspaceVisibility?: ProjectVisibility;
+  /**
    * The workspace this project belongs to — exactly one, per the 2026-07-21
    * ruling that 草稿 and shared projects are both bound to a workspace.
    *

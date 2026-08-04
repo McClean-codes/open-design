@@ -223,6 +223,7 @@ export async function listProjects(options?: {
       const project: Project = {
         ...summary.project,
         workspaceId: summary.workspaceId,
+        workspaceVisibility: summary.visibility,
       };
       // Workspace summaries have resource-level identities, so the same
       // logical project can legitimately appear more than once when local and
