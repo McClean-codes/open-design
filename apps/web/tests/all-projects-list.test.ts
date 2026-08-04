@@ -24,7 +24,12 @@ function teamContext(overrides: Partial<WorkspaceCollabContext> = {}): Workspace
   } as WorkspaceCollabContext;
 }
 
-function localProject(id: string, name: string, workspaceId?: string | null): Project {
+function localProject(
+  id: string,
+  name: string,
+  workspaceId?: string | null,
+  workspaceVisibility?: Project['workspaceVisibility'],
+): Project {
   return {
     id,
     name,
@@ -33,6 +38,7 @@ function localProject(id: string, name: string, workspaceId?: string | null): Pr
     createdAt: 1_700_000_000_000,
     updatedAt: 1_700_000_000_000,
     ...(workspaceId === undefined ? {} : { workspaceId }),
+    ...(workspaceVisibility === undefined ? {} : { workspaceVisibility }),
   } as Project;
 }
 
@@ -80,6 +86,32 @@ describe('buildAllProjectsList', () => {
     });
 
     expect(list.map((project) => project.id)).toEqual(['p-mine']);
+  });
+
+  it('uses the current workspace team visibility when a normal project has no project-hub row', () => {
+    const designSystemProject = {
+      ...localProject('p-design-system', 'Shopify Design System', 'ws-1', 'team'),
+      metadata: {
+        kind: 'other',
+        importedFrom: 'design-system',
+      },
+    } satisfies Project;
+
+    const list = build({
+      projects: [designSystemProject],
+      teamProjects: [],
+    });
+
+    expect(list.map((project) => project.id)).toEqual(['p-design-system']);
+  });
+
+  it('does not use another workspace team visibility as sharing evidence', () => {
+    const list = build({
+      projects: [localProject('p-elsewhere', 'Elsewhere', 'ws-2', 'team')],
+      teamProjects: [],
+    });
+
+    expect(list).toEqual([]);
   });
 
   it('lists shared projects the member has not pulled alongside their shared own', () => {
@@ -235,6 +267,24 @@ describe('buildDraftsList', () => {
     expect(list.map((p) => p.id)).toEqual(['p-a', 'p-b']);
   });
 
+  it('keeps an authoritative personal project in drafts', () => {
+    const list = drafts(
+      [localProject('p-personal', 'Personal authoring project', 'ws-1', 'personal')],
+      [],
+    );
+
+    expect(list.map((project) => project.id)).toEqual(['p-personal']);
+  });
+
+  it('drops an authoritative team project from drafts without a project-hub row', () => {
+    const list = drafts(
+      [localProject('p-team', 'Team backing project', 'ws-1', 'team')],
+      [],
+    );
+
+    expect(list).toEqual([]);
+  });
+
   // The two grids must partition the local list, never double-count.
   it('complements 全部项目 — no project appears in both', () => {
     const projects = [localProject('p-shared', 'Shared'), localProject('p-draft', 'Draft')];
@@ -382,6 +432,17 @@ describe('createSharedProjectPredicate', () => {
       unsharedThisSession: new Set(['p-stale']),
     });
     expect(isShared('p-stale')).toBe(false);
+  });
+
+  it('lets an optimistic unshare override current-workspace team visibility', () => {
+    const isShared = createSharedProjectPredicate({
+      teamProjects: [],
+      localProjects: [localProject('p-local-team', 'Local Team project', 'ws-1', 'team')],
+      workspaceContext: teamContext(),
+      unsharedThisSession: new Set(['p-local-team']),
+    });
+
+    expect(isShared('p-local-team')).toBe(false);
   });
 
   // The reported symptom, at the grid level: sharing must move the card between

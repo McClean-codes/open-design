@@ -8,11 +8,12 @@ export type SharedProjectPredicate = (projectId: string) => boolean;
 /**
  * The ONE answer to "is this project shared?".
  *
- * The invariant: **a project is shared if the team hub already lists it OR we
- * shared it in this session, and it is not shared if we unshared it in this
- * session.** The hub layer is persistent (it survives a reload); the session
- * layer is optimistic and exists so the state flips the instant the user acts,
- * instead of waiting for the next team-projects poll.
+ * The invariant: **a project is shared if the team hub already lists it, its
+ * authoritative row in the current workspace says `team`, OR we shared it in
+ * this session; and it is not shared if we unshared it in this session.** The
+ * local visibility witness covers ordinary projects synchronized through a
+ * non-project hub, while the session layer makes the state flip immediately
+ * instead of waiting for the next workspace list or team-projects poll.
  *
  * Every reader of that answer must call this predicate — the card's 共享 badge
  * AND the 全部项目 / 草稿 partition below. They used to compute it separately:
@@ -24,6 +25,10 @@ export type SharedProjectPredicate = (projectId: string) => boolean;
 export function createSharedProjectPredicate(input: {
   /** Rows the team hub lists as shared. Persistent, survives a reload. */
   teamProjects: readonly TeamProject[];
+  /** Local card rows carrying the daemon-authoritative workspace visibility. */
+  localProjects?: readonly Project[];
+  /** Exact workspace whose local visibility may be used as evidence. */
+  workspaceContext?: WorkspaceCollabContext | null;
   /** Ids shared in this session, before the hub poll caught up. */
   sharedThisSession?: ReadonlySet<string>;
   /** Ids unshared in this session, before the hub poll caught up. */
@@ -37,9 +42,23 @@ export function createSharedProjectPredicate(input: {
   const hubShared = new Set(
     asTeamProjectRows(input.teamProjects).map((teamProject) => teamProject.projectId),
   );
+  const workspaceContext = input.workspaceContext ?? null;
+  const locallyTeamVisible = new Set(
+    (workspaceContext ? input.localProjects ?? [] : [])
+      .filter(
+        (project) =>
+          project.workspaceVisibility === 'team' &&
+          project.workspaceId === workspaceContext?.workspaceId,
+      )
+      .map((project) => project.id),
+  );
   return (projectId: string) => {
     if (unsharedThisSession?.has(projectId) === true) return false;
-    return hubShared.has(projectId) || sharedThisSession?.has(projectId) === true;
+    return (
+      hubShared.has(projectId) ||
+      locallyTeamVisible.has(projectId) ||
+      sharedThisSession?.has(projectId) === true
+    );
   };
 }
 
@@ -159,7 +178,11 @@ export function buildAllProjectsList(input: {
   // only guards a context that resolves to null under a mounted grid.
   if (!workspaceContext) return projects;
 
-  const isShared = input.isShared ?? createSharedProjectPredicate({ teamProjects });
+  const isShared = input.isShared ?? createSharedProjectPredicate({
+    teamProjects,
+    localProjects: projects,
+    workspaceContext,
+  });
   // Only this workspace's projects, so the grid cannot render another
   // workspace's local rows while a switch is still in flight.
   const scopedProjects = projects.filter((project) => belongsToWorkspace(project, workspaceContext));
@@ -225,7 +248,11 @@ export function buildDraftsList(input: {
   // Stated as an early return to mirror 全部项目's fallback — the general path
   // below computes the same list once `teamProjects` is empty.
   if (!workspaceContext) return projects;
-  const isShared = input.isShared ?? createSharedProjectPredicate({ teamProjects });
+  const isShared = input.isShared ?? createSharedProjectPredicate({
+    teamProjects,
+    localProjects: projects,
+    workspaceContext,
+  });
   return projects.filter(
     (project) => belongsToWorkspace(project, workspaceContext) && !isShared(project.id),
   );

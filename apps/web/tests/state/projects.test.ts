@@ -311,7 +311,7 @@ describe('listProjects', () => {
     })).resolves.toEqual([localProject]);
   });
 
-  it('restores the exact wrapper Workspace onto project card models', async () => {
+  it('restores the exact wrapper Workspace and visibility onto project card models', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input) => {
       const requestedWorkspaceId = new URL(String(input), 'http://localhost').pathname.split('/')[3]!;
       return Response.json({
@@ -319,6 +319,7 @@ describe('listProjects', () => {
           {
             id: 'summary-first',
             workspaceId: requestedWorkspaceId,
+            visibility: 'team',
             project: {
               id: 'project-shared',
               name: `First catalog row in ${requestedWorkspaceId}`,
@@ -329,6 +330,7 @@ describe('listProjects', () => {
           {
             id: 'summary-duplicate',
             workspaceId: requestedWorkspaceId,
+            visibility: 'personal',
             project: {
               id: 'project-shared',
               name: 'Duplicate catalog row',
@@ -339,6 +341,7 @@ describe('listProjects', () => {
           {
             id: 'summary-second',
             workspaceId: requestedWorkspaceId,
+            visibility: 'personal',
             project: {
               id: 'project-second',
               name: 'Second project',
@@ -375,11 +378,13 @@ describe('listProjects', () => {
         id: 'project-shared',
         name: 'First catalog row in workspace-wrapper-a',
         workspaceId: 'workspace-wrapper-a',
+        workspaceVisibility: 'team',
       }),
       expect.objectContaining({
         id: 'project-second',
         name: 'Second project',
         workspaceId: 'workspace-wrapper-a',
+        workspaceVisibility: 'personal',
       }),
     ]);
     expect(workspaceBProjects).toEqual([
@@ -387,11 +392,13 @@ describe('listProjects', () => {
         id: 'project-shared',
         name: 'First catalog row in workspace-wrapper-b',
         workspaceId: 'workspace-wrapper-b',
+        workspaceVisibility: 'team',
       }),
       expect.objectContaining({
         id: 'project-second',
         name: 'Second project',
         workspaceId: 'workspace-wrapper-b',
+        workspaceVisibility: 'personal',
       }),
     ]);
     expect(fetchMock).toHaveBeenCalledTimes(2);
