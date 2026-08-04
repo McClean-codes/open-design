@@ -157,41 +157,41 @@ export interface ListSkillsOptions {
   /**
    * Narrow the listing to skills visible from this workspace (see
    * `workspace_resources` in `db.ts`). Requires `db` — both are optional so
-   * every existing caller (system-prompt composition, id resolution,
-   * install/import lookups, the bundled-scenario scan) keeps getting the
-   * unscoped catalog unchanged. Only `GET /api/skills` passes both.
+   * legacy callers can deliberately keep an unscoped local catalog. HTTP
+   * resource routes and project/run prompt resolution pass the exact
+   * Workspace plus creator member.
    */
   db?: SqliteDb;
   workspaceId?: string | null;
+  workspaceMemberId?: string | null;
 }
 
 /**
  * Is this skill visible from `scope` (the requesting workspace)?
  *
- * Same one-way rule design-systems (`designSystemVisibleFromWorkspace`,
- * design-systems/index.ts) and plugins (`pluginVisibleFromWorkspace`,
- * plugins/registry.ts) already ship, applied to the generic
- * `workspace_resources` table: a skill CLAIMED by another workspace (a
- * binding row whose `workspace_id` differs) is hidden, and an UNCLAIMED
- * skill (no binding row — every skill imported before workspace isolation
- * shipped looks like this) stays visible everywhere. Only a skill imported
- * AFTER this shipped, into a specific workspace, can be hidden from a
- * different one.
+ * Built-in skills are app capabilities and remain global. User skills in an
+ * explicit Workspace require an exact binding: Team skills are visible to
+ * Team members, while Personal skills require the creator member. Unbound
+ * user skills are quarantined from explicit Workspaces.
  *
  * `scope === undefined` is a separate signal from `null`/`''`: undefined
- * means the caller (system-prompt composition, id resolution, install/import
- * lookups) never asked to be scoped at all, so nothing is filtered by
- * ownership. `null`/`''` means a caller DID ask to be scoped but has no
- * workspace identity to offer (signed-out client, headerless `curl`) — spec
- * 04 §10: that must hide a CLAIMED skill, not show it, or "no scope" quietly
- * becomes "trust everything".
+ * means the caller is on the preserved local/CLI compatibility lane.
+ * `null`/`''` is a headerless HTTP catalog and may see built-ins and unbound
+ * local skills, but never a Workspace-claimed skill.
  */
 function skillVisibleFromWorkspace(
   db: SqliteDb,
   skillId: string,
   scope: string | null | undefined,
+  workspaceMemberId: string | null | undefined,
+  source: SkillSource,
 ): boolean {
-  return skillVisibleFromBinding(getWorkspaceResourceByResourceId(db, "skill", skillId), scope);
+  return skillVisibleFromBinding(
+    getWorkspaceResourceByResourceId(db, "skill", skillId),
+    scope,
+    workspaceMemberId,
+    source,
+  );
 }
 
 /**
@@ -204,6 +204,8 @@ function skillVisibleFromWorkspace(
 function skillVisibleFromBinding(
   binding: ReturnType<typeof getWorkspaceResourceByResourceId>,
   scope: string | null | undefined,
+  workspaceMemberId: string | null | undefined,
+  source: SkillSource,
 ): boolean {
   const ownerId = typeof binding?.workspaceId === "string" ? binding.workspaceId.trim() : "";
   if (scope === undefined) return true;
@@ -211,10 +213,14 @@ function skillVisibleFromBinding(
   // origin remains recoverable, but its tombstone removes it from every
   // scoped catalog. The on-disk copy is intentionally left untouched.
   if (binding?.visibility === "team" && binding.resourceState === "deleted") return false;
+  if (source === "built-in") return true;
   const scopeId = scope?.trim();
   if (!scopeId) return !ownerId;
-  if (!ownerId) return true;
-  return ownerId === scopeId;
+  if (!ownerId || ownerId !== scopeId) return false;
+  if (binding?.visibility === "team") return true;
+  const creatorId = binding?.createdByWorkspaceMemberId?.trim();
+  const callerId = workspaceMemberId?.trim();
+  return Boolean(creatorId && callerId && creatorId === callerId);
 }
 
 // Accept either a single root path or an array. When given multiple roots,
@@ -255,6 +261,23 @@ export async function listSkills(
         const data = asSkillFrontmatter(parsedData);
         const parentId =
           typeof data.name === "string" && data.name ? data.name : entry.name;
+        // A hidden user shadow must not consume the id before the built-in
+        // root is scanned. Otherwise another member's Personal skill could
+        // make the globally shipped skill of the same id disappear.
+        if (
+          source === "user"
+          && options.db
+          && options.workspaceId !== undefined
+          && !skillVisibleFromWorkspace(
+            options.db,
+            parentId,
+            options.workspaceId,
+            options.workspaceMemberId,
+            source,
+          )
+        ) {
+          continue;
+        }
         // Skip when an earlier root already surfaced this id — the first
         // root wins so user shadows built-in. Done before we read the
         // rest of the frontmatter to keep the shadowed-skill path cheap.
@@ -411,7 +434,14 @@ export async function listSkills(
       const bindingId = derived ? derived.parentId : entry.id;
       return { entry, binding: getWorkspaceResourceByResourceId(scopeDb, "skill", bindingId) };
     })
-    .filter(({ binding }) => skillVisibleFromBinding(binding, scopeId))
+    .filter(({ entry, binding }) =>
+      skillVisibleFromBinding(
+        binding,
+        scopeId,
+        options.workspaceMemberId,
+        entry.source,
+      ),
+    )
     // A live binding whose visibility is `'team'` is the puller's copy of a
     // teammate's share (see `syncSharedTeamSkill`'s `markTeamSynced` in
     // server.ts) — never the sharer's own skill, which is never bound this

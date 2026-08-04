@@ -51,13 +51,16 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-function fakePlugin(id: string): InstalledPluginRecord {
+function fakePlugin(
+  id: string,
+  sourceKind: InstalledPluginRecord['sourceKind'] = 'local',
+): InstalledPluginRecord {
   const now = Date.now();
   return {
     id,
     title: id,
     version: '1.0.0',
-    sourceKind: 'local',
+    sourceKind,
     source: `/tmp/${id}`,
     trust: 'trusted',
     capabilitiesGranted: [],
@@ -95,12 +98,22 @@ describe('listInstalledPlugins workspace scope', () => {
     expect(scoped.map((p) => p.id)).toEqual(['plugin-unbound']);
   });
 
-  it('keeps an unbound (legacy) plugin visible from every workspace', () => {
+  it('quarantines an unbound user plugin from every explicit workspace', () => {
     const db = openDatabase(tempDir, { dataDir: tempDir });
     upsertInstalledPlugin(db, fakePlugin('plugin-legacy'));
 
-    expect(listInstalledPlugins(db, 'ws-1').map((p) => p.id)).toContain('plugin-legacy');
-    expect(listInstalledPlugins(db, 'ws-2').map((p) => p.id)).toContain('plugin-legacy');
+    expect(listInstalledPlugins(db, 'ws-1', 'member-a').map((p) => p.id)).not.toContain('plugin-legacy');
+    expect(listInstalledPlugins(db, 'ws-2', 'member-b').map((p) => p.id)).not.toContain('plugin-legacy');
+    expect(listInstalledPlugins(db, null, null).map((p) => p.id)).toContain('plugin-legacy');
+    expect(listInstalledPlugins(db).map((p) => p.id)).toContain('plugin-legacy');
+  });
+
+  it('keeps bundled plugins visible in every explicit workspace', () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    upsertInstalledPlugin(db, fakePlugin('plugin-bundled', 'bundled'));
+
+    expect(listInstalledPlugins(db, 'ws-1', 'member-a').map((p) => p.id)).toContain('plugin-bundled');
+    expect(listInstalledPlugins(db, 'ws-2', 'member-b').map((p) => p.id)).toContain('plugin-bundled');
   });
 
   it('hides a plugin bound to a different workspace, but shows it from its own', () => {
@@ -108,13 +121,43 @@ describe('listInstalledPlugins workspace scope', () => {
     upsertInstalledPlugin(db, fakePlugin('plugin-claimed'));
     ensureWorkspaceResource(db, 'plugin', 'ws-1', 'plugin-claimed', { createdByWorkspaceMemberId: 'member-a' });
 
-    expect(listInstalledPlugins(db, 'ws-1').map((p) => p.id)).toContain('plugin-claimed');
-    expect(listInstalledPlugins(db, 'ws-2').map((p) => p.id)).not.toContain('plugin-claimed');
+    expect(listInstalledPlugins(db, 'ws-1', 'member-a').map((p) => p.id)).toContain('plugin-claimed');
+    expect(listInstalledPlugins(db, 'ws-2', 'member-a').map((p) => p.id)).not.toContain('plugin-claimed');
+  });
+
+  it('hides an unshared personal plugin from another member in the same workspace', () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    upsertInstalledPlugin(db, fakePlugin('plugin-personal'));
+    ensureWorkspaceResource(db, 'plugin', 'ws-team', 'plugin-personal', {
+      visibility: 'personal',
+      createdByWorkspaceMemberId: 'member-owner',
+    });
+
+    expect(listInstalledPlugins(db, 'ws-team', 'member-owner').map((p) => p.id))
+      .toContain('plugin-personal');
+    expect(listInstalledPlugins(db, 'ws-team', 'member-other').map((p) => p.id))
+      .not.toContain('plugin-personal');
+  });
+
+  it('shows a shared Team plugin to another member in the same workspace', () => {
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    upsertInstalledPlugin(db, fakePlugin('plugin-team'));
+    ensureWorkspaceResource(db, 'plugin', 'ws-team', 'plugin-team', {
+      visibility: 'team',
+      createdByWorkspaceMemberId: 'member-owner',
+    });
+
+    expect(listInstalledPlugins(db, 'ws-team', 'member-other').map((p) => p.id))
+      .toContain('plugin-team');
   });
 
   it('denies reads of a retired Team plugin without hiding a same-id Personal plugin', () => {
     const db = openDatabase(tempDir, { dataDir: tempDir });
     upsertInstalledPlugin(db, fakePlugin('plugin-retracted'));
+    ensureWorkspaceResource(db, 'plugin', 'ws-personal', 'plugin-retracted', {
+      visibility: 'personal',
+      createdByWorkspaceMemberId: 'member-personal',
+    });
     const teamBindingId = workspaceTeamPluginBindingResourceId(
       'ws-1',
       'plugin-retracted',
@@ -127,7 +170,7 @@ describe('listInstalledPlugins workspace scope', () => {
       resourceState: 'deleted',
     });
 
-    expect(listInstalledPlugins(db, 'ws-1').map((p) => p.id)).toContain(
+    expect(listInstalledPlugins(db, 'ws-personal', 'member-personal').map((p) => p.id)).toContain(
       'plugin-retracted',
     );
     expect(listInstalledPlugins(db).map((p) => p.id)).toContain(
@@ -164,6 +207,10 @@ describe('listInstalledPlugins workspace scope', () => {
   it('keeps a Personal plugin visible after a same-id Team mirror is retired', () => {
     const db = openDatabase(tempDir, { dataDir: tempDir });
     upsertInstalledPlugin(db, fakePlugin('plugin-collision'));
+    ensureWorkspaceResource(db, 'plugin', 'ws-personal', 'plugin-collision', {
+      visibility: 'personal',
+      createdByWorkspaceMemberId: 'member-personal',
+    });
     const teamBindingId = workspaceTeamPluginBindingResourceId(
       'ws-team',
       'plugin-collision',
@@ -176,7 +223,7 @@ describe('listInstalledPlugins workspace scope', () => {
       resourceState: 'deleted',
     });
 
-    expect(listInstalledPlugins(db, 'ws-personal').map((plugin) => plugin.id))
+    expect(listInstalledPlugins(db, 'ws-personal', 'member-personal').map((plugin) => plugin.id))
       .toContain('plugin-collision');
   });
 

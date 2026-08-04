@@ -2614,21 +2614,23 @@
   border-radius: 28px;
 }
 
-/* Retry + dismiss sit side by side, together spanning the same width as the
- * hint text above instead of shrink-wrapping to their own label width. */
+/* Keep the retry controls centered in the activation card. They deliberately
+ * retain their intrinsic width instead of stretching from the left edge — the
+ * primary "Open sign-in page" action should read as the card's focal CTA. */
 .onboarding-cloud__activation .amr-login-activation__actions {
   width: 100%;
+  justify-content: center;
   gap: 8px;
 }
 
 .onboarding-cloud__activation .amr-login-activation__open {
-  flex: 1;
+  flex: 0 0 auto;
   justify-content: center;
 }
 
 .onboarding-cloud__activation-dismiss {
   display: inline-flex;
-  flex: 1;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   padding: 4px 10px;

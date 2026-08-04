@@ -234,33 +234,46 @@ export function rowToInstalledPlugin(row: DbRow): InstalledPluginRecord {
 /**
  * Is this plugin visible from `scope` (the requesting workspace)?
  *
- * Same one-way rule design-systems already ships (`designSystemVisibleFromWorkspace`
- * in design-systems/index.ts): a plugin CLAIMED by another workspace (a
- * `workspace_resources` row whose `workspace_id` differs) is hidden, and an
- * UNCLAIMED plugin (no binding row at all) stays visible everywhere. Every
- * plugin installed before workspace isolation shipped looks unclaimed, so
- * this never makes a pre-existing install vanish out from under an upgrading
- * user — only a plugin installed AFTER this shipped, into a specific
- * workspace, can be hidden from a different one.
+ * Bundled plugins are app capabilities and remain global. User plugins in an
+ * explicit Workspace are stricter: Team bindings are visible to active Team
+ * members, while Personal bindings require the exact creator member. An
+ * unbound user plugin is quarantined from every explicit Workspace because no
+ * caller may adopt legacy bytes merely by viewing them.
  *
  * `scope === undefined` (as opposed to `null` or `''`) is a SEPARATE signal
  * from "no identity": it means the caller — `listInstalledPlugins` called
- * with no second argument at all — never asked for scoping in the first
- * place (id resolution, the bundled-scenario scan), so nothing is filtered
- * regardless of ownership. `null`/`''` means a caller DID ask to be scoped but
- * has no workspace identity to offer (a signed-out client, a `curl` with no
- * headers) — spec 04 §10: that must hide a CLAIMED plugin, not show it, or
- * "no scope" silently becomes "trust everything".
+ * with no second argument at all — never asked for scoping and is the
+ * preserved local/CLI compatibility lane. `null`/`''` is the headerless HTTP
+ * catalog: it may see unbound local user plugins and bundled plugins, but not
+ * anything claimed by a Workspace.
  */
-function pluginVisibleFromWorkspace(db: SqliteDb, pluginId: string, scope: string | null | undefined): boolean {
-  const binding = getWorkspaceResourceByResourceId(db, 'plugin', pluginId);
+function pluginVisibleFromWorkspace(
+  db: SqliteDb,
+  plugin: InstalledPluginRecord,
+  scope: string | null | undefined,
+  workspaceMemberId: string | null | undefined,
+): boolean {
+  if (scope !== undefined && plugin.sourceKind === 'bundled') return true;
+  let binding: ReturnType<typeof getWorkspaceResourceByResourceId>;
+  try {
+    binding = getWorkspaceResourceByResourceId(db, 'plugin', plugin.id);
+  } catch (error) {
+    // Narrow plugin-library tests and external embedders may initialize only
+    // the plugin schema. Unscoped/local reads do not require Workspace data;
+    // a scoped read must still fail rather than silently bypass isolation.
+    if (scope === undefined) return true;
+    throw error;
+  }
   const ownerId = typeof binding?.workspaceId === 'string' ? binding.workspaceId.trim() : '';
   if (binding?.resourceState === 'deleted') return false;
   if (scope === undefined) return true;
   const scopeId = scope?.trim();
   if (!scopeId) return !ownerId;
-  if (!ownerId) return true;
-  return ownerId === scopeId;
+  if (!ownerId || ownerId !== scopeId) return false;
+  if (binding?.visibility === 'team') return true;
+  const creatorId = binding?.createdByWorkspaceMemberId?.trim();
+  const callerId = workspaceMemberId?.trim();
+  return Boolean(creatorId && callerId && creatorId === callerId);
 }
 
 /**
@@ -393,10 +406,16 @@ export async function activateWorkspaceTeamPluginIfStillShared(input: {
  * `pluginVisibleFromWorkspace`'s doc comment for why `undefined` and `null`
  * must NOT collapse to the same "unfiltered" behavior here.
  */
-export function listInstalledPlugins(db: SqliteDb, workspaceId?: string | null): InstalledPluginRecord[] {
+export function listInstalledPlugins(
+  db: SqliteDb,
+  workspaceId?: string | null,
+  workspaceMemberId?: string | null,
+): InstalledPluginRecord[] {
   const rows = db.prepare(`SELECT * FROM installed_plugins ORDER BY title ASC`).all() as DbRow[];
   const records = rows.map(rowToInstalledPlugin);
-  return records.filter((record) => pluginVisibleFromWorkspace(db, record.id, workspaceId));
+  return records.filter((record) =>
+    pluginVisibleFromWorkspace(db, record, workspaceId, workspaceMemberId),
+  );
 }
 
 export function getInstalledPlugin(db: SqliteDb, id: string): InstalledPluginRecord | null {

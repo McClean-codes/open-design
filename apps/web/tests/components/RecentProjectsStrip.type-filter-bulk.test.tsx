@@ -11,11 +11,43 @@ import {
   projectCardCategory,
 } from '../../src/components/RecentProjectsStrip';
 import type { Project } from '../../src/types';
+import type { WorkspaceProjectSummary } from '@open-design/contracts';
 
 // Typed on the argument the component actually passes, so `.mock.calls`
 // destructures instead of widening to the empty tuple.
 interface MoveCall { projectId: string; visibility: string }
-const moveWorkspaceProject = vi.fn(async (_input: MoveCall) => undefined);
+function movedProject(input: MoveCall): WorkspaceProjectSummary {
+  return {
+    id: input.projectId,
+    name: input.projectId,
+    workspaceId: 'ws-1',
+    visibility: input.visibility === 'team' ? 'team' : 'personal',
+    resourceState: 'active',
+    createdByWorkspaceMemberId: 'wm-1',
+    currentUserAccess: {
+      canOpen: true,
+      canRename: true,
+      canDelete: true,
+      canDuplicate: true,
+      canMoveToTeam: input.visibility !== 'team',
+      canMoveToPersonal: input.visibility === 'team',
+      canExport: true,
+      canSendTo: true,
+      canRestoreVersion: true,
+    },
+    createdAt: 1,
+    updatedAt: 2,
+    project: {
+      id: input.projectId,
+      name: input.projectId,
+      skillId: null,
+      designSystemId: null,
+      createdAt: 1,
+      updatedAt: 2,
+    },
+  };
+}
+const moveWorkspaceProject = vi.fn(async (input: MoveCall) => movedProject(input));
 
 vi.mock('../../src/state/projects', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -286,7 +318,7 @@ describe('RecentProjectsStrip bulk selection bar (#75)', () => {
       ['p-media', 'team'],
     ]);
     await waitFor(() => {
-      expect(onProjectShared.mock.calls.map(([id]) => id)).toEqual(['p-deck', 'p-media']);
+      expect(onProjectShared.mock.calls.map(([project]) => project.id)).toEqual(['p-deck', 'p-media']);
     });
     // Selection mode closes once the batch is dispatched.
     expect(container.querySelector('.recent-projects__bulkbar')).toBeNull();

@@ -77,6 +77,10 @@ export type CollabProjectInvalidationEventName =
 /** A project was shared / unshared / created / deleted in the team. */
 export interface TeamProjectsChangedSsePayload {
   type: 'team-projects-changed';
+  /** Optional invalidation target; consumers must still re-read exact scope. */
+  projectId?: string;
+  /** Metadata-only patches can update one row; catalog changes reconcile all. */
+  kind?: 'catalog' | 'metadata';
   at?: number;
 }
 
@@ -85,6 +89,17 @@ export interface TeamProjectContentReadySsePayload {
   type: 'team-project-content-ready';
   projectId: string;
   workspaceId: string;
+  at?: number;
+}
+
+export type WorkspaceTeamResourceKind = 'design_system' | 'plugin' | 'skill';
+
+/** A team resource listing changed; consumers must re-read the exact scope. */
+export interface TeamResourcesChangedSsePayload {
+  type: 'team-resources-changed';
+  resourceKind: WorkspaceTeamResourceKind;
+  /** Optional invalidation target; the signal intentionally carries no state. */
+  resourceId?: string;
   at?: number;
 }
 
@@ -150,7 +165,7 @@ export interface WorkspaceWalletBalanceChangedSsePayload {
 export type WorkspaceInvalidationSsePayload =
   | TeamProjectsChangedSsePayload
   | TeamProjectContentReadySsePayload
-  | WorkspaceTeamResourcesChangedSsePayload
+  | TeamResourcesChangedSsePayload
   | WorkspaceMembersChangedSsePayload
   | WorkspaceContextChangedSsePayload
   | WorkspaceBillingChangedSsePayload

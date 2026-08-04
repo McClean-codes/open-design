@@ -15,12 +15,37 @@
 // a plain member who merely has a teammate's pulled copy can never overwrite
 // the real owner's shared entry.
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import React from 'react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DesignSystemSummary } from '@open-design/contracts';
 
 import { DesignSystemsTab } from '../../src/components/DesignSystemsTab';
 import { I18nProvider } from '../../src/i18n';
+import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+  onActive: [] as Array<() => void>,
+  autoActivate: true,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((
+    handlers: Record<string, (payload: any) => void>,
+    options?: { onActive?: () => void; enabled?: boolean; workspaceContext?: unknown },
+  ) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    if (options?.onActive) workspaceInvalidationHarness.onActive.push(options.onActive);
+    const identity = JSON.stringify(options?.workspaceContext ?? null);
+    React.useEffect(() => {
+      if (workspaceInvalidationHarness.autoActivate && options?.enabled !== false && options?.workspaceContext) {
+        options.onActive?.();
+      }
+    }, [identity, options?.enabled]);
+    return { connected: false };
+  }),
+}));
 
 vi.mock('../../src/analytics/provider', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/analytics/provider')>();
@@ -119,6 +144,14 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 let shareCalls: string[] = [];
 let teamReadHeaders: Headers[] = [];
 let unshareCalls: Array<{ url: string; headers: Headers }> = [];
@@ -162,6 +195,9 @@ beforeEach(() => {
   shareCalls = [];
   teamReadHeaders = [];
   unshareCalls = [];
+  workspaceInvalidationHarness.handlers.length = 0;
+  workspaceInvalidationHarness.onActive.length = 0;
+  workspaceInvalidationHarness.autoActivate = true;
 });
 
 afterEach(() => {
@@ -169,16 +205,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function renderTab(systems: DesignSystemSummary[]) {
+function renderTab(
+  systems: DesignSystemSummary[],
+  options: { isActive?: boolean; onSystemsRefresh?: () => void } = {},
+) {
   return render(
     <I18nProvider initial="en">
       <DesignSystemsTab
+        isActive={options.isActive}
         loading={false}
         systems={systems}
         selectedId={null}
         onSelect={() => {}}
         onCreate={() => {}}
         onOpenSystem={() => {}}
+        onSystemsRefresh={options.onSystemsRefresh}
       />
     </I18nProvider>,
   );
@@ -191,6 +232,52 @@ async function openTeamTabAndSelect(id = 'user:teammate-ds') {
 }
 
 describe('DesignSystemsTab — repeat share reads as "sync" once already team-shared', () => {
+  it('parks hidden invalidations and performs one exact Team-index catch-up when active', async () => {
+    mockFetch(true);
+    const onSystemsRefresh = vi.fn();
+    const view = renderTab([MY_SHARED_SYSTEM], { isActive: false, onSystemsRefresh });
+    await act(async () => Promise.resolve());
+    expect(teamReadHeaders).toHaveLength(0);
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(handler).toBeTypeOf('function');
+    act(() => handler?.({
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+      resourceId: MY_SHARED_SYSTEM.id,
+    }));
+    await act(async () => Promise.resolve());
+    expect(teamReadHeaders).toHaveLength(0);
+
+    view.rerender(
+      <I18nProvider initial="en">
+        <DesignSystemsTab
+          isActive
+          loading={false}
+          systems={[MY_SHARED_SYSTEM]}
+          selectedId={null}
+          onSelect={() => {}}
+          onCreate={() => {}}
+          onOpenSystem={() => {}}
+          onSystemsRefresh={onSystemsRefresh}
+        />
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(teamReadHeaders).toHaveLength(1));
+    expect(onSystemsRefresh).not.toHaveBeenCalled();
+    resetCoalescedGet();
+    teamReadHeaders = [];
+    onSystemsRefresh.mockClear();
+
+    const onActive = workspaceInvalidationHarness.onActive.at(-1);
+    expect(onActive).toBeTypeOf('function');
+    act(() => onActive?.());
+    await waitFor(() => expect(teamReadHeaders).toHaveLength(1));
+    expect(onSystemsRefresh).not.toHaveBeenCalled();
+  });
+
   it('moves an owner-shared design system out of Personal and keeps one Team entry', async () => {
     mockFetch(true);
     const view = renderTab([MY_SHARED_SYSTEM]);
@@ -227,6 +314,82 @@ describe('DesignSystemsTab — repeat share reads as "sync" once already team-sh
     await openTeamTabAndSelect('user:my-ds');
     expect(screen.getAllByTestId('design-kit-view-user:my-ds')).toHaveLength(1);
     expect(teamReadHeaders).toHaveLength(2);
+  });
+
+  it('applies a remote Team index event immediately and ignores the older in-flight snapshot', async () => {
+    const initial = deferred<Response>();
+    const refreshed = deferred<Response>();
+    let reads = 0;
+    globalThis.fetch = vi.fn(() => {
+      reads += 1;
+      return reads === 1 ? initial.promise : refreshed.promise;
+    }) as typeof fetch;
+    renderTab([MY_SHARED_SYSTEM]);
+    await waitFor(() => expect(reads).toBe(1));
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(handler).toBeTypeOf('function');
+    act(() => handler!({
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+      resourceId: MY_SHARED_SYSTEM.id,
+    }));
+    await waitFor(() => expect(reads).toBe(2));
+
+    refreshed.resolve(jsonResponse({
+      ids: [MY_SHARED_SYSTEM.id],
+      resources: [{ id: MY_SHARED_SYSTEM.id, canUnshare: true }],
+    }));
+    fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
+    expect(await screen.findByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+
+    initial.resolve(jsonResponse({ ids: [], resources: [] }));
+    await waitFor(() => expect(reads).toBe(2));
+    expect(screen.getByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+  });
+
+  it('starts an independent snapshot for each rapid mutation and rejects reverse-order stale data', async () => {
+    const mutationA = deferred<Response>();
+    const mutationB = deferred<Response>();
+    let reads = 0;
+    globalThis.fetch = vi.fn(() => {
+      reads += 1;
+      if (reads === 1) return Promise.resolve(jsonResponse({ ids: [], resources: [] }));
+      return reads === 2 ? mutationA.promise : mutationB.promise;
+    }) as typeof fetch;
+    renderTab([MY_SHARED_SYSTEM]);
+    await waitFor(() => expect(reads).toBe(1));
+
+    const handler = workspaceInvalidationHarness.handlers
+      .map((handlers) => handlers['team-resources-changed'])
+      .find((candidate) => typeof candidate === 'function');
+    expect(handler).toBeTypeOf('function');
+    act(() => {
+      handler!({
+        type: 'team-resources-changed',
+        resourceKind: 'design_system',
+        resourceId: 'mutation-a',
+      });
+      handler!({
+        type: 'team-resources-changed',
+        resourceKind: 'design_system',
+        resourceId: 'mutation-b',
+      });
+    });
+    await waitFor(() => expect(reads).toBe(3));
+
+    mutationB.resolve(jsonResponse({
+      ids: [MY_SHARED_SYSTEM.id],
+      resources: [{ id: MY_SHARED_SYSTEM.id, canUnshare: true }],
+    }));
+    fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
+    expect(await screen.findByTestId('design-kit-view-user:my-ds')).toBeTruthy();
+
+    mutationA.resolve(jsonResponse({ ids: [], resources: [] }));
+    await act(async () => Promise.resolve());
+    expect(screen.getByTestId('design-kit-view-user:my-ds')).toBeTruthy();
   });
 
   it('keeps the action visible (relabeled "Sync to team") for the owner, and re-POSTs the same /share route on click', async () => {

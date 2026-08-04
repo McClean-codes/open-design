@@ -43,6 +43,11 @@
 // design systems, plugins, and skills; each materializer owns creating the
 // active Team binding that this reconciler later retires.
 
+import type {
+  TeamResourcesChangedSsePayload,
+  WorkspaceTeamResourceKind,
+} from '@open-design/contracts';
+
 /** This daemon's one local `workspace_resources` row for a resource, as far
  *  as reconciliation cares. Only rows the caller has already filtered to
  *  `visibility: 'team'` for the target workspace are meaningful input — see
@@ -89,6 +94,10 @@ export function createWorkspaceResourceSignatureTracker() {
       return previous !== signature;
     },
   };
+}
+
+export interface MaterializedTeamResourceRef extends RemoteTeamResourceRef {
+  versionId?: string;
 }
 
 export type WorkspaceResourceReconcileAction = {
@@ -207,4 +216,159 @@ export async function reconcileWorkspaceResourcesWithRemote(
   }
 
   return { retired };
+}
+
+const TEAM_RESOURCE_KINDS: readonly WorkspaceTeamResourceKind[] = [
+  'design_system',
+  'plugin',
+  'skill',
+];
+
+export type WorkspaceTeamResourceRefreshReason = 'push' | 'poll' | 'catch-up';
+
+export interface WorkspaceTeamResourceRefreshInput<TScope> {
+  workspaceId: string;
+  scope: TScope;
+  resourceKind?: string;
+  resourceId?: string;
+  reason: WorkspaceTeamResourceRefreshReason;
+}
+
+export interface WorkspaceTeamResourceRefreshResult {
+  processedKinds: WorkspaceTeamResourceKind[];
+  emittedKinds: WorkspaceTeamResourceKind[];
+  failedKinds: WorkspaceTeamResourceKind[];
+}
+
+export interface WorkspaceTeamResourceEventCoordinatorDeps<TScope> {
+  /** Must not resolve until every listed resource is locally materialized. */
+  materializeAndList: (input: {
+    workspaceId: string;
+    resourceKind: WorkspaceTeamResourceKind;
+    scope: TScope;
+  }) => Promise<readonly MaterializedTeamResourceRef[]>;
+  /** Reconcile against the exact listing returned by materializeAndList. */
+  reconcile: (input: {
+    workspaceId: string;
+    resourceKind: WorkspaceTeamResourceKind;
+    scope: TScope;
+    resources: readonly MaterializedTeamResourceRef[];
+  }) => Promise<WorkspaceResourcesReconcileResult>;
+  emit: (workspaceId: string, payload: TeamResourcesChangedSsePayload) => void;
+  now?: () => number;
+  onError?: (error: unknown, resourceKind: WorkspaceTeamResourceKind) => void;
+}
+
+function teamResourceSignature(resources: readonly MaterializedTeamResourceRef[]): string {
+  return resources
+    .map((resource) => `${resource.resourceId}\u0000${resource.versionId ?? ''}`)
+    .sort()
+    .join('\u0001');
+}
+
+function isWorkspaceTeamResourceKind(value: string): value is WorkspaceTeamResourceKind {
+  return TEAM_RESOURCE_KINDS.some((kind) => kind === value);
+}
+
+/**
+ * Coordinates background resource invalidation without exposing partially
+ * materialized state. Work for the same workspace/kind is serialized; polling
+ * emits only when the stable remote signature changes (or a local row retires).
+ */
+export function createWorkspaceTeamResourceEventCoordinator<TScope>(
+  deps: WorkspaceTeamResourceEventCoordinatorDeps<TScope>,
+): {
+  refresh: (
+    input: WorkspaceTeamResourceRefreshInput<TScope>,
+  ) => Promise<WorkspaceTeamResourceRefreshResult>;
+} {
+  const signatures = new Map<string, string>();
+  const pending = new Map<string, Promise<void>>();
+
+  const runKind = async (
+    input: WorkspaceTeamResourceRefreshInput<TScope>,
+    resourceKind: WorkspaceTeamResourceKind,
+  ): Promise<'emitted' | 'processed' | 'failed'> => {
+    try {
+      const resources = await deps.materializeAndList({
+        workspaceId: input.workspaceId,
+        resourceKind,
+        scope: input.scope,
+      });
+      const reconciliation = await deps.reconcile({
+        workspaceId: input.workspaceId,
+        resourceKind,
+        scope: input.scope,
+        resources,
+      });
+      const key = `${input.workspaceId}\u0000${resourceKind}`;
+      const nextSignature = teamResourceSignature(resources);
+      const previousSignature = signatures.get(key);
+      const shouldEmit = input.reason === 'push'
+        || reconciliation.retired > 0
+        || (previousSignature === undefined
+          ? resources.length > 0
+          : previousSignature !== nextSignature);
+
+      if (shouldEmit) {
+        deps.emit(input.workspaceId, {
+          type: 'team-resources-changed',
+          resourceKind,
+          ...(input.resourceId ? { resourceId: input.resourceId } : {}),
+          at: deps.now?.() ?? Date.now(),
+        });
+      }
+      signatures.set(key, nextSignature);
+      return shouldEmit ? 'emitted' : 'processed';
+    } catch (error) {
+      deps.onError?.(error, resourceKind);
+      return 'failed';
+    }
+  };
+
+  const enqueueKind = async (
+    input: WorkspaceTeamResourceRefreshInput<TScope>,
+    resourceKind: WorkspaceTeamResourceKind,
+  ): Promise<'emitted' | 'processed' | 'failed'> => {
+    const key = `${input.workspaceId}\u0000${resourceKind}`;
+    const previous = pending.get(key);
+    let result: 'emitted' | 'processed' | 'failed' = 'failed';
+    const run = async () => {
+      result = await runKind(input, resourceKind);
+    };
+    const current = previous
+      ? previous.catch(() => undefined).then(run)
+      : run();
+    pending.set(key, current);
+    await current;
+    if (pending.get(key) === current) pending.delete(key);
+    return result;
+  };
+
+  return {
+    async refresh(input) {
+      const kinds = input.resourceKind === undefined
+        ? TEAM_RESOURCE_KINDS
+        : isWorkspaceTeamResourceKind(input.resourceKind)
+          ? [input.resourceKind]
+          : [];
+      const outcomes = await Promise.all(
+        kinds.map(async (resourceKind) => ({
+          resourceKind,
+          outcome: await enqueueKind(input, resourceKind),
+        })),
+      );
+      return {
+        processedKinds: outcomes
+          .filter(({ outcome }) => outcome !== 'failed')
+          .map(({ resourceKind }) => resourceKind),
+        emittedKinds: outcomes
+          .filter(({ outcome }) => outcome === 'emitted')
+          .map(({ resourceKind }) => resourceKind),
+        failedKinds: outcomes
+          .filter(({ outcome }) => outcome === 'failed')
+          .map(({ resourceKind }) => resourceKind),
+      };
+    },
+  };
 }

@@ -92,12 +92,15 @@ if (args[1] === 'summary') {
 }
 if (args[1] === 'workspace-snapshot') {
   const workspaceId = args[args.indexOf('--workspace-id') + 1];
+  const personal = workspaceId === 'ws-switch-personal';
   process.stdout.write(JSON.stringify({
     schemaVersion: 1,
     workspaceId,
-    workspaceMemberId: 'mem-switch-team',
+    workspaceMemberId: personal ? 'mem-switch-personal' : 'mem-switch-team',
     billingScopeVersion: 2,
-    billing: { billingState: 'active', planId: 'team_plus' },
+    billing: personal
+      ? { billingState: 'free', planId: null }
+      : { billingState: 'active', planId: 'team_plus' },
     wallet: { balanceUsd: '12.50', expiresAt: null, updatedAt: '2026-07-31T00:00:00Z' },
     revisions: { billing: 'billing-1', wallet: 'wallet-1' },
   }) + '\\n');
@@ -207,14 +210,28 @@ describe('workspace switching and scoped billing', () => {
           );
           expect(checkout.checkoutUrl).toBe('https://billing.example/checkout/team-1');
 
-          // A personal workspace is not a team billing subject, even though it
-          // is a valid workspace membership for project/editor scope.
-          await expectStatus(
-            webUrl,
+          // Personal and Team balances both use an exact Workspace subject.
+          // The directory membership is the authority; an unknown Workspace
+          // must still fail closed below.
+          const personalBilling = await requestJson<{
+            workspaceBalance: {
+              workspaceId: string;
+              workspaceMemberId: string;
+              balanceUsd: string;
+            } | null;
+            workspaceSnapshot?: { billing: { billingState: string; planId: string | null } };
+          }>(webUrl,
             `/api/workspace/billing?scope=workspace&workspaceId=${PERSONAL.workspaceId}`,
-            403,
-            workspaceHeaders(PERSONAL),
+            { headers: workspaceHeaders(PERSONAL) },
           );
+          expect(personalBilling.workspaceBalance).toMatchObject({
+            workspaceId: PERSONAL.workspaceId,
+            workspaceMemberId: PERSONAL.workspaceMemberId,
+            balanceUsd: '12.50',
+          });
+          expect(personalBilling.workspaceSnapshot).toMatchObject({
+            billing: { billingState: 'free', planId: null },
+          });
           await expectStatus(
             webUrl,
             '/api/workspace/billing?scope=workspace&workspaceId=ws-foreign',

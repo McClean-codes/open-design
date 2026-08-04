@@ -59,7 +59,6 @@ async function startServer({ shared = true }: { shared?: boolean } = {}) {
   const updated: string[] = [];
   const deleted: string[] = [];
   const created: string[] = [];
-  let syncComments = true;
 
   const app = express();
   app.use(express.json());
@@ -82,10 +81,9 @@ async function startServer({ shared = true }: { shared?: boolean } = {}) {
     // p1 is owned by OWNER.
     resolveProjectOwnerMemberId: async () => OWNER,
     isSharedProject: async () => shared,
-    shouldSyncProjectComments: async () => syncComments,
-    onCommentCreated: (c) => created.push(c.id),
-    onCommentUpdated: (c) => updated.push(c.id),
-    onCommentDeleted: (c) => deleted.push(c.id),
+    onCommentCreated: (c) => { created.push(c.id); },
+    onCommentUpdated: (c) => { updated.push(c.id); },
+    onCommentDeleted: (c) => { deleted.push(c.id); },
   });
   server = http.createServer(app);
   await new Promise<void>((resolve) => server!.listen(0, resolve));
@@ -151,9 +149,6 @@ async function startServer({ shared = true }: { shared?: boolean } = {}) {
     updated,
     deleted,
     commentTarget,
-    setSyncComments(value: boolean) {
-      syncComments = value;
-    },
   };
 }
 
@@ -358,30 +353,6 @@ describe('preview comment permission gating', () => {
     );
 
     expect(edit.status).toBe(404);
-    expect(api.listComments()).toHaveLength(0);
-  });
-
-  it('does not push local comment mutations when the project is no longer team-shared', async () => {
-    const api = await startServer();
-    api.setSyncComments(false);
-
-    const comment = await api.createComment('m-author', 'local after unshare');
-    expect(comment.note).toBe('local after unshare');
-    expect(api.created).toEqual([]);
-
-    const patch = await api.json(
-      `/api/projects/${PROJECT}/conversations/${CONVERSATION}/comments/${comment.id}`,
-      { method: 'PATCH', member: 'm-author', body: { status: 'applying' } },
-    );
-    expect(patch.status).toBe(200);
-    expect(api.updated).toEqual([]);
-
-    const del = await api.json(
-      `/api/projects/${PROJECT}/conversations/${CONVERSATION}/comments/${comment.id}`,
-      { method: 'DELETE', member: 'm-author' },
-    );
-    expect(del.status).toBe(200);
-    expect(api.deleted).toEqual([]);
     expect(api.listComments()).toHaveLength(0);
   });
 

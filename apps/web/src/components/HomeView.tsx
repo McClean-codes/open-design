@@ -17,6 +17,7 @@ import type {
   McpServerConfig,
   InstalledPluginRecord,
   ProjectKind,
+  WorkspaceProjectSummary,
   AudioVoiceOption,
   WorkspaceContextItem,
 } from '@open-design/contracts';
@@ -41,6 +42,7 @@ import {
   duplicatePluginAsProject,
   listPlugins,
   listPluginsFresh,
+  pluginCatalogCacheKey,
   readCachedVisiblePlugins,
   patchProject,
   resolvedWorkspaceContextForWrite,
@@ -91,7 +93,13 @@ import { consumePendingHomeChip, HOME_CHIP_INTENT_EVENT } from '../runtime/home-
 import { navigate } from '../router';
 import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry';
 import { workspaceContextLinkedDirs } from './workspace-context';
-import { useTeamProjects, useWorkspaceContext } from '../collab/useWorkspaceContext';
+import {
+  currentWorkspaceAccountGeneration,
+  useTeamProjects,
+  useWorkspaceContext,
+} from '../collab/useWorkspaceContext';
+import { useWorkspaceInvalidation } from '../collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
 import {
   buildHomeMediaComposer,
   homeMediaSurfaceForChipId,
@@ -253,8 +261,11 @@ interface Props {
    *  because the SAME answer partitions its 全部项目 / 草稿 grids — a home share
    *  must move the project between those grids too, without a refetch. */
   isSharedProject?: SharedProjectPredicate;
-  onProjectShared?: (projectId: string) => void;
+  onProjectShared?: (project: WorkspaceProjectSummary) => void;
+  onProjectShareFailed?: (projectId: string) => void;
   onProjectUnshared?: (projectId: string) => void;
+  /** Authoritative catalog owners plus any exact successful-move witness. */
+  projectOwnerMemberIds?: ReadonlyMap<string, string>;
   skills?: SkillSummary[];
   skillsLoading?: boolean;
   connectors?: ConnectorDetail[];
@@ -404,7 +415,9 @@ export function HomeView({
   promptHandoff,
   isSharedProject,
   onProjectShared,
+  onProjectShareFailed,
   onProjectUnshared,
+  projectOwnerMemberIds,
   skills = EMPTY_SKILLS,
   skillsLoading = false,
   connectors = EMPTY_CONNECTORS,
@@ -419,6 +432,14 @@ export function HomeView({
   const analytics = useAnalytics();
   const workspaceContextState = useWorkspaceContext();
   const { context: workspaceContext } = workspaceContextState;
+  const pluginAccountGeneration = currentWorkspaceAccountGeneration();
+  const pluginCatalogOptions = {
+    workspaceContext,
+    accountGeneration: pluginAccountGeneration,
+  };
+  const desiredPluginCatalogKey = workspaceContextState.identityChangePending
+    ? null
+    : pluginCatalogCacheKey(pluginCatalogOptions);
   // Team-wide catalog from the resource hub via the daemon; empty off-team / when
   // the hub is unconfigured. Only the creator attribution is derived here — the
   // shared/not-shared answer arrives as `isSharedProject` from EntryShell, which
@@ -428,14 +449,13 @@ export function HomeView({
   // teammate's shared project (a project absent here is the member's own local
   // project → "我创建").
   const homeProjectOwnerMemberIds = useMemo(
-    () =>
-      new Map(
-        homeTeamProjects.projects.map((teamProject) => [
-          teamProject.projectId,
-          teamProject.ownerMemberId,
-        ]),
-      ),
-    [homeTeamProjects.projects],
+    () => projectOwnerMemberIds ?? new Map(
+      homeTeamProjects.projects.map((teamProject) => [
+        teamProject.projectId,
+        teamProject.ownerMemberId,
+      ]),
+    ),
+    [homeTeamProjects.projects, projectOwnerMemberIds],
   );
   // P0 page_view page_name=home — fire once on mount. ref-keyed to survive
   // re-renders that flip parent state without remounting HomeView.
@@ -450,13 +470,30 @@ export function HomeView({
   // not become disabled merely because the 10-second refresh TTL elapsed while
   // the user was in a project. The effect below still revalidates an expired
   // catalog; only a true cold start (no successful catalog yet) stays guarded.
-  const initialPluginsRef = useRef<InstalledPluginRecord[] | null>(readCachedVisiblePlugins());
+  const initialPluginsRef = useRef<InstalledPluginRecord[] | null>(
+    desiredPluginCatalogKey ? readCachedVisiblePlugins(pluginCatalogOptions) : null,
+  );
+  const [pluginCatalogKey, setPluginCatalogKey] = useState<string | null>(
+    desiredPluginCatalogKey,
+  );
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>(
     () => initialPluginsRef.current ?? [],
   );
   const [pluginsLoading, setPluginsLoading] = useState(
     () => initialPluginsRef.current === null,
   );
+  // Home stays mounted while entry-shell views and Workspaces change. Never
+  // commit one render with the previous identity's plugin catalogue: switch to
+  // the exact new cache partition synchronously, or mask the old rows while a
+  // deliberate identity change is unresolved.
+  if (pluginCatalogKey !== desiredPluginCatalogKey) {
+    const cached = desiredPluginCatalogKey
+      ? readCachedVisiblePlugins(pluginCatalogOptions)
+      : null;
+    setPluginCatalogKey(desiredPluginCatalogKey);
+    setPlugins(cached ?? []);
+    setPluginsLoading(cached === null);
+  }
   const [pendingApplyId, setPendingApplyId] = useState<string | null>(null);
   const [pendingChipId, setPendingChipId] = useState<string | null>(null);
   const [pendingAuthoringChipId, setPendingAuthoringChipId] = useState<string | null>(null);
@@ -680,6 +717,22 @@ export function HomeView({
   const consumedHandoffIdRef = useRef<number | null>(null);
   const pendingPromptFocusEndRef = useRef(false);
   const activePluginApplyRequestRef = useRef(0);
+  const pluginCatalogRequestGenerationRef = useRef(0);
+  const pluginCatalogReloadRef = useRef<(
+    force?: boolean,
+    supersede?: boolean,
+  ) => Promise<void>>(
+    async () => {},
+  );
+  const pluginCatalogReloadInFlightRef = useRef<{
+    key: string;
+    promise: Promise<void>;
+  } | null>(null);
+  const pluginCatalogStaleRef = useRef(false);
+  const homeActiveRef = useRef(isActive);
+  homeActiveRef.current = isActive;
+  const desiredPluginCatalogKeyRef = useRef(desiredPluginCatalogKey);
+  desiredPluginCatalogKeyRef.current = desiredPluginCatalogKey;
   const scrollHomeToTop = useCallback(() => {
     requestAnimationFrame(() => {
       const scrollContainer = homeViewRef.current?.closest('.entry-main--scroll');
@@ -688,24 +741,91 @@ export function HomeView({
     });
   }, []);
   useEffect(() => {
+    if (!desiredPluginCatalogKey) return;
     let cancelled = false;
+    let ownedPromise: Promise<void> | null = null;
+    const issuedCatalogKey = desiredPluginCatalogKey;
     // On mount use the cache-aware loader (skips the network when warm); an
     // explicit plugins-changed event forces a fresh fetch.
-    const load = (force = false) => {
-      void (force ? listPlugins() : listPluginsFresh()).then((rows) => {
-        if (cancelled) return;
+    const load = (force = false, supersede = false): Promise<void> => {
+      const current = pluginCatalogReloadInFlightRef.current;
+      if (!supersede && current?.key === issuedCatalogKey) return current.promise;
+      const requestGeneration = ++pluginCatalogRequestGenerationRef.current;
+      const promise = (force
+        ? listPlugins(pluginCatalogOptions)
+        : listPluginsFresh(pluginCatalogOptions)).then((rows) => {
+        if (
+          cancelled
+          || requestGeneration !== pluginCatalogRequestGenerationRef.current
+          || desiredPluginCatalogKeyRef.current !== issuedCatalogKey
+        ) return;
+        setPluginCatalogKey(issuedCatalogKey);
         setPlugins(rows);
         setPluginsLoading(false);
+      }).finally(() => {
+        if (pluginCatalogReloadInFlightRef.current?.promise === promise) {
+          pluginCatalogReloadInFlightRef.current = null;
+        }
       });
+      pluginCatalogReloadInFlightRef.current = { key: issuedCatalogKey, promise };
+      ownedPromise = promise;
+      return promise;
     };
-    load();
-    const onChanged = () => load(true);
+    pluginCatalogReloadRef.current = load;
+    if (homeActiveRef.current && workspaceContext?.workspaceType !== 'team') load();
+    else pluginCatalogStaleRef.current = true;
+    const onChanged = () => {
+      // A mutation event is newer than any pending snapshot and must supersede
+      // it; only lifecycle catch-up joins the initial read.
+      if (homeActiveRef.current) load(true, true);
+      else pluginCatalogStaleRef.current = true;
+    };
     window.addEventListener('open-design:plugins-changed', onChanged);
     return () => {
       cancelled = true;
+      // A Workspace-directory refresh can briefly mask the catalog identity
+      // (K -> null -> K). Do not let the remounted K effect join this effect's
+      // cancelled promise: its response is intentionally prevented from
+      // committing, so reusing it would leave the new surface in the cold
+      // `pluginsLoading` state forever even though `/api/plugins` succeeded.
+      // A newer request has a different promise and must remain registered.
+      const inFlight = pluginCatalogReloadInFlightRef.current;
+      if (ownedPromise && inFlight?.promise === ownedPromise) {
+        pluginCatalogReloadInFlightRef.current = null;
+      }
+      if (pluginCatalogReloadRef.current === load) {
+        pluginCatalogReloadRef.current = async () => {};
+      }
       window.removeEventListener('open-design:plugins-changed', onChanged);
     };
-  }, []);
+  }, [desiredPluginCatalogKey, workspaceContext?.workspaceType]);
+
+  useEffect(() => {
+    if (!isActive || !desiredPluginCatalogKey || !pluginCatalogStaleRef.current) return;
+    if (workspaceContext?.workspaceType === 'team') return;
+    pluginCatalogStaleRef.current = false;
+    pluginCatalogReloadRef.current(true);
+  }, [desiredPluginCatalogKey, isActive, workspaceContext?.workspaceType]);
+
+  const handlePluginStreamActive = useWorkspaceSnapshotActivation({
+    enabled: isActive && workspaceContext?.workspaceType === 'team',
+    identity: desiredPluginCatalogKey ?? 'no-plugin-catalog',
+    refresh: () => { void pluginCatalogReloadRef.current(true, true); },
+  });
+
+  useWorkspaceInvalidation({}, {
+    workspaceContext:
+      isActive && workspaceContext?.workspaceType === 'team'
+        ? workspaceContext
+        : null,
+    enabled: isActive && workspaceContext?.workspaceType === 'team',
+    // App owns the global Skill/Design System catch-up. Home only refreshes
+    // its plugin projection.
+    onActive: () => {
+      pluginCatalogStaleRef.current = false;
+      handlePluginStreamActive();
+    },
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -2510,6 +2630,7 @@ export function HomeView({
         heading={t('recentProjects.title')}
         {...(isSharedProject ? { isSharedProject } : {})}
         {...(onProjectShared ? { onProjectShared } : {})}
+        {...(onProjectShareFailed ? { onProjectShareFailed } : {})}
         {...(onProjectUnshared ? { onProjectUnshared } : {})}
         projectOwnerMemberIds={homeProjectOwnerMemberIds}
         limit={1000}

@@ -120,19 +120,6 @@ function renderOnboarding(
     onRenameProject: vi.fn(),
     onChangeDefaultDesignSystem: vi.fn(),
     onPersistComposioKey: vi.fn(),
-    onPersistByokCredential: vi.fn(async (input) => ({
-      id: input.id ?? 'byok-onboarding-test',
-      label: input.label,
-      protocol: input.protocol,
-      baseUrl: input.baseUrl,
-      model: input.model,
-      apiVersion: input.apiVersion,
-      requiresApiKey: input.requiresApiKey ?? true,
-      configured: true,
-      keyTail: input.apiKey?.slice(-4),
-      createdAt: 1,
-      updatedAt: 1,
-    })),
     onOpenSettings: vi.fn(),
     onCompleteOnboarding: vi.fn(),
     ...overrides,
@@ -342,11 +329,18 @@ describe('EntryShell settings menu', () => {
 });
 
 describe('EntryShell design systems view', () => {
-  it('refreshes the design-system catalog when the view is active', async () => {
+  it('leaves workspace-scoped design-system activation to the mounted tab', async () => {
     const onDesignSystemsRefresh = vi.fn();
     renderHome({ onDesignSystemsRefresh }, '/design-systems');
 
-    await waitFor(() => expect(onDesignSystemsRefresh).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId('entry-view-design-systems')).toHaveAttribute(
+      'data-active',
+      'true',
+    );
+    // DesignSystemsTab owns its Team SSE activation and fallback snapshot.
+    // Calling the App-level catalog refresh here as well creates a duplicate,
+    // differently-scoped request every time the route becomes active.
+    expect(onDesignSystemsRefresh).not.toHaveBeenCalled();
   });
 });
 
@@ -1841,12 +1835,6 @@ describe('EntryShell onboarding Open Design AMR runtime', () => {
 
     expect(props.onModeChange).toHaveBeenCalledWith('api');
     expect(props.onApiModelChange).toHaveBeenCalledWith('claude-opus-4-8');
-    expect(props.onPersistByokCredential).toHaveBeenCalledWith(expect.objectContaining({
-      protocol: 'anthropic',
-      apiKey: 'test-api-key',
-      baseUrl: 'https://api.anthropic.com',
-      model: 'claude-opus-4-8',
-    }));
     expect(props.onConfigPersist).toHaveBeenCalled();
     await waitFor(() => {
       expect(props.onCompleteOnboarding).toHaveBeenCalledTimes(1);
@@ -1854,13 +1842,10 @@ describe('EntryShell onboarding Open Design AMR runtime', () => {
     expect((props.onConfigPersist as ReturnType<typeof vi.fn>).mock.calls.at(-1)?.[0]).toMatchObject({
       mode: 'api',
       apiProtocol: 'anthropic',
-      apiKey: '',
+      apiKey: 'test-api-key',
       baseUrl: 'https://api.anthropic.com',
       model: 'claude-opus-4-8',
       apiProviderBaseUrl: null,
-      byokProfileId: 'byok-onboarding-test',
-      byokCredentialConfigured: true,
-      byokCredentialTail: '-key',
     });
   });
 

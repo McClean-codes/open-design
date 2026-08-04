@@ -51,6 +51,7 @@ const saveTabs = vi.fn();
 const playSound = vi.fn();
 const showCompletionNotification = vi.fn();
 const analyticsTrackMock = vi.fn();
+const useProjectFileEvents = vi.fn();
 const workspaceScopeMocks = vi.hoisted(() => {
   const personalContext = (): WorkspaceCollabContext & {
     workspaceType: 'personal';
@@ -198,7 +199,7 @@ vi.mock('../../src/providers/daemon', () => ({
 }));
 
 vi.mock('../../src/providers/project-events', () => ({
-  useProjectFileEvents: vi.fn(),
+  useProjectFileEvents: (...args: unknown[]) => useProjectFileEvents(...args),
 }));
 
 vi.mock('../../src/utils/notifications', async (importOriginal) => ({
@@ -589,8 +590,6 @@ vi.mock('../../src/components/ChatPane', () => ({
 const config: AppConfig = {
   mode: 'daemon',
   apiKey: '',
-  byokProfileId: 'byok-test-profile',
-  byokCredentialConfigured: true,
   baseUrl: '',
   model: '',
   agentId: 'agent-1',
@@ -1935,6 +1934,77 @@ describe('ProjectView conversation run isolation', () => {
       projectId: 'project-1',
     }));
   });
+
+  it('refreshes the active conversation when a project comment event arrives', async () => {
+    renderProjectView();
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    fireEvent.click(screen.getByTestId('conversation-select-conv-b'));
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-b'));
+    if (!resolveConversationBMessages) throw new Error('Expected conv-b message load to be pending');
+    resolveConversationBMessages([]);
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fetchPreviewComments.mockClear();
+    fetchPreviewComments.mockResolvedValue([previewComment]);
+    const handleProjectEvent = useProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'comment-changed'; projectId: string }) => void)
+      | undefined;
+    await act(async () => {
+      handleProjectEvent?.({ type: 'comment-changed', projectId: project.id });
+    });
+
+    await waitFor(() => {
+      expect(fetchPreviewComments).toHaveBeenCalledWith(
+        project.id,
+        'conv-b',
+        expect.anything(),
+      );
+    });
+    // The daemon GET is project-scoped for a Team share, so a comment whose
+    // local FK anchor is conv-a is intentionally accepted by the conv-b view.
+    expect(previewComment.conversationId).toBe('conv-a');
+  });
+
+  it('sends a project-scoped comment through the active chat when its local anchor belongs to another conversation', async () => {
+    renderProjectView();
+
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-a'));
+    fireEvent.click(screen.getByTestId('conversation-select-conv-b'));
+    await waitFor(() => expect(screen.getByTestId('active-conversation').textContent).toBe('conv-b'));
+    if (!resolveConversationBMessages) throw new Error('Expected conv-b message load to be pending');
+    resolveConversationBMessages([]);
+    await waitFor(() => expect(screen.getByTestId('send-message')).toHaveProperty('disabled', false));
+
+    fetchPreviewComments.mockClear();
+    fetchPreviewComments.mockResolvedValue([previewComment]);
+    const handleProjectEvent = useProjectFileEvents.mock.calls.at(-1)?.[2] as
+      | ((event: { type: 'comment-changed'; projectId: string }) => void)
+      | undefined;
+    await act(async () => {
+      handleProjectEvent?.({ type: 'comment-changed', projectId: project.id });
+    });
+    await waitFor(() => expect(fetchPreviewComments).toHaveBeenCalledWith(
+      project.id,
+      'conv-b',
+      expect.anything(),
+    ));
+
+    fireEvent.click(screen.getByTestId('attach-first-comment'));
+    await waitFor(() => expect(screen.getByTestId('attached-comment-count').textContent).toBe('1'));
+    fireEvent.click(screen.getByTestId('send-message'));
+
+    await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: project.id,
+      conversationId: 'conv-b',
+      commentAttachments: [expect.objectContaining({
+        id: previewComment.id,
+        comment: previewComment.note,
+      })],
+    })));
+    expect(previewComment.conversationId).toBe('conv-a');
+  });
+
   it('detaches saved comment attachments after queueing them for a busy conversation', async () => {
     fetchPreviewComments.mockResolvedValue([previewComment]);
 
@@ -2687,9 +2757,7 @@ describe('ProjectView conversation run isolation', () => {
       ...config,
       mode: 'api',
       apiProtocol: 'openai',
-      apiKey: '',
-      byokProfileId: 'byok-test-profile',
-      byokCredentialConfigured: true,
+      apiKey: 'byok-test-key',
       baseUrl: 'https://api.openai.com/v1',
       model: 'api-model',
     });
@@ -2702,7 +2770,12 @@ describe('ProjectView conversation run isolation', () => {
     await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
     expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'byok-opencode',
-      byokProfileId: 'byok-test-profile',
+      byokProvider: expect.objectContaining({
+        protocol: 'openai',
+        apiKey: 'byok-test-key',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'api-model',
+      }),
       model: 'api-model',
     }));
     await waitFor(() => expect(playSound).toHaveBeenCalledWith('success-sound'));
@@ -2746,8 +2819,6 @@ describe('ProjectView conversation run isolation', () => {
           agentId,
           apiProtocol: 'openai',
           apiKey,
-          byokProfileId: undefined,
-          byokCredentialConfigured: false,
           baseUrl: 'https://api.openai.com/v1',
           model,
         },
@@ -2802,7 +2873,12 @@ describe('ProjectView conversation run isolation', () => {
     await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
     expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'byok-opencode',
-      byokProfileId: 'byok-test-profile',
+      byokProvider: expect.objectContaining({
+        protocol: 'ollama',
+        baseUrl: 'http://localhost:11434',
+        model: 'llama3.2',
+        requiresApiKey: false,
+      }),
       model: 'llama3.2',
     }));
   });
@@ -2829,7 +2905,12 @@ describe('ProjectView conversation run isolation', () => {
     await waitFor(() => expect(streamViaDaemon).toHaveBeenCalledTimes(1));
     expect(streamViaDaemon).toHaveBeenCalledWith(expect.objectContaining({
       agentId: 'byok-opencode',
-      byokProfileId: 'byok-test-profile',
+      byokProvider: expect.objectContaining({
+        protocol: 'openai',
+        baseUrl: 'http://127.0.0.1:8000/v1',
+        model: 'model',
+        requiresApiKey: false,
+      }),
       model: 'model',
     }));
   });

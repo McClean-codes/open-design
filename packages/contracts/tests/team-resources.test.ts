@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   assertTeamResourceCopyAllowed,
   evaluateTeamResourceCopy,
+  WORKSPACE_INVALIDATION_EVENTS,
+  type TeamResourcesChangedSsePayload,
   TeamResourceCopyForbiddenError,
-} from '../src/api/team-resources.js';
+} from '../src/index.js';
 
 describe('evaluateTeamResourceCopy (AC-9 copy red-line)', () => {
   it('allows copying a personal resource regardless of state', () => {
@@ -53,5 +55,25 @@ describe('assertTeamResourceCopyAllowed', () => {
     } catch (error) {
       expect((error as TeamResourceCopyForbiddenError).code).toBe('WORKSPACE_RESOURCE_DELETED');
     }
+  });
+});
+
+describe('Team resource workspace invalidation contract', () => {
+  it('exposes a thin team-resources-changed signal without resource state', () => {
+    const payload: TeamResourcesChangedSsePayload = {
+      type: 'team-resources-changed',
+      resourceKind: 'skill',
+      resourceId: 'skill-1',
+      at: 123,
+    };
+
+    expect(WORKSPACE_INVALIDATION_EVENTS).toContain('team-resources-changed');
+    expect(payload).toEqual({
+      type: 'team-resources-changed',
+      resourceKind: 'skill',
+      resourceId: 'skill-1',
+      at: 123,
+    });
+    expect(payload).not.toHaveProperty('resourceStatus');
   });
 });

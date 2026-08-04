@@ -10,12 +10,12 @@ vi.mock('../src/collab/workspace-events', () => ({
 import { resetCoalescedGet } from '../src/lib/coalesced-get';
 import {
   lastResolvedTeamProjects,
+  notifyTeamProjectsChanged,
   notifyWorkspaceContextRefresh,
   resetTeamProjectsCache,
   resetWorkspaceContextCache,
   useTeamProjects,
 } from '../src/collab/useWorkspaceContext';
-import { useProjectCollab } from '../src/collab/useProjectCollab';
 import {
   workspaceContextFixture,
   workspaceDirectoryFixture,
@@ -37,9 +37,9 @@ const A_PROJECT = {
   name: 'Workspace A project',
 };
 
-function jsonResponse(body: unknown): Response {
+function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
-    status: 200,
+    status,
     headers: { 'content-type': 'application/json' },
   });
 }
@@ -131,6 +131,190 @@ describe('useTeamProjects workspace-switch races', () => {
 
     expect(hook.result.current.loading).toBe(false);
     expect(hook.result.current.projects).toEqual([B_PROJECT]);
+  });
+
+  it('remounts from the exact cached catalog without a loader and keeps it when refresh fails', async () => {
+    let catalogReads = 0;
+    let rejectRefresh!: (reason?: unknown) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])));
+        }
+        if (url.includes('/api/workspace/context')) {
+          return Promise.resolve(jsonResponse({ context: CONTEXTS.a }));
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          catalogReads += 1;
+          if (catalogReads === 1) {
+            return Promise.resolve(jsonResponse({ projects: [A_PROJECT] }));
+          }
+          return new Promise<Response>((_resolve, reject) => {
+            rejectRefresh = reject;
+          });
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const first = renderHook(() => useTeamProjects());
+    await waitFor(() => {
+      expect(first.result.current.loading).toBe(false);
+      expect(first.result.current.projects).toEqual([A_PROJECT]);
+    });
+    first.unmount();
+    resetCoalescedGet();
+
+    const second = renderHook(() => useTeamProjects());
+    expect(second.result.current.loading).toBe(false);
+    expect(second.result.current.projects).toEqual([A_PROJECT]);
+    await waitFor(() => expect(rejectRefresh).toBeTypeOf('function'));
+
+    await act(async () => {
+      rejectRefresh(new Error('background refresh unavailable'));
+      await Promise.resolve();
+    });
+    expect(second.result.current.loading).toBe(false);
+    expect(second.result.current.projects).toEqual([A_PROJECT]);
+  });
+
+  it('keeps exact last-good rows across a typed catalog outage and converges after recovery', async () => {
+    let catalogReads = 0;
+    const RECOVERED_PROJECT = { ...A_PROJECT, name: 'Recovered catalog project' };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])));
+        }
+        if (url.includes('/api/workspace/context')) {
+          return Promise.resolve(jsonResponse({ context: CONTEXTS.a }));
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          catalogReads += 1;
+          if (catalogReads === 1) {
+            return Promise.resolve(jsonResponse({ projects: [A_PROJECT] }));
+          }
+          if (catalogReads === 2) {
+            return Promise.resolve(jsonResponse({
+              error: {
+                code: 'UPSTREAM_UNAVAILABLE',
+                message: 'team project catalog is temporarily unavailable',
+                retryable: true,
+              },
+            }, 503));
+          }
+          return Promise.resolve(jsonResponse({ projects: [RECOVERED_PROJECT] }));
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const hook = renderHook(() => useTeamProjects());
+    await waitFor(() => {
+      expect(hook.result.current.loading).toBe(false);
+      expect(hook.result.current.projects).toEqual([A_PROJECT]);
+    });
+
+    act(() => notifyTeamProjectsChanged());
+    await waitFor(() => expect(catalogReads).toBe(2));
+    expect(hook.result.current.loading).toBe(false);
+    expect(hook.result.current.projects).toEqual([A_PROJECT]);
+    expect(lastResolvedTeamProjects(CONTEXTS.a)).toEqual([A_PROJECT]);
+
+    act(() => notifyTeamProjectsChanged());
+    await waitFor(() => {
+      expect(catalogReads).toBe(3);
+      expect(hook.result.current.projects).toEqual([RECOVERED_PROJECT]);
+    });
+    expect(hook.result.current.loading).toBe(false);
+    expect(lastResolvedTeamProjects(CONTEXTS.a)).toEqual([RECOVERED_PROJECT]);
+  });
+
+  it('does not reuse an exact-looking catalog across an account boundary', async () => {
+    let catalogReads = 0;
+    let resolveNewAccountCatalog!: (response: Response) => void;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(jsonResponse(workspaceDirectoryFixture([CONTEXTS.a])));
+        }
+        if (url.includes('/api/workspace/context')) {
+          return Promise.resolve(jsonResponse({ context: CONTEXTS.a }));
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          catalogReads += 1;
+          if (catalogReads === 1) {
+            return Promise.resolve(jsonResponse({ projects: [A_PROJECT] }));
+          }
+          return new Promise<Response>((resolve) => {
+            resolveNewAccountCatalog = resolve;
+          });
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+
+    const hook = renderHook(() => useTeamProjects());
+    await waitFor(() => expect(hook.result.current.projects).toEqual([A_PROJECT]));
+
+    act(() => notifyWorkspaceContextRefresh());
+    await waitFor(() => expect(catalogReads).toBe(2));
+    expect(hook.result.current.projects).toEqual([]);
+    expect(hook.result.current.loading).toBe(true);
+
+    const NEW_ACCOUNT_PROJECT = { ...A_PROJECT, projectId: 'new-account-project' };
+    await act(async () => {
+      resolveNewAccountCatalog(jsonResponse({ projects: [NEW_ACCOUNT_PROJECT] }));
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      expect(hook.result.current.projects).toEqual([NEW_ACCOUNT_PROJECT]);
+      expect(hook.result.current.loading).toBe(false);
+    });
+  });
+
+  it('retains exact catalogs across a seeded workspace switch in the same account', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const url = String(input);
+        if (url.includes('/api/workspace/directory')) {
+          return Promise.resolve(jsonResponse(workspaceDirectoryFixture([
+            CONTEXTS.a,
+            CONTEXTS.b,
+          ])));
+        }
+        if (url.includes('/api/workspace/context')) {
+          return Promise.resolve(jsonResponse({ context: CONTEXTS[activeWorkspace] }));
+        }
+        if (url.includes('/api/workspace/projects/team')) {
+          const workspaceId = new Headers(init?.headers).get('x-od-workspace-id');
+          return Promise.resolve(jsonResponse({
+            projects: workspaceId === CONTEXTS.a.workspaceId ? [A_PROJECT] : [B_PROJECT],
+          }));
+        }
+        return Promise.reject(new Error(`Unexpected fetch: ${url}`));
+      }),
+    );
+    selectWorkspaceForSession(CONTEXTS.a);
+    const hook = renderHook(() => useTeamProjects());
+    await waitFor(() => expect(hook.result.current.projects).toEqual([A_PROJECT]));
+
+    activeWorkspace = 'b';
+    act(() => notifyWorkspaceContextRefresh({ context: CONTEXTS.b }));
+    await waitFor(() => expect(hook.result.current.projects).toEqual([B_PROJECT]));
+
+    expect(lastResolvedTeamProjects(CONTEXTS.a)).toEqual([A_PROJECT]);
+    expect(lastResolvedTeamProjects(CONTEXTS.b)).toEqual([B_PROJECT]);
   });
 
   it('starts the team catalog as soon as the directory establishes its read identity', async () => {
@@ -416,22 +600,11 @@ describe('useTeamProjects workspace-switch races', () => {
       expect(hook.result.current.loading).toBe(false);
     });
     expect(lastResolvedTeamProjects()).toEqual([B_PROJECT]);
-    expect(lastResolvedTeamProjects(CONTEXTS.a)).toEqual([A_PROJECT]);
+    // An unseeded refresh is an account boundary. Even if the next account has
+    // an identically-shaped Workspace, the previous account's display catalog
+    // is no longer a legal last-good snapshot.
+    expect(lastResolvedTeamProjects(CONTEXTS.a)).toBeNull();
     expect(lastResolvedTeamProjects(CONTEXTS.b)).toEqual([B_PROJECT]);
-
-    // The shell is currently on B, but a still-mounted A project view must
-    // consult A's catalog. B contains `project-b`; A does not. Borrowing the
-    // ambient B cache would therefore fail closed and make this A-local project
-    // read-only while another tab/navigation has B active.
-    const projectInA = renderHook(() =>
-      useProjectCollab(B_PROJECT.projectId, {
-        workspaceContext: CONTEXTS.a,
-        workspaceContextLoading: false,
-      }),
-    );
-    await waitFor(() => {
-      expect(projectInA.result.current.viewerOnly).toBe(false);
-    });
   });
 
   it('settles an identity without a workspace to an empty catalog', async () => {

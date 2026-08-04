@@ -30,6 +30,18 @@ import {
   resetWorkspaceContextCache,
 } from '../../src/collab/useWorkspaceContext';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+import { workspaceDirectoryFixture } from '../helpers/workspace-context';
+
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    return { connected: false };
+  }),
+}));
 
 vi.mock('../../src/router', () => ({
   navigate: vi.fn(),
@@ -190,6 +202,7 @@ beforeEach(() => {
   resetWorkspaceContextCache();
   resetTeamProjectsCache();
   resetCoalescedGet();
+  workspaceInvalidationHarness.handlers.length = 0;
   vi.mocked(daemonIsLive).mockResolvedValue(true);
   vi.mocked(fetchAgentsStream).mockResolvedValue([]);
   vi.mocked(fetchAppVersionInfo).mockResolvedValue(null);
@@ -218,29 +231,33 @@ afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllGlobals();
   resetWorkspaceContextCache();
+  workspaceInvalidationHarness.handlers.length = 0;
   resetTeamProjectsCache();
   resetCoalescedGet();
 });
 
 describe('App design-system catalog loading race', () => {
-  it('clears loading when any concurrent initial catalog request succeeds', async () => {
-    const neverSettles = new Promise<DesignSystemSummary[]>(() => {});
+  it('waits for the newest concurrent initial catalog request and ignores an older success', async () => {
+    const newest = deferred<DesignSystemSummary[]>();
     vi.mocked(fetchDesignSystems)
-      // The workspace-scoped effect fires synchronously; this is the observed
-      // 200 response that already supplied a usable catalog.
+      // The first request is stale once bootstrap starts its same-identity
+      // successor, so its result must not flash before the newest read lands.
       .mockResolvedValueOnce([readySystem])
-      // Bootstrap resumes after daemonIsLive and can restart as its nominally
-      // stable dependencies settle. Those duplicate requests own the old
-      // loading flag; if they stall, they must not hide the first result.
-      .mockReturnValue(neverSettles);
+      .mockReturnValue(newest.promise);
 
     render(<App />);
 
     await waitFor(() => {
       expect(vi.mocked(fetchDesignSystems).mock.calls.length).toBeGreaterThanOrEqual(2);
-      expect(screen.getByText('Ready design system')).toBeTruthy();
     });
+    expect(screen.queryByText('Ready design system')).toBeNull();
+    expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('true');
 
+    await act(async () => {
+      newest.resolve([designSystem('newest-design-system')]);
+      await newest.promise;
+    });
+    await waitFor(() => expect(screen.getByText('newest-design-system')).toBeTruthy());
     expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('false');
   });
 
@@ -276,11 +293,12 @@ describe('App design-system catalog loading race', () => {
 
     render(<App />);
 
-    // Let every pre-existing launch read settle before creating the race, so
-    // call order among bootstrap and the two home effects is irrelevant.
+    // Let the initial stream/fallback-owned read settle before creating the
+    // identity race. The old eager bootstrap/home reads were intentionally
+    // removed, so startup no longer needs three duplicate snapshots.
     await waitFor(() =>
       expect(readPhases.filter((readPhase) => readPhase === 'startup').length)
-        .toBeGreaterThanOrEqual(3),
+        .toBeGreaterThanOrEqual(2),
     );
 
     phase = 'a';
@@ -408,5 +426,160 @@ describe('App design-system catalog loading race', () => {
     await waitFor(() => expect(screen.getByText('system-from-member-b')).toBeTruthy());
     expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('false');
     expect(pendingReads).toBe(2);
+  });
+
+  it('hides the previous account systems while an unseeded identity refresh is pending', async () => {
+    const sharedContext = {
+      ...workspaceContext('ws-same'),
+      workspaceMemberId: 'member-same',
+    };
+    const directoryB = deferred<Response>();
+    const contextB = deferred<Response>();
+    const readB = deferred<DesignSystemSummary[]>();
+    let accountPhase: 'a' | 'b' = 'a';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/directory')) {
+          return directoryB.promise;
+        }
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/context')) {
+          return contextB.promise;
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? {
+                  items: [{
+                    workspaceId: sharedContext.workspaceId,
+                    workspaceName: sharedContext.displayName,
+                    workspaceType: sharedContext.workspaceType,
+                    workspaceMemberId: sharedContext.workspaceMemberId,
+                    role: sharedContext.role,
+                    memberStatus: sharedContext.memberStatus,
+                    lifecycleState: sharedContext.lifecycleState,
+                  }],
+                }
+              : pathname.endsWith('/workspace/context')
+                ? { context: sharedContext }
+                : {},
+        } as Response);
+      }),
+    );
+    vi.mocked(fetchDesignSystems).mockImplementation(() =>
+      accountPhase === 'a'
+        ? Promise.resolve([designSystem('system-from-account-a')])
+        : readB.promise,
+    );
+
+    render(<App />);
+    await waitFor(() => expect(screen.getByText('system-from-account-a')).toBeTruthy());
+
+    accountPhase = 'b';
+    await act(async () => {
+      notifyWorkspaceContextRefresh();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('system-from-account-a')).toBeNull();
+    expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('true');
+
+    await act(async () => {
+      directoryB.resolve({
+        ok: true,
+        json: async () => ({
+          items: [{
+            workspaceId: sharedContext.workspaceId,
+            workspaceName: sharedContext.displayName,
+            workspaceType: sharedContext.workspaceType,
+            workspaceMemberId: sharedContext.workspaceMemberId,
+            role: sharedContext.role,
+            memberStatus: sharedContext.memberStatus,
+            lifecycleState: sharedContext.lifecycleState,
+          }],
+        }),
+      } as Response);
+      contextB.resolve({
+        ok: true,
+        json: async () => ({ context: sharedContext }),
+      } as Response);
+      await Promise.all([directoryB.promise, contextB.promise]);
+    });
+    await waitFor(() => expect(vi.mocked(fetchDesignSystems).mock.calls.length).toBeGreaterThan(1));
+
+    await act(async () => {
+      readB.resolve([designSystem('system-from-account-b')]);
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getByText('system-from-account-b')).toBeTruthy());
+    expect(screen.queryByText('system-from-account-a')).toBeNull();
+  });
+
+  it('keeps the newest same-identity design-system refresh when an older request finishes last', async () => {
+    const context = workspaceContext('ws-same-identity');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([context])
+              : pathname.endsWith('/workspace/context')
+                ? { context }
+                : {},
+        } as Response;
+      }),
+    );
+    vi.mocked(fetchDesignSystems).mockResolvedValue([]);
+    render(<App />);
+    await waitFor(() => {
+      expect(vi.mocked(fetchDesignSystems)).toHaveBeenCalled();
+      expect(screen.getByTestId('design-systems-state').dataset.loading).toBe('false');
+    });
+
+    const older = deferred<DesignSystemSummary[]>();
+    const newer = deferred<DesignSystemSummary[]>();
+    vi.mocked(fetchDesignSystems)
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+    const resourceHandler = [...workspaceInvalidationHarness.handlers]
+      .reverse()
+      .find((handlers) => handlers['team-resources-changed'])?.['team-resources-changed'];
+    expect(resourceHandler).toBeTypeOf('function');
+
+    act(() => resourceHandler?.({
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+    }));
+    act(() => resourceHandler?.({
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+    }));
+    await waitFor(() => expect(vi.mocked(fetchDesignSystems).mock.calls.length).toBeGreaterThanOrEqual(4));
+    expect(vi.mocked(fetchDesignSystems).mock.calls.slice(-2)).toEqual([
+      [expect.objectContaining({ workspaceId: context.workspaceId }), {
+        forceTeamMaterialization: true,
+      }],
+      [expect.objectContaining({ workspaceId: context.workspaceId }), {
+        forceTeamMaterialization: true,
+      }],
+    ]);
+
+    await act(async () => {
+      newer.resolve([designSystem('newer-system')]);
+      await newer.promise;
+    });
+    await waitFor(() => expect(screen.getByText('newer-system')).toBeTruthy());
+
+    await act(async () => {
+      older.resolve([designSystem('older-system')]);
+      await older.promise;
+    });
+    expect(screen.getByText('newer-system')).toBeTruthy();
+    expect(screen.queryByText('older-system')).toBeNull();
   });
 });

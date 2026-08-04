@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +10,7 @@ import {
 } from '@open-design/contracts';
 import {
   closeDatabase,
+  deleteConversationAndRepairTeamCommentAnchor,
   deleteSyncedPreviewComment,
   ensureProjectCommentAnchorConversation,
   getLatestConversationIdForProject,
@@ -20,6 +21,8 @@ import {
   listPreviewComments,
   mergeSyncedPreviewComment,
   openDatabase,
+  repairTeamProjectCommentAnchorConversations,
+  ensureWorkspaceProject,
   upsertPreviewComment,
 } from '../src/db.js';
 import { createCollabCloudClient, type CollabCloudClient } from '../src/integrations/collab-cloud.js';
@@ -301,6 +304,97 @@ function fakeClient() {
 }
 
 describe('createCollabCloudService', () => {
+  it('repairs only active Team projects with no local comment anchor and is idempotent', () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-collab-cloud-anchor-repair-'));
+    const db = openDatabase(tempDir);
+    for (const id of ['team-empty', 'team-existing', 'personal-empty', 'team-deleted']) {
+      insertProject(db, { id, name: id, createdAt: 1, updatedAt: 1 });
+    }
+    insertConversation(db, {
+      id: 'existing-conversation',
+      projectId: 'team-existing',
+      title: 'Existing',
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    ensureWorkspaceProject(db, {
+      projectId: 'team-empty',
+      workspaceId: 'ws-1',
+      visibility: 'team',
+      resourceState: 'active',
+    });
+    ensureWorkspaceProject(db, {
+      projectId: 'team-existing',
+      workspaceId: 'ws-1',
+      visibility: 'team',
+      resourceState: 'active',
+    });
+    ensureWorkspaceProject(db, {
+      projectId: 'personal-empty',
+      workspaceId: 'ws-1',
+      visibility: 'personal',
+      resourceState: 'active',
+    });
+    ensureWorkspaceProject(db, {
+      projectId: 'team-deleted',
+      workspaceId: 'ws-1',
+      visibility: 'team',
+      resourceState: 'deleted',
+    });
+
+    expect(repairTeamProjectCommentAnchorConversations(db, 10)).toEqual({
+      checked: 2,
+      created: 1,
+    });
+    const repairedId = getLatestConversationIdForProject(db, 'team-empty');
+    expect(repairedId).toMatch(/^comment-anchor-/);
+    expect(getLatestConversationIdForProject(db, 'team-existing')).toBe('existing-conversation');
+    expect(getLatestConversationIdForProject(db, 'personal-empty')).toBeNull();
+    expect(getLatestConversationIdForProject(db, 'team-deleted')).toBeNull();
+
+    expect(repairTeamProjectCommentAnchorConversations(db, 20)).toEqual({
+      checked: 2,
+      created: 0,
+    });
+    expect(getLatestConversationIdForProject(db, 'team-empty')).toBe(repairedId);
+  });
+
+  it('replaces the final active Team conversation in the delete transaction but preserves Personal deletion', () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-collab-cloud-anchor-delete-'));
+    const db = openDatabase(tempDir);
+    for (const [projectId, conversationId] of [
+      ['team-project', 'team-last'],
+      ['personal-project', 'personal-last'],
+    ] as const) {
+      insertProject(db, { id: projectId, name: projectId, createdAt: 1, updatedAt: 1 });
+      insertConversation(db, {
+        id: conversationId,
+        projectId,
+        title: 'Last',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+      ensureWorkspaceProject(db, {
+        projectId,
+        workspaceId: 'ws-1',
+        visibility: projectId === 'team-project' ? 'team' : 'personal',
+        resourceState: 'active',
+      });
+    }
+
+    expect(deleteConversationAndRepairTeamCommentAnchor(db, 'team-project', 'team-last', 10)).toEqual({
+      anchorCreated: true,
+    });
+    const replacement = getLatestConversationIdForProject(db, 'team-project');
+    expect(replacement).toMatch(/^comment-anchor-/);
+    expect(replacement).not.toBe('team-last');
+
+    expect(deleteConversationAndRepairTeamCommentAnchor(db, 'personal-project', 'personal-last', 10)).toEqual({
+      anchorCreated: false,
+    });
+    expect(getLatestConversationIdForProject(db, 'personal-project')).toBeNull();
+  });
+
   it('re-homes remote comments onto a stable empty local anchor', async () => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-collab-cloud-anchor-'));
     const db = openDatabase(tempDir);
@@ -668,6 +762,102 @@ describe('createCollabCloudService', () => {
       { teamId: 'workspace-b', sinceSeq: 0, etag: undefined },
       { teamId: 'workspace-a', sinceSeq: 7, etag: 'etag-workspace-a' },
     ]);
+    service.dispose();
+  });
+
+  it('coalesces concurrent pulls for the same workspace member and project', async () => {
+    let releasePull!: (value: {
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }) => void;
+    const pendingPull = new Promise<{
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }>((resolve) => {
+      releasePull = resolve;
+    });
+    const pullComments = vi.fn(() => pendingPull);
+    const client = { pullComments } as unknown as CollabCloudClient;
+    const service = createCollabCloudService({
+      client,
+      listProjectIds: () => [],
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+    });
+    const context = teamContext({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      teamId: 'team-a',
+    });
+
+    const first = service.pullProject('same-project', context);
+    const second = service.pullProject('same-project', context);
+
+    expect(pullComments).toHaveBeenCalledTimes(1);
+    releasePull({
+      comments: [],
+      latestSeq: 0,
+      etag: null,
+      notModified: true,
+    });
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
+    service.dispose();
+  });
+
+  it('shares one pull between the poll floor and a targeted hub/read pull', async () => {
+    let releasePull!: (value: {
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }) => void;
+    const pendingPull = new Promise<{
+      comments: CollabCloudComment[];
+      latestSeq: number;
+      etag: string | null;
+      notModified: boolean;
+    }>((resolve) => {
+      releasePull = resolve;
+    });
+    const pullComments = vi.fn(() => pendingPull);
+    const context = teamContext({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      teamId: 'team-a',
+    });
+    const client = {
+      pullComments,
+      registerMember: async () => ({
+        memberId: 'member-a',
+        displayName: 'Member A',
+        role: 'member' as const,
+      }),
+    } as unknown as CollabCloudClient;
+    const service = createCollabCloudService({
+      client,
+      listProjectIds: () => ['same-project'],
+      resolveProjectWorkspaceContext: async () => context,
+      resolveLocalConversationId: () => 'conv-local',
+      mergeComment: () => false,
+    });
+
+    const targeted = service.pullProject('same-project', context);
+    const poll = service.pollOnce();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(pullComments).toHaveBeenCalledTimes(1);
+    releasePull({
+      comments: [],
+      latestSeq: 0,
+      etag: null,
+      notModified: true,
+    });
+    await expect(Promise.all([targeted, poll])).resolves.toEqual([true, undefined]);
     service.dispose();
   });
 

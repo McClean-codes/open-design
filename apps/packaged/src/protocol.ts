@@ -17,18 +17,10 @@ type OdProtocolTarget = string | null;
  * Supplies the CURRENT web sidecar address, consulted once per proxied
  * request.
  *
- * Deliberately a provider and not a plain string. Today the packaged runtime
- * brings the web sidecar up exactly once — `startPackagedSidecars` is called a
- * single time from the Electron entry, nothing re-spawns the child, and the
- * sidecar binds its listener once for its whole process lifetime — so the
- * address it reports is in practice immutable and a snapshot would be
- * *accidentally* correct. It is the accident that is the problem: the previous
- * signature made the protocol layer silently dependent on that invariant, so
- * the day anything re-resolves the sidecar (supervision, reconnect, a second
- * bring-up) the proxy would keep dialling the retired port and every renderer
- * resource would fail ERR_CONNECTION_REFUSED with no clue pointing here.
- * Resolving per request costs one property read and makes the layer correct by
- * construction.
+ * Deliberately a provider and not a plain string. The packaged restart
+ * supervisor can respawn the web sidecar on a fresh ephemeral port, so a
+ * snapshot would keep dialling the retired process. Resolving per request also
+ * preserves the explicit unavailable state while a replacement starts.
  */
 type OdProtocolTargetResolver = () => OdProtocolTarget;
 

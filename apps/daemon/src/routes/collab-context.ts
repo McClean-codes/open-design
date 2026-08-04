@@ -61,6 +61,7 @@ import {
   type VerifiedWorkspaceRequestContextResult,
 } from '../collab/request-workspace-context.js';
 import { requestWithWorkspaceNavigationScope } from '../collab/workspace-resource-mutation.js';
+import { sendApiError } from '../http/api-errors.js';
 
 export type WorkspaceEventSink = (payload: WorkspaceInvalidationSsePayload) => void;
 export type WorkspaceEventSinksByWorkspace =
@@ -507,8 +508,10 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
   // Team-wide shared-project discovery: the web "全部项目" view fetches every
   // project any member shared to the team here (read from the resource hub), so a
   // member whose own /api/projects list is empty still sees the owner's shared
-  // projects to pull + open. Empty off-team / hub-unconfigured; a transient hub
-  // error also degrades to [] so a hub outage never blanks the view with a 500.
+  // projects to pull + open. A successful empty result is authoritative. A
+  // transient upstream failure must stay distinguishable so clients can retain
+  // their exact-scope last-good catalog instead of treating the outage as an
+  // authoritative removal of every project.
   app.get('/api/workspace/projects/team', async (req, res) => {
     const verified = await verifyWorkspaceRequestContext({
       req,
@@ -522,11 +525,17 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
         ...(verified.retryable ? { retryable: true } : {}),
       });
     }
-    let projects: TeamProject[] = [];
+    let projects: TeamProject[];
     try {
       projects = await listTeamProjects(verified.context);
     } catch {
-      projects = [];
+      return sendApiError(
+        res,
+        503,
+        'UPSTREAM_UNAVAILABLE',
+        'team project catalog is temporarily unavailable',
+        { retryable: true },
+      );
     }
     const body: WorkspaceTeamProjectsResponse = { projects };
     res.json(body);
@@ -554,10 +563,11 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
   });
 
   // Billing reads are explicit at the HTTP boundary:
-  // - scope=account is the personal/account summary;
-  // - scope=workspace requires a workspaceId that resolves to an active team
-  //   membership in the directory, then reads Vela's independently scoped v2
-  //   wallet response.
+  // - scope=account is retained only for old callers that cannot name a
+  //   Workspace;
+  // - scope=workspace requires a workspaceId that resolves to an active
+  //   Personal or Team membership in the directory, then reads Vela's
+  //   independently scoped v2 wallet response.
   //
   // The URL is the selection source. Authorization is an independent
   // membership lookup — never daemon-global active/current state — so two
@@ -600,7 +610,6 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
             (item) =>
               item.workspaceId === interest.workspaceId &&
               item.workspaceMemberId === interest.workspaceMemberId &&
-              item.workspaceType === 'team' &&
               item.memberStatus === 'active' &&
               item.lifecycleState === 'active',
           ),
@@ -686,7 +695,6 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
     const membership = directory.find(
       (item) =>
         item.workspaceId === requestedWorkspaceId &&
-        item.workspaceType === 'team' &&
         item.memberStatus === 'active' &&
         item.lifecycleState === 'active',
     );

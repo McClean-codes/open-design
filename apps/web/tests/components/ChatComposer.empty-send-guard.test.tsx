@@ -110,4 +110,31 @@ describe('ChatComposer empty-send guard (recvqaj7eKpxH6)', () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(onSend).toHaveBeenCalledWith('Ship the onboarding tweak', [], [], undefined);
   });
+
+  it('pauses the typewriter while the empty composer owns the real caret', async () => {
+    const { container } = render(
+      <ChatComposer
+        projectId="project-1"
+        projectFiles={[]}
+        streaming={false}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        placeholderScenarios={[
+          { id: 'follow-up-1', text: 'Make the hero punchier', chipId: 'design-toolbox' },
+        ]}
+      />,
+    );
+    await flushMounts();
+
+    const editor = container.querySelector<HTMLElement>('.composer-editable');
+    expect(editor).not.toBeNull();
+    expect(screen.getByTestId('home-hero-carousel')).toBeTruthy();
+
+    fireEvent.focus(editor!);
+    expect(screen.queryByTestId('home-hero-carousel')).toBeNull();
+
+    fireEvent.blur(editor!, { relatedTarget: null });
+    expect(screen.getByTestId('home-hero-carousel')).toBeTruthy();
+  });
 });

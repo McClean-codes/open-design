@@ -93,6 +93,27 @@ describe('GET/POST /api/design-systems — explicit request scope is isolated fr
       designSystems: Array<{ id: string }>;
     };
     expect(listed.designSystems.some((item) => item.id === created.id)).toBe(true);
+
+    const scopedResponse = await fetch(`${baseUrl}/api/design-systems`, {
+      headers: workspaceHeaders(CONTEXT_WS1),
+    });
+    expect(scopedResponse.status).toBe(200);
+    const scoped = (await scopedResponse.json()) as {
+      designSystems: Array<{ id: string }>;
+    };
+    expect(scoped.designSystems.some((item) => item.id === created.id)).toBe(false);
+
+    const scopedDetailResponse = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(created.id)}`,
+      { headers: workspaceHeaders(CONTEXT_WS1) },
+    );
+    expect(scopedDetailResponse.status).toBe(403);
+
+    const scopedFilesResponse = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(created.id)}/files`,
+      { headers: workspaceHeaders(CONTEXT_WS1) },
+    );
+    expect(scopedFilesResponse.status).toBe(403);
   });
 
   it('rejects a half-specified Workspace identity instead of treating it as local', async () => {
@@ -231,7 +252,7 @@ describe('resolveDesignSystemWorkspaceScope — stale local pins are never data-
     expect(body.designSystems.some((d) => d.id === 'user:pinned-claim')).toBe(false);
   });
 
-  it('shows the claim only when the explicit request names the pinned Workspace', async () => {
+  it('quarantines a metadata-only claim without an exact member ownership envelope', async () => {
     const resp = await fetch(`${baseUrl}/api/design-systems`, {
       headers: workspaceHeaders({
         ...CONTEXT_WS1,
@@ -239,6 +260,6 @@ describe('resolveDesignSystemWorkspaceScope — stale local pins are never data-
       }),
     });
     const body = (await resp.json()) as { designSystems: Array<{ id: string }> };
-    expect(body.designSystems.some((d) => d.id === 'user:pinned-claim')).toBe(true);
+    expect(body.designSystems.some((d) => d.id === 'user:pinned-claim')).toBe(false);
   });
 });

@@ -11,8 +11,41 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { RecentProjectsStrip } from '../../src/components/RecentProjectsStrip';
 import type { Project } from '../../src/types';
+import type { WorkspaceProjectSummary } from '@open-design/contracts';
 
-const moveWorkspaceProject = vi.fn(async (_input: { projectId: string; visibility: string }) => undefined as unknown);
+const movedTeamProject: WorkspaceProjectSummary = {
+  id: 'project-1',
+  name: 'Draft',
+  workspaceId: 'ws-1',
+  visibility: 'team',
+  resourceState: 'active',
+  createdByWorkspaceMemberId: 'wm-1',
+  updatedByWorkspaceMemberId: 'wm-1',
+  resourceHubResourceId: 'resource-project-1',
+  currentUserAccess: {
+    canOpen: true,
+    canRename: true,
+    canDelete: true,
+    canDuplicate: true,
+    canMoveToTeam: false,
+    canMoveToPersonal: true,
+    canExport: true,
+    canSendTo: true,
+    canRestoreVersion: true,
+  },
+  createdAt: 1,
+  updatedAt: 2,
+  project: {
+    id: 'project-1',
+    name: 'Draft',
+    skillId: null,
+    designSystemId: null,
+    createdAt: 1,
+    updatedAt: 2,
+  },
+};
+
+const moveWorkspaceProject = vi.fn(async (_input: { projectId: string; visibility: string }) => movedTeamProject);
 
 vi.mock('../../src/state/projects', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -46,12 +79,13 @@ function project(overrides: Partial<Project>): Project {
   };
 }
 
-async function attemptMoveToTeam() {
+async function attemptMoveToTeam(props: Partial<React.ComponentProps<typeof RecentProjectsStrip>> = {}) {
   render(
     <RecentProjectsStrip
       projects={[project({ id: 'project-1', name: 'Draft' })]}
       onOpen={() => {}}
       collaborationEnabled
+      {...props}
     />,
   );
   fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
@@ -65,6 +99,26 @@ async function attemptMoveToTeam() {
 }
 
 describe('move-to-team owner conflict message (recvqzjnshIlOe)', () => {
+  it('hands the exact successful move response to the optimistic owner layer', async () => {
+    const onProjectShared = vi.fn();
+    render(
+      <RecentProjectsStrip
+        projects={[project({ id: 'project-1', name: 'Draft' })]}
+        onOpen={() => {}}
+        collaborationEnabled
+        onProjectShared={onProjectShared}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: /Move to team space/i }));
+    fireEvent.click(screen.getByText('Confirm move'));
+
+    await waitFor(() => {
+      expect(onProjectShared).toHaveBeenCalledWith(movedTeamProject);
+    });
+  });
+
   it('renders the permanent owner-conflict message, not the retry hint', async () => {
     moveWorkspaceProject.mockRejectedValueOnce(
       Object.assign(new Error('… 403: {"error":"team_project_owner_conflict"}'), {
@@ -80,8 +134,12 @@ describe('move-to-team owner conflict message (recvqzjnshIlOe)', () => {
 
   it('keeps the retry hint for code-less transient failures', async () => {
     moveWorkspaceProject.mockRejectedValueOnce(new Error('network wobble'));
+    const onProjectShared = vi.fn();
+    const onProjectShareFailed = vi.fn();
 
-    const alert = await attemptMoveToTeam();
+    const alert = await attemptMoveToTeam({ onProjectShared, onProjectShareFailed });
     expect(alert.textContent).toBe('Could not move to team space. Try again.');
+    expect(onProjectShared).not.toHaveBeenCalled();
+    expect(onProjectShareFailed).toHaveBeenCalledWith('project-1');
   });
 });

@@ -903,8 +903,12 @@ test('[P0] an already-open move flow fails closed when the workspace locks befor
     window.dispatchEvent(new Event('od:workspace-context-refresh'));
   });
   await expect(page.getByTestId('workspace-switcher')).toContainText('Locked Atlas Team');
-  await expect(card.getByRole('button', { name: 'More actions' })).toHaveCount(0);
-  await expect(card.getByRole('menu')).toHaveCount(0);
+  // Locking revokes Team move/share authority, but this is still the caller's
+  // own local project: rename, duplicate and delete remain reachable from the
+  // same menu. Pin the capability that must disappear instead of treating the
+  // entire owner-actions surface as Team-only.
+  await openProjectMenu(card);
+  await expect(card.getByRole('menuitem', { name: 'Move to team space' })).toHaveCount(0);
 });
 
 test('[P1] visible workspace allowance refreshes in place without reloading the shell', async ({
@@ -1758,13 +1762,14 @@ async function wireWorkspaceProjectMocks(
   options: { ownerConflict?: boolean } = {},
 ): Promise<{ moves: WorkspaceProjectMove[] }> {
   const moves: WorkspaceProjectMove[] = [];
+  let visibility: 'personal' | 'team' = 'personal';
 
   await page.route(`**/api/workspaces/${TEAM_OWNER.workspaceId}/projects**`, async (route) => {
     const request = route.request();
     const { pathname } = new URL(request.url());
     if (request.method() === 'GET' && pathname.endsWith('/projects')) {
       await route.fulfill({
-        json: { projects: [workspaceProjectSummary('personal')] },
+        json: { projects: [workspaceProjectSummary(visibility)] },
       });
       return;
     }
@@ -1787,14 +1792,36 @@ async function wireWorkspaceProjectMocks(
         });
         return;
       }
+      visibility = body.visibility === 'team' ? 'team' : 'personal';
       await route.fulfill({
         json: {
-          project: workspaceProjectSummary(body.visibility === 'team' ? 'team' : 'personal'),
+          project: workspaceProjectSummary(visibility),
         },
       });
       return;
     }
     await route.fallback();
+  });
+
+  await page.route('**/api/workspace/projects/team', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        projects:
+          visibility === 'team'
+            ? [
+                teamProject(
+                  LOCAL_TEAM_DRAFT.id,
+                  LOCAL_TEAM_DRAFT.name,
+                  TEAM_OWNER.workspaceMemberId,
+                ),
+              ]
+            : [],
+      },
+    });
   });
 
   await page.route(`**/api/projects/${LOCAL_TEAM_DRAFT.id}/files**`, async (route) => {

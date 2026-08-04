@@ -261,11 +261,10 @@ async function ensureEntryRailOpenIfPresent(page: Page) {
 }
 
 /**
- * The settings surface. Opened over a project it is still a modal
- * (`role="dialog"`), but from the entry #5517 routes to `/settings` and
- * `SettingsDialog` renders in `presentation="page"` mode — same markup, but
- * `role="region"` and no `aria-modal`. `.modal-settings` is the class both
- * presentations share, so match on it and keep the dialog role as a fallback.
+ * The settings surface. Current entry and project launchers route to the
+ * settings page, where `SettingsDialog` renders in `presentation="page"`
+ * mode (`role="region"`, no `aria-modal`). Match the shared surface class so
+ * this helper also remains correct if a modal presentation is used again.
  */
 export function settingsSurface(page: Page) {
   // Match only `.modal-settings` — the class both presentations share, so the

@@ -56,20 +56,60 @@ function exactHeaders(): Record<string, string> {
   };
 }
 
-async function startAuthorityServer() {
+function otherMemberHeaders(): Record<string, string> {
+  return {
+    'x-od-workspace-id': WORKSPACE_ID,
+    'x-od-workspace-member-id': 'member-b',
+  };
+}
+
+async function startAuthorityServer(options: {
+  visibility?: 'personal' | 'team';
+  namespacedTeams?: boolean;
+} = {}) {
   tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-ds-family-authority-'));
   const db = openDatabase(tempDir, { dataDir: tempDir });
-  ensureWorkspaceResource(
-    db,
-    'design_system',
-    WORKSPACE_ID,
-    DESIGN_SYSTEM_ID,
-    {
-      visibility: 'team',
-      resourceState: 'active',
-      createdByWorkspaceMemberId: MEMBER_ID,
-    },
-  );
+  if (options.namespacedTeams) {
+    ensureWorkspaceResource(
+      db,
+      'design_system',
+      WORKSPACE_ID,
+      DESIGN_SYSTEM_ID,
+      {
+        visibility: 'personal',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: 'personal-owner',
+      },
+    );
+    for (const [workspaceId, memberId] of [
+      [WORKSPACE_ID, MEMBER_ID],
+      ['workspace-b', 'member-b'],
+    ] as const) {
+      ensureWorkspaceResource(
+        db,
+        'design_system',
+        workspaceId,
+        `team-mirror:${workspaceId}:${encodeURIComponent(DESIGN_SYSTEM_ID)}`,
+        {
+          visibility: 'team',
+          resourceState: 'active',
+          createdByWorkspaceMemberId: memberId,
+        },
+      );
+    }
+  } else {
+    ensureWorkspaceResource(
+      db,
+      'design_system',
+      WORKSPACE_ID,
+      DESIGN_SYSTEM_ID,
+      {
+        visibility: options.visibility ?? 'team',
+        resourceState: 'active',
+        createdByWorkspaceMemberId: MEMBER_ID,
+      },
+    );
+  }
   const calls = {
     archive: vi.fn(async () => ({
       buffer: Buffer.from('zip'),
@@ -101,7 +141,16 @@ async function startAuthorityServer() {
         message: 'exact workspace identity required',
       };
     }
-    if (workspaceId !== WORKSPACE_ID || workspaceMemberId !== MEMBER_ID) {
+    const accepted = options.namespacedTeams
+      ? (
+          (workspaceId === WORKSPACE_ID && (
+            workspaceMemberId === MEMBER_ID || workspaceMemberId === 'member-other'
+          ))
+          || (workspaceId === 'workspace-b' && workspaceMemberId === 'member-b')
+        )
+      : workspaceId === WORKSPACE_ID
+        && (workspaceMemberId === MEMBER_ID || workspaceMemberId === 'member-b');
+    if (!accepted) {
       return {
         ok: false as const,
         status: 403 as const,
@@ -200,11 +249,88 @@ async function startAuthorityServer() {
   return {
     baseUrl: await listen(app),
     calls,
+    db,
     verifyWorkspaceRequestAuthority,
   };
 }
 
 describe('Design System route family exact Workspace authority', () => {
+  it('denies another same-workspace owner every Personal read and mutation path', async () => {
+    const { baseUrl, calls } = await startAuthorityServer({ visibility: 'personal' });
+    const reads = [
+      '',
+      '/revisions',
+      '/preview',
+      '/showcase',
+      '/static?path=tokens.css',
+      '/files',
+      '/file?path=DESIGN.md',
+      '/archive',
+    ];
+    for (const suffix of reads) {
+      const response = await fetch(
+        `${baseUrl}/api/design-systems/${encodeURIComponent(DESIGN_SYSTEM_ID)}${suffix}`,
+        { headers: otherMemberHeaders() },
+      );
+      expect(response.status, suffix).toBe(403);
+    }
+    const mutation = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(DESIGN_SYSTEM_ID)}`,
+      {
+        method: 'PATCH',
+        headers: { ...otherMemberHeaders(), 'content-type': 'application/json' },
+        body: JSON.stringify({ title: 'Stolen' }),
+      },
+    );
+    expect(mutation.status).toBe(403);
+    expect(calls.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps Team design systems readable by another verified active member', async () => {
+    const { baseUrl } = await startAuthorityServer();
+    const response = await fetch(
+      `${baseUrl}/api/design-systems/${encodeURIComponent(DESIGN_SYSTEM_ID)}`,
+      { headers: otherMemberHeaders() },
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it('resolves identical Team ids through each Workspace-namespaced binding', async () => {
+    const { baseUrl, db } = await startAuthorityServer({ namespacedTeams: true });
+    for (const headers of [
+      {
+        ...exactHeaders(),
+        'x-od-workspace-member-id': 'member-other',
+      },
+      {
+        'x-od-workspace-id': 'workspace-b',
+        'x-od-workspace-member-id': 'member-b',
+      },
+    ]) {
+      const detail = await fetch(
+        `${baseUrl}/api/design-systems/${encodeURIComponent(DESIGN_SYSTEM_ID)}`,
+        { headers },
+      );
+      const files = await fetch(
+        `${baseUrl}/api/design-systems/${encodeURIComponent(DESIGN_SYSTEM_ID)}/files`,
+        { headers },
+      );
+      expect(detail.status).toBe(200);
+      expect(files.status).toBe(200);
+    }
+    expect(getWorkspaceResourceByResourceId(db, 'design_system', DESIGN_SYSTEM_ID))
+      .toMatchObject({
+        workspaceId: WORKSPACE_ID,
+        visibility: 'personal',
+        createdByWorkspaceMemberId: 'personal-owner',
+      });
+    expect(getWorkspaceResourceByResourceId(
+      db,
+      'design_system',
+      `team-mirror:${WORKSPACE_ID}:${encodeURIComponent(DESIGN_SYSTEM_ID)}`,
+    )).toMatchObject({ workspaceId: WORKSPACE_ID, visibility: 'team' });
+  });
+
   it('rejects every bound read before touching its backing store', async () => {
     const { baseUrl, calls } = await startAuthorityServer();
     const paths = [
@@ -249,12 +375,12 @@ describe('Design System route family exact Workspace authority', () => {
     expect(calls.static).toHaveBeenCalledWith(
       DESIGN_SYSTEM_ID,
       'system/kit.html',
-      { workspaceId: WORKSPACE_ID },
+      { workspaceId: WORKSPACE_ID, exactTeam: false },
     );
     expect(calls.static).toHaveBeenCalledWith(
       DESIGN_SYSTEM_ID,
       'tokens.css',
-      { workspaceId: WORKSPACE_ID },
+      { workspaceId: WORKSPACE_ID, exactTeam: false },
     );
     expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(2);
   });

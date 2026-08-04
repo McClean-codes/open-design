@@ -25,13 +25,12 @@ import {
   defaultScenarioPluginIdForProjectMetadata,
   PROFILE_MEMORY_ID,
   type AmrWalletSnapshot,
-  type ByokCredentialProfile,
   type ChatSessionMode,
   type ConnectorDetail,
   type InstalledPluginRecord,
   type RunContextSelection,
-  type UpsertByokCredentialProfileRequest,
   type UpsertMemoryRequest,
+  type WorkspaceProjectSummary,
 } from '@open-design/contracts';
 import type { OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import type { DesignSystemGenerateSnapshot } from './DesignSystemFlow';
@@ -142,6 +141,7 @@ import {
   notifyTeamProjectsChanged,
   notifyWorkspaceBillingRefresh,
   notifyWorkspaceContextRefresh,
+  currentWorkspaceAccountGeneration,
   useTeamProjects,
   useWorkspaceBillingResponse,
   useWorkspaceContext,
@@ -160,6 +160,14 @@ import {
   createSharedProjectPredicate,
   reconcileSharedProjectCatalogFields,
 } from '../collab/all-projects-list';
+import {
+  forgetOptimisticProjectOwnership,
+  optimisticProjectOwnershipScopeKey,
+  projectOwnerMemberIdsWithOptimisticWitnesses,
+  reconcileOptimisticProjectOwnership,
+  recordOptimisticProjectOwnership,
+  type OptimisticProjectOwnershipWitnesses,
+} from '../collab/optimistic-project-ownership';
 import {
   getModelCapabilityTag,
   getModelCostTier,
@@ -189,11 +197,7 @@ import {
   API_PROTOCOL_TABS,
   SUGGESTED_MODELS_BY_PROTOCOL,
 } from '../state/apiProtocols';
-import {
-  applySavedByokCredentialProfile,
-  defaultKnownProviderModel,
-  KNOWN_PROVIDERS,
-} from '../state/config';
+import { defaultKnownProviderModel, KNOWN_PROVIDERS } from '../state/config';
 import type { KnownProvider } from '../state/config';
 import { saveOnboardingProfile } from '../state/onboarding-profile';
 import { testAgent, testApiProvider } from '../providers/connection-test';
@@ -488,9 +492,6 @@ interface Props {
   onOpenDesignSystem?: (id: string) => void;
   onDesignSystemsRefresh?: () => Promise<void> | void;
   onPersistComposioKey: (composio: AppConfig['composio']) => Promise<void> | void;
-  onPersistByokCredential?: (
-    input: UpsertByokCredentialProfileRequest,
-  ) => Promise<ByokCredentialProfile>;
   onOpenSettings: (section?: EntrySettingsSection) => void;
   onCompleteOnboarding: () => void;
   artifactUpgradeSlot?: ReactNode;
@@ -595,7 +596,6 @@ export function EntryShell({
   onOpenDesignSystem,
   onDesignSystemsRefresh,
   onPersistComposioKey,
-  onPersistByokCredential,
   onOpenSettings,
   onCompleteOnboarding,
   artifactUpgradeSlot,
@@ -655,13 +655,35 @@ export function EntryShell({
   const [unsharedThisSession, setUnsharedThisSession] = useState<ReadonlySet<string>>(
     () => new Set<string>(),
   );
-  const markProjectShared = useCallback((projectId: string) => {
-    setSharedThisSession((prev) => new Set(prev).add(projectId));
+  const optimisticOwnershipScopeKey = optimisticProjectOwnershipScopeKey(
+    workspaceContext,
+    currentWorkspaceAccountGeneration(),
+  );
+  const [optimisticOwnershipWitnesses, setOptimisticOwnershipWitnesses] = useState<
+    OptimisticProjectOwnershipWitnesses
+  >(() => new Map());
+  const markProjectShared = useCallback((project: WorkspaceProjectSummary) => {
+    setSharedThisSession((prev) => new Set(prev).add(project.id));
     setUnsharedThisSession((prev) => {
+      const next = new Set(prev);
+      next.delete(project.id);
+      return next;
+    });
+    setOptimisticOwnershipWitnesses((prev) => recordOptimisticProjectOwnership(prev, {
+      scopeKey: optimisticOwnershipScopeKey,
+      context: workspaceContext,
+      project,
+    }));
+  }, [optimisticOwnershipScopeKey, workspaceContext]);
+  const markProjectShareFailed = useCallback((projectId: string) => {
+    setSharedThisSession((prev) => {
+      if (!prev.has(projectId)) return prev;
       const next = new Set(prev);
       next.delete(projectId);
       return next;
     });
+    setOptimisticOwnershipWitnesses((prev) =>
+      forgetOptimisticProjectOwnership(prev, projectId));
   }, []);
   const markProjectUnshared = useCallback((projectId: string) => {
     setUnsharedThisSession((prev) => new Set(prev).add(projectId));
@@ -670,7 +692,22 @@ export function EntryShell({
       next.delete(projectId);
       return next;
     });
+    setOptimisticOwnershipWitnesses((prev) =>
+      forgetOptimisticProjectOwnership(prev, projectId));
   }, []);
+  useEffect(() => {
+    setOptimisticOwnershipWitnesses((prev) => reconcileOptimisticProjectOwnership(prev, {
+      scopeKey: optimisticOwnershipScopeKey,
+      teamProjects: teamProjects.projects,
+    }));
+    const catalogProjectIds = new Set(
+      teamProjects.projects.map((project) => project.projectId),
+    );
+    setSharedThisSession((prev) => {
+      if (![...prev].some((projectId) => catalogProjectIds.has(projectId))) return prev;
+      return new Set([...prev].filter((projectId) => !catalogProjectIds.has(projectId)));
+    });
+  }, [optimisticOwnershipScopeKey, teamProjects.projects]);
   // The single shared-state answer, handed to the grids AND to every strip.
   const isSharedProject = useMemo(
     () =>
@@ -707,8 +744,13 @@ export function EntryShell({
   // projectId → sharing member id, so a card in the 全部项目 / 草稿 grids can
   // resolve "{creator}创建" against the member directory. A project absent here
   // is the member's own local project → "我创建".
-  const teamProjectOwnerMemberIds = new Map(
-    teamProjects.projects.map((teamProject) => [teamProject.projectId, teamProject.ownerMemberId]),
+  const teamProjectOwnerMemberIds = useMemo(
+    () => projectOwnerMemberIdsWithOptimisticWitnesses({
+      scopeKey: optimisticOwnershipScopeKey,
+      teamProjects: teamProjects.projects,
+      witnesses: optimisticOwnershipWitnesses,
+    }),
+    [optimisticOwnershipScopeKey, optimisticOwnershipWitnesses, teamProjects.projects],
   );
   const contentReadyProjectIdsRef = useRef(new Set<string>());
   const pendingContentReadyProjectIdsRef = useRef(
@@ -936,10 +978,6 @@ export function EntryShell({
       resolve: (decision: AmrLowBalanceDecision) => void;
     } | null
   >(null);
-  useEffect(() => {
-    if (view !== 'design-systems') return;
-    void onDesignSystemsRefresh?.();
-  }, [onDesignSystemsRefresh, view]);
   // The entry nav rail is collapsed by default (Manus-style) so the entry
   // view opens clean and full-width; the panel toggle in the topbar opens it
   // as an overlay that dismisses on selection / backdrop click / Escape.
@@ -1397,7 +1435,6 @@ export function EntryShell({
             onApiProtocolChange={onApiProtocolChange}
             onApiModelChange={onApiModelChange}
             onConfigPersist={onConfigPersist}
-            {...(onPersistByokCredential ? { onPersistByokCredential } : {})}
             onRefreshAgents={onRefreshAgents}
             onFinish={finishOnboarding}
             onGoBuild={() => {
@@ -1537,7 +1574,9 @@ export function EntryShell({
                 promptHandoff={homePromptHandoff}
                 isSharedProject={isSharedProject}
                 onProjectShared={markProjectShared}
+                onProjectShareFailed={markProjectShareFailed}
                 onProjectUnshared={markProjectUnshared}
+                projectOwnerMemberIds={teamProjectOwnerMemberIds}
                 skills={skills}
                 skillsLoading={skillsLoading}
                 connectors={connectors}
@@ -1585,6 +1624,7 @@ export function EntryShell({
             </div>
             <div data-testid="entry-view-plugins" data-active={view === 'plugins' ? 'true' : 'false'} {...inactiveViewProps(view === 'plugins')}>
               <ExtensionsMarketplace
+                isActive={view === 'plugins'}
                 onCreatePlugin={startPluginAuthoring}
                 onUsePlugin={usePluginFromLibrary}
                 onUseSkill={useSkillFromLibrary}
@@ -1594,6 +1634,7 @@ export function EntryShell({
               {designSystemsLoading ? (
                 <div className="entry-section">
                   <DesignSystemsTab
+                    isActive={view === 'design-systems'}
                     loading
                     systems={[]}
                     templates={templates}
@@ -1607,6 +1648,7 @@ export function EntryShell({
               ) : (
                 <div className="entry-section">
                   <DesignSystemsTab
+                    isActive={view === 'design-systems'}
                     systems={designSystems}
                     templates={templates}
                     selectedId={defaultDesignSystemId}
@@ -1740,6 +1782,7 @@ export function EntryShell({
                     space="drafts"
                     isSharedProject={isSharedProject}
                     onProjectShared={markProjectShared}
+                    onProjectShareFailed={markProjectShareFailed}
                     onProjectUnshared={markProjectUnshared}
                     projectOwnerMemberIds={teamProjectOwnerMemberIds}
                     onOpen={(id) => onOpenProject(id)}
@@ -1777,6 +1820,7 @@ export function EntryShell({
                     space="team"
                     isSharedProject={isSharedProject}
                     onProjectShared={markProjectShared}
+                    onProjectShareFailed={markProjectShareFailed}
                     onProjectUnshared={markProjectUnshared}
                     projectOwnerMemberIds={teamProjectOwnerMemberIds}
                     openingProjectId={pullingProjectId}
@@ -1843,7 +1887,6 @@ function OnboardingView({
   onApiProtocolChange,
   onApiModelChange,
   onConfigPersist,
-  onPersistByokCredential,
   onRefreshAgents,
   onFinish,
   onGoBuild,
@@ -1863,9 +1906,6 @@ function OnboardingView({
   onApiProtocolChange: (protocol: ApiProtocol) => void;
   onApiModelChange: (model: string) => void;
   onConfigPersist: (cfg: AppConfig) => Promise<void> | void;
-  onPersistByokCredential?: (
-    input: UpsertByokCredentialProfileRequest,
-  ) => Promise<ByokCredentialProfile>;
   onRefreshAgents: () => Promise<AgentInfo[]> | AgentInfo[];
   // `survey` is passed on the About-you completion paths (not on skip) so the
   // shell can build a personalized Home recommendation.
@@ -1882,7 +1922,6 @@ function OnboardingView({
   // straight from the landing's primary button.
   const [connectExpanded, setConnectExpanded] = useState<'local' | 'byok' | null>(null);
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
-  const [byokPersistPending, setByokPersistPending] = useState(false);
   const [cliScanStatus, setCliScanStatus] = useState<'idle' | 'scanning' | 'done'>('idle');
   const [amrStatus, setAmrStatus] = useState<VelaLoginStatus | null>(null);
   // Initial login status fetch has settled, whether signed in or not. The
@@ -2613,7 +2652,7 @@ function OnboardingView({
     setStep((current) => current - 1);
   }
   async function handlePrimaryAction() {
-    if (newsletterSubmitting || byokPersistPending) return;
+    if (newsletterSubmitting) return;
     // Connect gate: the button is `aria-disabled` (not natively disabled, so it
     // can still surface its tooltip on hover), so guard the click here — a
     // blocked Continue must not advance past the Connect step.
@@ -2629,72 +2668,6 @@ function OnboardingView({
         },
       );
       void handleAmrSignInToContinue(attribution);
-      return;
-    }
-    if (step === 0 && runtime === 'byok') {
-      if (!byokConnectionVerified) return;
-      if (apiProtocol === 'bedrock') {
-        setProviderTestState({
-          status: 'done',
-          inputKey: providerTestInputKey,
-          result: {
-            ok: false,
-            kind: 'unknown',
-            latencyMs: 0,
-            model: config.model,
-            detail: 'Secure BYOK profiles do not support the Bedrock protocol',
-          },
-        });
-        return;
-      }
-      if (!onPersistByokCredential) {
-        setProviderTestState({
-          status: 'done',
-          inputKey: providerTestInputKey,
-          result: {
-            ok: false,
-            kind: 'unknown',
-            latencyMs: 0,
-            model: config.model,
-            detail: 'Secure BYOK credential storage is unavailable',
-          },
-        });
-        return;
-      }
-      setByokPersistPending(true);
-      try {
-        const profile = await onPersistByokCredential({
-          ...(config.byokProfileId ? { id: config.byokProfileId } : {}),
-          label: selectedProvider?.label ?? apiProtocol,
-          protocol: apiProtocol,
-          baseUrl: config.baseUrl.trim(),
-          model: config.model.trim(),
-          ...(apiProtocol === 'azure' && config.apiVersion?.trim()
-            ? { apiVersion: config.apiVersion.trim() }
-            : {}),
-          requiresApiKey: true,
-          apiKey: config.apiKey.trim(),
-        });
-        await onConfigPersist(applySavedByokCredentialProfile(config, profile));
-        emitOnboardingClick('continue', 'continue');
-        setStep((current) => current + 1);
-      } catch (error) {
-        setProviderTestState({
-          status: 'done',
-          inputKey: providerTestInputKey,
-          result: {
-            ok: false,
-            kind: 'unknown',
-            latencyMs: 0,
-            model: config.model,
-            detail: error instanceof Error
-              ? error.message
-              : 'Secure BYOK credential storage is unavailable',
-          },
-        });
-      } finally {
-        setByokPersistPending(false);
-      }
       return;
     }
     if (isLastStep) {
@@ -3311,10 +3284,8 @@ function OnboardingView({
     step,
   ]);
 
-  const onboardingNavigationLocked = newsletterSubmitting || byokPersistPending;
-  const primaryActionLabel = byokPersistPending
-    ? t('common.loading')
-    : isLastStep && newsletterSubmitting
+  const onboardingNavigationLocked = newsletterSubmitting;
+  const primaryActionLabel = isLastStep && newsletterSubmitting
     ? t('common.loading')
     : step === 0 && amrLoginPending
     ? t('settings.amrSigningIn')

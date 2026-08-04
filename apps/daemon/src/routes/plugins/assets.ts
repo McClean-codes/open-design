@@ -14,6 +14,7 @@ export interface RegisterPluginAssetRoutesDeps {
     db: PluginDbLike,
     id: string,
     workspaceId: string | null,
+    workspaceMemberId?: string | null,
   ) => InstalledPluginLike | null | Promise<InstalledPluginLike | null>;
   pluginAssetCache: { get(url: string): Promise<{ buf: Buffer; contentType: string }> };
   AssetCacheError: new (...args: unknown[]) => Error & { status: number };
@@ -111,7 +112,12 @@ export function registerPluginAssetRoutes(app: Express, deps: RegisterPluginAsse
     authority: WorkspaceCollabContext | null,
   ): Promise<InstalledPluginLike | null> => {
     if (deps.getWorkspacePlugin) {
-      return deps.getWorkspacePlugin(db, id, authority?.workspaceId ?? null);
+      return deps.getWorkspacePlugin(
+        db,
+        id,
+        authority?.workspaceId ?? null,
+        authority?.workspaceMemberId ?? null,
+      );
     }
     const { getInstalledPlugin } = await import('../../plugins/index.js');
     return getInstalledPlugin(db, id) as InstalledPluginLike | null;

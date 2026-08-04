@@ -294,11 +294,9 @@ async function main(): Promise<void> {
   // gate, which is a no-op when the label is already current).
   setSplashStage(splash.window, "workspace");
   // Resolve the web sidecar address per request instead of freezing it here.
-  // `startPackagedSidecars` already rejects a web sidecar that reports no URL,
-  // so in practice this reads a stable value — but the protocol layer no
-  // longer *depends* on that, and a null (however it arises) now surfaces as a
-  // structured 503 rather than a connection attempt against `127.0.0.1:0`.
-  registerOdProtocol(() => sidecars.web.url);
+  // The restart supervisor may bind a fresh ephemeral port, while a temporary
+  // lack of a target should surface as the protocol layer's structured 503.
+  registerOdProtocol(() => sidecars.currentWebUrl());
 
   const { runDesktopMain } = await import("@open-design/desktop/main");
   await runDesktopMain(runtime, {

@@ -26,6 +26,7 @@ import { x as tarExtract } from 'tar';
 import {
   defaultRegistryRoots,
   deleteInstalledPlugin,
+  getInstalledPlugin,
   resolvePluginFolder,
   upsertInstalledPlugin,
   type ResolveOptions,
@@ -94,6 +95,10 @@ export interface InstallOptions {
   // Optional runtime-data lockfile path. Daemon routes pass
   // `<OD_DATA_DIR>/od-plugin-lock.json`; tests can point at temp dirs.
   lockfilePath?: string;
+  // Called after manifest identity is known but before existing bytes or the
+  // installed_plugins row can be replaced. Workspace-aware callers use this
+  // to fail closed when the global install slot belongs to another member.
+  allowReplacePlugin?: (pluginId: string) => boolean | string;
 }
 
 export type ArchiveFetcher = (url: string) => Promise<{
@@ -714,6 +719,20 @@ export async function* installFromLocalFolder(
     return;
   }
   const destFolder = path.join(roots.userPluginsRoot, pluginId);
+
+  if (fs.existsSync(destFolder) || getInstalledPlugin(db, pluginId)) {
+    const replacement = opts.allowReplacePlugin?.(pluginId);
+    if (typeof replacement === 'string' || replacement === false) {
+      yield {
+        kind: 'error',
+        message: typeof replacement === 'string'
+          ? replacement
+          : `Plugin "${pluginId}" cannot be replaced from this workspace`,
+        warnings,
+      };
+      return;
+    }
+  }
 
   // Block overwriting a foreign plugin id. The destination folder may
   // contain a previous version of the same id, in which case we replace it.

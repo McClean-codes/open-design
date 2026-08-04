@@ -281,6 +281,88 @@ describe('App connectors settings flows', () => {
     });
   });
 
+  it('does not send a destructive empty Composio write during bootstrap', async () => {
+    mockedLoadConfig.mockReturnValue({
+      ...baseConfig,
+      composio: {
+        apiKey: '',
+        apiKeyConfigured: false,
+        apiKeyTail: '',
+      },
+    });
+    mockedFetchComposioConfigFromDaemon.mockResolvedValue({
+      apiKey: '',
+      apiKeyConfigured: false,
+      apiKeyTail: '',
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockedFetchComposioConfigFromDaemon).toHaveBeenCalledTimes(1);
+      expect(mockedSyncConfigToDaemon).toHaveBeenCalled();
+    });
+
+    // PUT { apiKey: '' } means "clear" at the daemon boundary. A bootstrap
+    // write can complete after the user's first explicit Save and erase the
+    // freshly stored key, so startup must stay read-only when there is no
+    // legacy plaintext key to migrate.
+    expect(mockedSyncComposioConfigToDaemon).not.toHaveBeenCalled();
+  });
+
+  it('removes a legacy plaintext Composio key only after migration succeeds', async () => {
+    mockedLoadConfig.mockReturnValue({
+      ...baseConfig,
+      composio: {
+        apiKey: 'cmp_legacy_secret',
+        apiKeyConfigured: false,
+        apiKeyTail: '',
+      },
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockedSyncComposioConfigToDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: 'cmp_legacy_secret' }),
+      );
+      expect(mockedSaveConfig.mock.calls.at(-1)?.[0]).toMatchObject({
+        composio: {
+          apiKey: '',
+          apiKeyConfigured: true,
+          apiKeyTail: 'cret',
+        },
+      });
+    });
+  });
+
+  it('retains a legacy plaintext Composio key when migration fails', async () => {
+    mockedLoadConfig.mockReturnValue({
+      ...baseConfig,
+      composio: {
+        apiKey: 'cmp_retry_secret',
+        apiKeyConfigured: false,
+        apiKeyTail: '',
+      },
+    });
+    mockedSyncComposioConfigToDaemon.mockResolvedValueOnce(false);
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(mockedSyncComposioConfigToDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({ apiKey: 'cmp_retry_secret' }),
+      );
+      expect(mockedSaveConfig.mock.calls.at(-1)?.[0]).toMatchObject({
+        composio: {
+          apiKey: 'cmp_retry_secret',
+          apiKeyConfigured: false,
+          apiKeyTail: '',
+        },
+      });
+    });
+  });
+
   it('does not show first-run privacy consent until daemon config hydration finishes', async () => {
     let resolveDaemonConfig: (value: Record<string, never>) => void = () => {};
     mockedFetchDaemonConfig.mockReturnValue(

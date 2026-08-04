@@ -54,6 +54,10 @@ export type SrcdocOptions = {
   /** Document-owned identity for preview content-size reports. The host rejects
    * reports from a previous srcdoc document even if it echoed a newer request. */
   previewMeasurementEpoch?: string;
+  /** Identity of this exact srcdoc artifact generation. The injected bridge
+   * echoes it only after all document-side listeners are installed, allowing
+   * the host to reject a stale ready signal from the document being replaced. */
+  transportActivationGeneration?: string;
 };
 
 // --- Redirect-loop guard -------------------------------------------------
@@ -432,6 +436,7 @@ export function buildSrcdoc(
       withTweaks,
       options.previewMeasurementEpoch ?? '',
     ))),
+    options.transportActivationGeneration ?? '',
   );
   // Embed the reload counter so the srcdoc string differs across reloads even
   // when the underlying HTML bytes are identical.  This ensures the browser
@@ -463,7 +468,7 @@ export function buildLazySrcdocTransport(): string {
     <script data-od-lazy-srcdoc-transport>(function(){
       window.addEventListener('message', function(ev){
         var data = ev && ev.data;
-        if (!data || data.type !== 'od:srcdoc-transport-activate' || typeof data.html !== 'string') return;
+        if (!data || data.type !== 'od:srcdoc-transport-activate' || typeof data.html !== 'string' || typeof data.generation !== 'string' || !data.generation) return;
         document.open();
         document.write(data.html);
         document.close();
@@ -512,15 +517,30 @@ export function canActivateSrcDocTransport(state: SrcDocActivationInputs): boole
   return true;
 }
 
-function injectSrcdocTransportActivationBridge(doc: string): string {
+function injectSrcdocTransportActivationBridge(doc: string, generation: string): string {
+  const encodedGeneration = JSON.stringify(generation);
   const script = `<script data-od-srcdoc-transport-activation>(function(){
+  var generation = ${encodedGeneration};
+  function announceReady(){
+    if (!generation) return;
+    try {
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage({ type: 'od:srcdoc-transport-activated', generation: generation }, '*');
+      }
+    } catch (_) { /* sandboxed parent */ }
+  }
   window.addEventListener('message', function(ev){
     var data = ev && ev.data;
-    if (!data || data.type !== 'od:srcdoc-transport-activate' || typeof data.html !== 'string') return;
+    if (data && data.type === 'od:srcdoc-transport-ready-probe') {
+      if (data.generation === generation) announceReady();
+      return;
+    }
+    if (!data || data.type !== 'od:srcdoc-transport-activate' || typeof data.html !== 'string' || typeof data.generation !== 'string' || !data.generation) return;
     document.open();
     document.write(data.html);
     document.close();
   });
+  announceReady();
 })();</script>`;
   return injectBeforeBodyEnd(doc, script);
 }

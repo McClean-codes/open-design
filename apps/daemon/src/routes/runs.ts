@@ -8,6 +8,7 @@ import {
   RUN_RESULT_PACKAGE_SCHEMA,
   type AppliedPluginSnapshot,
   type ArtifactManifest,
+  type ByokChatProviderConfig,
   type ChatRunStatus,
   type ChatRunStatusResponse,
   type ProjectMetadata as ContractProjectMetadata,
@@ -37,7 +38,6 @@ import {
   codexSessionIdFromRunEvents,
   readCodexRolloutFirstCall,
 } from '../codex-rollout-usage.js';
-import type { ByokCredentialService } from '../byok/credential-service.js';
 import type { ConnectorService } from '../connectors/service.js';
 import {
   conversationTurnIndexForRun,
@@ -106,6 +106,7 @@ import {
 } from '../run-tool-bundle.js';
 import type { DetectedAgent, RuntimeAgentDef } from '../runtimes/types.js';
 import {
+  buildOpenCodeByokProviderConfig,
   BYOK_OPENCODE_AGENT_ID,
   BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
 } from '../runtimes/byok-opencode.js';
@@ -476,7 +477,6 @@ export interface RegisterRunRoutesDeps {
   chat: {
     startChatRun: (meta: RunCreateMeta, run: ChatRun) => Promise<unknown>;
   };
-  byokCredentials: Pick<ByokCredentialService, 'has'>;
   lifecycle: {
     isDaemonShuttingDown: () => boolean;
   };
@@ -495,8 +495,22 @@ export interface RegisterRunRoutesDeps {
       runs: ChatRunService;
       db: SqliteDb;
     }) => void;
-    loadPluginRegistryView: () => Promise<Parameters<typeof resolvePluginSnapshot>[0]['registry']>;
+    loadPluginRegistryView: (options?: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    }) => Promise<Parameters<typeof resolvePluginSnapshot>[0]['registry']>;
     renderPluginBriefTemplate: (template: string, inputs?: Record<string, unknown>) => string;
+    /**
+     * Fail-closed request-scoped plugin lookup. The catalog API and the run
+     * API must use the same Workspace/member visibility rules; otherwise a
+     * caller can bypass a hidden Personal plugin by posting its id directly
+     * to /api/runs.
+     */
+    authorizePluginRequest?: (
+      req: ApiRequest,
+      res: ApiResponse,
+      pluginId: string,
+    ) => Promise<boolean>;
   };
   telemetry: {
     reportRunCompletionTelemetryFallback: (input: RunCreatedFallbackInput) => void;
@@ -748,6 +762,7 @@ function routeParamId(req: ApiRequest): string | null {
 function withoutSensitiveRunInput(body: JsonRecord): JsonRecord {
   const sanitized = { ...body };
   delete sanitized.byokProvider;
+  delete sanitized.byokProfileId;
   delete sanitized.apiKey;
   delete sanitized.rechargeResumeCapability;
   return sanitized;
@@ -836,49 +851,12 @@ function externalPluginAttributionMismatch(
   );
 }
 
-const CREDENTIAL_FIELD_PATTERN =
-  /^(?:api[_-]?key|authorization|access[_-]?token|refresh[_-]?token|secret|password)$/iu;
-
-function containsCredentialShapedField(value: unknown, depth = 0): boolean {
-  // Over-complex structured input is rejected rather than allowed to outrun
-  // the secret scan. This keeps the credential boundary fail-closed.
-  if (depth > 20) return true;
-  if (value === null || typeof value !== 'object') return false;
-  if (Array.isArray(value)) {
-    return value.some((item) => containsCredentialShapedField(item, depth + 1));
-  }
-  return Object.entries(value as JsonRecord).some(([key, nested]) =>
-    CREDENTIAL_FIELD_PATTERN.test(key)
-    || containsCredentialShapedField(nested, depth + 1),
-  );
-}
-
-async function byokRunInputError(
-  meta: JsonRecord,
-  credentials: Pick<ByokCredentialService, 'has'>,
-): Promise<string | null> {
-  const isByokRequest =
-    meta.agentId === BYOK_OPENCODE_AGENT_ID
-    || typeof meta.byokProfileId === 'string';
-  if (
-    Object.prototype.hasOwnProperty.call(meta, 'byokProvider')
-    || Object.prototype.hasOwnProperty.call(meta, 'apiKey')
-    || (isByokRequest && containsCredentialShapedField(meta))
-  ) {
-    return 'Raw BYOK credentials are not accepted by run APIs; save a secure credential profile and pass byokProfileId.';
-  }
-  if (meta.agentId !== BYOK_OPENCODE_AGENT_ID) return null;
-  const profileId = typeof meta.byokProfileId === 'string'
-    ? meta.byokProfileId.trim()
-    : '';
-  if (!profileId) return BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE;
-  try {
-    return await credentials.has(profileId)
-      ? null
-      : BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE;
-  } catch {
-    return BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE;
-  }
+function hasCompleteByokOpenCodeConfig(meta: JsonRecord): boolean {
+  if (meta.agentId !== BYOK_OPENCODE_AGENT_ID) return true;
+  return buildOpenCodeByokProviderConfig(
+    meta.byokProvider as ByokChatProviderConfig | null | undefined,
+    typeof meta.model === 'string' ? meta.model : null,
+  ) !== null;
 }
 
 function toOdNativeEvent(record: RunEventRecord): OdNativeEvent | null {
@@ -910,18 +888,70 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     reconcileAssistantMessageOnRunEnd,
   } = ctx.messages;
 
+  /** Authorize every bound run mutation before plugin or snapshot resolution. */
+  async function authorizeRunProjectBeforePluginResolution(
+    req: ApiRequest,
+    res: ApiResponse,
+    projectId: string,
+  ): Promise<{ ok: true; authorizedBoundMutation: boolean } | { ok: false }> {
+    if (!ctx.projectStore || !ctx.authorizeProjectRequest) {
+      return { ok: true, authorizedBoundMutation: false };
+    }
+    const binding = ctx.projectStore.getWorkspaceProjectByProjectId(db, projectId);
+    if (!binding) return { ok: true, authorizedBoundMutation: false };
+
+    const requestContext = workspaceResourceContextFromRequest(req);
+    const mustAuthorize = binding.visibility === 'team' || requestContext !== null;
+    if (!mustAuthorize) {
+      // Headerless local CLI/BYOK calls keep the legacy Personal-project path.
+      return { ok: true, authorizedBoundMutation: false };
+    }
+    if (!await ctx.authorizeProjectRequest(
+      req,
+      res,
+      projectId,
+      { mode: 'write', capability: 'writeFiles' },
+    )) {
+      return { ok: false };
+    }
+    return { ok: true, authorizedBoundMutation: true };
+  }
+
+  function requestedSnapshotBelongsToProject(
+    res: ApiResponse,
+    projectId: string,
+    snapshotId: unknown,
+  ): boolean {
+    if (typeof snapshotId !== 'string' || snapshotId.trim().length === 0) {
+      return true;
+    }
+    const normalizedSnapshotId = snapshotId.trim();
+    const row = db
+      .prepare('SELECT project_id AS projectId FROM applied_plugin_snapshots WHERE id = ?')
+      .get(normalizedSnapshotId) as { projectId?: unknown } | undefined;
+    if (row?.projectId === projectId) return true;
+    sendApiError(
+      res,
+      404,
+      'snapshot-not-found',
+      `Applied plugin snapshot ${normalizedSnapshotId} not found`,
+    );
+    return false;
+  }
+
   /**
    * Pin a run to its persisted project binding. The sole adoption branch is a
    * signed-in AMR request for a truly unbound historical project: a freshly
-   * verified exact Personal identity may write the same ownerless projection
-   * that the Personal project-list migration writes. Every other runtime keeps
-   * its legacy local path and never reads Workspace authority here.
+   * verified exact Personal identity becomes the persisted creator witness.
+   * Every other runtime keeps its legacy local path and never reads Workspace
+   * authority here.
    */
   async function prepareRunWorkspaceScope(
     req: ApiRequest,
     res: ApiResponse,
     projectId: string,
     agentId: unknown,
+    authorizedBoundMutation = false,
   ): Promise<
     | { ok: true; workspaceScope: PinnedRunWorkspaceScope | null }
     | { ok: false }
@@ -933,11 +963,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       // A shared Team project is a single-writer resource. Billing still uses
       // the persisted Workspace binding below, but starting an agent can write
       // project files and conversation state, so the caller must separately
-      // prove project-owner mutation standing. Workspace owner/admin is not a
-      // substitute for the catalog's project owner. Personal and unshared
-      // bindings retain the legacy local-run behavior.
+      // prove project-owner mutation standing. Explicitly scoped Personal
+      // requests use the same exact creator gate before plugin/snapshot
+      // resolution; only headerless local Personal callers keep legacy access.
       if (
         binding.visibility === 'team'
+        && !authorizedBoundMutation
         && ctx.authorizeProjectRequest
         && !await ctx.authorizeProjectRequest(
           req,
@@ -1065,8 +1096,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         workspaceId: verified.context.workspaceId,
         visibility: 'personal',
         resourceState: 'active',
-        createdByWorkspaceMemberId: null,
-        updatedByWorkspaceMemberId: null,
+        createdByWorkspaceMemberId: verified.context.workspaceMemberId,
+        updatedByWorkspaceMemberId: verified.context.workspaceMemberId,
         syncState: 'local_only',
         resourceHubResourceId: null,
         cloudTombstonedAt: null,
@@ -1170,16 +1201,12 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     if (!toolBundle.ok) {
       return sendApiError(res, 400, 'BAD_REQUEST', toolBundle.message);
     }
-    const initialByokInputError = await byokRunInputError(
-      requestBody,
-      ctx.byokCredentials,
-    );
-    if (initialByokInputError) {
+    if (!hasCompleteByokOpenCodeConfig(requestBody)) {
       return sendApiError(
         res,
         400,
         'VALIDATION_FAILED',
-        initialByokInputError,
+        BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
       );
     }
     // Reject a client-supplied conversationId that is missing a projectId or
@@ -1198,14 +1225,53 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         return sendApiError(res, 404, 'CONVERSATION_NOT_FOUND', 'conversation not found for project');
       }
     }
+    let authorizedBoundMutation = false;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      const authorization = await authorizeRunProjectBeforePluginResolution(
+        req,
+        res,
+        requestBody.projectId,
+      );
+      if (!authorization.ok) return;
+      authorizedBoundMutation = authorization.authorizedBoundMutation;
+    }
+    let effectiveAgentId =
+      typeof requestBody.agentId === 'string' && requestBody.agentId
+        ? requestBody.agentId
+        : null;
+    if (!effectiveAgentId) {
+      try {
+        const appCfg = await readAppConfig(RUNTIME_DATA_DIR);
+        const cfgAgent = typeof appCfg.agentId === 'string' && appCfg.agentId
+          ? appCfg.agentId
+          : null;
+        const agents = await detectAgents(
+          toJsonRecord(appCfg.agentCliEnv),
+        ).catch((): DetectedAgent[] => []);
+        const cfgAgentAvailable = cfgAgent
+          ? agents.some((agent) => agent.id === cfgAgent && agent.available)
+          : false;
+        effectiveAgentId = cfgAgent && cfgAgentAvailable
+          ? cfgAgent
+          : agents.find((agent) => agent.available)?.id ?? null;
+      } catch (err) {
+        console.warn('[runs] agent id fallback failed', err);
+      }
+    }
+    let preparedWorkspaceScope: PinnedRunWorkspaceScope | null = null;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      const prepared = await prepareRunWorkspaceScope(
+        req,
+        res,
+        requestBody.projectId,
+        effectiveAgentId,
+        authorizedBoundMutation,
+      );
+      if (!prepared.ok) return;
+      preparedWorkspaceScope = prepared.workspaceScope;
+    }
     let resolvedSnapshot = null;
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
-      let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
-      try {
-        registryView = await loadPluginRegistryView();
-      } catch (err) {
-        return res.status(500).json({ error: String(err) });
-      }
       const explicitPlugin =
         requestBody.pluginId || requestBody.appliedPluginSnapshotId;
       let runResolveBody: JsonRecord = requestBody;
@@ -1223,6 +1289,39 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           }
         }
       }
+      // Authorize the final plugin id, not only the literal request field.
+      // Project-kind fallback may synthesize a pluginId, and it must not gain
+      // a bypass around the same scoped catalog resolver.
+      if (
+        typeof runResolveBody.pluginId === 'string'
+        && runResolveBody.pluginId.length > 0
+        && ctx.plugins.authorizePluginRequest
+        && !await ctx.plugins.authorizePluginRequest(
+          req,
+          res,
+          runResolveBody.pluginId,
+        )
+      ) return;
+      let registryView: Parameters<typeof resolvePluginSnapshot>[0]['registry'];
+      try {
+        const projectBinding = ctx.projectStore?.getWorkspaceProjectByProjectId(
+          db,
+          requestBody.projectId,
+        );
+        registryView = await loadPluginRegistryView(
+          projectBinding?.workspaceId
+            ? {
+                workspaceId: String(projectBinding.workspaceId),
+                workspaceMemberId:
+                  typeof projectBinding.createdByWorkspaceMemberId === 'string'
+                    ? projectBinding.createdByWorkspaceMemberId
+                    : null,
+              }
+            : undefined,
+        );
+      } catch (err) {
+        return res.status(500).json({ error: String(err) });
+      }
       const resolved = resolvePluginSnapshot({
         db,
         body: runResolveBody,
@@ -1232,6 +1331,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           : null,
         registry: registryView,
         connectorProbe: buildConnectorProbe(connectorService),
+        requireSnapshotProjectMatch: true,
       });
       if (resolved && !resolved.ok) {
         if (!explicitPlugin) {
@@ -1249,6 +1349,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       ...withoutSensitiveRunInput(requestBody),
       mediaExecution: mediaExecution.policy,
       toolBundle: toolBundle.bundle,
+      ...(effectiveAgentId ? { agentId: effectiveAgentId } : {}),
+      ...(preparedWorkspaceScope ? { workspaceScope: preparedWorkspaceScope } : {}),
     };
     if (resolvedSnapshot?.ok) {
       meta.appliedPluginSnapshotId = resolvedSnapshot.snapshotId;
@@ -1295,23 +1397,18 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[runs] agent id fallback failed', err);
       }
     }
-    const resolvedByokInputError = await byokRunInputError(
-      meta,
-      ctx.byokCredentials,
-    );
-    if (resolvedByokInputError) {
+    if (!hasCompleteByokOpenCodeConfig({
+      ...meta,
+      ...(requestBody.byokProvider !== undefined
+        ? { byokProvider: requestBody.byokProvider }
+        : {}),
+    })) {
       return sendApiError(
         res,
         400,
         'VALIDATION_FAILED',
-        resolvedByokInputError,
+        BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
       );
-    }
-    if (typeof meta.projectId === 'string' && meta.projectId) {
-      const preparedWorkspaceScope =
-        await prepareRunWorkspaceScope(req, res, meta.projectId, meta.agentId);
-      if (!preparedWorkspaceScope.ok) return;
-      meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
     const toolBundleSupport = validateRunToolBundleForAgent(
       toolBundle.bundle,
@@ -1664,7 +1761,13 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[plugins] skill candidate hook setup failed', err);
       }
     }
-    design.runs.start(run, () => startChatRun(meta, run));
+    const executionMeta: RunCreateMeta = {
+      ...meta,
+      ...(requestBody.byokProvider !== undefined
+        ? { byokProvider: requestBody.byokProvider }
+        : {}),
+    };
+    design.runs.start(run, () => startChatRun(executionMeta, run));
 
     const reqBody = requestBody;
     const analyticsHints =
@@ -2723,16 +2826,22 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         return sendApiError(res, 404, 'CONVERSATION_NOT_FOUND', 'conversation not found for project');
       }
     }
-    const byokInputError = await byokRunInputError(
-      requestBody,
-      ctx.byokCredentials,
-    );
-    if (byokInputError) {
+    let authorizedBoundMutation = false;
+    if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
+      const authorization = await authorizeRunProjectBeforePluginResolution(
+        req,
+        res,
+        requestBody.projectId,
+      );
+      if (!authorization.ok) return;
+      authorizedBoundMutation = authorization.authorizedBoundMutation;
+    }
+    if (!hasCompleteByokOpenCodeConfig(requestBody)) {
       return sendApiError(
         res,
         400,
         'VALIDATION_FAILED',
-        byokInputError,
+        BYOK_OPENCODE_PROVIDER_REQUIRED_MESSAGE,
       );
     }
     const meta: RunCreateMeta = {
@@ -2743,10 +2852,35 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     };
     if (typeof meta.projectId === 'string' && meta.projectId) {
       const preparedWorkspaceScope =
-        await prepareRunWorkspaceScope(req, res, meta.projectId, meta.agentId);
+        await prepareRunWorkspaceScope(
+          req,
+          res,
+          meta.projectId,
+          meta.agentId,
+          authorizedBoundMutation,
+        );
       if (!preparedWorkspaceScope.ok) return;
       meta.workspaceScope = preparedWorkspaceScope.workspaceScope;
     }
+    if (
+      typeof requestBody.pluginId === 'string'
+      && requestBody.pluginId.length > 0
+      && ctx.plugins.authorizePluginRequest
+      && !await ctx.plugins.authorizePluginRequest(
+        req,
+        res,
+        requestBody.pluginId,
+      )
+    ) return;
+    if (
+      typeof meta.projectId === 'string'
+      && meta.projectId
+      && !requestedSnapshotBelongsToProject(
+        res,
+        meta.projectId,
+        meta.appliedPluginSnapshotId,
+      )
+    ) return;
     meta.requestFingerprint = runRequestFingerprint(meta);
     const creation = design.runs.createOrReuse(meta);
     if (creation.kind === 'conflict') {
@@ -2769,9 +2903,15 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
     design.runs.stream(run, req, res);
     reconcileAssistantMessageOnRunEnd(db, design.runs, run);
-    design.runs.start(run, () => startChatRun(meta, run));
+    const executionMeta: RunCreateMeta = {
+      ...meta,
+      ...(requestBody.byokProvider !== undefined
+        ? { byokProvider: requestBody.byokProvider }
+        : {}),
+    };
+    design.runs.start(run, () => startChatRun(executionMeta, run));
   });
 }
 
-export const __forTestByokRunInputError = byokRunInputError;
+export const __forTestHasCompleteByokOpenCodeConfig = hasCompleteByokOpenCodeConfig;
 export const __forTestWithoutSensitiveRunInput = withoutSensitiveRunInput;

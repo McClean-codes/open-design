@@ -454,12 +454,21 @@ describe('workspace project routes', () => {
     const draftId = `workspace-view-draft-${suffix}`;
     const teamId = `workspace-view-team-${suffix}`;
     const otherId = `workspace-view-other-${suffix}`;
-    await createProject(draftId, 'Draft view fixture');
-    await list('member-view');
-    await createProject(teamId, 'Team view fixture');
-    await list('member-view');
-    await createProject(otherId, 'Other member view fixture');
-    await list('member-other');
+    const otherWorkspaceId = `${workspaceId}-other-${suffix}`;
+    const otherWorkspaceProjectId = `workspace-view-cross-workspace-${suffix}`;
+    await createProjectInWorkspace(draftId, 'Draft view fixture', 'member-view', {
+      'x-od-workspace-type': 'team',
+    });
+    await createProjectInWorkspace(teamId, 'Team view fixture', 'member-view', {
+      'x-od-workspace-type': 'team',
+    });
+    await createProjectInWorkspace(otherId, 'Other member view fixture', 'member-other', {
+      'x-od-workspace-type': 'team',
+    });
+    await createProjectInWorkspace(otherWorkspaceProjectId, 'Other Workspace fixture', 'member-view', {
+      'x-od-workspace-id': otherWorkspaceId,
+      'x-od-workspace-type': 'team',
+    });
 
     const moveResp = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects/${teamId}/move`, {
       method: 'POST',
@@ -475,22 +484,22 @@ describe('workspace project routes', () => {
     const recent = await list('member-view', '?view=recent');
     const drafts = await list('member-view', '?view=drafts');
     const team = await list('member-view', '?view=team');
+    const otherPersonal = await list(
+      'member-view',
+      '?view=all&owner=others&visibility=personal',
+    );
 
     expect(all.projects.some((item) => item.id === draftId)).toBe(true);
     expect(recent.projects.map((item) => item.id)).toContain(draftId);
-    expect(recent.projects.map((item) => item.id)).toContain(otherId);
     expect(recent.projects.map((item) => item.id)).toContain(teamId);
-    // Every fixture project is created through the bare `/api/projects` path, so
-    // each has a null workspace creator and counts as a local draft for whoever
-    // views it (legacy local-project compatibility). draftId and otherId are
-    // still personal, so both surface in drafts; teamId was moved to team, so it
-    // drops out. Real per-member draft isolation applies once a project carries a
-    // stamped workspace creator (created within a workspace context, or shared).
     expect(drafts.projects.map((item) => item.id)).toContain(draftId);
-    expect(drafts.projects.map((item) => item.id)).toContain(otherId);
     expect(drafts.projects.map((item) => item.id)).not.toContain(teamId);
     expect(team.projects.map((item) => item.id)).toContain(teamId);
     expect(team.projects.map((item) => item.id)).not.toContain(draftId);
+    for (const response of [all, recent, drafts, team, otherPersonal]) {
+      expect(response.projects.map((item) => item.id)).not.toContain(otherId);
+      expect(response.projects.map((item) => item.id)).not.toContain(otherWorkspaceProjectId);
+    }
 
     const invalid = await fetch(`${baseUrl}/api/workspaces/${workspaceId}/projects?view=personal`, {
       headers: headers('member-view'),
@@ -1530,6 +1539,7 @@ describe('workspace project routes', () => {
         },
       });
       expect(body.projects[0].project.id).toBe(remoteProjectId);
+      expect(body.projects[0].project.workspaceId).toBe(workspaceId);
       expect(body.projects[0].project.metadata).toEqual({
         sharedProjectPlaceholderAt: 20,
       });
@@ -1974,6 +1984,10 @@ describe('workspace project routes', () => {
       dbDeleteProject: vi.fn(),
       removeProjectDir: vi.fn(),
       teamProjectCatalog,
+      workspaceRowOverrides: {
+        createdByWorkspaceMemberId: 'member-viewer',
+        updatedByWorkspaceMemberId: 'member-viewer',
+      },
     }));
     const routeServer = await listen(app);
     try {
@@ -2145,7 +2159,7 @@ describe('workspace project routes', () => {
         }),
         body: JSON.stringify({ visibility: 'team' }),
       });
-      expect(moveResp.status).toBe(400);
+      expect(moveResp.status).toBe(503);
       expect(requestTeamShare).toHaveBeenCalledWith(projectId, {
         memberId: 'member-share-rejected',
         teamId: workspaceId,
@@ -2173,7 +2187,7 @@ describe('workspace project routes', () => {
         }),
         body: JSON.stringify({ projectIds: [projectId], visibility: 'team' }),
       });
-      expect(batchResp.status).toBe(400);
+      expect(batchResp.status).toBe(503);
       expect(updateWorkspaceProject).toHaveBeenCalledTimes(2);
       expect(updateWorkspaceProject.mock.calls[0]?.[3]).toMatchObject({
         visibility: 'team',
@@ -2183,6 +2197,157 @@ describe('workspace project routes', () => {
         visibility: 'personal',
         syncState: 'local_only',
         resourceHubResourceId: null,
+      });
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('retries a failed Team publish only for the exact recorded owner and Workspace', async () => {
+    const projectId = `workspace-share-retry-${Date.now()}`;
+    const memberId = 'member-share-retry';
+    const requestTeamShare = vi.fn(async () => ({ version: 7 }));
+    const updateWorkspaceProject = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      collabSync: { requestTeamShare },
+      updateWorkspaceProject,
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        createdByWorkspaceMemberId: memberId,
+        updatedByWorkspaceMemberId: memberId,
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const retry = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: headers(memberId, {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'member',
+          'x-od-workspace-lifecycle-state': 'active',
+        }),
+        body: JSON.stringify({ visibility: 'team' }),
+      });
+
+      expect(retry.status).toBe(200);
+      expect(requestTeamShare).toHaveBeenCalledTimes(1);
+      expect(requestTeamShare).toHaveBeenCalledWith(projectId, {
+        memberId,
+        teamId: workspaceId,
+        role: 'member',
+        lifecycleState: 'active',
+      });
+      expect(updateWorkspaceProject).toHaveBeenCalledWith(
+        expect.anything(),
+        workspaceId,
+        projectId,
+        expect.objectContaining({
+          visibility: 'team',
+          createdByWorkspaceMemberId: memberId,
+          resourceHubResourceId: expect.any(String),
+          syncState: 'pending_upload',
+        }),
+      );
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('does not let another member retry a failed Team publish', async () => {
+    const projectId = `workspace-share-retry-foreign-${Date.now()}`;
+    const requestTeamShare = vi.fn(async () => ({ version: 7 }));
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      collabSync: { requestTeamShare },
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        createdByWorkspaceMemberId: 'member-recorded-owner',
+        updatedByWorkspaceMemberId: 'member-recorded-owner',
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const retry = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: headers('member-other', {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'admin',
+          'x-od-workspace-lifecycle-state': 'active',
+        }),
+        body: JSON.stringify({ visibility: 'team' }),
+      });
+
+      expect(retry.status).toBe(403);
+      expect(requestTeamShare).not.toHaveBeenCalled();
+    } finally {
+      await close(routeServer.server);
+    }
+  });
+
+  it('preserves the failed Team binding when an exact-owner retry is still unavailable', async () => {
+    const projectId = `workspace-share-retry-unavailable-${Date.now()}`;
+    const memberId = 'member-share-retry-unavailable';
+    const requestTeamShare = vi.fn(async () => {
+      throw new Error('TLS handshake timeout');
+    });
+    const updateWorkspaceProject = vi.fn();
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, workspaceProjectRouteDeps({
+      workspaceId,
+      projectId,
+      dbDeleteProject: vi.fn(),
+      removeProjectDir: vi.fn(),
+      collabSync: { requestTeamShare },
+      updateWorkspaceProject,
+      workspaceRowOverrides: {
+        workspaceVisibility: 'team',
+        createdByWorkspaceMemberId: memberId,
+        updatedByWorkspaceMemberId: memberId,
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
+      },
+    }));
+    const routeServer = await listen(app);
+    try {
+      const retry = await fetch(`${routeServer.url}/api/workspaces/${workspaceId}/projects/${projectId}/move`, {
+        method: 'POST',
+        headers: headers(memberId, {
+          'x-od-workspace-type': 'team',
+          'x-od-workspace-role': 'member',
+          'x-od-workspace-lifecycle-state': 'active',
+        }),
+        body: JSON.stringify({ visibility: 'team' }),
+      });
+
+      expect(retry.status).toBe(503);
+      await expect(retry.json()).resolves.toMatchObject({
+        error: {
+          code: 'UPSTREAM_UNAVAILABLE',
+          retryable: true,
+        },
+      });
+      expect(updateWorkspaceProject).toHaveBeenCalledTimes(2);
+      expect(updateWorkspaceProject.mock.calls[1]?.[3]).toMatchObject({
+        visibility: 'team',
+        createdByWorkspaceMemberId: memberId,
+        resourceHubResourceId: `resource-${projectId}`,
+        syncState: 'sync_failed',
       });
     } finally {
       await close(routeServer.server);
@@ -2340,12 +2505,27 @@ function workspaceProjectRouteDeps({
   return {
     db: {
       transaction: (fn: (ids: string[]) => void) => fn,
+      // Successful Team shares now preserve the comment foreign-key invariant
+      // by ensuring one local conversation after the visibility write. These
+      // route tests isolate share/catalog behavior behind a synthetic project
+      // store rather than a real SQLite database, so model the pre-existing
+      // anchor that is unrelated to their assertions. Keep the SQL surface
+      // deliberately narrow: an unexpected direct database query must still
+      // fail instead of being silently accepted by an all-purpose stub.
+      prepare: (sql: string) => {
+        if (/FROM conversations\b/.test(sql)) {
+          return {
+            get: () => ({ id: `comment-anchor-${projectId}` }),
+          };
+        }
+        throw new Error(`unexpected direct SQLite query in workspace route fixture: ${sql}`);
+      },
     },
     design: {},
     http: {
       createSseResponse: noop,
-      sendApiError: (res: any, status: number, code: string, message: string) =>
-        res.status(status).json({ error: { code, message } }),
+      sendApiError: (res: any, status: number, code: string, message: string, init: Record<string, unknown> = {}) =>
+        res.status(status).json({ error: { code, message, ...init } }),
     },
     paths: {
       DESIGN_SYSTEMS_DIR: '',

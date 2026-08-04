@@ -46,6 +46,17 @@ import {
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
 import { workspaceDirectoryFixture } from '../helpers/workspace-context';
 
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: [] as Array<Record<string, (payload: any) => void>>,
+}));
+
+vi.mock('../../src/collab/workspace-events', () => ({
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, (payload: any) => void>) => {
+    workspaceInvalidationHarness.handlers.push(handlers);
+    return { connected: false };
+  }),
+}));
+
 vi.mock('../../src/components/EntryView', () => ({
   EntryView: ({
     skills,
@@ -217,6 +228,7 @@ describe('App skills list — workspace scope', () => {
     resetWorkspaceContextCache();
     resetTeamProjectsCache();
     resetCoalescedGet();
+    workspaceInvalidationHarness.handlers.length = 0;
     window.history.replaceState(null, '', '/');
     vi.mocked(daemonIsLive).mockResolvedValue(true);
     vi.mocked(fetchAgentsStream).mockResolvedValue([]);
@@ -238,6 +250,7 @@ describe('App skills list — workspace scope', () => {
     vi.unstubAllGlobals();
     vi.clearAllMocks();
     resetWorkspaceContextCache();
+    workspaceInvalidationHarness.handlers.length = 0;
     resetTeamProjectsCache();
     resetCoalescedGet();
   });
@@ -487,5 +500,128 @@ describe('App skills list — workspace scope', () => {
     });
     await waitFor(() => expect(screen.getByTestId('entry-skill-skill-from-b')).toBeTruthy());
     expect(screen.queryByTestId('entry-skill-skill-from-a')).toBeNull();
+  });
+
+  it('hides the previous account catalog while an unseeded identity refresh is pending', async () => {
+    const sharedContext = workspaceContext('ws-same', 'member-same');
+    const directoryB = deferred<Response>();
+    const contextB = deferred<Response>();
+    const readB = deferred<SkillSummary[]>();
+    let accountPhase: 'a' | 'b' = 'a';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/directory')) {
+          return directoryB.promise;
+        }
+        if (accountPhase === 'b' && pathname.endsWith('/workspace/context')) {
+          return contextB.promise;
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([sharedContext])
+              : pathname.endsWith('/workspace/context')
+                ? { context: sharedContext }
+                : {},
+        } as Response);
+      }),
+    );
+    vi.mocked(fetchSkills).mockImplementation(() =>
+      accountPhase === 'a'
+        ? Promise.resolve([skill('skill-from-account-a')])
+        : readB.promise,
+    );
+
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByTestId('entry-skill-skill-from-account-a')).toBeTruthy(),
+    );
+
+    accountPhase = 'b';
+    await act(async () => {
+      notifyWorkspaceContextRefresh();
+      await Promise.resolve();
+    });
+
+    // The next account deliberately resolves to the same Workspace/member
+    // fields. Account generation and the pending boundary must still hide A
+    // synchronously rather than treating those equal fields as one identity.
+    expect(screen.queryByTestId('entry-skill-skill-from-account-a')).toBeNull();
+    expect(screen.getByTestId('entry-skills-loading').textContent).toBe('true');
+    expect(vi.mocked(fetchSkills)).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      directoryB.resolve({
+        ok: true,
+        json: async () => workspaceDirectoryFixture([sharedContext]),
+      } as Response);
+      contextB.resolve({
+        ok: true,
+        json: async () => ({ context: sharedContext }),
+      } as Response);
+      await Promise.all([directoryB.promise, contextB.promise]);
+    });
+    await waitFor(() => expect(vi.mocked(fetchSkills)).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      readB.resolve([skill('skill-from-account-b')]);
+      await Promise.resolve();
+    });
+    await waitFor(() =>
+      expect(screen.getByTestId('entry-skill-skill-from-account-b')).toBeTruthy(),
+    );
+    expect(screen.queryByTestId('entry-skill-skill-from-account-a')).toBeNull();
+  });
+
+  it('keeps the newest same-identity skill refresh when an older request finishes last', async () => {
+    const context = workspaceContext('ws-same-identity');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        return {
+          ok: true,
+          json: async () =>
+            pathname.endsWith('/workspace/directory')
+              ? workspaceDirectoryFixture([context])
+              : pathname.endsWith('/workspace/context')
+                ? { context }
+                : {},
+        } as Response;
+      }),
+    );
+    vi.mocked(fetchSkills).mockResolvedValue([]);
+    render(<App />);
+    await waitFor(() => expect(vi.mocked(fetchSkills)).toHaveBeenCalled());
+
+    const older = deferred<SkillSummary[]>();
+    const newer = deferred<SkillSummary[]>();
+    vi.mocked(fetchSkills)
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+    const resourceHandler = [...workspaceInvalidationHarness.handlers]
+      .reverse()
+      .find((handlers) => handlers['team-resources-changed'])?.['team-resources-changed'];
+    expect(resourceHandler).toBeTypeOf('function');
+
+    act(() => resourceHandler?.({ type: 'team-resources-changed', resourceKind: 'skill' }));
+    act(() => resourceHandler?.({ type: 'team-resources-changed', resourceKind: 'skill' }));
+    await waitFor(() => expect(vi.mocked(fetchSkills).mock.calls.length).toBeGreaterThanOrEqual(3));
+
+    await act(async () => {
+      newer.resolve([skill('newer-skill')]);
+      await newer.promise;
+    });
+    await waitFor(() => expect(screen.getByTestId('entry-skill-newer-skill')).toBeTruthy());
+
+    await act(async () => {
+      older.resolve([skill('older-skill')]);
+      await older.promise;
+    });
+    expect(screen.getByTestId('entry-skill-newer-skill')).toBeTruthy();
+    expect(screen.queryByTestId('entry-skill-older-skill')).toBeNull();
   });
 });

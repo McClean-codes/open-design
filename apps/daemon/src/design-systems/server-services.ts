@@ -1,10 +1,19 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { teamResourceWorkspaceRoot } from '../collab/team-resource-materialization.js';
+import {
+  readTeamResourceMaterialization,
+  teamResourceWorkspaceRoot,
+} from '../collab/team-resource-materialization.js';
+import {
+  getWorkspaceProjectByProjectId,
+  getWorkspaceResourceByResourceId,
+} from '../db.js';
+import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
 
 type JsonRecord = Record<string, unknown>;
-type SkillEntry = { id: string } & JsonRecord;
+type SkillEntry = { id: string; dir?: string } & JsonRecord;
 type DesignSystemSummary = {
   id: string;
   source?: string;
@@ -12,6 +21,8 @@ type DesignSystemSummary = {
   title?: string;
   updatedAt?: string;
   projectId?: string;
+  teamSynced?: boolean;
+  workspaceId?: string;
 } & JsonRecord;
 
 type DesignSystemStaticFile = {
@@ -54,6 +65,13 @@ type DesignSystemListOptions = {
   workspaceId?: string | null;
 };
 
+type DesignSystemWorkspaceOptions = {
+  workspaceId?: string | null;
+  workspaceMemberId?: string | null;
+  /** A verified Team binding forbids same-id Personal fallback. */
+  exactTeam?: boolean;
+};
+
 export type DesignSystemAssetSyncOutcome =
   | { ok: true; synced: string[] }
   | { ok: false; reason: 'not-found' | 'no-workspace-project' };
@@ -86,17 +104,22 @@ export function createDesignSystemServerServices({
   skills: {
     listSkills: (
       roots: string[],
-      options?: { db?: Database.Database; workspaceId?: string | null },
+      options?: {
+        db?: Database.Database;
+        workspaceId?: string | null;
+        workspaceMemberId?: string | null;
+      },
     ) => Promise<SkillEntry[]>;
     findSkillById: (skills: SkillEntry[], id: string) => SkillEntry | undefined;
   };
   designSystems: {
     listDesignSystems: (root: string, options?: DesignSystemListOptions) => Promise<DesignSystemSummary[]>;
-    readDesignSystem: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<string | null | undefined>;
-    readDesignSystemPackageInfo: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<unknown>;
-    readDesignSystemStaticFile: (root: string, id: string, filePath: string, options?: Pick<DesignSystemListOptions, 'idPrefix'>) => Promise<DesignSystemStaticFile | null | undefined>;
+    readDesignSystem: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<string | null | undefined>;
+    readDesignSystemPackageInfo: (root: string, id: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<unknown>;
+    readDesignSystemStaticFile: (root: string, id: string, filePath: string, options?: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'>) => Promise<DesignSystemStaticFile | null | undefined>;
     listUserDesignSystemFiles: (root: string, id: string) => Promise<Array<{ kind?: string; path: string }> | null | undefined>;
     readUserDesignSystemFile: (root: string, id: string, filePath: string) => Promise<{ path: string; content: string } | null | undefined>;
+    readUserDesignSystemFileBytes: (root: string, id: string, filePath: string) => Promise<{ path: string; bytes: Buffer } | null | undefined>;
     linkUserDesignSystemProject: (root: string, id: string, projectId: string) => Promise<unknown>;
     // Physically copies real asset bytes (sourced from a workspace project's
     // editing mirror) into the canonical assets/ dir and un-fingerprints them
@@ -156,7 +179,10 @@ export function createDesignSystemServerServices({
    * branch the way a plain `options.workspaceId ? … : …` truthiness check
    * would.
    */
-  async function listAllSkills(options: { workspaceId?: string | null } = {}) {
+  async function listAllSkills(options: {
+    workspaceId?: string | null;
+    workspaceMemberId?: string | null;
+  } = {}) {
     const db = getDb?.();
     if (!db || options.workspaceId === undefined) {
       return skills.listSkills(roots.SKILL_ROOTS);
@@ -164,13 +190,59 @@ export function createDesignSystemServerServices({
     const personalAndBuiltIn = await skills.listSkills(roots.SKILL_ROOTS, {
       db,
       workspaceId: options.workspaceId,
+      workspaceMemberId: options.workspaceMemberId ?? null,
     });
     const workspaceId = options.workspaceId?.trim();
-    if (!workspaceId || !roots.SKILL_ROOTS[0]) return personalAndBuiltIn;
-    const team = await skills.listSkills(
-      [teamResourceWorkspaceRoot(roots.SKILL_ROOTS[0], workspaceId)],
-      { db, workspaceId },
+    const userSkillsRoot = roots.SKILL_ROOTS[0];
+    if (!workspaceId || !userSkillsRoot) return personalAndBuiltIn;
+    const workspaceRoot = teamResourceWorkspaceRoot(userSkillsRoot, workspaceId);
+    let directories: fs.Dirent[] = [];
+    try {
+      directories = await fs.promises.readdir(workspaceRoot, { withFileTypes: true });
+    } catch {
+      return personalAndBuiltIn;
+    }
+    const markerByDirectory = new Map<string, string>();
+    await Promise.all(
+      directories
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          // Skill hub ids may use either the plain local id or the historical
+          // `user:` prefix. Both materialize into the same safe storage name;
+          // the marker is authoritative about which logical id was pulled.
+          const candidates = [entry.name, `user:${entry.name}`];
+          let marker = null;
+          for (const candidate of candidates) {
+            marker = await readTeamResourceMaterialization(
+              userSkillsRoot,
+              workspaceId,
+              candidate,
+              entry.name,
+            );
+            if (marker) break;
+          }
+          if (
+            marker?.kind !== 'skill'
+            || !workspaceTeamSkillBindingAllowsRead(db, workspaceId, marker.resourceId)
+          ) return;
+          markerByDirectory.set(path.join(workspaceRoot, entry.name), marker.resourceId);
+        }),
     );
+    if (markerByDirectory.size === 0) return personalAndBuiltIn;
+    const discoveredTeam = await skills.listSkills([workspaceRoot]);
+    // Re-check the exact binding after filesystem parsing. Reconciliation can
+    // tombstone a Team Skill while SKILL.md and its attachments are being
+    // read; that newer negative verdict must win over the stale directory.
+    const team = discoveredTeam.filter((entry) => {
+      const logicalId = typeof entry.dir === 'string'
+        ? markerByDirectory.get(entry.dir)
+        : undefined;
+      return Boolean(
+        logicalId
+        && (entry.id === logicalId || entry.id.startsWith(`${logicalId}:`))
+        && workspaceTeamSkillBindingAllowsRead(db, workspaceId, logicalId),
+      );
+    });
     const teamIds = new Set(team.map((entry) => entry.id));
     return [
       ...team.map((entry) => ({ ...entry, teamSynced: true })),
@@ -183,7 +255,10 @@ export function createDesignSystemServerServices({
   }
 
   async function listAllSkillLikeEntries(
-    options: { workspaceId?: string | null } = {},
+    options: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    } = {},
   ) {
     if (options.workspaceId === undefined) {
       return skills.listSkills(roots.ALL_SKILL_LIKE_ROOTS);
@@ -215,7 +290,11 @@ export function createDesignSystemServerServices({
    * from it (spec 04 §10) instead of silently landing in the unscoped branch a
    * plain `options.workspaceId ? … : …` truthiness check would take.
    */
-  async function listAllDesignSystems(options: { workspaceId?: string | null } = {}) {
+  async function listAllDesignSystems(options: {
+    workspaceId?: string | null;
+    workspaceMemberId?: string | null;
+    exactTeam?: boolean;
+  } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
       ...s,
       source: 'built-in',
@@ -248,39 +327,78 @@ export function createDesignSystemServerServices({
           },
         );
         const teamIds = new Set(team.map((system) => system.id));
-        installed = [
-          ...team.map((system) => ({ ...system, teamSynced: true })),
-          ...installed.filter((system) => !teamIds.has(system.id)),
-        ];
+        const teamSystems = team.map((system) => ({ ...system, teamSynced: true }));
+        installed = options.exactTeam
+          ? teamSystems
+          : [
+              ...teamSystems,
+              ...installed.filter((system) => !teamIds.has(system.id)),
+            ];
       } catch {
         // A workspace with no pulled Team systems has no scoped directory.
       }
     }
     const seen = new Set(builtIn.map((s) => s.id));
-    return [
+    const catalog = [
       ...installed
         .filter((s) => s.source === 'user')
         .sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '')),
       ...builtIn,
       ...installed.filter((s) => s.source !== 'user' && !seen.has(s.id)),
     ];
+    if (options.workspaceId === undefined) return catalog;
+    const exactWorkspaceId = options.workspaceId?.trim() ?? '';
+    const exactMemberId = options.workspaceMemberId?.trim() ?? '';
+    const db = getDb?.();
+    return catalog.filter((system) => {
+      if (system.source !== 'user') return true;
+      // A fully headerless request is the signed-out/local compatibility
+      // lane. It may see resources that have never been claimed by any
+      // Workspace, but a persisted binding is positive evidence that the
+      // resource is not local-public and must stay hidden without authority.
+      if (!exactWorkspaceId && !exactMemberId) {
+        if (!db) return false;
+        return !getWorkspaceResourceByResourceId(
+          db,
+          'design_system',
+          system.id,
+        );
+      }
+      if (system.teamSynced === true) {
+        return Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId;
+      }
+      if (!db || !exactWorkspaceId || !exactMemberId) return false;
+      const binding = getWorkspaceResourceByResourceId(
+        db,
+        'design_system',
+        system.id,
+      );
+      return binding?.workspaceId === exactWorkspaceId
+        && binding.visibility === 'personal'
+        && binding.resourceState !== 'deleted'
+        && binding.createdByWorkspaceMemberId === exactMemberId;
+    });
   }
 
   async function readAvailableDesignSystem(
     id: string,
-    options: { workspaceId?: string | null } = {},
+    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
       const scoped = await designSystems.readDesignSystem(
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,
-        { idPrefix: 'user:' },
+        { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
+      if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, { idPrefix: 'user:' });
+      return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, {
+        idPrefix: 'user:',
+        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      });
     }
     return (
       (await designSystems.readDesignSystem(paths.DESIGN_SYSTEMS_DIR, id))
@@ -290,19 +408,23 @@ export function createDesignSystemServerServices({
 
   async function readAvailableDesignSystemPackageInfo(
     id: string,
-    options: { workspaceId?: string | null } = {},
+    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
       const scoped = await designSystems.readDesignSystemPackageInfo(
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,
-        { idPrefix: 'user:' },
+        { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
+      if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, { idPrefix: 'user:' });
+      return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, {
+        idPrefix: 'user:',
+        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      });
     }
     return (
       (await designSystems.readDesignSystemPackageInfo(paths.DESIGN_SYSTEMS_DIR, id))
@@ -313,7 +435,7 @@ export function createDesignSystemServerServices({
   async function readAvailableDesignSystemStaticFile(
     id: string,
     filePath: string,
-    options: { workspaceId?: string | null } = {},
+    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
@@ -321,12 +443,16 @@ export function createDesignSystemServerServices({
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,
         filePath,
-        { idPrefix: 'user:' },
+        { idPrefix: 'user:', workspaceId },
       );
       if (scoped != null) return scoped;
+      if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, { idPrefix: 'user:' });
+      return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, {
+        idPrefix: 'user:',
+        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+      });
     }
     return (
       (await designSystems.readDesignSystemStaticFile(paths.DESIGN_SYSTEMS_DIR, id, filePath))
@@ -340,7 +466,10 @@ export function createDesignSystemServerServices({
 
   async function validateProjectDesignSystemId(
     id: unknown,
-    options: { workspaceId?: string | null } = {},
+    options: {
+      workspaceId?: string | null;
+      workspaceMemberId?: string | null;
+    } = {},
   ) {
     if (id === undefined || id === null || id === '') return { ok: true, id: null };
     if (typeof id !== 'string') {
@@ -415,12 +544,104 @@ export function createDesignSystemServerServices({
     return userDesignSystemWorkspaceProjectId(id);
   }
 
-  async function ensureUserDesignSystemWorkspaceProject(dbHandle: Database.Database, id: string) {
-    const systems = await listAllDesignSystems();
+  function workspaceScopedDesignSystemProjectId(id: string, workspaceId: string) {
+    const dirId = userDesignSystemDirectoryId(id);
+    if (!dirId) return null;
+    const suffix = createHash('sha256')
+      .update(`${workspaceId}\0${id}`, 'utf8')
+      .digest('hex')
+      .slice(0, 16);
+    const prefix = `ds-${dirId}-`.slice(0, 128 - suffix.length);
+    return `${prefix}${suffix}`;
+  }
+
+  function isExactDesignSystemProjectBinding(
+    binding: ReturnType<typeof getWorkspaceProjectByProjectId>,
+    summary: DesignSystemSummary,
+    workspaceId: string,
+    workspaceMemberId: string,
+  ) {
+    if (!binding || binding.workspaceId !== workspaceId || binding.resourceState === 'deleted') {
+      return false;
+    }
+    if (summary.teamSynced === true) return binding.visibility === 'team';
+    return binding.visibility === 'personal'
+      && binding.createdByWorkspaceMemberId === workspaceMemberId;
+  }
+
+  async function resolveDesignSystemWorkspaceProject(
+    dbHandle: Database.Database,
+    id: string,
+    options: DesignSystemWorkspaceOptions = {},
+  ) {
+    const isScoped = options.workspaceId !== undefined
+      || options.workspaceMemberId !== undefined;
+    const workspaceId = options.workspaceId?.trim() ?? '';
+    const workspaceMemberId = options.workspaceMemberId?.trim() ?? '';
+    // A request that claims Workspace scope must carry the complete verified
+    // identity. Falling back to the legacy unscoped catalog here is precisely
+    // what allowed a Team operation to mutate a same-id Personal project.
+    if (isScoped && (!workspaceId || !workspaceMemberId)) return null;
+
+    const systems = await listAllDesignSystems(
+      isScoped
+        ? {
+            workspaceId,
+            workspaceMemberId,
+            ...(options.exactTeam !== undefined ? { exactTeam: options.exactTeam } : {}),
+          }
+        : {},
+    );
     const summary = systems.find((s) => s.id === id && s.source === 'user');
     if (!summary) return null;
-    const projectId = projectBackedDesignSystemProjectId(id, summary);
+
+    const sourceRoot = summary.teamSynced === true
+      ? teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId)
+      : paths.USER_DESIGN_SYSTEMS_DIR;
+    let projectId = summary.teamSynced === true
+      ? workspaceScopedDesignSystemProjectId(id, workspaceId)
+      : projectBackedDesignSystemProjectId(id, summary);
     if (!projectId) return null;
+
+    if (isScoped) {
+      const existing = projects.getProject(dbHandle, projectId);
+      const binding = existing
+        ? getWorkspaceProjectByProjectId(dbHandle, projectId)
+        : undefined;
+      const exactBinding = isExactDesignSystemProjectBinding(
+        binding,
+        summary,
+        workspaceId,
+        workspaceMemberId,
+      );
+      if (existing && !exactBinding) {
+        projectId = workspaceScopedDesignSystemProjectId(id, workspaceId);
+        if (!projectId) return null;
+        const scopedExisting = projects.getProject(dbHandle, projectId);
+        const scopedBinding = scopedExisting
+          ? getWorkspaceProjectByProjectId(dbHandle, projectId)
+          : undefined;
+        if (scopedExisting && !isExactDesignSystemProjectBinding(
+          scopedBinding,
+          summary,
+          workspaceId,
+          workspaceMemberId,
+        )) {
+          return null;
+        }
+      }
+    }
+    return { summary, projectId, sourceRoot, workspaceId };
+  }
+
+  async function ensureUserDesignSystemWorkspaceProject(
+    dbHandle: Database.Database,
+    id: string,
+    options: DesignSystemWorkspaceOptions = {},
+  ) {
+    const resolved = await resolveDesignSystemWorkspaceProject(dbHandle, id, options);
+    if (!resolved) return null;
+    const { summary, projectId, sourceRoot } = resolved;
 
     const now = Date.now();
     const metadata = {
@@ -451,16 +672,16 @@ export function createDesignSystemServerServices({
     if (!project) return null;
     if (!existing) bindProjectToWorkspace?.(projectId, now, summary);
 
-    const files = await designSystems.listUserDesignSystemFiles(paths.USER_DESIGN_SYSTEMS_DIR, id);
+    const files = await designSystems.listUserDesignSystemFiles(sourceRoot, id);
     if (!files) return null;
     for (const file of files) {
       if (file.kind === 'folder') continue;
-      const detail = await designSystems.readUserDesignSystemFile(paths.USER_DESIGN_SYSTEMS_DIR, id, file.path);
+      const detail = await designSystems.readUserDesignSystemFileBytes(sourceRoot, id, file.path);
       if (!detail) continue;
       if (existing) {
         try {
-          const existingFile = await projects.readProjectFile(paths.PROJECTS_DIR, projectId, detail.path, project.metadata);
-          if (!isReplaceableDesignSystemWorkspaceFile(detail.path, existingFile)) continue;
+          const existingFile = await projects.readProjectFile(paths.PROJECTS_DIR, projectId, file.path, project.metadata);
+          if (!isReplaceableDesignSystemWorkspaceFile(file.path, existingFile)) continue;
         } catch (err: unknown) {
           if (!isNodeErrorCode(err, 'ENOENT')) throw err;
         }
@@ -468,14 +689,14 @@ export function createDesignSystemServerServices({
       await projects.writeProjectFile(
         paths.PROJECTS_DIR,
         projectId,
-        detail.path,
-        Buffer.from(detail.content, 'utf8'),
+        file.path,
+        detail.bytes,
         {},
         project.metadata,
       );
     }
     await removeLegacyDesignSystemWorkspaceArtifacts(project);
-    await designSystems.linkUserDesignSystemProject(paths.USER_DESIGN_SYSTEMS_DIR, id, project.id);
+    await designSystems.linkUserDesignSystemProject(sourceRoot, id, project.id);
     const projectFiles = await projects.listFiles(
       paths.PROJECTS_DIR,
       projectId,
@@ -560,12 +781,11 @@ export function createDesignSystemServerServices({
   async function syncUserDesignSystemAssetsFromWorkspace(
     dbHandle: Database.Database,
     id: string,
+    options: DesignSystemWorkspaceOptions = {},
   ): Promise<DesignSystemAssetSyncOutcome> {
-    const systems = await listAllDesignSystems();
-    const summary = systems.find((s) => s.id === id && s.source === 'user');
-    if (!summary) return { ok: false, reason: 'not-found' };
-    const projectId = projectBackedDesignSystemProjectId(id, summary);
-    if (!projectId) return { ok: false, reason: 'no-workspace-project' };
+    const resolved = await resolveDesignSystemWorkspaceProject(dbHandle, id, options);
+    if (!resolved) return { ok: false, reason: 'not-found' };
+    const { projectId, sourceRoot } = resolved;
     const project = projects.getProject(dbHandle, projectId);
     if (!project) return { ok: false, reason: 'no-workspace-project' };
 
@@ -598,7 +818,7 @@ export function createDesignSystemServerServices({
     }
 
     const result = await designSystems.syncUserDesignSystemAssetsFromFiles(
-      paths.USER_DESIGN_SYSTEMS_DIR,
+      sourceRoot,
       id,
       files,
     );

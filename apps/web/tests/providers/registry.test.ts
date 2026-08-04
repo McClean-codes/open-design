@@ -81,6 +81,12 @@ function agentStreamResponse(text: string): Response {
   );
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 describe('design-system Workspace scope', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -148,6 +154,109 @@ describe('design-system Workspace scope', () => {
         'x-od-workspace-id': context.workspaceId,
         'x-od-workspace-member-id': context.workspaceMemberId,
       }),
+    });
+  });
+
+  it('forces a fresh Team materialization after a remote resource invalidation', async () => {
+    const context = {
+      ...teamWorkspaceContext(),
+      workspaceId: 'ws-team-force-refresh',
+    };
+    let teamReadCount = 0;
+    let sharedIds = ['user:old-team-brand'];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/workspace/design-systems/team') {
+        teamReadCount += 1;
+        return new Response(JSON.stringify({ ids: sharedIds }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        designSystems: [
+          {
+            id: 'user:old-team-brand',
+            title: 'Old Team Brand',
+            category: 'Custom',
+            summary: 'Removed remotely.',
+            source: 'user',
+            status: 'published',
+          },
+          {
+            id: 'user:new-team-brand',
+            title: 'New Team Brand',
+            category: 'Custom',
+            summary: 'Shared remotely.',
+            source: 'user',
+            status: 'published',
+          },
+        ],
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchDesignSystemsResult(context)).resolves.toMatchObject({
+      ok: true,
+      designSystems: [
+        expect.objectContaining({ id: 'user:old-team-brand', teamShared: true }),
+        expect.objectContaining({ id: 'user:new-team-brand' }),
+      ],
+    });
+
+    sharedIds = ['user:new-team-brand'];
+    await expect(fetchDesignSystemsResult(context, {
+      forceTeamMaterialization: true,
+    })).resolves.toMatchObject({
+      ok: true,
+      designSystems: [
+        expect.not.objectContaining({ teamShared: true }),
+        expect.objectContaining({ id: 'user:new-team-brand', teamShared: true }),
+      ],
+    });
+    expect(teamReadCount).toBe(2);
+  });
+
+  it('does not merge two forced Team materializations inside the burst window', async () => {
+    const context = {
+      ...teamWorkspaceContext(),
+      workspaceId: 'ws-team-two-rapid-mutations',
+    };
+    const teamA = deferred<Response>();
+    const teamB = deferred<Response>();
+    let teamReadCount = 0;
+    const catalog = {
+      designSystems: [
+        { id: 'user:brand-a', title: 'A', source: 'user', status: 'published' },
+        { id: 'user:brand-b', title: 'B', source: 'user', status: 'published' },
+      ],
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/workspace/design-systems/team') {
+        teamReadCount += 1;
+        return teamReadCount === 1 ? teamA.promise : teamB.promise;
+      }
+      return Promise.resolve(new Response(JSON.stringify(catalog), { status: 200 }));
+    }));
+
+    const resultA = fetchDesignSystemsResult(context, { forceTeamMaterialization: true });
+    expect(teamReadCount).toBe(1);
+    const resultB = fetchDesignSystemsResult(context, { forceTeamMaterialization: true });
+    expect(teamReadCount).toBe(2);
+
+    teamB.resolve(new Response(JSON.stringify({ ids: ['user:brand-b'] }), { status: 200 }));
+    await expect(resultB).resolves.toMatchObject({
+      ok: true,
+      designSystems: [
+        expect.not.objectContaining({ teamShared: true }),
+        expect.objectContaining({ id: 'user:brand-b', teamShared: true }),
+      ],
+    });
+
+    teamA.resolve(new Response(JSON.stringify({ ids: ['user:brand-a'] }), { status: 200 }));
+    await expect(resultA).resolves.toMatchObject({
+      ok: true,
+      designSystems: [
+        expect.objectContaining({ id: 'user:brand-a', teamShared: true }),
+        expect.not.objectContaining({ teamShared: true }),
+      ],
     });
   });
 

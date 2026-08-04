@@ -696,6 +696,11 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
     const [composerEngaged, setComposerEngaged] = useState(
       () => (draft ?? '').trim().length > 0,
     );
+    // Match HomeHero's empty-editor behavior: once the user places the real
+    // caret in this composer, hide/pause the decorative typewriter overlay so
+    // CSS no longer suppresses the native blinking caret. Blur resumes the
+    // animation only while the composer is still genuinely empty.
+    const [composerFocused, setComposerFocused] = useState(false);
     const fileInputRef = useRef<HTMLInputElement | null>(null);
     // The Lexical editor handle — drives text/mention/clear/focus from the
     // host. Replaces the old textareaRef + manual selection plumbing. IME
@@ -3028,7 +3033,14 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               picker will reuse. */}
           <div
             className="composer-input-wrap"
-            onFocus={() => setComposerEngaged(true)}
+            onFocus={() => {
+              setComposerEngaged(true);
+              setComposerFocused(true);
+            }}
+            onBlur={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+              setComposerFocused(false);
+            }}
           >
             <LexicalComposerInput
               ref={editorRef}
@@ -3058,6 +3070,7 @@ export const ChatComposer = forwardRef<ChatComposerHandle, Props>(
               <PlaceholderCarousel
                 scenarios={placeholderScenarios}
                 active={placeholderCarouselActive}
+                paused={composerFocused}
                 onScenarioChange={setPlaceholderScenario}
               />
             ) : null}

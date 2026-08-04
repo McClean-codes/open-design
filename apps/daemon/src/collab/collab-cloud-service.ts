@@ -16,6 +16,11 @@ import type {
 } from '@open-design/contracts';
 import type { CollabCloudClient } from '../integrations/collab-cloud.js';
 import type { WorkspaceContextProvider } from './workspace-context.js';
+import type {
+  CommentRelayOutboxIdentity,
+  CommentRelayOutboxRecord,
+  CommentRelayOutboxStore,
+} from './comment-relay-outbox.js';
 
 /** The daemon-local seams the service needs; injected so this file stays free of
  *  SQLite and the poller is unit-testable with fakes. */
@@ -32,7 +37,36 @@ export interface CollabCloudServiceDeps {
   /** Resolve the exact persisted + directory-verified scope for one project. */
   resolveProjectWorkspaceContext?: (
     projectId: string,
+    options?: { fresh?: boolean },
   ) => Promise<WorkspaceCollabContext | null>;
+  /**
+   * Resolve one fresh directory authority for a durable relay batch. The
+   * returned context must still match the persisted identity; the service
+   * verifies that before any catalog read or push.
+   */
+  resolveCommentRelayWorkspaceContext?: (
+    identity: CommentRelayOutboxIdentity,
+    options: { fresh: true },
+  ) => Promise<WorkspaceCollabContext | null>;
+  /** Cheap local binding witness applied per queued record in a batch. */
+  validateCommentRelayProjectBinding?: (record: CommentRelayOutboxRecord) => boolean;
+  /** Local binding witness captured synchronously when the mutation commits. */
+  resolveLocalProjectRelayBinding?: (projectId: string) => {
+    workspaceId: string;
+    ownerMemberId: string | null;
+  } | null;
+  /** Fresh remote catalog witness checked immediately before each relay push. */
+  resolveRemoteProjectOwnerMemberId?: (
+    projectId: string,
+    context: WorkspaceCollabContext,
+  ) => Promise<string | null>;
+  /**
+   * One uncached Team catalog snapshot for a durable relay batch. Multiple
+   * owners for the same project id are retained and matched exactly.
+   */
+  listRemoteProjectRelayBindings?: (
+    context: WorkspaceCollabContext,
+  ) => Promise<Array<{ projectId: string; ownerMemberId: string }>>;
   /**
    * Resolve a LOCAL conversation id to re-home synced comments onto (conversation
    * ids do not cross daemons, and preview_comments has a conversation FK). Null
@@ -50,11 +84,22 @@ export interface CollabCloudServiceDeps {
   }) => boolean;
   /** Poll cadence; defaults to the spec's foreground 5s (§D4.5). */
   pollIntervalMs?: number;
+  /** Durable outbound Team-comment queue. Omitted by isolated/local callers. */
+  commentOutbox?: CommentRelayOutboxStore;
+  /** Called after a queued create/edit receives its authoritative relay seq. */
+  onCommentPushed?: (input: {
+    projectId: string;
+    commentId: string;
+    seq: number;
+  }) => void;
+  now?: () => number;
+  retryDelayMs?: (attemptCount: number) => number;
   onError?: (error: unknown) => void;
   onMerged?: (input: { projectId: string; inserted: number }) => void;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
+const COMMENT_OUTBOX_PUSH_CONCURRENCY = 4;
 
 /**
  * Map a locally-stored preview comment to the cloud sync unit. Carries the full
@@ -127,6 +172,18 @@ export interface CollabCloudService {
     comment: PreviewComment,
     context: WorkspaceCollabContext,
   ): Promise<void>;
+  /** Persist a create/edit for asynchronous, restart-safe relay delivery. */
+  enqueueComment(
+    comment: PreviewComment,
+    context: WorkspaceCollabContext,
+  ): boolean;
+  /** Persist a delete tombstone for asynchronous, restart-safe delivery. */
+  enqueueCommentDeletion(
+    comment: PreviewComment,
+    context: WorkspaceCollabContext,
+  ): boolean;
+  /** Drain due durable deliveries; exposed for deterministic tests/catch-up. */
+  flushPendingComments(): Promise<void>;
   /** The explicitly scoped team's member directory (empty off-team / on error). */
   listMembers(
     context: WorkspaceCollabContext,
@@ -165,12 +222,19 @@ export interface CollabCloudService {
 
 export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCloudService {
   const pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const now = deps.now ?? Date.now;
+  const retryDelayMs = deps.retryDelayMs ?? ((attemptCount: number) =>
+    Math.min(30_000, 1_000 * (2 ** Math.min(Math.max(0, attemptCount), 5))));
   // Per-project pull cursor + last ETag, so each poll only fetches new comments
   // and a 304 costs nothing.
   const cursors = new Map<string, number>();
   const etags = new Map<string, string | null>();
+  const inFlightPulls = new Map<string, Promise<boolean>>();
   let timer: NodeJS.Timeout | null = null;
   let running = false;
+  let outboxRunning = false;
+  let outboxRerunRequested = false;
+  let started = false;
   // The identity we last pushed to the member directory. Re-registering only
   // when this changes keeps `pollOnce` from spawning a `vela member register`
   // process on every 5s tick (see pollOnce).
@@ -236,6 +300,281 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
     await deps.client.pushComment(identity.teamId, comment.projectId, cloud);
   }
 
+  function queuedCloudComment(
+    comment: PreviewComment,
+    context: WorkspaceCollabContext,
+    deleted: boolean,
+  ): boolean {
+    if (!deps.commentOutbox) return false;
+    const identity = explicitTeamIdentity(context);
+    if (!identity) return false;
+    const localBinding = deps.resolveLocalProjectRelayBinding?.(comment.projectId) ?? null;
+    const expectedOwnerMemberId = localBinding?.ownerMemberId?.trim() || null;
+    if (
+      !localBinding
+      || localBinding.workspaceId !== context.workspaceId
+    ) return false;
+    const cloud = previewCommentToCloud(comment, identity.memberId);
+    if (deleted) {
+      cloud.deleted = true;
+      cloud.updatedAt = now();
+    }
+    try {
+      deps.commentOutbox.enqueue({
+        workspaceId: context.workspaceId,
+        workspaceMemberId: identity.memberId,
+        teamId: identity.teamId,
+        projectId: comment.projectId,
+        expectedOwnerMemberId,
+        comment: cloud,
+      });
+    } catch (error) {
+      deps.onError?.(error);
+      return false;
+    }
+    if (started) {
+      queueMicrotask(() => {
+        void flushPendingComments().catch((error) => deps.onError?.(error));
+      });
+    }
+    return true;
+  }
+
+  function deferOutboxRecord(record: CommentRelayOutboxRecord, error: unknown): void {
+    const attemptCount = record.attemptCount + 1;
+    const message = error instanceof Error ? error.message : String(error);
+    deps.commentOutbox?.defer(record, {
+      nextAttemptAt: now() + Math.max(0, retryDelayMs(attemptCount)),
+      error: message,
+    });
+    deps.onError?.(error);
+  }
+
+  const relayIdentityKey = (record: CommentRelayOutboxIdentity): string =>
+    JSON.stringify([record.workspaceId, record.workspaceMemberId, record.teamId]);
+
+  const relayIdentityMatches = (
+    context: WorkspaceCollabContext,
+    record: CommentRelayOutboxIdentity,
+  ): ReturnType<typeof explicitTeamIdentity> => {
+    const identity = explicitTeamIdentity(context);
+    return identity
+      && context.workspaceId === record.workspaceId
+      && identity.memberId === record.workspaceMemberId
+      && identity.teamId === record.teamId
+      ? identity
+      : null;
+  };
+
+  async function pushOutboxRecord(
+    record: CommentRelayOutboxRecord,
+    identity: NonNullable<ReturnType<typeof explicitTeamIdentity>>,
+  ): Promise<void> {
+    try {
+      const result = await deps.client.pushComment(
+        identity.teamId,
+        record.projectId,
+        record.comment,
+      );
+      // Revision-conditional ACK: if an edit/delete was queued while this
+      // payload was in flight, its newer row remains for the next drain.
+      deps.commentOutbox?.acknowledge(record);
+      if (!record.comment.deleted) {
+        deps.onCommentPushed?.({
+          projectId: record.projectId,
+          commentId: record.commentId,
+          seq: result.seq,
+        });
+      }
+    } catch (error) {
+      deferOutboxRecord(record, error);
+    }
+  }
+
+  async function pushOutboxProjectLanes(
+    records: CommentRelayOutboxRecord[],
+    identity: NonNullable<ReturnType<typeof explicitTeamIdentity>>,
+  ): Promise<void> {
+    const lanes = new Map<string, CommentRelayOutboxRecord[]>();
+    for (const record of records) {
+      const lane = lanes.get(record.projectId);
+      if (lane) lane.push(record);
+      else lanes.set(record.projectId, [record]);
+    }
+    const pendingLanes = [...lanes.values()];
+    let nextLane = 0;
+    const worker = async () => {
+      while (nextLane < pendingLanes.length) {
+        const lane = pendingLanes[nextLane];
+        nextLane += 1;
+        if (!lane) continue;
+        // A project's relay sequence is user-visible comment order. Keep that
+        // lane strictly serial while unrelated projects use spare capacity.
+        for (const record of lane) await pushOutboxRecord(record, identity);
+      }
+    };
+    await Promise.all(
+      Array.from(
+        { length: Math.min(COMMENT_OUTBOX_PUSH_CONCURRENCY, pendingLanes.length) },
+        () => worker(),
+      ),
+    );
+  }
+
+  async function flushLegacyOutboxRecord(record: CommentRelayOutboxRecord): Promise<void> {
+    try {
+      const context =
+        await deps.resolveProjectWorkspaceContext?.(
+          record.projectId,
+          { fresh: true },
+        ) ?? null;
+      const identity = context ? relayIdentityMatches(context, record) : null;
+      if (!context || !identity) {
+        deferOutboxRecord(
+          record,
+          new Error('comment relay delivery authority is unavailable or changed'),
+        );
+        return;
+      }
+      const remoteOwnerMemberId =
+        await deps.resolveRemoteProjectOwnerMemberId?.(
+          record.projectId,
+          context,
+        );
+      if (
+        !remoteOwnerMemberId
+        || (
+          record.expectedOwnerMemberId !== null
+          && remoteOwnerMemberId !== record.expectedOwnerMemberId
+        )
+      ) {
+        deps.commentOutbox?.acknowledge(record);
+        if (
+          remoteOwnerMemberId
+          && record.expectedOwnerMemberId !== null
+          && remoteOwnerMemberId !== record.expectedOwnerMemberId
+        ) {
+          deps.onError?.(new Error('comment relay delivery owner changed; canceled'));
+        }
+        return;
+      }
+      await pushOutboxRecord(record, identity);
+    } catch (error) {
+      deferOutboxRecord(record, error);
+    }
+  }
+
+  async function flushOutboxIdentityBatch(
+    records: CommentRelayOutboxRecord[],
+  ): Promise<void> {
+    const representative = records[0];
+    if (!representative) return;
+    let eligible = records;
+    if (deps.validateCommentRelayProjectBinding) {
+      eligible = [];
+      for (const record of records) {
+        if (deps.validateCommentRelayProjectBinding(record)) eligible.push(record);
+        else {
+          // A local unshare/delete/re-home is authoritative and cannot become
+          // valid again for this queued revision. Cancel it even if the remote
+          // catalog still carries a briefly-stale row.
+          deps.commentOutbox?.acknowledge(record);
+          deps.onError?.(new Error('comment relay project binding changed; canceled'));
+        }
+      }
+    }
+    if (eligible.length === 0) return;
+
+    let context: WorkspaceCollabContext | null;
+    try {
+      context = await deps.resolveCommentRelayWorkspaceContext?.(
+        representative,
+        { fresh: true },
+      ) ?? null;
+    } catch (error) {
+      for (const record of eligible) deferOutboxRecord(record, error);
+      return;
+    }
+    const identity = context ? relayIdentityMatches(context, representative) : null;
+    if (!context || !identity) {
+      const error = new Error('comment relay delivery authority is unavailable or changed');
+      for (const record of eligible) deferOutboxRecord(record, error);
+      return;
+    }
+
+    let bindings: Array<{ projectId: string; ownerMemberId: string }>;
+    try {
+      bindings = await deps.listRemoteProjectRelayBindings?.(context) ?? [];
+    } catch (error) {
+      for (const record of eligible) deferOutboxRecord(record, error);
+      return;
+    }
+    const remoteOwners = new Map<string, Set<string>>();
+    for (const binding of bindings) {
+      const projectId = binding.projectId.trim();
+      const ownerMemberId = binding.ownerMemberId.trim();
+      if (!projectId || !ownerMemberId) continue;
+      const owners = remoteOwners.get(projectId);
+      if (owners) owners.add(ownerMemberId);
+      else remoteOwners.set(projectId, new Set([ownerMemberId]));
+    }
+
+    const deliverable: CommentRelayOutboxRecord[] = [];
+    for (const record of eligible) {
+      const owners = remoteOwners.get(record.projectId);
+      const expectedOwner = record.expectedOwnerMemberId;
+      if (!owners || owners.size === 0) {
+        deps.commentOutbox?.acknowledge(record);
+        continue;
+      }
+      if (expectedOwner !== null && !owners.has(expectedOwner)) {
+        deps.commentOutbox?.acknowledge(record);
+        deps.onError?.(new Error('comment relay delivery owner changed; canceled'));
+        continue;
+      }
+      deliverable.push(record);
+    }
+    await pushOutboxProjectLanes(deliverable, identity);
+  }
+
+  async function flushPendingComments(): Promise<void> {
+    if (!deps.commentOutbox) return;
+    if (outboxRunning) {
+      // A mutation can land after the active drain took its SQLite snapshot.
+      // Coalesce that signal into one follow-up pass instead of dropping it
+      // and making the revision wait for the next 5s poll tick.
+      outboxRerunRequested = true;
+      return;
+    }
+    outboxRunning = true;
+    try {
+      do {
+        outboxRerunRequested = false;
+        const pending = deps.commentOutbox.listDue(now());
+        if (pending.length === 0) continue;
+        if (
+          !deps.resolveCommentRelayWorkspaceContext
+          || !deps.listRemoteProjectRelayBindings
+        ) {
+          for (const record of pending) await flushLegacyOutboxRecord(record);
+          continue;
+        }
+        const batches = new Map<string, CommentRelayOutboxRecord[]>();
+        for (const record of pending) {
+          const key = relayIdentityKey(record);
+          const batch = batches.get(key);
+          if (batch) batch.push(record);
+          else batches.set(key, [record]);
+        }
+        // Identity batches remain serial so a login/session transition cannot
+        // overlap two principals. Pushes inside one verified batch are bounded.
+        for (const batch of batches.values()) await flushOutboxIdentityBatch(batch);
+      } while (outboxRerunRequested);
+    } finally {
+      outboxRunning = false;
+    }
+  }
+
   async function listMembersForTeamId(
     teamId: string,
   ): Promise<CollabCloudMemberDirectoryEntry[]> {
@@ -295,25 +634,52 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
     return true;
   }
 
+  function pullProjectSingleflight(
+    context: WorkspaceCollabContext,
+    identity: {
+      teamId: string;
+      memberId: string;
+    },
+    projectId: string,
+  ): Promise<boolean> {
+    const scopeKey = `${context.workspaceId}:${identity.memberId}`;
+    const inFlightKey = JSON.stringify([
+      context.workspaceId,
+      identity.teamId,
+      identity.memberId,
+      projectId,
+    ]);
+    const existing = inFlightPulls.get(inFlightKey);
+    if (existing) return existing;
+
+    const request = pollProject(identity.teamId, scopeKey, projectId)
+      .catch((error) => {
+        deps.onError?.(error);
+        return false;
+      });
+    inFlightPulls.set(inFlightKey, request);
+    void request.then(() => {
+      if (inFlightPulls.get(inFlightKey) === request) {
+        inFlightPulls.delete(inFlightKey);
+      }
+    });
+    return request;
+  }
+
   async function pullProject(
     projectId: string,
     context: WorkspaceCollabContext,
   ): Promise<boolean> {
     const identity = explicitTeamIdentity(context);
     if (!identity) return false;
-    try {
-      return await pollProject(
-        identity.teamId,
-        `${context.workspaceId}:${identity.memberId}`,
-        projectId,
-      );
-    } catch (error) {
-      deps.onError?.(error);
-      return false;
-    }
+    return pullProjectSingleflight(context, identity, projectId);
   }
 
   async function pollOnce(): Promise<void> {
+    // Outbound delivery is durable and owns its own single-flight guard. Do
+    // not put inbound pulls behind a slow relay push: a stalled outbox row
+    // must not delay a teammate's newly-created comment from appearing.
+    void flushPendingComments().catch((error) => deps.onError?.(error));
     for (const projectId of deps.listProjectIds()) {
       try {
         const context =
@@ -333,11 +699,7 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
           });
           lastRegisteredKey = identityKey;
         }
-        await pollProject(
-          identity.teamId,
-          `${context.workspaceId}:${identity.memberId}`,
-          projectId,
-        );
+        await pullProjectSingleflight(context, identity, projectId);
       } catch (error) {
         deps.onError?.(error);
       }
@@ -358,17 +720,28 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
     registerSelf,
     pushComment,
     pushCommentDeletion,
+    enqueueComment(comment, context) {
+      return queuedCloudComment(comment, context, false);
+    },
+    enqueueCommentDeletion(comment, context) {
+      return queuedCloudComment(comment, context, true);
+    },
+    flushPendingComments,
     listMembers,
     resolveMember,
     pollOnce,
     pullProject,
     start() {
       if (timer) return;
+      started = true;
       timer = setInterval(tick, pollIntervalMs);
       // Do not keep the event loop alive solely for polling.
       timer.unref?.();
+      // Recover rows left by a prior daemon before waiting a whole poll period.
+      tick();
     },
     dispose() {
+      started = false;
       if (timer) {
         clearInterval(timer);
         timer = null;

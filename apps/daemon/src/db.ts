@@ -15,6 +15,7 @@ import type {
 } from '@open-design/contracts';
 import { eventsEndedWithUnfinishedWork } from '@open-design/contracts';
 import { migrateCollabSyncSnapshots } from './collab/sync-snapshot-store.js';
+import { migrateCommentRelayOutbox } from './collab/comment-relay-outbox.js';
 import {
   collapseWorkspaceProjectHomes,
   type WorkspaceProjectHomeRow,
@@ -87,6 +88,7 @@ function migrate(db: SqliteDb): void {
       resource_hub_resource_id TEXT,
       cloud_tombstoned_at INTEGER,
       sync_state TEXT,
+      metadata_refresh_pending INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -363,6 +365,14 @@ function migrate(db: SqliteDb): void {
     db.exec(`ALTER TABLE workspace_projects ADD COLUMN cloud_tombstoned_at INTEGER`);
   }
   migrateWorkspaceProjectsSingleHome(db);
+  const migratedWorkspaceProjectCols = db
+    .prepare(`PRAGMA table_info(workspace_projects)`)
+    .all() as DbRow[];
+  if (!migratedWorkspaceProjectCols.some((c: DbRow) => c.name === 'metadata_refresh_pending')) {
+    db.exec(
+      `ALTER TABLE workspace_projects ADD COLUMN metadata_refresh_pending INTEGER NOT NULL DEFAULT 0`,
+    );
+  }
   const conversationCols = db.prepare(`PRAGMA table_info(conversations)`).all() as DbRow[];
   if (!conversationCols.some((c: DbRow) => c.name === 'session_mode')) {
     db.exec(`ALTER TABLE conversations ADD COLUMN session_mode TEXT NOT NULL DEFAULT 'design'`);
@@ -529,6 +539,7 @@ function migrate(db: SqliteDb): void {
   migrateLibrary(db);
   migratePlugins(db);
   migrateCollabSyncSnapshots(db);
+  migrateCommentRelayOutbox(db);
 }
 
 /**
@@ -611,6 +622,7 @@ function migrateWorkspaceProjectsSingleHome(db: SqliteDb): void {
       resource_hub_resource_id TEXT,
       cloud_tombstoned_at INTEGER,
       sync_state TEXT,
+      metadata_refresh_pending INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -1087,12 +1099,31 @@ export function listTeamWorkspaceProjectShares(db: SqliteDb) {
               visibility,
               created_by_workspace_member_id AS createdByWorkspaceMemberId,
               updated_by_workspace_member_id AS updatedByWorkspaceMemberId,
-              sync_state AS syncState
+              sync_state AS syncState,
+              metadata_refresh_pending AS metadataRefreshPending
          FROM workspace_projects
         WHERE visibility = 'team'
           AND resource_state != 'deleted'`,
     )
     .all() as DbRow[];
+}
+
+/**
+ * Durable metadata-only catalog repair marker. This is intentionally separate
+ * from `sync_state`: a failed rename upsert does not mean the project's
+ * published content failed to sync.
+ */
+export function setWorkspaceProjectMetadataRefreshPending(
+  db: SqliteDb,
+  workspaceId: string,
+  projectId: string,
+  pending: boolean,
+): void {
+  db.prepare(
+    `UPDATE workspace_projects
+        SET metadata_refresh_pending = ?
+      WHERE workspace_id = ? AND project_id = ?`,
+  ).run(pending ? 1 : 0, workspaceId, projectId);
 }
 
 /**
@@ -2749,6 +2780,33 @@ export function listPreviewComments(db: SqliteDb, projectId: string, conversatio
     .map(normalizePreviewComment);
 }
 
+/**
+ * Team preview annotations are project resources, not chat transcript rows.
+ * Different daemons intentionally use different local conversation ids as the
+ * SQLite foreign-key anchor, so shared reads must not filter on that local id.
+ */
+export function listProjectPreviewComments(db: SqliteDb, projectId: string) {
+  return (db
+    .prepare(
+      `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+              file_path AS filePath, element_id AS elementId, selector, label,
+              text, position_json AS positionJson, html_hint AS htmlHint,
+              selection_kind AS selectionKind, member_count AS memberCount,
+              pod_members_json AS podMembersJson, style_json AS styleJson,
+              attachments_json AS attachmentsJson,
+              slide_index AS slideIndex,
+              anchor_state AS anchorState, anchored_version AS anchoredVersion,
+              author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
+              pin_seq AS pinSeq, sort_key AS sortKey,
+              note, status, created_at AS createdAt, updated_at AS updatedAt
+         FROM preview_comments
+        WHERE project_id = ?
+        ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(projectId) as DbRow[])
+    .map(normalizePreviewComment);
+}
+
 export interface UpsertPreviewCommentOptions {
   /**
    * True when this project currently syncs comments to the collab cloud (see
@@ -3068,6 +3126,65 @@ export function ensureProjectCommentAnchorConversation(
 }
 
 /**
+ * Repair the comment-anchor invariant for historical active Team projects.
+ *
+ * Older databases can contain Team bindings created before pulled mirrors and
+ * Team shares seeded a local conversation. Comments are project-scoped in the
+ * collaboration protocol but still need a daemon-local conversation FK. Run
+ * this once at startup instead of mutating the database from a comments GET.
+ * Personal and deleted bindings intentionally keep their existing behavior.
+ */
+export function repairTeamProjectCommentAnchorConversations(
+  db: SqliteDb,
+  now = Date.now(),
+): { checked: number; created: number } {
+  const rows = db
+    .prepare(
+      `SELECT project_id AS projectId
+         FROM workspace_projects
+        WHERE visibility = 'team'
+          AND resource_state != 'deleted'`,
+    )
+    .all() as Array<{ projectId: string }>;
+
+  let created = 0;
+  const repair = db.transaction(() => {
+    for (const row of rows) {
+      if (ensureProjectCommentAnchorConversation(db, row.projectId, now)?.created) {
+        created += 1;
+      }
+    }
+  });
+  repair();
+  return { checked: rows.length, created };
+}
+
+/**
+ * Delete one validated project conversation while preserving the Team comment
+ * FK invariant. The delete and replacement anchor insert are one SQLite
+ * transaction, so realtime comment pulls can never observe an active Team
+ * project with no local conversation. Personal projects remain allowed to
+ * have zero conversations.
+ */
+export function deleteConversationAndRepairTeamCommentAnchor(
+  db: SqliteDb,
+  projectId: string,
+  conversationId: string,
+  now = Date.now(),
+): { anchorCreated: boolean } {
+  let anchorCreated = false;
+  const remove = db.transaction(() => {
+    deleteConversation(db, conversationId);
+    const binding = getWorkspaceProjectByProjectId(db, projectId);
+    if (binding?.visibility === 'team' && binding.resourceState !== 'deleted') {
+      anchorCreated = ensureProjectCommentAnchorConversation(db, projectId, now)?.created === true;
+    }
+  });
+  remove();
+  return { anchorCreated };
+}
+
+/**
  * Delete a synced comment by its global id (the author daemon's own id). Used to
  * apply an inbound tombstone. Scoped by project so a stray id can't reach across
  * projects. Returns true when a row was removed.
@@ -3259,6 +3376,28 @@ export function getPreviewComment(db: SqliteDb, projectId: string, conversationI
         WHERE id = ? AND project_id = ? AND conversation_id = ?`,
     )
     .get(id, projectId, conversationId) as DbRow | undefined;
+  return row ? normalizePreviewComment(row) : null;
+}
+
+/** Resolve a Team annotation independently from its daemon-local FK anchor. */
+export function getProjectPreviewComment(db: SqliteDb, projectId: string, id: string) {
+  const row = db
+    .prepare(
+      `SELECT id, project_id AS projectId, conversation_id AS conversationId,
+              file_path AS filePath, element_id AS elementId, selector, label,
+              text, position_json AS positionJson, html_hint AS htmlHint,
+              selection_kind AS selectionKind, member_count AS memberCount,
+              pod_members_json AS podMembersJson, style_json AS styleJson,
+              attachments_json AS attachmentsJson,
+              slide_index AS slideIndex,
+              anchor_state AS anchorState, anchored_version AS anchoredVersion,
+              author_member_id AS authorMemberId, last_good_position_json AS lastGoodPositionJson,
+              pin_seq AS pinSeq, sort_key AS sortKey,
+              note, status, created_at AS createdAt, updated_at AS updatedAt
+         FROM preview_comments
+        WHERE id = ? AND project_id = ?`,
+    )
+    .get(id, projectId) as DbRow | undefined;
   return row ? normalizePreviewComment(row) : null;
 }
 

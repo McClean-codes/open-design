@@ -25,6 +25,7 @@ import type {
   RunContextSelection,
   TeamProject,
   WorkspaceCollabContext,
+  WorkspaceInvalidationSsePayload,
   ProjectWorkspaceScope,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
@@ -46,6 +47,7 @@ import { buildPetTaskCenter } from './components/pet/taskCenter';
 import { migrateCustomPetAtlas } from './components/pet/pets';
 import {
   ProjectView,
+  type ProjectRenameFenceToken,
   type ProjectNameAuthorityResolution,
 } from './components/ProjectView';
 import { AmrArtifactUpgradeGate } from './components/AmrArtifactUpgradeGate';
@@ -94,13 +96,19 @@ import {
   amrLoginStatusEventReason,
 } from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
-import { fetchTeamProjectsCatalog } from './collab/team-projects-catalog';
-import { workspaceProjectHeaders } from './collab/workspace-identity';
+import {
+  beginTeamProjectMetadataRefresh,
+  fetchTeamProjectCatalogEntry as fetchScopedTeamProjectCatalogEntry,
+  fetchTeamProjectsCatalog,
+} from './collab/team-projects-catalog';
 import { useWorkspaceInvalidation } from './collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from './collab/workspace-snapshot-activation';
+import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
   resolveBoundProjectWorkspaceContext,
+  resolveCurrentWorkspaceContextReadWitness,
   useWorkspaceBilling,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
@@ -116,19 +124,14 @@ import { seedHomeComposerPrompt } from './components/HomeView';
 import { goBack, navigate, useRoute, type Route } from './router';
 import {
   fetchDaemonConfig,
-  fetchByokCredentialProfilesFromDaemon,
   DEFAULT_PET,
   fetchMediaProvidersFromDaemon,
   hasAnyConfiguredProvider,
   fetchComposioConfigFromDaemon,
-  legacyByokMigrationErrorPresentation,
   loadConfig,
-  migrateLegacyByokCredentialsToDaemon,
   mergeDaemonConfig,
-  mergeByokCredentialProfiles,
   mergeDaemonMediaProviders,
   saveConfig,
-  persistByokCredentialProfileToDaemon,
   shouldSyncLocalMediaProvidersToDaemon,
   syncComposioConfigToDaemon,
   syncConfigToDaemon,
@@ -163,6 +166,8 @@ import {
   getProject,
   importClaudeDesignZip,
   importFolderProject,
+  invalidatePluginCatalogCache,
+  invalidateWorkspaceProjectLists,
   listWorkspaceProjectSummaries,
   listProjects,
   listTemplates,
@@ -178,6 +183,14 @@ import type {
   PluginShareProjectOutcome,
   WorkspaceProjectListView,
 } from './state/projects';
+import {
+  markProjectDisplaySnapshotsDirty,
+  patchProjectDisplaySnapshots,
+  projectDisplaySnapshotKey,
+  readProjectDisplaySnapshot,
+  removeProjectFromDisplaySnapshots,
+  writeProjectDisplaySnapshot,
+} from './state/project-display-cache';
 import { getOpenDesignHost, type OpenDesignHostProjectImportSuccess } from '@open-design/host';
 import { useI18n } from './i18n';
 import { liveArtifactTabId } from './types';
@@ -336,8 +349,25 @@ function clearStaleAmrModelChoiceOnProfileChange(
 type ProjectListRequest = {
   generation: number;
   mutationVersion: number;
+  accountGeneration: number;
   scopeKey: string;
+  displayKey: string;
   workspaceView: WorkspaceProjectListView | undefined;
+};
+
+type PendingProjectNameProjection = {
+  accountGeneration: number;
+  scopeKey: string;
+  project: Project;
+  mutationVersion: number;
+  confirmed: boolean;
+};
+
+type QueuedProjectRenameState = {
+  generation: number;
+  confirmed: Project;
+  pending: number;
+  tail: Promise<void>;
 };
 
 /**
@@ -767,6 +797,16 @@ function AppInner() {
     loading: workspaceContextLoading,
   } = workspaceContextState;
   const currentWorkspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
+  const workspaceAccountGeneration = currentWorkspaceAccountGeneration();
+  // Catalog display state is account-scoped in addition to Workspace-scoped.
+  // During an unseeded identity transition the hook intentionally retains the
+  // previous context while the replacement account is resolved; a pending
+  // sentinel makes that retained context unusable for display immediately.
+  const currentWorkspaceCatalogIdentity = JSON.stringify(
+    workspaceContextState.identityChangePending
+      ? ['pending-account', workspaceAccountGeneration]
+      : ['workspace-account', workspaceAccountGeneration, currentWorkspaceIdentity],
+  );
   const workspaceBilling = useWorkspaceBilling();
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
@@ -861,8 +901,6 @@ function AppInner() {
     failure: 'missing' | 'materialization-failed';
   } | null>(null);
   const [deepLinkRetryRevision, setDeepLinkRetryRevision] = useState(0);
-  const [legacyByokMigrationError, setLegacyByokMigrationError] =
-    useState<Error | null>(null);
   const [settingsWelcome, setSettingsWelcome] = useState(false);
   const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>('execution');
   const [settingsHighlight, setSettingsHighlight] = useState<SettingsHighlight>(null);
@@ -884,7 +922,7 @@ function AppInner() {
     identity: string;
     items: SkillSummary[];
   }>(() => ({
-    identity: currentWorkspaceIdentity,
+    identity: currentWorkspaceCatalogIdentity,
     items: [],
   }));
   // A workspace-scoped response is safe to render only under the exact
@@ -893,7 +931,7 @@ function AppInner() {
   // Derive the visible catalog during render instead: an identity mismatch is
   // a fail-closed empty list until B's own response commits.
   const skills =
-    workspaceSkills.identity === currentWorkspaceIdentity
+    workspaceSkills.identity === currentWorkspaceCatalogIdentity
       ? workspaceSkills.items
       : [];
   // Design templates (rendering catalogue: decks, prototypes, image/video/
@@ -904,7 +942,7 @@ function AppInner() {
     identity: string;
     items: DesignSystemSummary[];
   }>(() => ({
-    identity: currentWorkspaceIdentity,
+    identity: currentWorkspaceCatalogIdentity,
     items: [],
   }));
   // Like skills and projects, a design-system catalog belongs to one exact
@@ -913,9 +951,11 @@ function AppInner() {
   // check, switching A -> B paints A's systems under B until B's request
   // finishes. Fail closed during that gap; opening the picker still reuses the
   // already-loaded list instantly when the identity has not changed.
-  const designSystems = workspaceDesignSystems.identity === currentWorkspaceIdentity
+  const designSystems = workspaceDesignSystems.identity === currentWorkspaceCatalogIdentity
     ? workspaceDesignSystems.items
     : [];
+  const skillsRequestGenerationRef = useRef<Map<string, number>>(new Map());
+  const designSystemsRequestGenerationRef = useRef<Map<string, number>>(new Map());
   const [pendingDesignSystemRevisionJobs, setPendingDesignSystemRevisionJobs] = useState<
     Record<string, DesignSystemGenerationJob>
   >({});
@@ -940,6 +980,132 @@ function AppInner() {
   const authoritativeProjectNamesRef = useRef(authoritativeProjectNames);
   authoritativeProjectNamesRef.current = authoritativeProjectNames;
   const projectNameAuthorityRequestGenerationRef = useRef<Map<string, number>>(new Map());
+  const refreshTargetedProjectMetadata = useCallback(async (
+    payload: Extract<WorkspaceInvalidationSsePayload, { type: 'team-projects-changed' }>,
+  ) => {
+    const projectId = payload.projectId;
+    if (!projectId) return;
+    const issuedContext = workspaceContextRef.current;
+    if (!issuedContext) return;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
+    const metadataRefresh = beginTeamProjectMetadataRefresh({
+      accountGeneration: issuedAccountGeneration,
+      context: issuedContext,
+      projectId,
+      event: payload,
+    });
+    const metadataRequestIsCurrent = () =>
+      currentWorkspaceAccountGeneration() === issuedAccountGeneration
+      && workspaceIdentityCacheKey(workspaceContextRef.current) === issuedIdentity
+      && metadataRefresh.isLatest();
+    try {
+      const catalogProject = await fetchScopedTeamProjectCatalogEntry({
+        context: issuedContext,
+        projectId,
+        force: true,
+        cacheDiscriminator: metadataRefresh.cacheDiscriminator,
+      });
+      if (
+        !catalogProject
+        || !metadataRequestIsCurrent()
+      ) return;
+      const name = catalogProject.name?.trim();
+      if (!name) return;
+      setProjects((current) => {
+        if (!metadataRequestIsCurrent()) return current;
+        return current.map((project) =>
+          project.id === projectId
+          && project.workspaceId === issuedContext.workspaceId
+            ? { ...project, name }
+            : project
+        );
+      });
+      if (!metadataRequestIsCurrent()) return;
+      patchProjectDisplaySnapshots({
+        accountGeneration: issuedAccountGeneration,
+        context: issuedContext,
+        patch: (projects) => projects.map((project) =>
+          project.id === projectId
+            ? {
+                ...project,
+                name,
+                ...(catalogProject.metadata ? { metadata: catalogProject.metadata } : {}),
+                ...(catalogProject.updatedAt !== undefined
+                  ? { updatedAt: catalogProject.updatedAt }
+                  : {}),
+              }
+            : project),
+      });
+      // Another member's catalog row is title authority over a stale local
+      // mirror. The creator's own local row remains authoritative, but still
+      // receives the exact hub-confirmed projection update above (for another
+      // window/device logged into the same member).
+      if (catalogProject.ownerMemberId !== issuedContext.workspaceMemberId) {
+        const authorityKey = projectViewAuthorizationLifetimeKey(projectId, issuedContext);
+        setAuthoritativeProjectNames((current) => {
+          if (!metadataRequestIsCurrent()) return current;
+          return current[authorityKey] === name
+            ? current
+            : { ...current, [authorityKey]: name };
+        });
+      }
+    } catch {
+      // Keep the last-good projection. Reconnect/poll performs full catch-up.
+    }
+  }, []);
+  const refreshProjectCatalogRef = useRef<() => void>(() => {});
+  const teamResourceRefreshRefs = useRef<{
+    skill: (resourceId?: string) => void;
+    designSystem: (resourceId?: string) => void;
+    plugin: (
+      context: WorkspaceCollabContext | null,
+      accountGeneration: number,
+    ) => void;
+    catchUp: () => void;
+  }>({
+    skill: () => {},
+    designSystem: () => {},
+    plugin: () => {},
+    catchUp: () => {},
+  });
+  const invalidationWorkspaceContext = workspaceContext;
+  const invalidationAccountGeneration = workspaceAccountGeneration;
+  const resourceStreamIdentity = JSON.stringify([
+    invalidationAccountGeneration,
+    workspaceIdentityCacheKey(invalidationWorkspaceContext),
+  ]);
+  const handleTeamResourceStreamActive = useWorkspaceSnapshotActivation({
+    enabled: invalidationWorkspaceContext?.workspaceType === 'team',
+    identity: resourceStreamIdentity,
+    refresh: () => teamResourceRefreshRefs.current.catchUp(),
+  });
+  useWorkspaceInvalidation({
+    'team-projects-changed': (payload) => {
+      if (payload.kind === 'metadata' && payload.projectId) {
+        void refreshTargetedProjectMetadata(payload);
+        return;
+      }
+      refreshProjectCatalogRef.current();
+    },
+    'team-resources-changed': (payload) => {
+      if (payload.resourceKind === 'skill') {
+        teamResourceRefreshRefs.current.skill(payload.resourceId);
+        return;
+      }
+      if (payload.resourceKind === 'design_system') {
+        teamResourceRefreshRefs.current.designSystem(payload.resourceId);
+        return;
+      }
+      teamResourceRefreshRefs.current.plugin(
+        invalidationWorkspaceContext,
+        invalidationAccountGeneration,
+      );
+    },
+  }, {
+    workspaceContext,
+    onActive: handleTeamResourceStreamActive,
+  });
   const [petTaskCenter, setPetTaskCenter] = useState<PetTaskCenter>({
     running: [],
     queued: [],
@@ -956,20 +1122,28 @@ function AppInner() {
     [],
   );
   const pendingLocalProjectIdsRef = useRef<Set<string>>(new Set());
-  const pendingLocalProjectScopeRef = useRef(projectListScopeKey(workspaceContext));
   const currentProjectListScope = projectListScopeKey(workspaceContext);
+  const currentPendingLocalProjectScope = [
+    currentWorkspaceAccountGeneration(),
+    currentProjectListScope,
+  ].join(':');
+  const pendingLocalProjectScopeRef = useRef(currentPendingLocalProjectScope);
   const projectAuthorizationScopeRef = useRef(currentProjectListScope);
   const projectAuthorizationGenerationRef = useRef(0);
   if (projectAuthorizationScopeRef.current !== currentProjectListScope) {
     projectAuthorizationScopeRef.current = currentProjectListScope;
     projectAuthorizationGenerationRef.current += 1;
   }
-  if (pendingLocalProjectScopeRef.current !== currentProjectListScope) {
-    pendingLocalProjectScopeRef.current = currentProjectListScope;
+  if (pendingLocalProjectScopeRef.current !== currentPendingLocalProjectScope) {
+    pendingLocalProjectScopeRef.current = currentPendingLocalProjectScope;
     pendingLocalProjectIdsRef.current.clear();
   }
   const locallyDeletedProjectIdsRef = useRef<Map<string, number>>(new Map());
   const projectListMutationVersionRef = useRef(0);
+  const projectRenameStatesRef = useRef<Map<string, QueuedProjectRenameState>>(new Map());
+  const pendingProjectNameProjectionsRef = useRef<Map<string, PendingProjectNameProjection>>(
+    new Map(),
+  );
   const projectListRequestGenerationRef = useRef(0);
   const latestAppliedProjectListGenerationRef = useRef(0);
   const [templates, setTemplates] = useState<ProjectTemplate[]>([]);
@@ -1008,34 +1182,6 @@ function AppInner() {
   }, []);
   const [dsLoading, setDsLoading] = useState(true);
   const [projectsLoading, setProjectsLoading] = useState(true);
-  // A loaded project list describes exactly ONE workspace identity, so leaving
-  // that workspace INVALIDATES it — it does not merely make it stale.
-  //
-  // Everything downstream of `projects` (the home 最近项目 strip, the 全部项目 and
-  // 草稿 grids) renders whatever this array holds, and the re-list on switch is
-  // an effect: effects run after the commit, so the browser paints the previous
-  // workspace's cards under the new workspace's identity first and only swaps
-  // them when the new list lands. That is the reported 「总是要慢一拍」 — the
-  // strip presenting one workspace's projects as another's, which is worse than
-  // showing nothing. Dropping the list here, during the render that first
-  // observes the new scope, means no frame ever shows the wrong workspace's
-  // data. (`reconcileFetchedProjects` already refuses to APPLY a response whose
-  // scope has moved on; the missing half was discarding what is already on
-  // screen.)
-  //
-  // Nothing is refetched: the switch effect below owns that, and its request is
-  // already keyed on the resolved workspace, so this is not a backend problem
-  // and needs no extra round-trip.
-  const projectListScopeRef = useRef(currentProjectListScope);
-  if (projectListScopeRef.current !== currentProjectListScope) {
-    const leftAResolvedWorkspace =
-      projectListScopeRef.current !== UNRESOLVED_PROJECT_LIST_SCOPE;
-    projectListScopeRef.current = currentProjectListScope;
-    if (leftAResolvedWorkspace) {
-      setProjects([]);
-      setProjectsLoading(true);
-    }
-  }
   const [promptTemplatesLoading, setPromptTemplatesLoading] = useState(true);
   // Goes true once the daemon-persisted config (agentId/designSystemId/etc.)
   // has merged into local state. Auto-selection effects below wait on this
@@ -1078,6 +1224,52 @@ function AppInner() {
   // every click. Mirror the callback's own collapse here so the effect's
   // dependency is stable outside a workspace, matching the fetch it triggers.
   const effectiveWorkspaceProjectView = workspaceContext ? workspaceProjectView : undefined;
+  const projectDisplayAccountGeneration = currentWorkspaceAccountGeneration();
+  const currentProjectDisplayKey = projectDisplaySnapshotKey({
+    accountGeneration: projectDisplayAccountGeneration,
+    context: workspaceContext,
+    view: effectiveWorkspaceProjectView,
+  });
+  // Display snapshots are deliberately separate from authorization. They may
+  // prevent a warm view from flashing a loader, but every network read and
+  // mutation still carries the current request's independently verified
+  // Workspace context. An exact account/workspace/member+view hit is safe to
+  // render while it revalidates; any other identity is cleared before paint.
+  const projectListScopeRef = useRef(currentProjectListScope);
+  const projectDisplayKeyRef = useRef(currentProjectDisplayKey);
+  if (projectDisplayKeyRef.current !== currentProjectDisplayKey) {
+    const leftAResolvedWorkspace =
+      projectListScopeRef.current !== UNRESOLVED_PROJECT_LIST_SCOPE;
+    const snapshot = readProjectDisplaySnapshot(currentProjectDisplayKey);
+    // A create/import is immediately projected into `projects`, but opening
+    // that project changes the list projection from Home's `recent` to `all`.
+    // An older exact-scope `all` snapshot must not erase the pending local row:
+    // ProjectView can keep rendering from its route snapshot, while later
+    // rename callbacks then have no list row to update and Back restores the
+    // stale Home cards. Personal creates belong to recent/all/drafts; Team is
+    // intentionally excluded until the share mutation is authoritative.
+    const pendingProjects = effectiveWorkspaceProjectView === 'team'
+      ? []
+      : projects.filter((project) =>
+          pendingLocalProjectScopeRef.current === currentPendingLocalProjectScope
+          && pendingLocalProjectIdsRef.current.has(project.id)
+          && (
+            workspaceContext === null
+              ? project.workspaceId == null
+              : project.workspaceId === workspaceContext.workspaceId
+          ));
+    projectListScopeRef.current = currentProjectListScope;
+    projectDisplayKeyRef.current = currentProjectDisplayKey;
+    if (snapshot) {
+      const snapshotIds = new Set(snapshot.projects.map((project) => project.id));
+      const preserved = pendingProjects.filter((project) => !snapshotIds.has(project.id));
+      setProjects(preserved.length > 0 ? [...preserved, ...snapshot.projects] : snapshot.projects);
+      setProjectsLoading(false);
+    } else if (leftAResolvedWorkspace) {
+      setProjects(pendingProjects);
+      setProjectsLoading(true);
+    }
+  }
   const projectScopeRefreshMountedRef = useRef(false);
   const analytics = useAnalytics();
 
@@ -1114,6 +1306,13 @@ function AppInner() {
     pendingLocalProjectIdsRef.current.add(projectId);
     locallyDeletedProjectIdsRef.current.delete(projectId);
     projectListMutationVersionRef.current += 1;
+    const context = workspaceContextRef.current;
+    if (context) {
+      markProjectDisplaySnapshotsDirty({
+        accountGeneration: currentWorkspaceAccountGeneration(),
+        context,
+      });
+    }
   }, []);
 
   const handleTeamProjectContentReady = useCallback(async (
@@ -1159,26 +1358,64 @@ function AppInner() {
   ): ProjectListRequest => {
     projectListRequestGenerationRef.current += 1;
     const issuedContext = workspaceContextRef.current;
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const effectiveView = issuedContext ? workspaceView ?? 'recent' : undefined;
     return {
       generation: projectListRequestGenerationRef.current,
       mutationVersion: projectListMutationVersionRef.current,
+      accountGeneration,
       scopeKey: projectListScopeKey(issuedContext),
-      workspaceView: issuedContext ? workspaceView ?? 'recent' : undefined,
+      displayKey: projectDisplaySnapshotKey({
+        accountGeneration,
+        context: issuedContext,
+        view: effectiveView,
+      }),
+      workspaceView: effectiveView,
     };
   }, []);
 
   const reconcileFetchedProjects = useCallback((list: Project[], request: ProjectListRequest) => {
-    if (request.scopeKey !== projectListScopeKey(workspaceContextRef.current)) {
+    if (
+      request.accountGeneration !== currentWorkspaceAccountGeneration()
+      || request.scopeKey !== projectListScopeKey(workspaceContextRef.current)
+    ) {
       return false;
     }
+    const projectedList = list.map((project) => {
+      const key = JSON.stringify([
+        request.accountGeneration,
+        request.scopeKey,
+        project.id,
+      ]);
+      const pending = pendingProjectNameProjectionsRef.current.get(key);
+      if (!pending) return project;
+      if (
+        pending.confirmed
+        && request.mutationVersion >= pending.mutationVersion
+      ) {
+        // A request issued after the local mutation settled is authoritative,
+        // even when another tab has already committed a newer name. The fence
+        // only protects requests that were already in flight when the local
+        // optimistic rename began; keeping it past the first post-write read
+        // would permanently hide later remote renames.
+        pendingProjectNameProjectionsRef.current.delete(key);
+        return project;
+      }
+      return {
+        ...project,
+        name: pending.project.name,
+        metadata: pending.project.metadata,
+        updatedAt: Math.max(project.updatedAt, pending.project.updatedAt),
+      };
+    });
     const pendingLocalProjectIds = pendingLocalProjectIdsRef.current;
     const locallyDeletedProjectIds = locallyDeletedProjectIdsRef.current;
-    const fetchedIds = new Set(list.map((project) => project.id));
+    const fetchedIds = new Set(projectedList.map((project) => project.id));
     if (request.generation < latestAppliedProjectListGenerationRef.current) {
       const visibleList =
         locallyDeletedProjectIds.size > 0
-          ? list.filter((project) => !locallyDeletedProjectIds.has(project.id))
-          : list;
+          ? projectedList.filter((project) => !locallyDeletedProjectIds.has(project.id))
+          : projectedList;
       if (visibleList.length === 0) return false;
       const hydratableProjects = visibleList.filter(
         (project) =>
@@ -1230,12 +1467,17 @@ function AppInner() {
     const activeDeletedProjectIds = new Set(locallyDeletedProjectIds.keys());
     const visibleList =
       activeDeletedProjectIds.size > 0
-        ? list.filter((project) => !activeDeletedProjectIds.has(project.id))
-        : list;
+        ? projectedList.filter((project) => !activeDeletedProjectIds.has(project.id))
+        : projectedList;
     const visibleFetchedIds =
       activeDeletedProjectIds.size > 0
         ? new Set(visibleList.map((project) => project.id))
         : fetchedIds;
+    writeProjectDisplaySnapshot({
+      accountGeneration: request.accountGeneration,
+      context: workspaceContextRef.current,
+      view: request.workspaceView,
+    }, visibleList);
     setProjects((current) => {
       const preserved = current.filter(
         (project) =>
@@ -1717,21 +1959,41 @@ function AppInner() {
         markSkillRegistryReady('templates');
       });
 
-      const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(
-        workspaceContextRef.current,
-      );
-      void fetchDesignSystems(workspaceContextRef.current).then((list) => {
-        if (
-          cancelled ||
-          workspaceIdentityCacheKey(workspaceContextRef.current)
-            !== designSystemsWorkspaceIdentity
-        ) return;
-        setWorkspaceDesignSystems({
-          identity: designSystemsWorkspaceIdentity,
-          items: list,
+      const designSystemsContext = workspaceContextRef.current;
+      // A cached Team identity already has an SSE lifecycle owner below. Do
+      // not race an eager bootstrap snapshot against its first onActive; the
+      // 250ms fallback covers shells where the stream never opens.
+      if (designSystemsContext?.workspaceType !== 'team') {
+        const designSystemsWorkspaceIdentity = workspaceIdentityCacheKey(designSystemsContext);
+        const designSystemsAccountGeneration = currentWorkspaceAccountGeneration();
+        const designSystemsCatalogIdentity = JSON.stringify([
+          'workspace-account',
+          designSystemsAccountGeneration,
+          designSystemsWorkspaceIdentity,
+        ]);
+        const designSystemsRequestGeneration =
+          (designSystemsRequestGenerationRef.current.get(designSystemsCatalogIdentity) ?? 0) + 1;
+        designSystemsRequestGenerationRef.current.set(
+          designSystemsCatalogIdentity,
+          designSystemsRequestGeneration,
+        );
+        void fetchDesignSystems(designSystemsContext).then((list) => {
+          if (
+            cancelled ||
+            workspaceContextStateRef.current.identityChangePending ||
+            designSystemsRequestGenerationRef.current.get(designSystemsCatalogIdentity)
+              !== designSystemsRequestGeneration ||
+            currentWorkspaceAccountGeneration() !== designSystemsAccountGeneration ||
+            workspaceIdentityCacheKey(workspaceContextRef.current)
+              !== designSystemsWorkspaceIdentity
+          ) return;
+          setWorkspaceDesignSystems({
+            identity: designSystemsCatalogIdentity,
+            items: list,
+          });
+          setDsLoading(false);
         });
-        setDsLoading(false);
-      });
+      }
 
       const request = beginProjectListRequest(workspaceProjectViewRef.current);
       void listCurrentWorkspaceProjects({
@@ -1758,21 +2020,6 @@ function AppInner() {
         setAppVersionInfo(info);
       });
 
-      const legacyByokMigration =
-        await migrateLegacyByokCredentialsToDaemon(
-          latestPersistedConfigRef.current,
-        );
-      if (cancelled) return;
-      setLegacyByokMigrationError(
-        legacyByokMigration.status === 'failed'
-          ? legacyByokMigration.error
-          : null,
-      );
-      const migrationBaseConfig = legacyByokMigration.config;
-      if (legacyByokMigration.status === 'migrated') {
-        latestPersistedConfigRef.current = migrationBaseConfig;
-      }
-
       // Daemon-persisted config + composio config + media provider config land
       // together so the welcome-modal decision and daemon-backed settings
       // apply in one merge, avoiding a flash where local-only state is shown
@@ -1781,14 +2028,10 @@ function AppInner() {
         fetchDaemonConfig(),
         fetchComposioConfigFromDaemon(),
         fetchMediaProvidersFromDaemon(),
-        migrationBaseConfig.byokProfileId
-          ? fetchByokCredentialProfilesFromDaemon()
-          : Promise.resolve(null),
-      ]).then(([
+      ]).then(async ([
         daemonConfig,
         daemonComposioConfig,
         daemonMediaProvidersResult,
-        byokCredentialProfiles,
       ]) => {
         if (cancelled) return;
         const daemonMediaProvidersLoaded =
@@ -1810,23 +2053,36 @@ function AppInner() {
           baseConfig.mediaProviders,
           daemonMediaProvidersLoaded,
         );
-        const next = mergeByokCredentialProfiles(
-          mergeDaemonMediaProviders(
-            clearStaleAmrModelChoiceOnProfileChange(
-              baseConfig,
-              mergeDaemonConfig(baseConfig, daemonConfig),
-            ),
-            daemonMediaProvidersLoaded,
+        const next = mergeDaemonMediaProviders(
+          clearStaleAmrModelChoiceOnProfileChange(
+            baseConfig,
+            mergeDaemonConfig(baseConfig, daemonConfig),
           ),
-          byokCredentialProfiles,
+          daemonMediaProvidersLoaded,
         );
         const hasLocalComposioKey = Boolean(next.composio?.apiKey?.trim());
         if (!hasLocalComposioKey && daemonComposioConfig) {
           next.composio = daemonComposioConfig;
         }
-        if (legacyByokMigration.status !== 'failed') {
-          saveConfig(next);
+        // The Composio PUT treats an explicit empty apiKey as a destructive
+        // clear. Bootstrap used to issue that write unconditionally, which
+        // allowed the empty startup request to arrive after the user's first
+        // explicit Save and erase the freshly stored key (plus connector
+        // credentials). Startup only needs to write when migrating a legacy
+        // plaintext key. Keep the credentials surface locked until that one
+        // migration settles so an older key cannot race a user replacement.
+        if (hasLocalComposioKey) {
+          const migrated = await syncComposioConfigToDaemon(next.composio);
+          if (cancelled) return;
+          // Only remove the legacy plaintext after the daemon confirms it was
+          // stored. A failed migration deliberately leaves the existing local
+          // draft intact so the user can retry Save instead of losing the only
+          // remaining copy of the credential.
+          if (migrated) {
+            next.composio = normalizeSavedComposioConfig(next.composio);
+          }
         }
+        saveConfig(next);
         if (
           daemonMediaProvidersResult.status === 'ok'
           && migratedLocalMediaProviders
@@ -1840,7 +2096,6 @@ function AppInner() {
         // endpoint. If daemon already had values the merge above used them;
         // writing back is idempotent and keeps both sides in sync.
         void syncConfigToDaemon(next);
-        void syncComposioConfigToDaemon(next.composio);
         latestPersistedConfigRef.current = next;
         setConfig(next);
 
@@ -1878,6 +2133,25 @@ function AppInner() {
     isCurrentAgentStreamRequest,
     listCurrentWorkspaceProjects,
     reconcileFetchedProjects,
+  ]);
+
+  // Keep the active projection's last-good display in sync with optimistic
+  // local mutations (rename/delete/create). Related projections are marked
+  // dirty by the mutation helpers and still revalidate when selected.
+  useEffect(() => {
+    if (projectsLoading) return;
+    writeProjectDisplaySnapshot({
+      accountGeneration: projectDisplayAccountGeneration,
+      context: workspaceContext,
+      view: effectiveWorkspaceProjectView,
+    }, projects);
+  }, [
+    currentProjectDisplayKey,
+    effectiveWorkspaceProjectView,
+    projectDisplayAccountGeneration,
+    projects,
+    projectsLoading,
+    workspaceContext,
   ]);
 
   // Auto-pick the first available agent once both the daemon-stored config
@@ -1975,6 +2249,23 @@ function AppInner() {
     reconcileFetchedProjects(list, request);
   }, [beginProjectListRequest, listCurrentWorkspaceProjects, reconcileFetchedProjects, workspaceProjectView]);
 
+  const refreshProjectsAfterTeamCatalogChange = useCallback(() => {
+    const context = workspaceContextRef.current;
+    if (!context) return;
+    invalidateWorkspaceProjectLists(
+      context,
+      currentWorkspaceAccountGeneration(),
+    );
+    // Preserve the exact principal's last-good rows while the authoritative
+    // list reconciles. The request/reconcile pair independently captures and
+    // rechecks account + Workspace identity, so a late response cannot cross a
+    // switch boundary.
+    void refreshProjectsStrict().catch((error: unknown) => {
+      console.error('[projects] failed to refresh after team catalog change', error);
+    });
+  }, [refreshProjectsStrict]);
+  refreshProjectCatalogRef.current = refreshProjectsAfterTeamCatalogChange;
+
   useEffect(() => {
     // Bootstrap already reads this exact scope on mount. Only re-list after
     // the resolved workspace identity or a workspace-specific route changes;
@@ -1985,7 +2276,13 @@ function AppInner() {
     }
     let cancelled = false;
     const request = beginProjectListRequest(effectiveWorkspaceProjectView);
-    setProjectsLoading(true);
+    const snapshot = readProjectDisplaySnapshot(request.displayKey);
+    if (snapshot) {
+      setProjects(snapshot.projects);
+      setProjectsLoading(false);
+    } else {
+      setProjectsLoading(true);
+    }
     (async () => {
       for (let attempt = 0; attempt < 2; attempt++) {
         try {
@@ -2020,21 +2317,40 @@ function AppInner() {
   }, [
     workspaceContext?.workspaceId,
     beginProjectListRequest,
+    currentProjectDisplayKey,
     effectiveWorkspaceProjectView,
     listCurrentWorkspaceProjects,
     reconcileFetchedProjects,
   ]);
 
-  const refreshDesignSystems = useCallback(async () => {
+  const refreshDesignSystems = useCallback(async (options?: {
+    forceTeamMaterialization?: boolean;
+  }) => {
     // Carry the captured Workspace/member identity on the request. The daemon
     // verifies that exact membership instead of consulting mutable ambient
     // Workspace state, and the same identity key prevents an A response from
     // committing after the UI has moved to B.
+    if (workspaceContextStateRef.current.identityChangePending) return;
     const issuedContext = workspaceContextRef.current;
     const issuedIdentity = workspaceIdentityCacheKey(issuedContext);
-    const list = await fetchDesignSystems(issuedContext);
-    if (workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity) return;
-    setWorkspaceDesignSystems({ identity: issuedIdentity, items: list });
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
+    const issuedCatalogIdentity = JSON.stringify([
+      'workspace-account',
+      issuedAccountGeneration,
+      issuedIdentity,
+    ]);
+    const requestGeneration =
+      (designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
+    designSystemsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
+    const list = await fetchDesignSystems(issuedContext, options);
+    if (
+      workspaceContextStateRef.current.identityChangePending
+      || designSystemsRequestGenerationRef.current.get(issuedCatalogIdentity)
+        !== requestGeneration
+      || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
+      || workspaceIdentityCacheKey(workspaceContextRef.current) !== issuedIdentity
+    ) return;
+    setWorkspaceDesignSystems({ identity: issuedCatalogIdentity, items: list });
     // Bootstrap and this workspace-scoped refresh can overlap on launch.
     // Either response is a complete catalog for the active daemon identity,
     // so do not leave a successful refresh hidden behind bootstrap's loader
@@ -2046,8 +2362,15 @@ function AppInner() {
   // identity. Re-read whenever either half changes; a role replacement can
   // reuse the Workspace id while changing the authoritative membership.
   useEffect(() => {
+    if (workspaceContextState.identityChangePending) return;
+    if (workspaceContext?.workspaceType === 'team') return;
     void refreshDesignSystems();
-  }, [currentWorkspaceIdentity, refreshDesignSystems]);
+  }, [
+    currentWorkspaceCatalogIdentity,
+    refreshDesignSystems,
+    workspaceContext?.workspaceType,
+    workspaceContextState.identityChangePending,
+  ]);
 
   const refreshSkills = useCallback(async () => {
     // Always scoped. `GET /api/skills` is fail-closed on a missing
@@ -2055,46 +2378,34 @@ function AppInner() {
     // headerless read is not the "unfiltered" list — it is the list with every
     // workspace-claimed skill removed, including the ones claimed by the
     // workspace the user is actually in.
+    if (workspaceContextStateRef.current.identityChangePending) return;
+    const issuedAccountGeneration = currentWorkspaceAccountGeneration();
     const read = beginWorkspaceScopedRead(workspaceContextRef.current);
+    const issuedCatalogIdentity = JSON.stringify([
+      'workspace-account',
+      issuedAccountGeneration,
+      workspaceIdentityCacheKey(read.context),
+    ]);
+    const requestGeneration =
+      (skillsRequestGenerationRef.current.get(issuedCatalogIdentity) ?? 0) + 1;
+    skillsRequestGenerationRef.current.set(issuedCatalogIdentity, requestGeneration);
     const list = await fetchSkills(read.context);
     // A read for the workspace the user has since LEFT must not restore that
     // workspace's catalog over the current one — see `beginWorkspaceScopedRead`.
     // Skipping the gate too is deliberate: this response is not an answer about
     // the current identity, and the newer read that replaced it will mark it.
-    if (!read.isStillCurrent(workspaceContextRef.current)) return;
+    if (
+      workspaceContextStateRef.current.identityChangePending
+      || skillsRequestGenerationRef.current.get(issuedCatalogIdentity) !== requestGeneration
+      || currentWorkspaceAccountGeneration() !== issuedAccountGeneration
+      || !read.isStillCurrent(workspaceContextRef.current)
+    ) return;
     setWorkspaceSkills({
-      identity: workspaceIdentityCacheKey(read.context),
+      identity: issuedCatalogIdentity,
       items: list,
     });
     markSkillRegistryReady('functional');
   }, [markSkillRegistryReady]);
-
-  // Hub resource events are reconciled by the daemon first, then forwarded as
-  // a thin Workspace invalidation. Re-read only the affected catalog so an
-  // already-open Home picker converges without a route change or manual
-  // refresh. The shared Workspace EventSource is multiplexed with the other
-  // shell subscribers by useEventStream.
-  useWorkspaceInvalidation({
-    'team-resources-changed': ({ resourceKind }) => {
-      if (resourceKind === 'design_system') {
-        void refreshDesignSystems();
-      } else if (resourceKind === 'skill') {
-        void refreshSkills();
-      } else if (resourceKind === 'plugin') {
-        window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
-      }
-    },
-  }, {
-    workspaceContext,
-    onActive: () => {
-      // Thin resource events are not replayed after the shared EventSource is
-      // parked with a hidden tab. A reconnect cannot identify which catalog
-      // changed during that gap, so catch up all three Team resource views.
-      void refreshDesignSystems();
-      void refreshSkills();
-      window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
-    },
-  });
 
   // The skills catalog is workspace-scoped on the daemon exactly like the
   // design-system catalog above, and needs the same workspace-keyed refresh for
@@ -2119,14 +2430,21 @@ function AppInner() {
   // startup, or holding A's list later. "Discarded and never replaced" is a
   // worse outcome than the staleness it replaced, so every transition that
   // invalidates a response must also start its successor.
-  const skillsReadIdentity = currentWorkspaceIdentity;
+  const skillsReadIdentity = currentWorkspaceCatalogIdentity;
   const skillsReadIdentityRef = useRef<string | null>(null);
   useEffect(() => {
-    if (workspaceContextLoading) return;
+    if (workspaceContextLoading || workspaceContextState.identityChangePending) return;
     if (skillsReadIdentityRef.current === skillsReadIdentity) return;
     skillsReadIdentityRef.current = skillsReadIdentity;
+    if (workspaceContext?.workspaceType === 'team') return;
     void refreshSkills();
-  }, [workspaceContextLoading, skillsReadIdentity, refreshSkills]);
+  }, [
+    workspaceContextLoading,
+    workspaceContextState.identityChangePending,
+    skillsReadIdentity,
+    refreshSkills,
+    workspaceContext?.workspaceType,
+  ]);
 
   const refreshTemplates = useCallback(async () => {
     const list = await listTemplates();
@@ -3086,8 +3404,39 @@ function AppInner() {
     const routeFileName = fileName ?? null;
     const hintedProjectName = projectTitleHint?.name.trim() || null;
     const requiresBoundCatalogProject = projectTitleHint?.authoritative === true;
-    const openingContext = workspaceContextRef.current;
     const openingAccountGeneration = currentWorkspaceAccountGeneration();
+    let openingContext = workspaceContextRef.current;
+    const knownUnboundLocalProject = !requiresBoundCatalogProject
+      && projectsRef.current.some((project) =>
+        project.id === id && !project.workspaceId?.trim()
+      );
+    let pendingContextWitness: Awaited<
+      ReturnType<typeof resolveCurrentWorkspaceContextReadWitness>
+    > | null = null;
+    if (
+      !knownUnboundLocalProject
+      && (
+        !openingContext
+        || workspaceContextStateRef.current.identityChangePending === true
+      )
+    ) {
+      try {
+        pendingContextWitness = await resolveCurrentWorkspaceContextReadWitness();
+      } catch {
+        pendingContextWitness = null;
+      }
+      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration) return false;
+      if (pendingContextWitness) {
+        if (!pendingContextWitness.isStillCurrent()) return false;
+        openingContext = pendingContextWitness.context;
+      } else {
+        // The richer hook may have settled while the directory read failed or
+        // was invalidated. Reuse it only when no identity change remains in
+        // flight; otherwise a cached pre-switch context is not authority.
+        const liveState = workspaceContextStateRef.current;
+        openingContext = liveState.identityChangePending ? null : liveState.context;
+      }
+    }
     const openingAuthorizationGeneration = projectAuthorizationGenerationRef.current;
     const openingScopeKey = projectListScopeKey(openingContext);
     const expectedWorkspaceId = openingContext?.workspaceId ?? null;
@@ -3108,9 +3457,22 @@ function AppInner() {
       id,
       openingContext,
     );
-    const openingScopeIsCurrent = () =>
-      projectAuthorizationGenerationRef.current === openingAuthorizationGeneration
-      && projectListScopeKey(workspaceContextRef.current) === openingScopeKey;
+    const openingScopeIsCurrent = () => {
+      if (currentWorkspaceAccountGeneration() !== openingAccountGeneration) return false;
+      if (!pendingContextWitness) {
+        return projectAuthorizationGenerationRef.current === openingAuthorizationGeneration
+          && projectListScopeKey(workspaceContextRef.current) === openingScopeKey;
+      }
+      if (!pendingContextWitness.isStillCurrent()) return false;
+      const liveState = workspaceContextStateRef.current;
+      const liveContext = liveState.context ?? liveState.resourceReadIdentity?.context ?? null;
+      if (!openingContext) {
+        return liveContext === null && liveState.identityChangePending !== true;
+      }
+      return liveContext
+        ? workspaceIdentityCacheKey(liveContext) === workspaceIdentityCacheKey(openingContext)
+        : liveState.loading === true || liveState.identityChangePending === true;
+    };
     const canUseLocalProject = (project: Project) => {
       if (project.workspaceId) return project.workspaceId === expectedWorkspaceId;
       return !requiresBoundCatalogProject;
@@ -3299,8 +3661,17 @@ function AppInner() {
     // ownership check actually runs — see deleteProject's docblock
     // (recvq5ecTkar91: a leaked-in project was really deletable, not just
     // visible, because this call sent no workspace headers at all).
-    const ok = await deleteProjectApi(id, workspaceContextRef.current);
+    const mutationContext = workspaceContextRef.current;
+    const mutationAccountGeneration = currentWorkspaceAccountGeneration();
+    const ok = await deleteProjectApi(id, mutationContext);
     if (!ok) return false;
+    if (mutationContext) {
+      removeProjectFromDisplaySnapshots({
+        accountGeneration: mutationAccountGeneration,
+        context: mutationContext,
+        projectId: id,
+      });
+    }
     clearLocalProject(id, { deleted: true });
     iframeKeepAlivePool.evictProject(id, { includeActive: true });
     setProjects((curr) => curr.filter((p) => p.id !== id));
@@ -3313,11 +3684,122 @@ function AppInner() {
   const handleRenameProject = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
+    const previous = projectsRef.current.find((project) => project.id === id) ?? null;
+    const renameContext = workspaceContextRef.current;
+    const renameAccountGeneration = currentWorkspaceAccountGeneration();
+    const renameScopeKey = projectListScopeKey(renameContext);
+    const renameProjectionKey = JSON.stringify([
+      renameAccountGeneration,
+      renameScopeKey,
+      id,
+    ]);
+    let renameState = projectRenameStatesRef.current.get(renameProjectionKey);
+    if (!renameState || renameState.pending === 0) {
+      if (!previous) return;
+      renameState = {
+        generation: 0,
+        confirmed: previous,
+        pending: 0,
+        tail: Promise.resolve(),
+      };
+      projectRenameStatesRef.current.set(renameProjectionKey, renameState);
+    }
+    const renameGeneration = ++renameState.generation;
+    renameState.pending += 1;
+    projectListMutationVersionRef.current += 1;
+    const renameMutationVersion = projectListMutationVersionRef.current;
+    const optimistic = { ...(previous ?? renameState.confirmed), name: trimmed };
+    pendingProjectNameProjectionsRef.current.set(renameProjectionKey, {
+      accountGeneration: renameAccountGeneration,
+      scopeKey: renameScopeKey,
+      project: optimistic,
+      mutationVersion: renameMutationVersion,
+      confirmed: false,
+    });
     setProjects((curr) =>
       curr.map((p) => (p.id === id ? { ...p, name: trimmed } : p)),
     );
-    void patchProject(id, { name: trimmed }, workspaceContextRef.current);
-  }, []);
+    if (renameContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: renameAccountGeneration,
+        context: renameContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === id ? { ...project, name: trimmed } : project),
+      });
+    }
+    const runRename = async () => {
+      const persisted = await patchProject(id, { name: trimmed }, renameContext);
+      if (persisted) renameState.confirmed = persisted;
+      const isLatestQueuedRename =
+        projectRenameStatesRef.current.get(renameProjectionKey) === renameState
+        && renameState.generation === renameGeneration;
+      if (!isLatestQueuedRename) return;
+      const nextProject = persisted ?? renameState.confirmed;
+      const pendingProjection = pendingProjectNameProjectionsRef.current.get(renameProjectionKey);
+      if (pendingProjection?.mutationVersion === renameMutationVersion) {
+        pendingProjection.project = nextProject;
+        pendingProjection.confirmed = true;
+      }
+      if (renameContext) {
+        patchProjectDisplaySnapshots({
+          accountGeneration: renameAccountGeneration,
+          context: renameContext,
+          patch: (cachedProjects) => cachedProjects.map((project) =>
+            project.id === id && (persisted || project.name === trimmed)
+              ? {
+                  ...project,
+                  name: nextProject.name,
+                  metadata: nextProject.metadata,
+                  updatedAt: nextProject.updatedAt,
+                }
+              : project),
+        });
+      }
+      const isCurrentScope =
+        currentWorkspaceAccountGeneration() === renameAccountGeneration
+        && projectListScopeKey(workspaceContextRef.current) === renameScopeKey;
+      if (!isCurrentScope) return;
+      if (!persisted) {
+        setProjects((current) => current.map((project) =>
+          project.id === id && project.name === trimmed
+            ? {
+                ...project,
+                name: nextProject.name,
+                metadata: nextProject.metadata,
+                updatedAt: nextProject.updatedAt,
+              }
+            : project
+        ));
+        await refreshProjects();
+        return;
+      }
+      setProjects((current) => current.map((project) =>
+        project.id === id
+          ? {
+              ...project,
+              name: persisted.name,
+              metadata: persisted.metadata,
+              updatedAt: persisted.updatedAt,
+            }
+          : project
+      ));
+      await refreshProjects();
+    };
+    const queued = renameState.tail.then(runRename, runRename);
+    renameState.tail = queued.then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      renameState.pending -= 1;
+      if (
+        renameState.pending === 0
+        && projectRenameStatesRef.current.get(renameProjectionKey) === renameState
+      ) {
+        projectRenameStatesRef.current.delete(renameProjectionKey);
+      }
+    });
+    await queued;
+  }, [refreshProjects]);
 
   // The project header back button is an escape hatch back to Home. Avoid
   // depending on browser history here: tab restores and template-create flows
@@ -3340,7 +3822,16 @@ function AppInner() {
         p.id === projectId ? { ...p, pendingPrompt: undefined } : p,
       ),
     );
-    void patchProject(projectId, { pendingPrompt: null }, workspaceContextRef.current);
+    const mutationContext = workspaceContextRef.current;
+    if (mutationContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: currentWorkspaceAccountGeneration(),
+        context: mutationContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === projectId ? { ...project, pendingPrompt: undefined } : project),
+      });
+    }
+    void patchProject(projectId, { pendingPrompt: null }, mutationContext);
   }, [route]);
 
   const handleTouchProject = useCallback(() => {
@@ -3350,10 +3841,55 @@ function AppInner() {
     setProjects((curr) =>
       curr.map((p) => (p.id === projectId ? { ...p, updatedAt } : p)),
     );
-    void patchProject(projectId, { updatedAt }, workspaceContextRef.current);
+    const mutationContext = workspaceContextRef.current;
+    if (mutationContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration: currentWorkspaceAccountGeneration(),
+        context: mutationContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === projectId ? { ...project, updatedAt } : project),
+      });
+    }
+    void patchProject(projectId, { updatedAt }, mutationContext);
   }, [route]);
 
   const handleProjectChange = useCallback((updated: Project) => {
+    // ProjectView is pinned to the opened project's persisted Workspace, which
+    // can differ from the shell's ambient selection while a switch settles.
+    // Patch every list projection for that exact principal so an inline rename
+    // cannot restore an old title when the user next opens Personal or Team.
+    const projectContext = projectRouteWorkspaceContextRef.current;
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    // A cold deep link can mount from this route-owned snapshot before the
+    // ambient project list resolves. Keep that independent row current too,
+    // but only under the exact account + Workspace principal that opened it.
+    const routeSnapshot = routeProjectSnapshotRef.current;
+    const routeSnapshotContext =
+      routeSnapshot?.workspaceContext
+      ?? routeSnapshot?.workspaceScope?.context
+      ?? null;
+    const routeSnapshotMatches =
+      routeRef.current.kind === 'project'
+      && routeRef.current.projectId === updated.id
+      && routeSnapshot?.project.id === updated.id
+      && routeSnapshot.accountGeneration === accountGeneration
+      && (routeSnapshot.project.workspaceId ?? null) === (updated.workspaceId ?? null)
+      && (
+        routeSnapshotContext === null && projectContext === null
+        || (
+          routeSnapshotContext !== null
+          && projectContext !== null
+          && workspaceIdentityCacheKey(routeSnapshotContext)
+            === workspaceIdentityCacheKey(projectContext)
+        )
+      );
+    if (routeSnapshotMatches) {
+      routeProjectSnapshotRef.current = {
+        ...routeSnapshot,
+        project: updated,
+      };
+      setRouteProjectSnapshotRevision((current) => current + 1);
+    }
     setProjects((curr) => {
       const previous = curr.find((p) => p.id === updated.id);
       if (
@@ -3368,7 +3904,54 @@ function AppInner() {
       }
       return curr.map((p) => (p.id === updated.id ? updated : p));
     });
+    if (projectContext) {
+      patchProjectDisplaySnapshots({
+        accountGeneration,
+        context: projectContext,
+        patch: (cachedProjects) => cachedProjects.map((project) =>
+          project.id === updated.id ? { ...project, ...updated } : project),
+      });
+    }
   }, [iframeKeepAlivePool]);
+
+  const handleProjectRenameStarted = useCallback((
+    optimistic: Project,
+  ): ProjectRenameFenceToken => {
+    const context = projectRouteWorkspaceContextRef.current;
+    const accountGeneration = currentWorkspaceAccountGeneration();
+    const scopeKey = projectListScopeKey(context);
+    projectListMutationVersionRef.current += 1;
+    const mutationVersion = projectListMutationVersionRef.current;
+    const key = JSON.stringify([accountGeneration, scopeKey, optimistic.id]);
+    pendingProjectNameProjectionsRef.current.set(
+      key,
+      {
+        accountGeneration,
+        scopeKey,
+        project: optimistic,
+        mutationVersion,
+        confirmed: false,
+      },
+    );
+    return {
+      accountGeneration,
+      scopeKey,
+      projectId: optimistic.id,
+      mutationVersion,
+    };
+  }, []);
+
+  const handleProjectRenameSettled = useCallback((
+    token: ProjectRenameFenceToken | null,
+    confirmed: Project,
+  ) => {
+    if (!token || token.projectId !== confirmed.id) return;
+    const key = JSON.stringify([token.accountGeneration, token.scopeKey, token.projectId]);
+    const pending = pendingProjectNameProjectionsRef.current.get(key);
+    if (!pending || pending.mutationVersion !== token.mutationVersion) return;
+    pending.project = confirmed;
+    pending.confirmed = true;
+  }, []);
 
   // ProjectView's prompt-context signature derives from SkillSummary /
   // DesignSystemSummary fields, so a body-only registry edit (same name,
@@ -3381,16 +3964,7 @@ function AppInner() {
 
   const handleSkillsChanged = useCallback(
     (affectedSkillId?: string) => {
-      // Scoped AND guarded on commit, like every other app-level skills read —
-      // see `refreshSkills` and `beginWorkspaceScopedRead`.
-      const skillsRead = beginWorkspaceScopedRead(workspaceContextRef.current);
-      void fetchSkills(skillsRead.context).then((list) => {
-        if (!skillsRead.isStillCurrent(workspaceContextRef.current)) return;
-        setWorkspaceSkills({
-          identity: workspaceIdentityCacheKey(skillsRead.context),
-          items: list,
-        });
-      });
+      void refreshSkills();
       void fetchDesignTemplates().then((list) => setDesignTemplates(list));
       iframeKeepAlivePool.evictMatching(
         (entry) => {
@@ -3402,12 +3976,12 @@ function AppInner() {
         { includeActive: true },
       );
     },
-    [iframeKeepAlivePool],
+    [iframeKeepAlivePool, refreshSkills],
   );
 
   const handleDesignSystemsChanged = useCallback(
     (affectedDesignSystemId?: string) => {
-      void refreshDesignSystems();
+      void refreshDesignSystems({ forceTeamMaterialization: true });
       iframeKeepAlivePool.evictMatching(
         (entry) => {
           const proj = projectsRef.current.find((p) => p.id === entry.projectId);
@@ -3422,6 +3996,24 @@ function AppInner() {
     },
     [iframeKeepAlivePool, refreshDesignSystems],
   );
+
+  const handlePluginsChanged = useCallback((
+    context: WorkspaceCollabContext | null,
+    accountGeneration: number,
+  ) => {
+    invalidatePluginCatalogCache({ workspaceContext: context, accountGeneration });
+    window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
+  }, []);
+
+  teamResourceRefreshRefs.current.skill = handleSkillsChanged;
+  teamResourceRefreshRefs.current.designSystem = handleDesignSystemsChanged;
+  teamResourceRefreshRefs.current.plugin = handlePluginsChanged;
+  teamResourceRefreshRefs.current.catchUp = () => {
+    // Focus/reconnect is snapshot catch-up, not a mutation. Keep project
+    // previews intact and never fan out the plugin mutation CustomEvent.
+    void refreshSkills();
+    void refreshDesignSystems({ forceTeamMaterialization: true });
+  };
   const handleDesignSystemImportRebuildJob = useCallback(
     (designSystemId: string, job: DesignSystemGenerationJob) => {
       setPendingDesignSystemRevisionJobs((current) => ({
@@ -3936,8 +4528,8 @@ function AppInner() {
   useEffect(() => {
     if (route.kind !== 'home') return;
     void refreshTemplates();
-    void refreshDesignSystems();
-  }, [route.kind, refreshTemplates, refreshDesignSystems]);
+    if (workspaceContext?.workspaceType !== 'team') void refreshDesignSystems();
+  }, [route.kind, refreshTemplates, refreshDesignSystems, workspaceContext?.workspaceType]);
 
   // Existing card grids (DesignsTab, ProjectView), pickers (NewProjectPanel,
   // ChatComposer mention) all look skills up by id without caring whether
@@ -4045,7 +4637,6 @@ function AppInner() {
       }
       composioConfigLoading={composioConfigLoading}
       onPersist={handleConfigPersist}
-      onPersistByokCredential={persistByokCredentialProfileToDaemon}
       onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
       onDraftChange={handleSettingsDraftChange}
       onPersistComposioKey={handleConfigPersistComposioKey}
@@ -4324,6 +4915,8 @@ function AppInner() {
           onClearPendingPrompt={handleClearPendingPrompt}
           onTouchProject={handleTouchProject}
           onProjectChange={handleProjectChange}
+          onProjectRenameStarted={handleProjectRenameStarted}
+          onProjectRenameSettled={handleProjectRenameSettled}
           onProjectsRefresh={refreshProjects}
           onDeleteProject={handleDeleteProject}
           onChangeDefaultDesignSystem={handleChangeDefaultDesignSystem}
@@ -4361,16 +4954,17 @@ function AppInner() {
         onApiProtocolChange={handleApiProtocolChange}
         onApiModelChange={handleApiModelChange}
         onConfigPersist={handleConfigPersist}
-        onPersistByokCredential={persistByokCredentialProfileToDaemon}
         daemonAppConfigReady={daemonAppConfigReady}
         onSilentUpdatePreferenceChange={handleSilentUpdatePreferenceChange}
         onSkillsRefresh={refreshSkills}
         onSkillsChanged={handleSkillsChanged}
         onRefreshAgents={refreshAgents}
         skillsLoading={
-          workspaceSkills.identity !== currentWorkspaceIdentity || skillsLoading
+          workspaceSkills.identity !== currentWorkspaceCatalogIdentity || skillsLoading
         }
-        designSystemsLoading={dsLoading}
+        designSystemsLoading={
+          workspaceDesignSystems.identity !== currentWorkspaceCatalogIdentity || dsLoading
+        }
         projectsLoading={projectsLoading}
         promptTemplatesLoading={promptTemplatesLoading}
         onCreateProject={handleCreateProject}
@@ -4431,12 +5025,6 @@ function AppInner() {
       />
     );
   }
-  const legacyByokMigrationErrorView = legacyByokMigrationError
-    ? legacyByokMigrationErrorPresentation(
-        legacyByokMigrationError,
-        t('settings.autosaveError'),
-      )
-    : null;
   return (
     <>
       <div
@@ -4446,7 +5034,15 @@ function AppInner() {
       >
         <WorkspaceTabsBar
           route={route}
-          projects={projects}
+          // The ambient list may still be loading (or belong to a different
+          // selected Workspace) while a deep-linked project is already open.
+          // Supply only that route-owned row to chrome; never insert it into
+          // the ambient Home catalogue.
+          projects={
+            activeProject && !projects.some((project) => project.id === activeProject.id)
+              ? [...projects, activeProject]
+              : projects
+          }
           activeProjectWorkspaceId={
             route.kind === 'project' && activeProject
               ? activeProject.workspaceId ?? null
@@ -4524,21 +5120,6 @@ function AppInner() {
           role="alert"
           tone="error"
           onDismiss={() => setProjectOpenError(null)}
-        />
-      ) : null}
-      {legacyByokMigrationErrorView ? (
-        <Toast
-          message={legacyByokMigrationErrorView.message}
-          details={legacyByokMigrationErrorView.details}
-          actionLabel={t('settings.title')}
-          onAction={() => {
-            setLegacyByokMigrationError(null);
-            openSettings('execution');
-          }}
-          role="alert"
-          tone="error"
-          ttlMs={0}
-          onDismiss={() => setLegacyByokMigrationError(null)}
         />
       ) : null}
       {/* First-run privacy consent banner. It waits for daemon config

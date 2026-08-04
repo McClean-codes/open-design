@@ -34,6 +34,7 @@ import { moveWorkspaceProject, workspaceProjectMoveErrorCode } from '../state/pr
 import {
   workspaceContextHasTeamIdentity,
   type WorkspaceCollabContext,
+  type WorkspaceProjectSummary,
 } from '@open-design/contracts';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import {
@@ -95,7 +96,9 @@ interface Props {
   isSharedProject?: SharedProjectPredicate;
   /** Reported after a successful share/unshare so the caller can fold the change
    *  into its optimistic layer before the team-projects poll catches up. */
-  onProjectShared?: (projectId: string) => void;
+  onProjectShared?: (project: WorkspaceProjectSummary) => void;
+  /** Clears any optimistic owner proof when a share did not commit. */
+  onProjectShareFailed?: (projectId: string) => void;
   onProjectUnshared?: (projectId: string) => void;
   /** Which space this strip renders (see {@link SpaceKind}). Defaults to
    *  'recent' (home). 'team' hides the per-card 共享 badge since every card
@@ -314,6 +317,7 @@ export function RecentProjectsStrip({
   limit,
   isSharedProject,
   onProjectShared,
+  onProjectShareFailed,
   onProjectUnshared,
   space = 'recent',
   projectOwnerMemberIds,
@@ -469,7 +473,7 @@ export function RecentProjectsStrip({
   // (off-team, or a member the daemon has not seen register), never an opaque id.
   const resolveCreator = (projectId: string): { name: string; initial: string; ownedBySelf: boolean } => {
     const ownerMemberId = projectOwnerMemberIds?.get(projectId) ?? null;
-    if (!ownerMemberId || ownerMemberId === selfMemberId) {
+    if (ownerMemberId === selfMemberId || (!ownerMemberId && !isShared(projectId))) {
       const name = t('recentProjects.selfCreator');
       const initial = Array.from(name.trim())[0]?.toUpperCase() ?? 'M';
       return { name, initial, ownedBySelf: true };
@@ -937,15 +941,16 @@ export function RecentProjectsStrip({
     setMenuOpenId(project.id);
     setSharingId(project.id);
     try {
-      await moveWorkspaceProject({
+      const movedProject = await moveWorkspaceProject({
         projectId: project.id,
         visibility: 'team',
         workspaceContext,
       });
-      onProjectShared?.(project.id);
+      onProjectShared?.(movedProject);
       notifyTeamProjectsChanged();
       setMenuOpenId(null);
     } catch (err) {
+      onProjectShareFailed?.(project.id);
       console.warn('[RecentProjectsStrip] share project to team failed:', err);
       setShareErrorProjectId(project.id);
       setShareErrorKind(
@@ -1073,18 +1078,21 @@ export function RecentProjectsStrip({
     const moved = await Promise.all(
       ids.map(async (id) => {
         try {
-          await moveWorkspaceProject({ projectId: id, visibility, workspaceContext });
-          return id;
+          const project = await moveWorkspaceProject({ projectId: id, visibility, workspaceContext });
+          return { id, project };
         } catch (err) {
+          if (action === 'to-team') onProjectShareFailed?.(id);
           console.warn('[RecentProjectsStrip] bulk move project failed:', err);
           return null;
         }
       }),
     );
-    const succeeded = moved.filter((id): id is string => id !== null);
-    for (const id of succeeded) {
-      if (action === 'to-team') onProjectShared?.(id);
-      else onProjectUnshared?.(id);
+    const succeeded = moved.filter(
+      (result): result is { id: string; project: WorkspaceProjectSummary } => result !== null,
+    );
+    for (const result of succeeded) {
+      if (action === 'to-team') onProjectShared?.(result.project);
+      else onProjectUnshared?.(result.id);
     }
     if (succeeded.length > 0) notifyTeamProjectsChanged();
   }

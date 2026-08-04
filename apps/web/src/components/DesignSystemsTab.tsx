@@ -22,6 +22,10 @@ import {
   workspaceProjectHeaders,
 } from '../collab/workspace-identity';
 import {
+  useWorkspaceInvalidation,
+} from '../collab/workspace-events';
+import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
+import {
   workspaceContextHasTeamIdentity,
   type WorkspaceCollabContext,
 } from '@open-design/contracts';
@@ -48,6 +52,8 @@ import type { DesignSystemDetail, DesignSystemSummary, ProjectTemplate, Surface 
 import styles from './DesignSystemsTab.module.css';
 
 interface Props {
+  /** EntryShell parks this mounted tab while another nav surface is visible. */
+  isActive?: boolean;
   systems: DesignSystemSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -146,6 +152,7 @@ function teamSharedMetaEqual(
 }
 
 export function DesignSystemsTab({
+  isActive = true,
   systems,
   selectedId,
   onSelect,
@@ -158,6 +165,7 @@ export function DesignSystemsTab({
   const analytics = useAnalytics();
   const designSystemsPageViewFiredRef = useRef(false);
   useEffect(() => {
+    if (!isActive) return;
     if (loading) return;
     if (designSystemsPageViewFiredRef.current) return;
     designSystemsPageViewFiredRef.current = true;
@@ -173,7 +181,7 @@ export function DesignSystemsTab({
       entry_from: 'unknown',
       available_design_system_count: systems.length,
     });
-  }, [analytics.track, systems.length, loading]);
+  }, [analytics.track, systems.length, isActive, loading]);
   const searchTrackedRef = useRef(false);
   const categoryTrackedRef = useRef(false);
   const [filter, setFilter] = useState('');
@@ -199,6 +207,9 @@ export function DesignSystemsTab({
   const { context: workspaceContext } = useWorkspaceContext();
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const teamSharedStaleRef = useRef(false);
   const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
   // Gate on TEAM IDENTITY — the same predicate the daemon uses to accept a hub
   // share (workspaceContextHasTeamIdentity; see team-resource-share.ts) — NOT on
@@ -224,6 +235,7 @@ export function DesignSystemsTab({
     ids: new Set(),
     meta: new Map(),
   }));
+  const teamSharedRequestGenerationRef = useRef(0);
   // Never render a previous Workspace's Team index while the next scoped read
   // is still in flight. The cached response is partitioned by Workspace too,
   // but React state survives the context switch itself.
@@ -405,8 +417,9 @@ export function DesignSystemsTab({
   // the hub unconfigured) this returns an empty list, so the team collection is
   // simply empty and the share action is available but a no-op.
   const refreshTeamShared = useCallback(async (
-    options: { refreshSystems?: boolean; invalidate?: boolean } = {},
+    options: { refreshSystems?: boolean; invalidate?: boolean; fresh?: boolean } = {},
   ) => {
+    const requestGeneration = ++teamSharedRequestGenerationRef.current;
     const read = beginWorkspaceScopedRead(workspaceContextRef.current);
     if (!read.context || !workspaceContextHasTeamIdentity(read.context)) {
       setTeamSharedState({
@@ -432,12 +445,15 @@ export function DesignSystemsTab({
         if (!res.ok) throw new Error(`design-systems-team ${res.status}`);
         return (await res.json()) as { ids?: unknown; resources?: unknown };
       };
-      // A completed share/unshare invalidates the previous index answer. This
-      // component is the single mutation initiator, so evict exactly this key
-      // before re-entering the normal single-flight read.
-      if (options.invalidate) evictCoalescedGet(cacheKey);
+      // Lifecycle snapshots and every real mutation must supersede whatever
+      // was in flight. Two distinct mutations inside 250ms are not one burst:
+      // joining would let A's old body commit under B's request generation.
+      if (options.fresh || options.invalidate) evictCoalescedGet(cacheKey);
       const body = await coalescedGet(cacheKey, readTeamIndex);
-      if (!read.isStillCurrent(workspaceContextRef.current)) return;
+      if (
+        requestGeneration !== teamSharedRequestGenerationRef.current
+        || !read.isStillCurrent(workspaceContextRef.current)
+      ) return;
       if (Array.isArray(body.ids)) {
         const next = new Set(body.ids.filter((id): id is string => typeof id === 'string'));
         const meta = new Map<string, { canUnshare?: boolean }>();
@@ -466,24 +482,51 @@ export function DesignSystemsTab({
   }, [onSystemsRefresh, workspaceIdentity]);
 
   useEffect(() => {
+    if (!isActive) return;
+    if (hasTeamWorkspace) return;
     void refreshTeamShared();
-  }, [refreshTeamShared]);
+  }, [hasTeamWorkspace, isActive, refreshTeamShared]);
+
+  const handleTeamIndexStreamActive = useWorkspaceSnapshotActivation({
+    enabled: isActive && hasTeamWorkspace,
+    identity: workspaceIdentity,
+    refresh: () => { void refreshTeamShared({ fresh: true }); },
+  });
+
+  useWorkspaceInvalidation(
+    {
+      'team-resources-changed': (payload) => {
+        if (payload.resourceKind !== 'design_system') return;
+        if (!isActiveRef.current) {
+          teamSharedStaleRef.current = true;
+          return;
+        }
+        void refreshTeamShared({ invalidate: true });
+      },
+    },
+    {
+      workspaceContext: hasTeamWorkspace ? workspaceContext : null,
+      enabled: hasTeamWorkspace,
+      onActive: () => {
+        if (!isActiveRef.current) {
+          teamSharedStaleRef.current = true;
+          return;
+        }
+        teamSharedStaleRef.current = false;
+        handleTeamIndexStreamActive();
+      },
+    },
+  );
 
   useEffect(() => {
-    const refreshVisible = () => {
+    if (!isActive) return;
+    const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') void refreshTeamShared();
-    };
-    const interval = window.setInterval(refreshVisible, 10_000);
-    window.addEventListener('focus', refreshVisible);
-    window.addEventListener('pageshow', refreshVisible);
-    document.addEventListener('visibilitychange', refreshVisible);
+    }, 10_000);
     return () => {
       window.clearInterval(interval);
-      window.removeEventListener('focus', refreshVisible);
-      window.removeEventListener('pageshow', refreshVisible);
-      document.removeEventListener('visibilitychange', refreshVisible);
     };
-  }, [refreshTeamShared]);
+  }, [isActive, refreshTeamShared]);
 
   // Promote a personal design system into the team scope, OR — when it is
   // already team-shared — push the current local directory as an update that

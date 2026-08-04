@@ -53,6 +53,7 @@ export interface ResourceDeps {
   // Omit it to resolve a design system by id from anywhere.
   listAllDesignSystems: (options?: {
     workspaceId?: string | null;
+    workspaceMemberId?: string | null;
   }) => Promise<Array<DesignSystemSummary & { source?: string }>>;
   // The workspace a catalog read should be scoped to (#145). Data-plane reads
   // resolve it from this exact request's explicit Workspace/member identity,
@@ -72,6 +73,7 @@ export interface ResourceDeps {
   // compose the system prompt) from anywhere.
   listAllSkills: (options?: {
     workspaceId?: string | null;
+    workspaceMemberId?: string | null;
   }) => Promise<Array<SkillInfo & { source?: string }>>;
   // Mirrors listAllSkills but scans DESIGN_TEMPLATE_ROOTS so the Templates
   // surface only sees rendering-catalogue entries.
@@ -82,6 +84,7 @@ export interface ResourceDeps {
   // a stored project.skillId points at either root.
   listAllSkillLikeEntries: (options?: {
     workspaceId?: string | null;
+    workspaceMemberId?: string | null;
   }) => Promise<Array<SkillInfo & { source?: string }>>;
   mimeFor: (filePath: string) => string;
 }
@@ -172,7 +175,6 @@ export interface ServerContext {
   finalize: any;
   handoff: any;
   chat: any;
-  byokCredentials: any;
   messages: any;
   agents: any;
   critique: any;
@@ -193,6 +195,12 @@ export interface ServerContext {
   collabSync: {
     requestTeamShare(projectId: string, share?: string | ResourceHubPrincipal): Promise<{ version: number | null }>;
     requestTeamUnshare(projectId: string, share?: string | ResourceHubPrincipal): Promise<void>;
+    /**
+     * Pull and atomically register a catalog-only Team project before an
+     * exact-owner mutation needs local state. This preserves a Personal copy
+     * before unshare and gives a second-device rename a real row to update.
+     */
+    materializeTeamProject?(projectId: string, principal: ResourceHubPrincipal): Promise<void>;
     /**
      * Re-upsert the shared project's hub catalog entry after a metadata-only
      * change (rename). Without this a rename with no follow-up content

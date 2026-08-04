@@ -204,6 +204,123 @@ describe('Vela CLI team-project catalog adapter', () => {
     expect(calls).toEqual(['team-a', 'team-b']);
   });
 
+  it('drops the exact cached project list after a successful upsert', async () => {
+    const principal = {
+      memberId: 'member-a',
+      teamId: 'team-a',
+      role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+    let projectIds = ['project-before'];
+    let listCalls = 0;
+    const cached = createScopedVelaTeamProjectCatalogClientCache({
+      list: async () => {
+        listCalls += 1;
+        return projectIds.map((projectId) => ({
+          id: `row-${projectId}`,
+          workspaceId: principal.teamId,
+          projectId,
+          resourceId: `resource-${projectId}`,
+          ownerMemberId: principal.memberId,
+          displayName: projectId,
+          syncState: 'synced' as const,
+          lastSyncedVersionId: null,
+          createdAt: '2026-07-01T00:00:00.000Z',
+          updatedAt: '2026-07-01T00:00:00.000Z',
+          access: {
+            canView: true,
+            canComment: true,
+            canEdit: false,
+            frozen: false,
+          },
+        }));
+      },
+      upsert: async (input) => {
+        projectIds = [input.projectId];
+        return null;
+      },
+    });
+
+    await expect(cached.list(principal)).resolves.toMatchObject([
+      { projectId: 'project-before' },
+    ]);
+    await cached.upsert({
+      projectId: 'project-after',
+      resourceId: 'resource-project-after',
+    }, principal);
+    await expect(cached.list(principal)).resolves.toMatchObject([
+      { projectId: 'project-after' },
+    ]);
+    expect(listCalls).toBe(2);
+  });
+
+  it('drops every principal after an external catalog mutation', async () => {
+    const calls: string[] = [];
+    const cached = createScopedVelaTeamProjectCatalogClientCache({
+      list: async (principal) => {
+        calls.push(principal.teamId);
+        return [];
+      },
+      upsert: async () => null,
+    });
+    const principalA = {
+      memberId: 'member-a',
+      teamId: 'team-a',
+      role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+    const principalB = {
+      memberId: 'member-b',
+      teamId: 'team-b',
+      role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+
+    await cached.list(principalA);
+    await cached.list(principalB);
+    cached.invalidate();
+    await cached.list(principalA);
+    await cached.list(principalB);
+
+    expect(calls).toEqual(['team-a', 'team-b', 'team-a', 'team-b']);
+  });
+
+  it('drops every member cache in one exact Workspace without evicting another Workspace', async () => {
+    const calls: string[] = [];
+    const cached = createScopedVelaTeamProjectCatalogClientCache({
+      list: async (principal) => {
+        calls.push(`${principal.teamId}:${principal.memberId}`);
+        return [];
+      },
+      upsert: async () => null,
+    });
+    const principalA1 = {
+      memberId: 'member-a1', teamId: 'team-a', role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+    const principalA2 = {
+      memberId: 'member-a2', teamId: 'team-a', role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+    const principalB = {
+      memberId: 'member-b', teamId: 'team-b', role: 'member' as const,
+      lifecycleState: 'active' as const,
+    };
+
+    await cached.list(principalA1);
+    await cached.list(principalA2);
+    await cached.list(principalB);
+    cached.invalidateWorkspace('team-a');
+    await cached.list(principalA1);
+    await cached.list(principalA2);
+    await cached.list(principalB);
+
+    expect(calls).toEqual([
+      'team-a:member-a1', 'team-a:member-a2', 'team-b:member-b',
+      'team-a:member-a1', 'team-a:member-a2',
+    ]);
+  });
+
   it('rejects a rich catalog with rows outside the explicit workspace as incomplete', async () => {
     const client = createVelaCliTeamProjectCatalogClient({
       supportsTeamProjects: () => true,

@@ -57,6 +57,10 @@ const MAX_BACKOFF_MS = 30_000;
 // client + server connection. Short enough to reclaim idle connections, long
 // enough that a quick tab-switch does not thrash reconnects.
 const HIDDEN_GRACE_MS = 30_000;
+// Browsers commonly emit `visibilitychange` followed immediately by `focus`
+// for one foreground transition. Collapse only that same-transition pair;
+// reconnect/open signals bypass this window and always catch up.
+const AMBIENT_ACTIVE_DEDUPE_MS = 50;
 
 function isDocumentHidden(): boolean {
   return typeof document !== 'undefined' && document.visibilityState === 'hidden';
@@ -78,6 +82,7 @@ class EventStreamManager {
   private hiddenTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly attachedNames = new Set<string>();
   private visibilityBound = false;
+  private lastAmbientActiveAt = Number.NEGATIVE_INFINITY;
 
   constructor(url: string, Ctor: typeof EventSource) {
     this.url = url;
@@ -241,6 +246,9 @@ class EventStreamManager {
     if (!this.source) {
       this.ensureOpen();
     } else if (this.connected) {
+      const now = Date.now();
+      if (now - this.lastAmbientActiveAt < AMBIENT_ACTIVE_DEDUPE_MS) return;
+      this.lastAmbientActiveAt = now;
       for (const sub of Array.from(this.subscribers)) sub.onActive?.();
     }
   };

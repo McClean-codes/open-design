@@ -33,12 +33,15 @@ import {
   ensureWorkspaceProject,
   getConversation,
   getPreviewComment,
+  getProjectPreviewComment,
   getWorkspaceProject,
   getWorkspaceProjectByProjectId,
   insertConversation,
   insertProject,
   listPreviewComments,
+  listProjectPreviewComments,
   openDatabase,
+  repairTeamProjectCommentAnchorConversations,
   reorderPreviewComment,
   updatePreviewCommentAnchor,
   updatePreviewCommentStatus,
@@ -174,8 +177,10 @@ async function startServer(
     conversations: {
       getConversation,
       listPreviewComments,
+      listProjectPreviewComments,
       upsertPreviewComment,
       getPreviewComment,
+      getProjectPreviewComment,
       updatePreviewCommentStatus,
       updatePreviewCommentAnchor,
       deletePreviewComment,
@@ -206,6 +211,97 @@ async function startServer(
 }
 
 describe('project comments — workspace mutation gate', () => {
+  it('lets a Member comment through the repaired anchor of a historical zero-conversation mirror', async () => {
+    const baseUrl = await startServer({
+      resolveWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+    });
+    database!.prepare('DELETE FROM conversations WHERE project_id = ?').run(TEAM_MIRROR_PROJECT);
+    expect(getConversation(database!, 'conv-team-mirror')).toBeNull();
+
+    expect(repairTeamProjectCommentAnchorConversations(database!, 10)).toMatchObject({
+      created: 1,
+    });
+    const anchor = database!
+      .prepare('SELECT id FROM conversations WHERE project_id = ?')
+      .get(TEAM_MIRROR_PROJECT) as { id: string };
+    expect(anchor.id).toMatch(/^comment-anchor-/);
+
+    const response = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/${anchor.id}/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          target: COMMENT_TARGET,
+          note: 'Member comment through repaired anchor',
+        }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(listProjectPreviewComments(database!, TEAM_MIRROR_PROJECT)).toEqual([
+      expect.objectContaining({
+        conversationId: anchor.id,
+        authorMemberId: OTHER_MEMBER_ID,
+        note: 'Member comment through repaired anchor',
+      }),
+    ]);
+  });
+
+  it('includes a dirty relay pull in the first comments response', async () => {
+    let releasePull!: () => void;
+    const pullGate = new Promise<void>((resolve) => {
+      releasePull = resolve;
+    });
+    const onCommentsRead = vi.fn(async () => {
+      await pullGate;
+      upsertPreviewComment(
+        database!,
+        TEAM_MIRROR_PROJECT,
+        'conv-team-mirror',
+        {
+          id: 'remote-comment-after-dirty-read',
+          target: COMMENT_TARGET,
+          note: 'remote comment merged by the dirty pull',
+          authorMemberId: OWNER_MEMBER_ID,
+        },
+      );
+    });
+    const baseUrl = await startServer({
+      resolveReadWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+      onCommentsRead,
+    });
+    const commentsUrl =
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-mirror/comments`;
+
+    const responsePromise = fetch(commentsUrl, {
+      headers: workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+    });
+    await vi.waitFor(() => expect(onCommentsRead).toHaveBeenCalledTimes(1));
+    releasePull();
+
+    const response = await responsePromise;
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      comments: Array<{ id: string; note: string }>;
+    };
+    expect(payload.comments).toEqual([
+      expect.objectContaining({
+        id: 'remote-comment-after-dirty-read',
+        note: 'remote comment merged by the dirty pull',
+      }),
+    ]);
+  });
+
   it('leases directory authority only for GET while mutations stay fresh and revocation fails closed', async () => {
     let clock = 0;
     let directoryItems = [{
@@ -401,7 +497,6 @@ describe('project comments — workspace mutation gate', () => {
       // Models the stale daemon-global answer after another tab moved to B.
       resolveAuthorMemberId: async () => 'member-b',
       resolveWorkspaceContext: async () => ({ ok: true, context: projectContext }),
-      shouldSyncProjectComments: async () => true,
       onCommentCreated: (
         _comment: unknown,
         scope: WorkspaceCollabContext | null,
@@ -437,6 +532,115 @@ describe('project comments — workspace mutation gate', () => {
         workspaceMemberId: OTHER_MEMBER_ID,
       },
     ]);
+  });
+
+  it('persists and enqueues without waiting for a pending remote catalog read', async () => {
+    const projectContext = activeTeamContext();
+    const remoteCatalogGate = vi.fn(
+      () => new Promise<boolean>(() => {
+        // Deliberately never resolves: delivery authority belongs to the
+        // outbox worker, not the mutation response path.
+      }),
+    );
+    const enqueued: string[] = [];
+    const baseUrl = await startServer({
+      resolveWorkspaceContext: async () => ({ ok: true, context: projectContext }),
+      // Compatibility-shaped trap: the route must not call/await this remote
+      // catalog seam before placing the local mutation into the outbox.
+      shouldSyncProjectComments: remoteCatalogGate,
+      onCommentCreated: (comment: { id: string }) => enqueued.push(comment.id),
+    });
+
+    const response = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-mirror/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({ target: COMMENT_TARGET, note: 'queue immediately' }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { comment: { id: string } };
+    expect(enqueued).toEqual([payload.comment.id]);
+    expect(remoteCatalogGate).not.toHaveBeenCalled();
+    expect(listPreviewComments(database!, TEAM_MIRROR_PROJECT, 'conv-team-mirror'))
+      .toEqual([expect.objectContaining({ id: payload.comment.id })]);
+  });
+
+  it('rolls back create, update, and delete when durable enqueue fails', async () => {
+    const projectContext = activeTeamContext(OWNER_MEMBER_ID, 'owner');
+    const baseUrl = await startServer({
+      resolveWorkspaceContext: async () => ({ ok: true, context: projectContext }),
+      onCommentCreated: () => false,
+      onCommentUpdated: () => false,
+      onCommentDeleted: () => false,
+    });
+    const commentsUrl =
+      `${baseUrl}/api/projects/${TEAM_PROJECT}/conversations/conv-team/comments`;
+    const headers = {
+      'Content-Type': 'application/json',
+      ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+    };
+
+    const create = await fetch(commentsUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ target: COMMENT_TARGET, note: 'must roll back' }),
+    });
+    expect(create.status).toBe(400);
+    expect(listPreviewComments(database!, TEAM_PROJECT, 'conv-team')).toEqual([]);
+
+    const updateTarget = upsertPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      {
+        id: 'comment-update-rollback',
+        target: COMMENT_TARGET,
+        note: 'keep open',
+        authorMemberId: OWNER_MEMBER_ID,
+      },
+    );
+    const removeTarget = upsertPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      {
+        id: 'comment-delete-rollback',
+        target: COMMENT_TARGET,
+        note: 'keep row',
+        authorMemberId: OWNER_MEMBER_ID,
+      },
+    );
+
+    const update = await fetch(`${commentsUrl}/${updateTarget!.id}`, {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ status: 'applying' }),
+    });
+    expect(update.status).toBe(400);
+    expect(getPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      updateTarget!.id,
+    )?.status).toBe('open');
+
+    const remove = await fetch(`${commentsUrl}/${removeTarget!.id}`, {
+      method: 'DELETE',
+      headers,
+    });
+    expect(remove.status).toBe(400);
+    expect(getPreviewComment(
+      database!,
+      TEAM_PROJECT,
+      'conv-team',
+      removeTarget!.id,
+    )).not.toBeNull();
   });
 
   it('fails closed before saving or relaying when project scope authority is unavailable', async () => {
@@ -674,6 +878,206 @@ describe('project comments — workspace mutation gate', () => {
       },
     );
     expect(resp.status).toBe(200);
+  });
+
+  it('lists Team comments across local conversation anchors while keeping personal comments isolated', async () => {
+    const baseUrl = await startServer({
+      resolveReadWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+      resolveWorkspaceContext: async () => ({
+        ok: true,
+        context: activeTeamContext(OTHER_MEMBER_ID, 'member'),
+      }),
+    });
+    const db = database!;
+    const now = Date.now();
+    insertConversation(db, {
+      id: 'conv-team-active',
+      projectId: TEAM_MIRROR_PROJECT,
+      title: 'Current local chat',
+      createdAt: now,
+      updatedAt: now,
+    });
+    insertConversation(db, {
+      id: 'conv-personal-active',
+      projectId: PERSONAL_PROJECT,
+      title: 'Current personal chat',
+      createdAt: now,
+      updatedAt: now,
+    });
+    const teamComment = upsertPreviewComment(db, TEAM_MIRROR_PROJECT, 'conv-team-mirror', {
+      target: COMMENT_TARGET,
+      note: 'remote comment stored under another local anchor',
+    })!;
+    const otherPersonalComment = upsertPreviewComment(db, PERSONAL_PROJECT, 'conv-personal', {
+      target: COMMENT_TARGET,
+      note: 'another personal conversation',
+    })!;
+    upsertPreviewComment(db, PERSONAL_PROJECT, 'conv-personal-active', {
+      target: { ...COMMENT_TARGET, elementId: 'personal-active' },
+      note: 'current personal conversation',
+    });
+
+    const teamResponse = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      { headers: workspaceHeaders(OTHER_MEMBER_ID, 'member') },
+    );
+    expect(teamResponse.status).toBe(200);
+    const teamPayload = (await teamResponse.json()) as {
+      comments: Array<{ conversationId: string; note: string }>;
+    };
+    expect(teamPayload.comments).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-team-mirror',
+        note: 'remote comment stored under another local anchor',
+      }),
+    ]);
+
+    const teamEdit = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          id: teamComment.id,
+          target: COMMENT_TARGET,
+          note: 'edited from the active local conversation',
+        }),
+      },
+    );
+    expect(teamEdit.status).toBe(200);
+    expect((await teamEdit.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        note: 'edited from the active local conversation',
+      }),
+    });
+
+    const teamAnchor = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}/anchor`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          anchorState: 'reanchored',
+          anchoredVersion: 3,
+          lastGoodPosition: { x: 11, y: 22, width: 33, height: 44 },
+        }),
+      },
+    );
+    expect(teamAnchor.status).toBe(200);
+    expect((await teamAnchor.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        anchorState: 'reanchored',
+        anchoredVersion: 3,
+        lastGoodPosition: { x: 11, y: 22, width: 33, height: 44 },
+      }),
+    });
+
+    const teamReorder = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}/reorder`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({ sortKey: 77 }),
+      },
+    );
+    expect(teamReorder.status).toBe(200);
+    expect((await teamReorder.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        sortKey: 77,
+      }),
+    });
+
+    const teamStatus = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({ status: 'resolved' }),
+      },
+    );
+    expect(teamStatus.status).toBe(200);
+    expect((await teamStatus.json()) as unknown).toEqual({
+      comment: expect.objectContaining({
+        id: teamComment.id,
+        conversationId: 'conv-team-mirror',
+        status: 'resolved',
+      }),
+    });
+
+    const teamAfterUpdate = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      { headers: workspaceHeaders(OTHER_MEMBER_ID, 'member') },
+    );
+    expect(teamAfterUpdate.status).toBe(200);
+    expect((await teamAfterUpdate.json()) as { comments: unknown[] }).toEqual({
+      comments: [expect.objectContaining({ id: teamComment.id })],
+    });
+
+    const teamDelete = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments/${teamComment.id}`,
+      {
+        method: 'DELETE',
+        headers: workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+      },
+    );
+    expect(teamDelete.status).toBe(200);
+    expect(await teamDelete.json()).toEqual({ ok: true });
+
+    const teamAfterDelete = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/conv-team-active/comments`,
+      { headers: workspaceHeaders(OTHER_MEMBER_ID, 'member') },
+    );
+    expect(teamAfterDelete.status).toBe(200);
+    expect(await teamAfterDelete.json()).toEqual({ comments: [] });
+
+    const personalResponse = await fetch(
+      `${baseUrl}/api/projects/${PERSONAL_PROJECT}/conversations/conv-personal-active/comments`,
+      { headers: workspaceHeaders(OWNER_MEMBER_ID, 'owner') },
+    );
+    expect(personalResponse.status).toBe(200);
+    const personalPayload = (await personalResponse.json()) as {
+      comments: Array<{ conversationId: string; note: string }>;
+    };
+    expect(personalPayload.comments).toEqual([
+      expect.objectContaining({
+        conversationId: 'conv-personal-active',
+        note: 'current personal conversation',
+      }),
+    ]);
+
+    const personalStatus = await fetch(
+      `${baseUrl}/api/projects/${PERSONAL_PROJECT}/conversations/conv-personal-active/comments/${otherPersonalComment.id}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({ status: 'resolved' }),
+      },
+    );
+    expect(personalStatus.status).toBe(404);
   });
 
   // Comment-capability follow-through: the same borrowed gate also fronts

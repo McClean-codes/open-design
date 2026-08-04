@@ -4,6 +4,12 @@ import { openAllProjectFiles } from '@/playwright/workspace';
 import { T } from '@/timeouts';
 import type { Locator, Page, Request } from '@playwright/test';
 import { routeAgents, routeSuccessfulRuns } from '../lib/playwright/mock-factory.js';
+import {
+  AMR_PERSONAL_WORKSPACE_CONTEXT,
+  AMR_PERSONAL_WORKSPACE_HEADERS,
+  mockAmrPersonalWorkspace,
+  settingsSurface,
+} from '../lib/playwright/amr.js';
 
 // The `/projects` view in `EntryShell` renders a `CenteredLoader` until
 // `projectsLoading || skillsLoading || designSystemsLoading` all clear
@@ -28,33 +34,6 @@ function projectDesignSystemTrigger(page: Page): Locator {
     .getByTestId('chat-composer')
     .getByTestId('composer-design-system-trigger');
 }
-
-async function routeByokProfile(
-  page: Page,
-  config: Record<string, unknown>,
-): Promise<void> {
-  await page.route('**/api/byok/profiles', async (route) => {
-    await route.fulfill({
-      json: {
-        available: true,
-        backend: 'test',
-        profiles: [{
-          id: config.byokProfileId,
-          label: 'OpenAI',
-          protocol: config.apiProtocol,
-          baseUrl: config.baseUrl,
-          model: config.model,
-          requiresApiKey: true,
-          configured: true,
-          keyTail: config.byokCredentialTail,
-          createdAt: 1,
-          updatedAt: 1,
-        }],
-      },
-    });
-  });
-}
-
 const AGENTS = [
   {
     id: 'codex',
@@ -1703,9 +1682,12 @@ test('[P0] project detail composer model and Plan mode switches carry into the n
   test.setTimeout(60_000);
   const runRequestBodies: Array<Record<string, unknown>> = [];
   await routeSuccessfulRuns(page, { bodies: runRequestBodies, runId: 'agent-model-run' });
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Composer agent switch run context');
+  await createProject(page, 'Composer agent switch run context', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
   await pickComposerModel(page, /^GPT 5\.5$/i);
@@ -1826,19 +1808,16 @@ test('[P1] project detail composer keeps the selected mode across consecutive tu
   );
 });
 
-test('[P0] @critical project detail composer reports the BYOK model read-only', async ({ page }) => {
+test('[P0] @critical project detail composer opens Execution settings where BYOK model choice persists', async ({ page }) => {
   test.setTimeout(60_000);
-  const config = {
-    mode: 'api',
-    apiKey: '',
+  let config = {
+    mode: 'daemon',
+    apiKey: 'sk-openai-test',
     apiProtocol: 'openai',
     apiVersion: '',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-2024-05-13',
     apiProviderBaseUrl: 'https://api.openai.com/v1',
-    byokProfileId: 'byok-project-model-switch',
-    byokCredentialConfigured: true,
-    byokCredentialTail: 'test',
     agentId: 'codex',
     skillId: null,
     designSystemId: null,
@@ -1859,10 +1838,11 @@ test('[P0] @critical project detail composer reports the BYOK model read-only', 
   await page.route('**/api/app-config', async (route) => {
     if (route.request().method() === 'PUT') {
       const body = route.request().postDataJSON() as Record<string, unknown>;
+      config = { ...config, ...body };
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify({ config: body }),
+        body: JSON.stringify({ config }),
       });
       return;
     }
@@ -1872,37 +1852,50 @@ test('[P0] @critical project detail composer reports the BYOK model read-only', 
       body: JSON.stringify({ config }),
     });
   });
-  await routeByokProfile(page, config);
 
   await page.goto('/');
   await createProject(page, 'Composer BYOK model switch');
   await expectWorkspaceReady(page);
 
   const { menu } = await openComposerAgentMenu(page);
+  await menu.getByTestId('avatar-open-execution-settings').click();
 
-  // BYOK is provider configuration, not a per-message choice: the composer
-  // popover reports the active model read-only and offers no picker. Changing
-  // it lives in Settings → Execution.
-  const readout = menu.locator('.avatar-model-section .avatar-static-value').first();
-  await expect(readout).toHaveText('gpt-4o-2024-05-13');
-  await expect(menu.locator('.avatar-model-section [role="combobox"]')).toHaveCount(0);
-  await expect(menu.getByTestId('avatar-model-list')).toHaveCount(0);
-  await expect(menu.getByRole('button', { name: /API · BYOK|Use API/i })).toHaveCount(0);
+  const settings = settingsSurface(page);
+  await expect(settings).toBeVisible();
+  await expect(settings.getByTestId('settings-nav-execution')).toBeVisible();
+  await settings.getByRole('tab', { name: 'API providers' }).click();
+  await settings.getByRole('tab', { name: 'OpenAI', exact: true }).click();
+  const modelSelect = settings.getByRole('combobox', { name: 'Model', exact: true });
+  await expect(modelSelect).toContainText('Custom (type below)…');
+  await expect(settings.getByRole('textbox', { name: 'Custom model id', exact: true }))
+    .toHaveValue('gpt-4o-2024-05-13');
+  await modelSelect.click();
+  const modelPopover = page.getByTestId('settings-byok-model-popover');
+  await expect(modelPopover.getByRole('option', { name: /^gpt-4o-mini$/i })).toBeVisible();
+  await expect(modelPopover.getByRole('option', { name: /deepseek/i })).toHaveCount(0);
+  await expect(modelPopover.getByRole('option', { name: /MiniMax/i })).toHaveCount(0);
+  await modelPopover.getByRole('option', { name: /^gpt-4o-mini$/i }).click();
+
+  await expect(modelSelect).toContainText('gpt-4o-mini');
+  await expect.poll(async () => page.evaluate((key) => {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : null;
+  }, STORAGE_KEY)).toMatchObject({
+    mode: 'api',
+    model: 'gpt-4o-mini',
+  });
 });
 
 test('[P0] @critical project detail composer keeps Local CLI and BYOK model choices isolated', async ({ page }) => {
   test.setTimeout(60_000);
   const config = {
     mode: 'daemon',
-    apiKey: '',
+    apiKey: 'test-byok-key',
     apiProtocol: 'openai',
     apiVersion: '',
     baseUrl: 'https://api.openai.com/v1',
     model: 'gpt-4o-2024-05-13',
     apiProviderBaseUrl: 'https://api.openai.com/v1',
-    byokProfileId: 'byok-project-model-isolation',
-    byokCredentialConfigured: true,
-    byokCredentialTail: 'test',
     agentId: 'codex',
     skillId: null,
     designSystemId: null,
@@ -1936,7 +1929,6 @@ test('[P0] @critical project detail composer keeps Local CLI and BYOK model choi
       body: JSON.stringify({ config }),
     });
   });
-  await routeByokProfile(page, config);
 
   await page.goto('/');
   await createProject(page, 'Composer model mode isolation');
@@ -2838,12 +2830,17 @@ test('[P0] project detail share menu copies the current share link for uploaded 
       },
     });
   });
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Share link copy flow');
+  await createProject(page, 'Share link copy flow', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
-  uploadedName = await uploadTinyHtml(page, 'share-link-copy.html', '<!doctype html><html><body><h1>Share link copy</h1></body></html>');
+  uploadedName = await uploadTinyHtml(page, 'share-link-copy.html', '<!doctype html><html><body><h1>Share link copy</h1></body></html>', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
   await openShareExportTab(page);
@@ -2891,11 +2888,22 @@ test('[P0] project detail share menu opens the current share page for uploaded h
     });
   });
 
+  // This scenario creates through Playwright's APIRequestContext rather than
+  // the browser UI, so the Web cannot inherit its normal same-session creation
+  // witness. Give the page an exact writable Personal/owner identity and bind
+  // the project-scope bootstrap to that same identity. Do not make the share
+  // control writable by weakening the shared-project authority gate.
+  await mockWritablePersonalProjectScope(page);
+
   await page.goto('/');
-  await createProject(page, 'Open share page flow');
+  await createProject(page, 'Open share page flow', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
-  uploadedName = await uploadTinyHtml(page, 'share-page-open.html', '<!doctype html><html><body><h1>Open share page</h1></body></html>');
+  uploadedName = await uploadTinyHtml(page, 'share-page-open.html', '<!doctype html><html><body><h1>Open share page</h1></body></html>', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
   await openShareExportTab(page);
@@ -3535,8 +3543,9 @@ test('[P2] change pet opens pet settings and updates the custom companion draft'
 async function createProject(
   page: Page,
   projectName: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
 ) {
-  const response = await retryProjectCreate(page, projectName);
+  const response = await retryProjectCreate(page, projectName, options);
   const body = (await response.json()) as {
     project: { id: string };
     conversationId: string;
@@ -3547,12 +3556,14 @@ async function createProject(
 async function retryProjectCreate(
   page: Page,
   projectName: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
 ) {
   let lastError = '';
   for (let attempt = 1; attempt <= 3; attempt += 1) {
     try {
       const response = await page.request.post('/api/projects', {
         timeout: 15_000,
+        ...(options.headers ? { headers: { ...options.headers } } : {}),
         data: {
           id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           name: projectName,
@@ -4021,6 +4032,7 @@ async function uploadTinyHtml(
   page: Page,
   name: string,
   content: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
 ): Promise<string> {
   await page.getByTestId('design-files-upload-input').setInputFiles({
     name,
@@ -4031,7 +4043,7 @@ async function uploadTinyHtml(
   let uploadedName = '';
   await expect
     .poll(async () => {
-      const files = await listProjectFiles(page, projectId);
+      const files = await listProjectFiles(page, projectId, options);
       uploadedName = files.find((file) => file.name.endsWith(name))?.name ?? '';
       return uploadedName;
     })
@@ -4151,11 +4163,36 @@ async function listProjectsFromApi(page: Page) {
   return body.projects;
 }
 
-async function listProjectFiles(page: Page, projectId: string) {
-  const response = await page.request.get(`/api/projects/${projectId}/files`);
+async function listProjectFiles(
+  page: Page,
+  projectId: string,
+  options: { headers?: Readonly<Record<string, string>> } = {},
+) {
+  const response = await page.request.get(
+    `/api/projects/${projectId}/files`,
+    options.headers ? { headers: { ...options.headers } } : undefined,
+  );
   expect(response.ok()).toBeTruthy();
   const body = (await response.json()) as { files: Array<{ name: string }> };
   return body.files;
+}
+
+async function mockWritablePersonalProjectScope(page: Page) {
+  await mockAmrPersonalWorkspace(page);
+  await page.route('**/api/projects/*/workspace-scope', async (route) => {
+    const projectId = getProjectIdFromApiPath(route.request().url());
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'personal',
+          projectId,
+          workspaceId: AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: AMR_PERSONAL_WORKSPACE_CONTEXT,
+        },
+      },
+    });
+  });
 }
 
 function isCreateProjectRequest(request: Request): boolean {

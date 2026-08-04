@@ -16,6 +16,7 @@ interface CapturedRequest {
   method: string;
   url: string;
   body: string;
+  headers: http.IncomingHttpHeaders;
 }
 
 describe('od skill install CLI', () => {
@@ -30,7 +31,12 @@ describe('od skill install CLI', () => {
         body += chunk;
       });
       req.on('end', () => {
-        requests.push({ method: req.method ?? '', url: req.url ?? '', body });
+        requests.push({
+          method: req.method ?? '',
+          url: req.url ?? '',
+          body,
+          headers: req.headers,
+        });
         res.setHeader('content-type', 'application/json');
         res.end(JSON.stringify({
           skill: {
@@ -90,11 +96,12 @@ describe('od skill install CLI', () => {
     ]);
 
     expect(result.code).toBe(0);
-    expect(requests).toEqual([{
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
       method: 'POST',
       url: '/api/skills/install',
       body: JSON.stringify({ source: 'github:owner/skill-repo' }),
-    }]);
+    });
     expect(JSON.parse(result.stdout)).toMatchObject({
       skill: { id: 'remote-skill' },
     });
@@ -111,10 +118,54 @@ describe('od skill install CLI', () => {
     ]);
 
     expect(result.code).toBe(0);
-    expect(requests).toEqual([{
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
       method: 'POST',
       url: '/api/skills/install',
       body: JSON.stringify({ source: 'https://github.com/leonxlnx/taste-skill' }),
-    }]);
+    });
+  });
+
+  it.each([
+    ['install', ['install', 'github:owner/skill-repo']],
+    ['uninstall', ['uninstall', 'remote-skill']],
+  ])('sends the exact workspace pair for skill %s', async (_label, command) => {
+    const result = await runCli([
+      'skill',
+      ...command,
+      '--workspace',
+      'workspace-a',
+      '--workspace-member',
+      'member-a',
+      '--daemon-url',
+      baseUrl,
+      '--json',
+    ]);
+
+    expect(result.code).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.headers).toMatchObject({
+      'x-od-workspace-id': 'workspace-a',
+      'x-od-workspace-member-id': 'member-a',
+    });
+  });
+
+  it.each([
+    ['install', ['install', 'github:owner/skill-repo']],
+    ['uninstall', ['uninstall', 'remote-skill']],
+  ])('rejects an incomplete workspace pair before skill %s', async (_label, command) => {
+    const result = await runCli([
+      'skill',
+      ...command,
+      '--workspace',
+      'workspace-a',
+      '--daemon-url',
+      baseUrl,
+      '--json',
+    ]);
+
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('--workspace-member');
+    expect(requests).toHaveLength(0);
   });
 });

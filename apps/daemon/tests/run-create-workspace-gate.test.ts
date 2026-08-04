@@ -1,8 +1,10 @@
 // Run creation is a billing-address boundary, not a local project-file
 // mutation gate. The persisted `workspace_projects` row supplies the exact
-// Team or Personal Workspace id to Vela/AMR. Headerless local callers are
-// valid; an explicitly supplied pair is checked only for a Workspace mismatch.
-// Membership, balance, and subscription eligibility remain backend decisions.
+// Team or Personal Workspace id to Vela/AMR. Headerless local callers remain
+// valid for Personal-bound, unbound, and scratch projects; a shared Team
+// project requires the explicit project-owner identity because starting a run
+// mutates its files and conversation state. Membership, balance, and
+// subscription eligibility remain backend decisions.
 
 import http from 'node:http';
 import express from 'express';
@@ -16,17 +18,25 @@ import {
   ensureWorkspaceProject,
   getWorkspaceProject,
   getWorkspaceProjectByProjectId,
+  getProject,
   insertProject,
   openDatabase,
 } from '../src/db.js';
+import {
+  createSnapshot,
+  linkSnapshotToProject,
+} from '../src/plugins/snapshots.js';
 import { createAuthorizeProjectRequest } from '../src/collab/project-request-authority.js';
+import { resolveOptionalWorkspaceRequestAuthority } from '../src/collab/workspace-resource-mutation.js';
 import { createEnforceWorkspaceProjectMutation } from '../src/routes/project/index.js';
 import { workspaceContextFromDirectoryItem } from '../src/collab/vela-workspace-context.js';
 import { registerRunRoutes } from '../src/routes/runs.js';
 import { connectorService } from '../src/connectors/service.js';
+import { upsertInstalledPlugin } from '../src/plugins/registry.js';
 
 let server: http.Server | null = null;
 let tempDir: string | null = null;
+let createdRunCount = 0;
 
 afterEach(async () => {
   if (server) {
@@ -57,14 +67,43 @@ function workspaceHeaders(memberId: string, role: 'owner' | 'admin' | 'member') 
   };
 }
 
+function seedPluginSnapshot(projectId: string) {
+  const db = openDatabase(tempDir!);
+  const snapshot = createSnapshot(db, {
+    projectId,
+    pluginId: 'scope-test-plugin',
+    pluginVersion: '1.0.0',
+    manifestSourceDigest: 'scope-test-digest',
+    taskKind: 'new-generation',
+    inputs: {},
+    resolvedContext: { items: [] },
+    capabilitiesGranted: [],
+    capabilitiesRequired: [],
+    assetsStaged: [],
+    connectorsRequired: [],
+    connectorsResolved: [],
+    mcpServers: [],
+  });
+  linkSnapshotToProject(db, snapshot.snapshotId, projectId);
+  return snapshot;
+}
+
+function snapshotProjectId(snapshotId: string): string | null {
+  const row = openDatabase(tempDir!)
+    .prepare('SELECT project_id AS projectId FROM applied_plugin_snapshots WHERE id = ?')
+    .get(snapshotId) as { projectId?: string | null } | undefined;
+  return typeof row?.projectId === 'string' ? row.projectId : null;
+}
+
 // A minimal in-memory ChatRunService stub. It deliberately does not spawn a
 // process, but it does preserve enough run state to exercise the complete
 // create -> status/events -> cancel HTTP lifecycle.
 function createRunsServiceStub() {
   const runs = new Map<string, any>();
   let seq = 0;
-  return {
+  const service = {
     create(meta: any) {
+      createdRunCount += 1;
       const run = {
         id: `run-${++seq}`,
         projectId: typeof meta.projectId === 'string' ? meta.projectId : null,
@@ -84,6 +123,9 @@ function createRunsServiceStub() {
       };
       runs.set(run.id, run);
       return run;
+    },
+    createOrReuse(meta: any) {
+      return { kind: 'created' as const, run: service.create(meta) };
     },
     get: (id: string) => runs.get(id) ?? null,
     list: (filters: { projectId?: unknown } = {}) =>
@@ -107,6 +149,7 @@ function createRunsServiceStub() {
     },
     isTerminal: (status: string) => status === 'succeeded' || status === 'failed' || status === 'canceled',
   };
+  return service;
 }
 
 async function startServer(opts?: {
@@ -127,13 +170,45 @@ async function startServer(opts?: {
   ) => Promise<boolean>;
   isAmrSignedIn?: () => boolean | Promise<boolean>;
   verifyWorkspaceRequestAuthority?: (req: any) => Promise<any>;
+  authorizePluginRequest?: (req: any, res: any, pluginId: string) => Promise<boolean>;
+  authorizePluginWithWorkspaceAuthority?: boolean;
+  seedImplicitScenarioPlugin?: boolean;
   teamProjectResourceState?: 'active' | 'deleted';
+  loadPluginRegistryView?: () => Promise<any>;
 }) {
+  createdRunCount = 0;
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'od-run-ws-gate-'));
   const db = openDatabase(tempDir);
   const now = Date.now();
   for (const id of [TEAM_PROJECT, PERSONAL_PROJECT, UNBOUND_PROJECT]) {
-    insertProject(db, { id, name: id, createdAt: now, updatedAt: now });
+    insertProject(db, {
+      id,
+      name: id,
+      createdAt: now,
+      updatedAt: now,
+      ...(id === PERSONAL_PROJECT && opts?.seedImplicitScenarioPlugin
+        ? { metadata: { kind: 'prototype' } }
+        : {}),
+    });
+  }
+  if (opts?.seedImplicitScenarioPlugin) {
+    upsertInstalledPlugin(db, {
+      id: 'example-web-prototype',
+      title: 'Bundled prototype scenario',
+      version: '1.0.0',
+      sourceKind: 'bundled',
+      source: '/bundled/example-web-prototype',
+      trust: 'bundled',
+      capabilitiesGranted: [],
+      manifest: {
+        name: 'example-web-prototype',
+        title: 'Bundled prototype scenario',
+        version: '1.0.0',
+      } as any,
+      fsPath: '/bundled/example-web-prototype',
+      installedAt: now,
+      updatedAt: now,
+    });
   }
   ensureWorkspaceProject(db, {
     projectId: TEAM_PROJECT,
@@ -198,13 +273,34 @@ async function startServer(opts?: {
       getAgentDef: () => null,
     },
     chat: { startChatRun: async () => undefined },
+    byokCredentials: { has: async (profileId: string) => profileId === 'test-profile' },
     lifecycle: { isDaemonShuttingDown: () => false },
     plugins: {
       connectorService,
       detectSkillPluginCandidateOnRunSuccess: () => {},
       firePipelineForRun: () => {},
-      loadPluginRegistryView: async () => ({} as any),
+      loadPluginRegistryView: opts?.loadPluginRegistryView ?? (async () => ({} as any)),
       renderPluginBriefTemplate: (template: string) => template,
+      authorizePluginRequest: opts?.authorizePluginRequest ?? (
+        opts?.authorizePluginWithWorkspaceAuthority
+          ? async (req: any, res: any) => {
+              const authority = await resolveOptionalWorkspaceRequestAuthority(
+                req,
+                verifyWorkspaceRequestAuthority,
+              );
+              if (!authority.ok) {
+                sendApiError(
+                  res,
+                  authority.status,
+                  authority.code,
+                  authority.message,
+                );
+                return false;
+              }
+              return true;
+            }
+          : undefined
+      ),
     },
     telemetry: {
       reportRunCompletionTelemetryFallback: () => {},
@@ -278,6 +374,306 @@ async function startServer(opts?: {
 }
 
 describe('POST /api/runs — workspace mutation gate', () => {
+  it.each(['/api/runs', '/api/chat'])(
+    'reuses one fresh exact Workspace authority witness for project and plugin gates through %s',
+    async (route) => {
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: OWNER_MEMBER_ID,
+          role: 'owner',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+        seedImplicitScenarioPlugin: true,
+      });
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'authorize once',
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['/api/runs', '/api/chat'])(
+    'still performs one fresh project mutation check when no plugin is requested through %s',
+    async (route) => {
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: OWNER_MEMBER_ID,
+          role: 'owner',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+      });
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          message: 'project-only authority',
+        }),
+      });
+
+      expect(response.status).toBe(202);
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each(['/api/runs', '/api/chat'])(
+    'fails closed on a rejected authority witness before plugin resolution through %s',
+    async (route) => {
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: false,
+        status: 503 as const,
+        code: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
+        message: 'workspace membership authority is temporarily unavailable',
+        retryable: true as const,
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+        seedImplicitScenarioPlugin: true,
+      });
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'must fail closed',
+        }),
+      });
+
+      expect(response.status).toBe(503);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'WORKSPACE_AUTHORITY_UNAVAILABLE' },
+      });
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
+      expect(createdRunCount).toBe(0);
+    },
+  );
+
+  it.each(['/api/runs', '/api/chat'])(
+    'does not reuse a prior request witness after Workspace membership changes through %s',
+    async (route) => {
+      let memberStatus: 'active' | 'removed' = 'active';
+      const verifyWorkspaceRequestAuthority = vi.fn(async () => ({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: OWNER_MEMBER_ID,
+          role: 'owner',
+          memberStatus,
+          lifecycleState: 'active',
+        }),
+      }));
+      const baseUrl = await startServer({
+        verifyWorkspaceRequestAuthority,
+        authorizePluginWithWorkspaceAuthority: true,
+        seedImplicitScenarioPlugin: true,
+      });
+      const create = () => fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'request-scoped membership',
+        }),
+      });
+
+      expect((await create()).status).toBe(202);
+      memberStatus = 'removed';
+      const removedResponse = await create();
+      expect(removedResponse.status).toBe(403);
+      await expect(removedResponse.json()).resolves.toMatchObject({
+        error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+      });
+      expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not share a fresh authority witness between concurrent run requests', async () => {
+    const pending: Array<{
+      memberId: string;
+      resolve: (value: any) => void;
+    }> = [];
+    const verifyWorkspaceRequestAuthority = vi.fn((req: any) => {
+      const memberId = String(req.get('x-od-workspace-member-id'));
+      if (pending.length >= 2) {
+        return Promise.resolve({
+          ok: true,
+          context: workspaceContextFromDirectoryItem({
+            workspaceId: WORKSPACE_ID,
+            workspaceName: 'Team',
+            workspaceType: 'team',
+            workspaceMemberId: memberId,
+            role: memberId === OWNER_MEMBER_ID ? 'owner' : 'member',
+            memberStatus: 'active',
+            lifecycleState: 'active',
+          }),
+        });
+      }
+      return new Promise((resolve) => pending.push({ memberId, resolve }));
+    });
+    const baseUrl = await startServer({
+      verifyWorkspaceRequestAuthority,
+      authorizePluginWithWorkspaceAuthority: true,
+      seedImplicitScenarioPlugin: true,
+    });
+    const create = (memberId: string, role: 'owner' | 'member') =>
+      fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(memberId, role),
+        },
+        body: JSON.stringify({
+          projectId: TEAM_PROJECT,
+          agentId: 'claude',
+          pluginId: 'example-web-prototype',
+          message: 'concurrent authority',
+        }),
+      });
+
+    const ownerRequest = create(OWNER_MEMBER_ID, 'owner');
+    const memberRequest = create('member-concurrent-run', 'member');
+    await vi.waitFor(() => expect(pending).toHaveLength(2));
+    for (const entry of pending) {
+      entry.resolve({
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Team',
+          workspaceType: 'team',
+          workspaceMemberId: entry.memberId,
+          role: entry.memberId === OWNER_MEMBER_ID ? 'owner' : 'member',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      });
+    }
+
+    const [ownerResponse, memberResponse] = await Promise.all([
+      ownerRequest,
+      memberRequest,
+    ]);
+    expect(ownerResponse.status).toBe(202);
+    expect(memberResponse.status).toBe(403);
+    expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(['/api/runs', '/api/chat'])(
+    'does not let an explicit plugin id bypass the request-scoped catalog through %s',
+    async (route) => {
+      const authorizePluginRequest = vi.fn(async (_req, res) => {
+        sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+        return false;
+      });
+      const baseUrl = await startServer({ authorizePluginRequest });
+      const resp = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: PERSONAL_PROJECT,
+          pluginId: 'private-plugin-owned-by-another-member',
+          agentId: 'claude',
+          message: 'must fail before global snapshot resolution',
+        }),
+      });
+
+      expect(resp.status).toBe(404);
+      await expect(resp.json()).resolves.toMatchObject({
+        error: { code: 'PLUGIN_NOT_FOUND' },
+      });
+      expect(authorizePluginRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'private-plugin-owned-by-another-member',
+      );
+    },
+  );
+
+  it(
+    'authorizes an implicit project-kind plugin before snapshot resolution through /api/runs',
+    async () => {
+      const authorizePluginRequest = vi.fn(async (_req, res) => {
+        sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+        return false;
+      });
+      const baseUrl = await startServer({
+        authorizePluginRequest,
+        seedImplicitScenarioPlugin: true,
+      });
+      const resp = await fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+        },
+        body: JSON.stringify({
+          projectId: PERSONAL_PROJECT,
+          agentId: 'claude',
+          message: 'fallback must use scoped plugin lookup',
+        }),
+      });
+
+      expect(resp.status).toBe(404);
+      expect(authorizePluginRequest).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.anything(),
+        'example-web-prototype',
+      );
+    },
+  );
+
   it('allows a headerless local run against a personal bound project so billing uses the persisted binding', async () => {
     const baseUrl = await startServer();
     const resp = await fetch(`${baseUrl}/api/runs`, {
@@ -440,6 +836,129 @@ describe('POST /api/runs — workspace mutation gate', () => {
     expect(typeof payload.runId).toBe('string');
   });
 
+  it('verifies AMR adoption before any plugin resolution side effects', async () => {
+    const loadPluginRegistryView = vi.fn(async () => ({}));
+    const baseUrl = await startServer({
+      isAmrSignedIn: () => true,
+      loadPluginRegistryView,
+      verifyWorkspaceRequestAuthority: async () => ({
+        ok: false,
+        status: 503,
+        code: 'WORKSPACE_DIRECTORY_UNAVAILABLE',
+        message: 'workspace directory temporarily unavailable',
+      }),
+    });
+    const db = openDatabase(tempDir!);
+    const beforeSnapshotCount = (db.prepare(
+      'SELECT COUNT(*) AS count FROM applied_plugin_snapshots',
+    ).get() as { count: number }).count;
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: UNBOUND_PROJECT,
+        agentId: 'amr',
+        pluginId: 'must-not-resolve-before-adoption',
+        message: 'must verify the historical project first',
+      }),
+    });
+
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'WORKSPACE_DIRECTORY_UNAVAILABLE' },
+    });
+    expect(loadPluginRegistryView).not.toHaveBeenCalled();
+    expect(createdRunCount).toBe(0);
+    expect(getWorkspaceProjectByProjectId(db, UNBOUND_PROJECT)).toBeUndefined();
+    expect((db.prepare(
+      'SELECT COUNT(*) AS count FROM applied_plugin_snapshots',
+    ).get() as { count: number }).count).toBe(beforeSnapshotCount);
+  });
+
+  it('authorizes the final run plugin before loading the scoped registry', async () => {
+    const calls: string[] = [];
+    const baseUrl = await startServer({
+      seedImplicitScenarioPlugin: true,
+      loadPluginRegistryView: async () => {
+        calls.push('registry');
+        return {};
+      },
+      authorizePluginRequest: async () => {
+        calls.push('plugin');
+        return true;
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: PERSONAL_PROJECT,
+        agentId: 'claude',
+        pluginId: 'example-web-prototype',
+        message: 'authorize before reading the registry',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(calls).toEqual(['plugin', 'registry']);
+  });
+
+  it('adopts an exact historical project scope before authorizing its chat plugin', async () => {
+    const calls: string[] = [];
+    const baseUrl = await startServer({
+      isAmrSignedIn: () => true,
+      verifyWorkspaceRequestAuthority: async () => {
+        calls.push('adoption');
+        return {
+          ok: true,
+          context: workspaceContextFromDirectoryItem({
+            workspaceId: WORKSPACE_ID,
+            workspaceName: WORKSPACE_ID,
+            workspaceType: 'personal',
+            workspaceMemberId: OWNER_MEMBER_ID,
+            role: 'owner',
+            memberStatus: 'active',
+            lifecycleState: 'active',
+          }),
+        };
+      },
+      authorizePluginRequest: async () => {
+        calls.push('plugin');
+        return true;
+      },
+    });
+
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: UNBOUND_PROJECT,
+        agentId: 'amr',
+        pluginId: 'explicit-plugin',
+        message: 'adopt before plugin lookup',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(calls).toEqual(['adoption', 'plugin']);
+    expect(getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT))
+      .toMatchObject({
+        workspaceId: WORKSPACE_ID,
+        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
+      });
+  });
+
   it('still allows a headerless run creation with no projectId at all (scratch / non-project usage)', async () => {
     const baseUrl = await startServer();
     const resp = await fetch(`${baseUrl}/api/runs`, {
@@ -450,6 +969,124 @@ describe('POST /api/runs — workspace mutation gate', () => {
     expect(resp.status).toBe(202);
     const payload = (await resp.json()) as { runId: string };
     expect(typeof payload.runId).toBe('string');
+  });
+
+  it('rejects a snapshot pinned to another project before changing either persisted link', async () => {
+    const baseUrl = await startServer();
+    const snapshot = seedPluginSnapshot(TEAM_PROJECT);
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: PERSONAL_PROJECT,
+        agentId: 'claude',
+        appliedPluginSnapshotId: snapshot.snapshotId,
+        message: 'must not move a snapshot across projects',
+      }),
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'snapshot-not-found' },
+    });
+    expect(snapshotProjectId(snapshot.snapshotId)).toBe(TEAM_PROJECT);
+    expect(getProject(openDatabase(tempDir!), TEAM_PROJECT)?.appliedPluginSnapshotId)
+      .toBe(snapshot.snapshotId);
+    expect(getProject(openDatabase(tempDir!), PERSONAL_PROJECT)?.appliedPluginSnapshotId ?? null)
+      .toBeNull();
+  });
+
+  it('rejects a cross-project snapshot on chat before creating a run', async () => {
+    const baseUrl = await startServer();
+    const snapshot = seedPluginSnapshot(TEAM_PROJECT);
+
+    const response = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: PERSONAL_PROJECT,
+        agentId: 'claude',
+        appliedPluginSnapshotId: snapshot.snapshotId,
+        message: 'must not read another project plugin snapshot',
+      }),
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'snapshot-not-found' },
+    });
+    expect(createdRunCount).toBe(0);
+    expect(snapshotProjectId(snapshot.snapshotId)).toBe(TEAM_PROJECT);
+    expect(getProject(openDatabase(tempDir!), PERSONAL_PROJECT)?.appliedPluginSnapshotId ?? null)
+      .toBeNull();
+  });
+
+  it.each(['/api/runs', '/api/chat'])(
+    'rejects another member before creating a run through %s and preserves same-project snapshot links',
+    async (route) => {
+      const loadPluginRegistryView = vi.fn(async () => ({}));
+      const baseUrl = await startServer({ loadPluginRegistryView });
+      const snapshot = seedPluginSnapshot(PERSONAL_PROJECT);
+      const otherMemberId = 'member-other-run';
+
+      const response = await fetch(`${baseUrl}${route}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(otherMemberId, 'member'),
+        },
+        body: JSON.stringify({
+          projectId: PERSONAL_PROJECT,
+          agentId: 'claude',
+          appliedPluginSnapshotId: snapshot.snapshotId,
+          message: 'must not run another member personal project',
+        }),
+      });
+
+      expect(response.status).toBe(403);
+      await expect(response.json()).resolves.toMatchObject({
+        error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+      });
+      expect(loadPluginRegistryView).not.toHaveBeenCalled();
+      expect(createdRunCount).toBe(0);
+      expect(snapshotProjectId(snapshot.snapshotId)).toBe(PERSONAL_PROJECT);
+      expect(getProject(openDatabase(tempDir!), PERSONAL_PROJECT)?.appliedPluginSnapshotId)
+        .toBe(snapshot.snapshotId);
+    },
+  );
+
+  it('keeps an exact owner run on its already-pinned snapshot', async () => {
+    const baseUrl = await startServer();
+    const snapshot = seedPluginSnapshot(PERSONAL_PROJECT);
+
+    const response = await fetch(`${baseUrl}/api/runs`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...workspaceHeaders(OWNER_MEMBER_ID, 'owner'),
+      },
+      body: JSON.stringify({
+        projectId: PERSONAL_PROJECT,
+        agentId: 'claude',
+        appliedPluginSnapshotId: snapshot.snapshotId,
+        message: 'same project snapshot',
+      }),
+    });
+
+    expect(response.status).toBe(202);
+    await expect(response.json()).resolves.toMatchObject({
+      appliedPluginSnapshotId: snapshot.snapshotId,
+    });
+    expect(snapshotProjectId(snapshot.snapshotId)).toBe(PERSONAL_PROJECT);
+    expect(getProject(openDatabase(tempDir!), PERSONAL_PROJECT)?.appliedPluginSnapshotId)
+      .toBe(snapshot.snapshotId);
   });
 });
 
@@ -465,11 +1102,7 @@ describe('Workspace-bound run lifecycle authority', () => {
         agentId: 'byok-opencode',
         model: 'test-model',
         message: 'byok run',
-        byokProvider: {
-          protocol: 'openai',
-          apiKey: 'test-key',
-          baseUrl: 'https://example.test/v1',
-        },
+        byokProfileId: 'test-profile',
       },
     ];
 
@@ -482,8 +1115,12 @@ describe('Workspace-bound run lifecycle authority', () => {
         },
         body: JSON.stringify(body),
       });
-      expect(createResponse.status).toBe(202);
-      const { runId } = (await createResponse.json()) as { runId: string };
+      const createResponseText = await createResponse.text();
+      expect(
+        createResponse.status,
+        `${body.agentId}: ${createResponseText}`,
+      ).toBe(202);
+      const { runId } = JSON.parse(createResponseText) as { runId: string };
 
       const statusResponse = await fetch(`${baseUrl}/api/runs/${runId}`);
       expect(statusResponse.status).toBe(200);
@@ -737,10 +1374,63 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       ).toMatchObject({
         workspaceId: WORKSPACE_ID,
         visibility: 'personal',
-        createdByWorkspaceMemberId: null,
+        createdByWorkspaceMemberId: OWNER_MEMBER_ID,
       });
     },
   );
+
+  it('keeps an adopted Personal project runnable only by the verified adopting member', async () => {
+    const verifyWorkspaceRequestAuthority = vi.fn(async (req: any) => {
+      const memberId = req.get('x-od-workspace-member-id');
+      return {
+        ok: true,
+        context: workspaceContextFromDirectoryItem({
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Personal',
+          workspaceType: 'personal',
+          workspaceMemberId: memberId,
+          role: memberId === OWNER_MEMBER_ID ? 'owner' : 'member',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }),
+      };
+    });
+    const baseUrl = await startServer({
+      isAmrSignedIn: () => true,
+      verifyWorkspaceRequestAuthority,
+    });
+
+    const run = (memberId: string, role: 'owner' | 'member') =>
+      fetch(`${baseUrl}/api/runs`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(memberId, role),
+          'x-od-workspace-type': 'personal',
+        },
+        body: JSON.stringify({
+          projectId: UNBOUND_PROJECT,
+          agentId: 'amr',
+          message: 'run adopted project',
+        }),
+      });
+
+    expect((await run(OWNER_MEMBER_ID, 'owner')).status).toBe(202);
+    expect(
+      getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT),
+    ).toMatchObject({
+      workspaceId: WORKSPACE_ID,
+      visibility: 'personal',
+      createdByWorkspaceMemberId: OWNER_MEMBER_ID,
+    });
+    expect((await run(OWNER_MEMBER_ID, 'owner')).status).toBe(202);
+
+    const foreignResponse = await run('member-foreign-adopted', 'member');
+    expect(foreignResponse.status).toBe(403);
+    await expect(foreignResponse.json()).resolves.toMatchObject({
+      error: { code: 'WORKSPACE_PROJECT_PERMISSION_DENIED' },
+    });
+  });
 
   it.each(['/api/runs', '/api/chat'])(
     'refuses a signed-in AMR run through %s when an unbound project has no explicit Personal identity',
@@ -869,11 +1559,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
           agentId: 'byok-opencode',
           model: 'test-model',
           message: 'byok',
-          byokProvider: {
-            protocol: 'openai',
-            apiKey: 'test-key',
-            baseUrl: 'https://example.test/v1',
-          },
+          byokProfileId: 'test-profile',
         },
       ]) {
         const response = await fetch(`${baseUrl}${route}`, {
