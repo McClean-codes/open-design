@@ -127,7 +127,7 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
         alt=""
         className={styles.cover}
         data-testid="deepseek-v4-flash-campaign-cover"
-        src="/campaigns/deepseek-v4-flash-free-week-poster-v2.png"
+        src="/campaigns/deepseek-v4-flash-free-week-poster-v3.png"
       />
 
       <div className={styles.content}>

@@ -84,7 +84,7 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the paid modal actions on the final approved interaction', () => {
     expect(campaignDialogSource).toContain('{presentation.cta}');
     expect(campaignDialogSource).toContain('稍后再说');
-    expect(campaignDialogSource).toContain('/campaigns/deepseek-v4-flash-free-week-poster-v2.png');
+    expect(campaignDialogSource).toContain('/campaigns/deepseek-v4-flash-free-week-poster-v3.png');
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-cover');
     expect(campaignDialogSource).toMatch(/className=\{styles\.dismissAction\}/);
     expect(campaignDialogSource).toMatch(/onClick=\{closeModal\}/);
