@@ -42,6 +42,22 @@ export const COMMON_MEDIA_ASPECTS = [
   '9:21',
 ] as const;
 
+export const MEDIA_ASPECT_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  '1:1': 'Instagram feed · Amazon product images',
+  '1:2': 'Pinterest pins · tall product storytelling',
+  '2:1': 'Facebook link previews · website banners',
+  '9:16': 'Instagram Reels · TikTok · Stories',
+  '16:9': 'YouTube · Facebook video · web heroes',
+  '3:4': 'Instagram portraits · marketplace listings',
+  '4:3': 'Facebook posts · editorial graphics',
+  '3:2': 'Amazon lifestyle images · photography',
+  '2:3': 'Pinterest content · poster layouts',
+  '5:4': 'Product detail images · Facebook feed',
+  '4:5': 'Instagram portrait posts · Meta ads',
+  '21:9': 'Cinematic banners · ultra-wide displays',
+  '9:21': 'Full-screen mobile ads · vertical stories',
+};
+
 /**
  * Product-review fixtures only. The production version should replace this
  * catalogue with the OpenDesign Cloud model/entitlement response without

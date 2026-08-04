@@ -6,6 +6,7 @@ import { Icon } from './Icon';
 export interface CustomSelectOption {
   value: string;
   label: string;
+  description?: string;
   disabled?: boolean;
 }
 
@@ -78,6 +79,7 @@ export function CustomSelect({
   const activeSourceValueRef = useRef(value);
   const [open, setOpen] = useState(false);
   const [activeValue, setActiveValue] = useState(value);
+  const [revealedValue, setRevealedValue] = useState<string | null>(null);
   const [position, setPosition] = useState<MenuPosition | null>(null);
 
   const flatOptions = useMemo(() => flattenOptions(options), [options]);
@@ -164,6 +166,7 @@ export function CustomSelect({
     if (!next || next.disabled) return;
     onChange(next.value);
     setOpen(false);
+    setRevealedValue(null);
     buttonRef.current?.focus();
   };
 
@@ -174,7 +177,9 @@ export function CustomSelect({
       currentIndex < 0
         ? 0
         : (currentIndex + direction + enabledOptions.length) % enabledOptions.length;
-    setActiveValue(enabledOptions[nextIndex]!.value);
+    const nextValue = enabledOptions[nextIndex]!.value;
+    setActiveValue(nextValue);
+    setRevealedValue(nextValue);
   };
 
   const onButtonKeyDown = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -182,6 +187,7 @@ export function CustomSelect({
       event.preventDefault();
       if (!open) {
         setOpen(true);
+        setRevealedValue(null);
         return;
       }
       moveActive(event.key === 'ArrowDown' ? 1 : -1);
@@ -193,6 +199,7 @@ export function CustomSelect({
         choose(activeValue || value);
       } else {
         setOpen(true);
+        setRevealedValue(null);
       }
       return;
     }
@@ -200,6 +207,7 @@ export function CustomSelect({
       event.preventDefault();
       event.stopPropagation();
       setOpen(false);
+      setRevealedValue(null);
     }
   };
 
@@ -214,6 +222,7 @@ export function CustomSelect({
       ].filter(Boolean).join(' ')}
       role="listbox"
       aria-label={ariaLabel}
+      onMouseLeave={() => setRevealedValue(null)}
       style={
         portal && position
           ? {
@@ -236,9 +245,13 @@ export function CustomSelect({
                   option={option}
                   selected={option.value === value}
                   active={option.value === activeValue}
+                  expanded={option.value === revealedValue}
                   id={optionIdByValue.get(option.value)}
                   onChoose={choose}
-                  onActive={setActiveValue}
+                  onActive={(nextValue) => {
+                    setActiveValue(nextValue);
+                    setRevealedValue(nextValue);
+                  }}
                 />
               ))}
             </div>
@@ -250,9 +263,13 @@ export function CustomSelect({
             option={item}
             selected={item.value === value}
             active={item.value === activeValue}
+            expanded={item.value === revealedValue}
             id={optionIdByValue.get(item.value)}
             onChoose={choose}
-            onActive={setActiveValue}
+            onActive={(nextValue) => {
+              setActiveValue(nextValue);
+              setRevealedValue(nextValue);
+            }}
           />
         );
       })}
@@ -275,7 +292,10 @@ export function CustomSelect({
         aria-label={`${ariaLabel}: ${selectedLabel}`}
         disabled={disabled}
         title={title}
-        onClick={() => setOpen((current) => !current)}
+        onClick={() => {
+          setOpen((current) => !current);
+          setRevealedValue(null);
+        }}
         onKeyDown={onButtonKeyDown}
         onFocus={onFocus}
       >
@@ -293,6 +313,7 @@ function SelectOptionButton({
   option,
   selected,
   active,
+  expanded,
   id,
   onChoose,
   onActive,
@@ -300,6 +321,7 @@ function SelectOptionButton({
   option: CustomSelectOption;
   selected: boolean;
   active: boolean;
+  expanded: boolean;
   id?: string;
   onChoose: (value: string) => void;
   onActive: (value: string) => void;
@@ -310,20 +332,41 @@ function SelectOptionButton({
       type="button"
       className={[
         'od-select-option',
+        option.description ? 'has-description' : '',
+        option.description && expanded ? 'description-expanded' : '',
         selected ? 'selected' : '',
         active ? 'active' : '',
       ].filter(Boolean).join(' ')}
       role="option"
+      aria-label={option.label}
       aria-selected={selected}
       tabIndex={-1}
       disabled={option.disabled}
       onMouseEnter={() => onActive(option.value)}
       onClick={() => onChoose(option.value)}
     >
-      <span className="od-select-option-label">{option.label}</span>
-      <span className="od-select-option-check" aria-hidden>
-        <Icon name="check" size={14} />
-      </span>
+      {option.description ? (
+        <>
+          <span className="od-select-option-main">
+            <span className="od-select-option-label">{option.label}</span>
+            <span className="od-select-option-check" aria-hidden>
+              <Icon name="check" size={14} />
+            </span>
+          </span>
+          <span className="od-select-option-details">
+            <span className="od-select-option-description">
+              {expanded ? option.description : ''}
+            </span>
+          </span>
+        </>
+      ) : (
+        <>
+          <span className="od-select-option-label">{option.label}</span>
+          <span className="od-select-option-check" aria-hidden>
+            <Icon name="check" size={14} />
+          </span>
+        </>
+      )}
     </button>
   );
 }

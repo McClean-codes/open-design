@@ -7,6 +7,7 @@ import {
   findMediaCloudDemoModel,
   formatMediaCloudDemoUnitPrice,
   MEDIA_CLOUD_DEMO_MODELS,
+  MEDIA_ASPECT_DESCRIPTIONS,
   mediaCloudDemoPriceUsd,
   type MediaCloudDemoModel,
   type MediaCloudDemoSurface,
@@ -241,10 +242,14 @@ export function MediaCloudSpecDemoPanel({ surface, value, onChange }: ChangeProp
             key={`${surface}:ratio`}
             ariaLabel="Ratio"
             value={aspectOptions.includes(value.aspect) ? value.aspect : aspectOptions[0]!}
-            options={aspectOptions.map((aspect) => ({ value: aspect, label: aspect }))}
+            options={aspectOptions.map((aspect) => ({
+              value: aspect,
+              label: aspect,
+              description: MEDIA_ASPECT_DESCRIPTIONS[aspect],
+            }))}
             onChange={(aspect) => onChange({ ...value, aspect })}
             triggerClassName={styles.fieldSelectTrigger}
-            menuClassName={styles.fieldSelectMenu}
+            menuClassName={`${styles.fieldSelectMenu} ${styles.aspectSelectMenu}`}
             portal={false}
           />
         </div>

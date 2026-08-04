@@ -107,6 +107,68 @@
   font-weight: 570;
 }
 
+.aspectSelectMenu:global(.od-select-menu.inline) {
+  right: 0;
+  left: auto;
+  width: min(310px, calc(100vw - 24px));
+  max-height: min(360px, 52vh);
+}
+
+.aspectSelectMenu :global(.od-select-option.has-description) {
+  display: grid;
+  height: 32px;
+  min-height: 32px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 0;
+  padding: 7px 8px;
+  transition:
+    height 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.aspectSelectMenu :global(.od-select-option.has-description.description-expanded) {
+  height: 58px;
+}
+
+.aspectSelectMenu :global(.od-select-option-main) {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 8px;
+}
+
+.aspectSelectMenu :global(.od-select-option-details) {
+  display: grid;
+  min-width: 0;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition:
+    grid-template-rows 200ms cubic-bezier(0.23, 1, 0.32, 1),
+    opacity 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.aspectSelectMenu :global(.description-expanded .od-select-option-details) {
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.aspectSelectMenu :global(.od-select-option-description) {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 520;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aspectSelectMenu :global(.description-expanded .od-select-option-description) {
+  padding-top: 6px;
+}
+
 .modelPicker {
   position: relative;
   display: inline-flex;
