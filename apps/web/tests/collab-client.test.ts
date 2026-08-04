@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CollabClient, type CollabSnapshot } from '../src/collab/collab-client.js';
+import {
+  CollabClient,
+  type CollabPresenceMember,
+  type CollabSnapshot,
+} from '../src/collab/collab-client.js';
 import { workspaceContextFixture } from './helpers/workspace-context';
 
 const TEAM_CONTEXT = workspaceContextFixture({
@@ -15,11 +19,15 @@ interface RecordedCall {
 }
 
 interface FakeFetchOptions {
-  present?: Array<{ memberId: string; name?: string }>;
+  present?: CollabPresenceMember[];
   publishedVersion?: number | null;
   syncState?: string | null;
   failPath?: string;
 }
+
+const PRESENCE_TEST_NOW = Date.parse('2026-08-05T00:00:00.000Z');
+const presenceTime = (offsetMs = 0) =>
+  new Date(PRESENCE_TEST_NOW + offsetMs).toISOString();
 
 function makeFetch(options: FakeFetchOptions = {}) {
   const calls: RecordedCall[] = [];
@@ -54,6 +62,7 @@ function makeFetch(options: FakeFetchOptions = {}) {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  vi.setSystemTime(PRESENCE_TEST_NOW);
 });
 
 afterEach(() => {
@@ -627,11 +636,11 @@ describe('CollabClient', () => {
     client.stop();
   });
 
-  it('retains a peer for one heartbeat window when one self-bearing roster omits it', async () => {
+  it('retains a peer for the upstream lease window when self-bearing rosters briefly omit it', async () => {
     const { fetchImpl, state } = makeFetch({
       present: [
-        { memberId: 'viewer', name: 'Viewer' },
-        { memberId: 'peer', name: 'Peer' },
+        { memberId: 'viewer', name: 'Viewer', heartbeatAt: presenceTime() },
+        { memberId: 'peer', name: 'Peer', heartbeatAt: presenceTime() },
       ],
     });
     const client = new CollabClient({
@@ -646,20 +655,154 @@ describe('CollabClient', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(client.getSnapshot().present).toHaveLength(2);
 
-    state.present = [{ memberId: 'viewer', name: 'Viewer' }];
+    state.present = [{
+      memberId: 'viewer',
+      name: 'Viewer',
+      heartbeatAt: presenceTime(10_000),
+    }];
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(client.getSnapshot().present).toEqual([
-      { memberId: 'viewer', name: 'Viewer' },
-      { memberId: 'peer', name: 'Peer' },
-    ]);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer', 'peer']);
 
-    await vi.advanceTimersByTimeAsync(9_999);
-    expect(client.getSnapshot().present).toHaveLength(2);
+    // The Vela presence lease is authoritative for 30 seconds from the last
+    // roster that actually contained the peer. A delayed heartbeat can make
+    // the peer absent from the 10s and 20s reads without making that last-good
+    // evidence stale. Dropping it after one interval makes the non-owner side
+    // flicker while the owner's local self witness hides the same upstream gap.
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer', 'peer']);
+
+    // At the exact upstream TTL boundary the peer is no longer retained.
     await vi.advanceTimersByTimeAsync(1);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer']);
+
+    client.stop();
+  });
+
+  it('never flashes a known peer when it returns before the upstream lease window ends', async () => {
+    const { fetchImpl, state } = makeFetch({
+      present: [
+        { memberId: 'viewer', name: 'Viewer', heartbeatAt: presenceTime() },
+        { memberId: 'owner', name: 'Owner', heartbeatAt: presenceTime() },
+      ],
+    });
+    const snapshots: CollabPresenceMember[][] = [];
+    const client = new CollabClient({
+      projectId: 'p-owner-transient-gap',
+      member: { memberId: 'viewer', name: 'Viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+      onUpdate: (snapshot) => snapshots.push(snapshot.present),
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer', 'owner']);
+    snapshots.length = 0;
+    state.present = [{
+      memberId: 'viewer',
+      name: 'Viewer',
+      heartbeatAt: presenceTime(10_000),
+    }];
+    await vi.advanceTimersByTimeAsync(20_000);
+    state.present = [
+      { memberId: 'viewer', name: 'Viewer', heartbeatAt: presenceTime(30_000) },
+      { memberId: 'owner', name: 'Owner', heartbeatAt: presenceTime(30_000) },
+    ];
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(snapshots.every((present) =>
+      present.some(({ memberId }) => memberId === 'owner'))).toBe(true);
+    expect(client.getSnapshot().present).toHaveLength(2);
+    client.stop();
+  });
+
+  it('does not extend a nearly expired backend lease from the local observation time', async () => {
+    vi.setSystemTime(PRESENCE_TEST_NOW + 29_000);
+    const { fetchImpl, state } = makeFetch({
+      present: [
+        { memberId: 'viewer', heartbeatAt: presenceTime(29_000) },
+        { memberId: 'owner', heartbeatAt: presenceTime() },
+      ],
+    });
+    const client = new CollabClient({
+      projectId: 'p-nearly-expired-owner',
+      member: { memberId: 'viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 1_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    state.present = [{
+      memberId: 'viewer',
+      heartbeatAt: presenceTime(30_000),
+    }];
+    await vi.advanceTimersByTimeAsync(999);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer', 'owner']);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer']);
+    client.stop();
+  });
+
+  it.each([
+    ['missing', undefined],
+    ['invalid', 'not-a-date'],
+  ])('retains a peer with %s heartbeatAt for only one fallback heartbeat window', async (_label, heartbeatAt) => {
+    const { fetchImpl, state } = makeFetch({
+      present: [
+        { memberId: 'viewer' },
+        { memberId: 'legacy-peer', heartbeatAt },
+      ],
+    });
+    const client = new CollabClient({
+      projectId: 'p-legacy-presence',
+      member: { memberId: 'viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    state.present = [{ memberId: 'viewer' }];
+    await vi.advanceTimersByTimeAsync(19_999);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer', 'legacy-peer']);
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(client.getSnapshot().present.map(({ memberId }) => memberId))
+      .toEqual(['viewer']);
+    client.stop();
+  });
+
+  it('applies an event-driven fresh roster exactly so explicit leaves stay immediate', async () => {
+    const { fetchImpl, state } = makeFetch({
+      present: [
+        { memberId: 'viewer', name: 'Viewer' },
+        { memberId: 'peer', name: 'Peer' },
+      ],
+    });
+    const client = new CollabClient({
+      projectId: 'p-explicit-leave',
+      member: { memberId: 'viewer', name: 'Viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    state.present = [{ memberId: 'viewer', name: 'Viewer' }];
+    await client.refreshPresence();
+
     expect(client.getSnapshot().present).toEqual([
       { memberId: 'viewer', name: 'Viewer' },
     ]);
-
     client.stop();
   });
 

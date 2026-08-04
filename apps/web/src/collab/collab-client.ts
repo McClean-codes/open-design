@@ -73,6 +73,10 @@ export interface CollabClientOptions {
 
 const DEFAULT_HEARTBEAT_MS = 10_000;
 const DEFAULT_STATUS_POLL_MS = 5_000;
+// Vela's authoritative project-presence lease is 30 seconds from the
+// server-recorded heartbeatAt, not from when this client happens to observe
+// the roster. Using observation time can nearly double a stale lease.
+const DEFAULT_PRESENCE_ROSTER_GRACE_MS = 30_000;
 
 class CollabRequestError extends Error {
   constructor(message: string, readonly status: number) {
@@ -132,8 +136,10 @@ export class CollabClient {
    */
   private presenceRequestGeneration = 0;
   private presenceAppliedRequestGeneration = 0;
-  /** First successful self-bearing response that omitted each known peer. */
-  private readonly presenceMissingSince = new Map<string, number>();
+  /** Authoritative Vela lease expiry derived from each valid heartbeatAt. */
+  private readonly presenceLeaseExpiresAt = new Map<string, number>();
+  /** Compatibility grace for legacy/local rosters without a valid heartbeatAt. */
+  private readonly presenceFallbackMissingSince = new Map<string, number>();
   /** Suppresses the status-transition echo of an optimistic Team heartbeat. */
   private presenceAttemptedForMember = false;
   /**
@@ -252,7 +258,7 @@ export class CollabClient {
         // the roster converged. This fresh read is only an extra catch-up for
         // events/timers the browser may have throttled in the background, and
         // it preserves the current roster until the response lands.
-        void this.refreshPresence();
+        void this.refreshPresenceAfterVisibility();
         void this.pollStatus();
       };
       document.addEventListener('visibilitychange', this.onVisibilityChange);
@@ -265,7 +271,8 @@ export class CollabClient {
     this.lifecycleGeneration += 1;
     this.presenceRequestGeneration += 1;
     this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
-    this.presenceMissingSince.clear();
+    this.presenceLeaseExpiresAt.clear();
+    this.presenceFallbackMissingSince.clear();
     for (const timer of this.timers) clearInterval(timer);
     this.timers.length = 0;
     if (this.onVisibilityChange && typeof document !== 'undefined') {
@@ -353,6 +360,18 @@ export class CollabClient {
    * feedback loop, so push-channel consumers must use this read-only path.
    */
   async refreshPresence(): Promise<void> {
+    await this.readFreshPresence(false);
+  }
+
+  /**
+   * Visibility catch-up is not evidence of an explicit viewer-set mutation.
+   * Preserve still-live last-good peers just like a heartbeat response.
+   */
+  private async refreshPresenceAfterVisibility(): Promise<void> {
+    await this.readFreshPresence(true);
+  }
+
+  private async readFreshPresence(preserveMissingPeers: boolean): Promise<void> {
     const requestGeneration = ++this.presenceRequestGeneration;
     try {
       // A hub presence event marks the daemon's short-lived roster cache stale.
@@ -365,6 +384,7 @@ export class CollabClient {
         this.applyPresenceResponse(
           requestGeneration,
           body.present as CollabPresenceMember[],
+          preserveMissingPeers,
         );
       }
     } catch (error) {
@@ -562,10 +582,13 @@ export class CollabClient {
   private applyPresenceResponse(
     requestGeneration: number,
     present: CollabPresenceMember[],
+    preserveMissingPeers = true,
   ): void {
     if (requestGeneration <= this.presenceAppliedRequestGeneration) return;
     this.presenceAppliedRequestGeneration = requestGeneration;
-    this.update({ present: this.stabilizePresenceRoster(present) });
+    this.update({
+      present: this.stabilizePresenceRoster(present, preserveMissingPeers),
+    });
   }
 
   private applyPresenceAuthorityRevocation(requestGeneration: number): void {
@@ -575,12 +598,14 @@ export class CollabClient {
   }
 
   private clearPresenceRoster(): void {
-    this.presenceMissingSince.clear();
+    this.presenceLeaseExpiresAt.clear();
+    this.presenceFallbackMissingSince.clear();
     if (this.snapshot.present.length > 0) this.update({ present: [] });
   }
 
   private stabilizePresenceRoster(
     incoming: CollabPresenceMember[],
+    preserveMissingPeers: boolean,
   ): CollabPresenceMember[] {
     const selfMemberId = this.member?.memberId;
     const incomingIds = new Set(incoming.map((member) => member.memberId));
@@ -592,13 +617,35 @@ export class CollabClient {
       || incoming.length === 0
       || !incomingIds.has(selfMemberId)
     ) {
-      this.presenceMissingSince.clear();
+      this.presenceLeaseExpiresAt.clear();
+      this.presenceFallbackMissingSince.clear();
       return incoming;
     }
 
     const now = Date.now();
-    for (const memberId of incomingIds) {
-      this.presenceMissingSince.delete(memberId);
+    for (const member of incoming) {
+      const heartbeatAt = member.heartbeatAt?.trim();
+      const heartbeatAtMs = heartbeatAt ? Date.parse(heartbeatAt) : Number.NaN;
+      if (Number.isFinite(heartbeatAtMs)) {
+        this.presenceLeaseExpiresAt.set(
+          member.memberId,
+          heartbeatAtMs + DEFAULT_PRESENCE_ROSTER_GRACE_MS,
+        );
+      } else {
+        this.presenceLeaseExpiresAt.delete(member.memberId);
+      }
+      this.presenceFallbackMissingSince.delete(member.memberId);
+    }
+    if (!preserveMissingPeers) {
+      for (const memberId of this.presenceLeaseExpiresAt.keys()) {
+        if (!incomingIds.has(memberId)) this.presenceLeaseExpiresAt.delete(memberId);
+      }
+      for (const memberId of this.presenceFallbackMissingSince.keys()) {
+        if (!incomingIds.has(memberId)) {
+          this.presenceFallbackMissingSince.delete(memberId);
+        }
+      }
+      return incoming;
     }
 
     const retained: CollabPresenceMember[] = [];
@@ -607,18 +654,33 @@ export class CollabClient {
     );
     for (const member of this.snapshot.present) {
       if (incomingIds.has(member.memberId)) continue;
-      const missingSince = this.presenceMissingSince.get(member.memberId);
+      const leaseExpiresAt = this.presenceLeaseExpiresAt.get(member.memberId);
+      if (leaseExpiresAt !== undefined) {
+        if (now < leaseExpiresAt) retained.push(member);
+        else this.presenceLeaseExpiresAt.delete(member.memberId);
+        this.presenceFallbackMissingSince.delete(member.memberId);
+        continue;
+      }
+
+      const missingSince = this.presenceFallbackMissingSince.get(member.memberId);
       if (missingSince === undefined) {
-        this.presenceMissingSince.set(member.memberId, now);
+        this.presenceFallbackMissingSince.set(member.memberId, now);
         retained.push(member);
       } else if (now - missingSince < this.heartbeatMs) {
         retained.push(member);
       } else {
-        this.presenceMissingSince.delete(member.memberId);
+        this.presenceFallbackMissingSince.delete(member.memberId);
       }
     }
-    for (const memberId of this.presenceMissingSince.keys()) {
-      if (!previousIds.has(memberId)) this.presenceMissingSince.delete(memberId);
+    for (const memberId of this.presenceLeaseExpiresAt.keys()) {
+      if (!previousIds.has(memberId) && !incomingIds.has(memberId)) {
+        this.presenceLeaseExpiresAt.delete(memberId);
+      }
+    }
+    for (const memberId of this.presenceFallbackMissingSince.keys()) {
+      if (!previousIds.has(memberId) && !incomingIds.has(memberId)) {
+        this.presenceFallbackMissingSince.delete(memberId);
+      }
     }
     return retained.length > 0 ? [...incoming, ...retained] : incoming;
   }
