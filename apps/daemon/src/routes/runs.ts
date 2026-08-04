@@ -2698,6 +2698,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         distributionMechanism: analytics.distributionMechanism,
         publisherClass: analytics.publisherClass,
       },
+      briefState: analytics.briefState,
     });
   });
 
