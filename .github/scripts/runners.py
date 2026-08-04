@@ -9,6 +9,7 @@ GITHUB_HOSTED = ["ubuntu-24.04"]
 WINDOWS_HOSTED = ["windows-latest"]
 NEXU_SMALL = ["nexu-runners-small"]
 NEXU_MEDIUM = ["nexu-runners-medium"]
+NEXU_LARGE = ["nexu-runners-large"]
 
 
 def compact_json(value):
@@ -25,6 +26,7 @@ def normalize_mode(raw_mode):
 def resolve_contract(mode):
     control = GITHUB_HOSTED if mode == "economic" else NEXU_SMALL
     workload = GITHUB_HOSTED if mode == "economic" else NEXU_MEDIUM
+    browser_workload = GITHUB_HOSTED if mode == "economic" else NEXU_LARGE
 
     return {
         "runs_on": {
@@ -33,8 +35,8 @@ def resolve_contract(mode):
             "workspace_unit": workload,
             "windows_tools": WINDOWS_HOSTED,
             "js_hot": workload,
-            "ui_hot": workload,
-            "visual_hot": workload,
+            "ui_hot": browser_workload,
+            "visual_hot": browser_workload,
         },
         "decision": {
             "schema_version": 1,

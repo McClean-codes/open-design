@@ -1249,8 +1249,8 @@ process.stdin.on("end", () => {
     expect(defaultRunsOn.workspace_unit).toEqual(["nexu-runners-medium"]);
     expect(defaultRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(defaultRunsOn.js_hot).toEqual(["nexu-runners-medium"]);
-    expect(defaultRunsOn.ui_hot).toEqual(["nexu-runners-medium"]);
-    expect(defaultRunsOn.visual_hot).toEqual(["nexu-runners-medium"]);
+    expect(defaultRunsOn.ui_hot).toEqual(["nexu-runners-large"]);
+    expect(defaultRunsOn.visual_hot).toEqual(["nexu-runners-large"]);
     expect(defaultProfiles).not.toHaveProperty("contabo_control");
     expect(defaultProfiles).not.toHaveProperty("hosted_or_blacksmith");
     expect(defaultProfiles).not.toHaveProperty("blacksmith_default");
@@ -1263,8 +1263,8 @@ process.stdin.on("end", () => {
     expect(performanceRunsOn.workspace_unit).toEqual(["nexu-runners-medium"]);
     expect(performanceRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(performanceRunsOn.js_hot).toEqual(["nexu-runners-medium"]);
-    expect(performanceRunsOn.ui_hot).toEqual(["nexu-runners-medium"]);
-    expect(performanceRunsOn.visual_hot).toEqual(["nexu-runners-medium"]);
+    expect(performanceRunsOn.ui_hot).toEqual(["nexu-runners-large"]);
+    expect(performanceRunsOn.visual_hot).toEqual(["nexu-runners-large"]);
 
     const economicProfiles = await runRunners("economic");
     const economicRunsOn = runnerRunsOn(economicProfiles);
