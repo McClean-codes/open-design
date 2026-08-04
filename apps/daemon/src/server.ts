@@ -6179,6 +6179,12 @@ export async function startServer({
       ...(resourceKind ? { resourceKind } : {}),
       ...(resourceId ? { resourceId } : {}),
       reason,
+      ...(rememberedLease
+        ? {
+            isRefreshCurrent: () =>
+              rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease),
+          }
+        : {}),
     });
   };
   const persistentTeamResourceBackgroundWorkspaceIds = (): string[] => {

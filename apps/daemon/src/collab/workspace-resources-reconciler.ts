@@ -232,6 +232,12 @@ export interface WorkspaceTeamResourceRefreshInput<TScope> {
   resourceKind?: string;
   resourceId?: string;
   reason: WorkspaceTeamResourceRefreshReason;
+  /**
+   * Optional compatibility-lease guard for queued prewarm work. It is checked
+   * immediately before the mutating pipeline starts. Once materialization has
+   * begun, reconcile, emit, and signature commit finish as one logical unit.
+   */
+  isRefreshCurrent?: () => boolean;
 }
 
 export interface WorkspaceTeamResourceRefreshResult {
@@ -288,8 +294,9 @@ export function createWorkspaceTeamResourceEventCoordinator<TScope>(
   const runKind = async (
     input: WorkspaceTeamResourceRefreshInput<TScope>,
     resourceKind: WorkspaceTeamResourceKind,
-  ): Promise<'emitted' | 'processed' | 'failed'> => {
+  ): Promise<'emitted' | 'processed' | 'skipped' | 'failed'> => {
     try {
+      if (input.isRefreshCurrent?.() === false) return 'skipped';
       const resources = await deps.materializeAndList({
         workspaceId: input.workspaceId,
         resourceKind,
@@ -329,10 +336,10 @@ export function createWorkspaceTeamResourceEventCoordinator<TScope>(
   const enqueueKind = async (
     input: WorkspaceTeamResourceRefreshInput<TScope>,
     resourceKind: WorkspaceTeamResourceKind,
-  ): Promise<'emitted' | 'processed' | 'failed'> => {
+  ): Promise<'emitted' | 'processed' | 'skipped' | 'failed'> => {
     const key = `${input.workspaceId}\u0000${resourceKind}`;
     const previous = pending.get(key);
-    let result: 'emitted' | 'processed' | 'failed' = 'failed';
+    let result: 'emitted' | 'processed' | 'skipped' | 'failed' = 'failed';
     const run = async () => {
       result = await runKind(input, resourceKind);
     };
@@ -360,7 +367,7 @@ export function createWorkspaceTeamResourceEventCoordinator<TScope>(
       );
       return {
         processedKinds: outcomes
-          .filter(({ outcome }) => outcome !== 'failed')
+          .filter(({ outcome }) => outcome === 'processed' || outcome === 'emitted')
           .map(({ resourceKind }) => resourceKind),
         emittedKinds: outcomes
           .filter(({ outcome }) => outcome === 'emitted')

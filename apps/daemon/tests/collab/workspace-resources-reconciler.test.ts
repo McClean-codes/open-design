@@ -7,8 +7,26 @@ import {
   reconcileWorkspaceResourcesWithRemote,
   type LocalTeamResourceBinding,
 } from '../../src/collab/workspace-resources-reconciler.js';
+import { createRememberedTeamResourceScopes } from '../../src/collab/remembered-team-resource-scopes.js';
+import type { TeamResourceRequestScope } from '../../src/collab/team-resource-share.js';
 
 const WORKSPACE_ID = 'team-1';
+
+function teamResourceScope(
+  workspaceId = WORKSPACE_ID,
+  memberId = 'member-a',
+): TeamResourceRequestScope {
+  return {
+    principal: {
+      teamId: workspaceId,
+      memberId,
+      role: 'member',
+      lifecycleState: 'active',
+      workspaceType: 'team',
+    },
+    canShare: false,
+  };
+}
 
 describe('createWorkspaceResourceSignatureTracker', () => {
   it('detects shares, retractions, and version moves per Workspace and kind', () => {
@@ -431,5 +449,171 @@ describe('createWorkspaceTeamResourceEventCoordinator', () => {
     releaseFirst();
     await Promise.all([first, second]);
     expect(materializations).toBe(2);
+  });
+
+  it('drops queued prewarm work when its exact principal lease is evicted before execution', async () => {
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const remembered = createRememberedTeamResourceScopes({
+      maxEntries: 1,
+      leaseMs: 1_000,
+      now: () => 0,
+    });
+    const rememberedScope = teamResourceScope();
+    remembered.remember(rememberedScope);
+    const rememberedLease = remembered.activeWorkspaceLeases()[0]!;
+    let materializations = 0;
+    const reconcile = vi.fn(async () => ({ retired: 0 }));
+    const emit = vi.fn();
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => {
+        materializations += 1;
+        if (materializations === 1) await firstBlocked;
+        return [{ resourceId: 'skill-1', versionId: String(materializations) }];
+      },
+      reconcile,
+      emit,
+    });
+
+    const first = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope: rememberedScope,
+      resourceKind: 'skill',
+      reason: 'push',
+    });
+    await vi.waitFor(() => expect(materializations).toBe(1));
+    const queued = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope: rememberedScope,
+      resourceKind: 'skill',
+      reason: 'poll',
+      isRefreshCurrent: () => remembered.isLeaseCurrent(rememberedLease),
+    });
+
+    remembered.remember(teamResourceScope('workspace-b', 'member-b'));
+    expect(remembered.isLeaseCurrent(rememberedLease)).toBe(false);
+    releaseFirst();
+
+    await expect(first).resolves.toEqual({
+      processedKinds: ['skill'],
+      emittedKinds: ['skill'],
+      failedKinds: [],
+    });
+    await expect(queued).resolves.toEqual({
+      processedKinds: [],
+      emittedKinds: [],
+      failedKinds: [],
+    });
+    expect(materializations).toBe(1);
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes reconcile, emit, and signature commit when the lease expires during materialization', async () => {
+    let now = 0;
+    let releaseMaterialization!: () => void;
+    const materializationBlocked = new Promise<void>((resolve) => {
+      releaseMaterialization = resolve;
+    });
+    const remembered = createRememberedTeamResourceScopes({
+      leaseMs: 100,
+      now: () => now,
+    });
+    const rememberedScope = teamResourceScope();
+    remembered.remember(rememberedScope);
+    const rememberedLease = remembered.activeWorkspaceLeases()[0]!;
+    let materializations = 0;
+    const reconcile = vi.fn(async () => ({ retired: 0 }));
+    const emit = vi.fn();
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => {
+        materializations += 1;
+        if (materializations === 1) await materializationBlocked;
+        return [{ resourceId: 'skill-1', versionId: 'v1' }];
+      },
+      reconcile,
+      emit,
+    });
+
+    const refresh = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope: rememberedScope,
+      resourceKind: 'skill',
+      reason: 'push',
+      isRefreshCurrent: () => remembered.isLeaseCurrent(rememberedLease),
+    });
+    await vi.waitFor(() => expect(materializations).toBe(1));
+    now = 100;
+    releaseMaterialization();
+
+    await expect(refresh).resolves.toEqual({
+      processedKinds: ['skill'],
+      emittedKinds: ['skill'],
+      failedKinds: [],
+    });
+    expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    await coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope: rememberedScope,
+      resourceKind: 'skill',
+      reason: 'poll',
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes emit and signature commit when the lease expires during reconciliation', async () => {
+    let now = 0;
+    let releaseReconciliation!: () => void;
+    const reconciliationBlocked = new Promise<void>((resolve) => {
+      releaseReconciliation = resolve;
+    });
+    const remembered = createRememberedTeamResourceScopes({
+      leaseMs: 100,
+      now: () => now,
+    });
+    const rememberedScope = teamResourceScope();
+    remembered.remember(rememberedScope);
+    const rememberedLease = remembered.activeWorkspaceLeases()[0]!;
+    let reconciliations = 0;
+    const emit = vi.fn();
+    const coordinator = createWorkspaceTeamResourceEventCoordinator({
+      materializeAndList: async () => [{ resourceId: 'skill-1', versionId: 'v1' }],
+      reconcile: async () => {
+        reconciliations += 1;
+        if (reconciliations === 1) await reconciliationBlocked;
+        return { retired: 0 };
+      },
+      emit,
+    });
+
+    const refresh = coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope: rememberedScope,
+      resourceKind: 'skill',
+      reason: 'push',
+      isRefreshCurrent: () => remembered.isLeaseCurrent(rememberedLease),
+    });
+    await vi.waitFor(() => expect(reconciliations).toBe(1));
+    now = 100;
+    releaseReconciliation();
+
+    await expect(refresh).resolves.toEqual({
+      processedKinds: ['skill'],
+      emittedKinds: ['skill'],
+      failedKinds: [],
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
+
+    await coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope: rememberedScope,
+      resourceKind: 'skill',
+      reason: 'poll',
+    });
+    expect(emit).toHaveBeenCalledTimes(1);
   });
 });

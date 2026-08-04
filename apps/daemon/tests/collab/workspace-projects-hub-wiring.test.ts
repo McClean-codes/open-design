@@ -463,6 +463,10 @@ describe('server.ts wiring (source boundary)', () => {
     expect(refreshBody).toContain(
       '!rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease)',
     );
+    expect(refreshBody).toContain('isRefreshCurrent: () =>');
+    expect(refreshBody).toContain(
+      'rememberedTeamResourceScopes.isLeaseCurrent(rememberedLease)',
+    );
   });
 
   it('keeps background authority fail-closed without renewing an expired remembered scope', () => {
