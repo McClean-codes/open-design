@@ -20,12 +20,14 @@ const scope = (workspaceId = 'ws-a'): TeamResourceRequestScope => ({
   canShare: true,
 });
 
-function fixture() {
+function fixture(options: { projectInitiallyExists?: boolean } = {}) {
   const calls: string[] = [];
   const shared = new Set<string>();
-  const projectVisibility = new Map<string, 'personal' | 'team'>([
-    ['project-brand', 'personal'],
-  ]);
+  const projectVisibility = new Map<string, 'personal' | 'team'>(
+    options.projectInitiallyExists === false
+      ? []
+      : [['project-brand', 'personal']],
+  );
   let failResourceShare = false;
   let failResourceUnshare = false;
   let resourceUnshareFailuresRemaining = 0;
@@ -35,7 +37,16 @@ function fixture() {
   let authoritativeShared: Set<string> | null = null;
   let authoritativeReadError: Error | null = null;
   let authoritativeCanUnshare = true;
-  let projectCreatorMemberId: string | null = 'member-owner';
+  let hubOwnerMemberId: string | undefined = 'member-owner';
+  let projectBinding: {
+    workspaceId: string;
+    createdByWorkspaceMemberId: string;
+  } | undefined = options.projectInitiallyExists === false
+    ? undefined
+    : {
+        workspaceId: 'ws-a',
+        createdByWorkspaceMemberId: 'member-owner',
+      };
 
   const resource: TeamResourceShareService = {
     configured: true,
@@ -61,24 +72,47 @@ function fixture() {
       if (readOptions?.authoritative) {
         if (authoritativeReadError) throw authoritativeReadError;
         return [...(authoritativeShared ?? shared)]
-          .map((id) => ({ id, canUnshare: authoritativeCanUnshare }));
+          .map((id) => ({
+            id,
+            ...(hubOwnerMemberId ? { ownerMemberId: hubOwnerMemberId } : {}),
+            canUnshare: authoritativeCanUnshare,
+          }));
       }
-      return [...shared].map((id) => ({ id, canUnshare: true }));
+      return [...shared].map((id) => ({
+        id,
+        ...(hubOwnerMemberId ? { ownerMemberId: hubOwnerMemberId } : {}),
+        canUnshare: true,
+      }));
     },
     isShared(resourceId) {
       return shared.has(resourceId);
     },
   };
+  const ensureProjectId = vi.fn(async (
+    resourceId: string,
+    requestScope: TeamResourceRequestScope,
+  ) => {
+    expect(resourceId).toBe('user:brand');
+    expect(requestScope.principal).toMatchObject({
+      teamId: 'ws-a',
+      memberId: 'member-owner',
+    });
+    calls.push('project:ensure:project-brand');
+    projectVisibility.set('project-brand', 'personal');
+    projectBinding = {
+      workspaceId: requestScope.principal.teamId,
+      createdByWorkspaceMemberId: requestScope.principal.memberId,
+    };
+    return 'project-brand';
+  });
   const prepare = vi.fn(createDesignSystemBackingProjectPreparer({
     resolveProjectId: (resourceId) => {
       expect(resourceId).toBe('user:brand');
-      return 'project-brand';
+      return projectVisibility.has('project-brand') ? 'project-brand' : null;
     },
+    ensureProjectId,
     projectExists: (projectId) => projectVisibility.has(projectId),
-    getProjectBinding: () => ({
-      workspaceId: 'ws-a',
-      createdByWorkspaceMemberId: projectCreatorMemberId,
-    }),
+    getProjectBinding: () => projectBinding,
     async publishProject(projectId) {
       calls.push(`project:team:${projectId}`);
       if (failNextProjectShare) {
@@ -109,6 +143,7 @@ function fixture() {
     shared,
     projectVisibility,
     prepare,
+    ensureProjectId,
     service,
     failResourceShare: () => { failResourceShare = true; },
     failResourceUnshare: () => { failResourceUnshare = true; },
@@ -125,8 +160,8 @@ function fixture() {
     denyAuthoritativeUnshare: () => {
       authoritativeCanUnshare = false;
     },
-    clearProjectCreator: () => {
-      projectCreatorMemberId = null;
+    clearHubOwner: () => {
+      hubOwnerMemberId = undefined;
     },
   };
 }
@@ -146,6 +181,55 @@ describe('design-system team share linked backing project', () => {
       'project:team:project-brand',
       'resource:share:user:brand',
       'project:team:project-brand',
+    ]);
+  });
+
+  it('ensures and binds a missing backing project in the exact Workspace before direct share', async () => {
+    const f = fixture({ projectInitiallyExists: false });
+
+    await expect(f.service.share('user:brand', scope())).resolves.toEqual({ version: 1 });
+
+    expect(f.ensureProjectId).toHaveBeenCalledOnce();
+    expect(f.projectVisibility.get('project-brand')).toBe('team');
+    expect([...f.shared]).toEqual(['user:brand']);
+    expect(f.calls).toEqual([
+      'project:ensure:project-brand',
+      'resource:share:user:brand',
+      'project:team:project-brand',
+    ]);
+  });
+
+  it('compensates a failed direct share without leaving the ensured project in Team', async () => {
+    const f = fixture({ projectInitiallyExists: false });
+    f.failNextProjectShare();
+
+    await expect(f.service.share('user:brand', scope()))
+      .rejects.toThrow('project publish failed');
+
+    expect(f.ensureProjectId).toHaveBeenCalledOnce();
+    expect(f.projectVisibility.get('project-brand')).toBe('personal');
+    expect(f.shared.size).toBe(0);
+    expect(f.calls).toEqual([
+      'project:ensure:project-brand',
+      'resource:share:user:brand',
+      'project:team:project-brand',
+      'resource:unshare:user:brand',
+    ]);
+  });
+
+  it('keeps an ensured backing project Personal when design-system publication fails', async () => {
+    const f = fixture({ projectInitiallyExists: false });
+    f.failResourceShare();
+
+    await expect(f.service.share('user:brand', scope()))
+      .rejects.toThrow('design-system publish failed');
+
+    expect(f.ensureProjectId).toHaveBeenCalledOnce();
+    expect(f.projectVisibility.get('project-brand')).toBe('personal');
+    expect(f.shared.size).toBe(0);
+    expect(f.calls).toEqual([
+      'project:ensure:project-brand',
+      'resource:share:user:brand',
     ]);
   });
 
@@ -349,18 +433,34 @@ describe('design-system team share linked backing project', () => {
     };
 
     await expect(f.service.sharedResources(adminScope)).resolves.toEqual([
-      { id: 'user:brand', canUnshare: false },
+      { id: 'user:brand', ownerMemberId: 'member-owner', canUnshare: false },
     ]);
   });
 
-  it('fails closed when no exact linked-project creator can be proven', async () => {
+  it('fails closed when the hub omits exact linked-project creator evidence', async () => {
     const f = fixture();
     await f.service.share('user:brand', scope());
-    f.clearProjectCreator();
+    f.clearHubOwner();
 
     await expect(f.service.sharedResources(scope())).resolves.toEqual([
       { id: 'user:brand', canUnshare: false },
     ]);
+  });
+
+  it('derives list capability without running full project preparation per resource', async () => {
+    const f = fixture();
+    f.shared.add('user:brand');
+    f.shared.add('user:brand-two');
+    f.shared.add('user:brand-three');
+    f.prepare.mockClear();
+
+    await expect(f.service.sharedResources(scope())).resolves.toEqual([
+      { id: 'user:brand', ownerMemberId: 'member-owner', canUnshare: true },
+      { id: 'user:brand-two', ownerMemberId: 'member-owner', canUnshare: true },
+      { id: 'user:brand-three', ownerMemberId: 'member-owner', canUnshare: true },
+    ]);
+
+    expect(f.prepare).not.toHaveBeenCalled();
   });
 
   it('fails closed across Workspace A→B before either hub mutation runs', async () => {

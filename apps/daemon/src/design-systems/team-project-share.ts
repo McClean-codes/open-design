@@ -33,7 +33,19 @@ export interface DesignSystemBackingProjectBinding {
 }
 
 export interface CreateDesignSystemBackingProjectPreparerOptions {
-  resolveProjectId(resourceId: string): Promise<string | null> | string | null;
+  resolveProjectId(
+    resourceId: string,
+    scope: TeamResourceRequestScope,
+  ): Promise<string | null> | string | null;
+  /**
+   * Materialize and bind a missing backing project under the request's exact
+   * Workspace identity. This is mutation-only; collection reads must never
+   * invoke it.
+   */
+  ensureProjectId?(
+    resourceId: string,
+    scope: TeamResourceRequestScope,
+  ): Promise<string | null> | string | null;
   projectExists(projectId: string): boolean;
   getProjectBinding(projectId: string): DesignSystemBackingProjectBinding | undefined;
   publishProject(
@@ -76,7 +88,10 @@ export function createDesignSystemBackingProjectPreparer(
   options: CreateDesignSystemBackingProjectPreparerOptions,
 ): CreateLinkedProjectTeamResourceShareServiceOptions['prepare'] {
   return async (resourceId, scope) => {
-    const projectId = (await options.resolveProjectId(resourceId))?.trim() ?? '';
+    let projectId = (await options.resolveProjectId(resourceId, scope))?.trim() ?? '';
+    if ((!projectId || !options.projectExists(projectId)) && options.ensureProjectId) {
+      projectId = (await options.ensureProjectId(resourceId, scope))?.trim() ?? '';
+    }
     if (!projectId || !options.projectExists(projectId)) {
       throw new Error('design system backing project is unavailable');
     }
@@ -247,19 +262,14 @@ export function createLinkedProjectTeamResourceShareService(
     sharedIds: (scope) => resource.sharedIds(scope),
     async sharedResources(scope, readOptions) {
       const resources = await resource.sharedResources(scope, readOptions);
-      await Promise.all(resources.map(async (candidate) => {
-        if (!candidate.canUnshare) return;
-        try {
-          // Reuse the exact same creator/Workspace preflight as the mutation
-          // path. The generic hub grants owner/admin broadly, but linked
-          // design-system projects are deliberately single-writer.
-          await options.prepare(candidate.id, scope);
-        } catch {
-          // Mutate in place to preserve the non-enumerable hubResourceId used
-          // by teammate materialization.
-          candidate.canUnshare = false;
-        }
-      }));
+      for (const candidate of resources) {
+        // Generic hub capability grants Workspace owner/admin broadly. Linked
+        // design-system projects are single-writer, so the authoritative hub
+        // owner id is the cheap collection-level creator evidence. Full local
+        // project resolution/creation remains mutation-only.
+        candidate.canUnshare = candidate.canUnshare === true
+          && candidate.ownerMemberId === scope.principal.memberId;
+      }
       return resources;
     },
     isShared: (resourceId, scope) => resource.isShared(resourceId, scope),

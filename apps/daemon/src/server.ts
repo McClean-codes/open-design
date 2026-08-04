@@ -5782,10 +5782,18 @@ export async function startServer({
   const designSystemsTeamShare = createLinkedProjectTeamResourceShareService({
     resource: designSystemsTeamResourceShare,
     prepare: createDesignSystemBackingProjectPreparer({
-      resolveProjectId: async (resourceId) =>
-        (await listAllDesignSystems())
+      resolveProjectId: async (resourceId, scope) =>
+        (await listAllDesignSystems({
+          workspaceId: scope.principal.teamId,
+          workspaceMemberId: scope.principal.memberId,
+        }))
           .find((candidate) => candidate.id === resourceId)
           ?.projectId ?? null,
+      ensureProjectId: async (resourceId, scope) =>
+        (await ensureUserDesignSystemWorkspaceProject(db, resourceId, {
+          workspaceId: scope.principal.teamId,
+          workspaceMemberId: scope.principal.memberId,
+        }))?.project.id ?? null,
       projectExists: (projectId) => Boolean(getProject(db, projectId)),
       getProjectBinding: (projectId) =>
         getWorkspaceProjectByProjectId(db, projectId),
