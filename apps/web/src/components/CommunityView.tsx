@@ -55,7 +55,13 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
   const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
   const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
+  const pageViewRecordedRef = useRef(false);
   useEffect(() => {
+    // React StrictMode replays mount effects in development. Keep one
+    // Community exposure per mounted view so local validation and production
+    // dashboards share the same one-view/one-event contract.
+    if (pageViewRecordedRef.current) return;
+    pageViewRecordedRef.current = true;
     trackPageView(analytics.track, { page_name: 'community' });
   }, [analytics.track]);
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
