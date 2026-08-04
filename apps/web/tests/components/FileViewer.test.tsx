@@ -1803,6 +1803,45 @@ describe('FileViewer SVG artifacts', () => {
     expect(markup).toContain('sandbox="allow-scripts allow-downloads"');
   });
 
+  it('does not mint a second preview capability for Workspace URL-load HTML', () => {
+    const context = teamWorkspaceContext();
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL) => (
+      Response.json({ deployments: [] })
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProjectWorkspace(
+      <FileViewer
+        projectId="project-1"
+        projectKind="prototype"
+        file={baseFile({
+          name: 'page.html',
+          path: 'page.html',
+          mime: 'text/html',
+          kind: 'html',
+          artifactManifest: {
+            version: 1,
+            kind: 'html',
+            title: 'Page',
+            entry: 'page.html',
+            renderer: 'html',
+            exports: ['html'],
+          },
+        })}
+        liveHtml="<html><body>URL loaded</body></html>"
+      />,
+      context,
+    );
+
+    expect(
+      (screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement)
+        .getAttribute('data-od-render-mode'),
+    ).toBe('url-load');
+    expect(fetchMock.mock.calls.some(([input]) => (
+      String(input).includes('/api/projects/project-1/preview-url')
+    ))).toBe(false);
+  });
+
   it('keeps browser-owned URL preview navigation authorized by query scope', () => {
     const file = baseFile({
       name: 'team-page.html',

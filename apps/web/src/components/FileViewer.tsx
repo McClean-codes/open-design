@@ -9097,26 +9097,6 @@ function HtmlViewer({
   ]);
 
   useEffect(() => {
-    if (!workspaceActive || projectResourceReadBlocked || !workspaceContext) return;
-    let cancelled = false;
-    const identity = srcDocPreviewBaseIdentity;
-    void fetchProjectPreviewBaseHref(projectId, file.name, workspaceContext).then((href) => {
-      if (cancelled || !href) return;
-      setScopedSrcDocPreviewBase({ identity, href });
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    file.name,
-    projectId,
-    projectResourceReadBlocked,
-    srcDocPreviewBaseIdentity,
-    workspaceActive,
-    workspaceContext,
-  ]);
-
-  useEffect(() => {
     if (!workspaceActive) return;
     const requestSeq = ++deploymentsLoadSeqRef.current;
     let cancelled = false;
@@ -9523,6 +9503,31 @@ function HtmlViewer({
     projectRootAssetRefs: projectRootAssetRefs || scopedRelativeAssetRefs,
   };
   const useUrlLoadPreview = shouldUrlLoadHtmlPreview(urlLoadDecision) && !manualEditRequiresSrcDoc;
+  useEffect(() => {
+    if (
+      useUrlLoadPreview
+      || !workspaceActive
+      || projectResourceReadBlocked
+      || !workspaceContext
+    ) return;
+    let cancelled = false;
+    const identity = srcDocPreviewBaseIdentity;
+    void fetchProjectPreviewBaseHref(projectId, file.name, workspaceContext).then((href) => {
+      if (cancelled || !href) return;
+      setScopedSrcDocPreviewBase({ identity, href });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    file.name,
+    projectId,
+    projectResourceReadBlocked,
+    srcDocPreviewBaseIdentity,
+    useUrlLoadPreview,
+    workspaceActive,
+    workspaceContext,
+  ]);
   const basePreviewSrcUrl = useMemo(
     () => appendResourceQuery(
       projectRawUrl(projectId, file.name, workspaceContext),
