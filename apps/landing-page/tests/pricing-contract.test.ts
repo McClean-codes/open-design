@@ -101,6 +101,10 @@ describe("pricing contract", () => {
     assert.ok(disclaimerRule);
     assert.doesNotMatch(disclaimerRule, /border-top:/);
     assert.doesNotMatch(disclaimerRule, /font-weight:/);
+    assert.match(disclaimerRule, /width:\s*100%;/);
+    assert.match(disclaimerRule, /max-width:\s*none;/);
+    assert.match(disclaimerRule, /margin:\s*0 0 36px;/);
+    assert.match(disclaimerRule, /padding:\s*0;/);
     assert.doesNotMatch(page, /权益生效后连续 7 天/);
     assert.doesNotMatch(page, /2026-08-22T00:00:00\+08:00/);
     assert.doesNotMatch(page, /限时抢购/);
