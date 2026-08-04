@@ -135,7 +135,7 @@ const personalPlans = [
                   <strong>DeepSeek V4 Flash 无限使用</strong>
                   <span>8 月 6 日—8 月 13 日 · 个人与团队付费用户同步生效</span>
                 </div>
-                <b data-campaign-countdown>7天 00:00:00</b>
+                <b data-campaign-countdown>活动剩余 7天 00:00:00</b>
               </div>
               <p class="campaign-disclaimer">套餐内的<strong>无限制模型额度</strong>与<strong>免费生成次数</strong>，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。</p>
             </div>
@@ -177,7 +177,7 @@ const personalPlans = [
     const hours = Math.floor((totalSeconds % 86400) / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    campaignCountdown.textContent = `${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    campaignCountdown.textContent = `活动剩余 ${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
 
   function setAudience(audience: 'personal' | 'team') {

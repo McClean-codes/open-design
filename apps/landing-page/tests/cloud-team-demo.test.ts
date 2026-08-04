@@ -15,6 +15,8 @@ test('cloud team upgrade demo leads the benefit list with the campaign entitleme
   assert.match(source, /class="campaign-banner"/);
   assert.match(source, /background: radial-gradient/);
   assert.match(source, /data-campaign-countdown/);
+  assert.match(source, /活动剩余 7天 00:00:00/);
+  assert.match(source, /campaignCountdown\.textContent = `活动剩余 \$\{days\}天/);
   assert.match(source, /campaignCountdownEndsAt = Date\.now\(\) \+ 7 \* 24 \* 60 \* 60 \* 1000/);
   assert.match(source, /\.campaign-banner \{[^}]*border:\s*0;/);
   assert.match(source, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
