@@ -80,6 +80,7 @@ export function currentUserDirectoryEntry(
  */
 export function useTeamMembers(
   currentUser?: CollabCloudMemberDirectoryEntry | null,
+  workspaceContextOverride?: WorkspaceCollabContext | null,
 ): TeamMembersState {
   // The identity lives both on the request and in its cache key. When it
   // changes, the hook immediately re-reads that workspace's roster instead of
@@ -89,11 +90,15 @@ export function useTeamMembers(
   // `useWorkspaceContext` shares one coalesced request and one module-level cache
   // across every mounted consumer, and both call sites of this hook already mount
   // it themselves.
-  const {
-    context: workspaceContext,
-    identityChangePending,
-    accountGeneration = 0,
-  } = useWorkspaceContext();
+  const workspaceContextState = useWorkspaceContext();
+  const hasWorkspaceContextOverride = workspaceContextOverride !== undefined;
+  const workspaceContext = hasWorkspaceContextOverride
+    ? workspaceContextOverride
+    : workspaceContextState.context;
+  const identityChangePending = hasWorkspaceContextOverride
+    ? false
+    : workspaceContextState.identityChangePending;
+  const accountGeneration = workspaceContextState.accountGeneration ?? 0;
   // During an unseeded account transition the context still describes the
   // account being left. Do not create or warm the next account's store until
   // useWorkspaceContext resolves its verified context.

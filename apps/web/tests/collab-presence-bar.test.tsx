@@ -78,8 +78,54 @@ describe('PresenceBar', () => {
     expect(screen.getByRole('group').getAttribute('aria-label')).toContain('including you');
   });
 
-  it('falls back to the member id when there is no name', () => {
-    render(<PresenceBar members={[{ memberId: 'zx' }]} />);
-    expect(screen.getByText('ZX')).toBeTruthy();
+  it('enriches a sparse presence roster from the Team member directory', () => {
+    render(
+      <PresenceBar
+        members={[{ memberId: 'member-peer' }]}
+        resolveMember={(memberId) =>
+          memberId === 'member-peer'
+            ? {
+                memberId,
+                displayName: 'Ma Shu',
+                role: 'admin',
+              }
+            : null}
+      />,
+    );
+
+    const avatar = screen.getByText('MS');
+    expect(avatar.getAttribute('title')).toBe('Ma Shu');
+    expect(avatar.getAttribute('data-role')).toBe('admin');
+  });
+
+  it('hides a sparse other member until the directory resolves it', () => {
+    const { container, rerender } = render(
+      <PresenceBar
+        selfMember={{ memberId: 'self', name: 'Viewer' }}
+        selfMemberId="self"
+        members={[{ memberId: 'opaque-workspace-member-id' }]}
+        resolveMember={() => null}
+      />,
+    );
+    expect(container.firstChild).toBeNull();
+    expect(screen.queryByText('OP')).toBeNull();
+
+    rerender(
+      <PresenceBar
+        selfMember={{ memberId: 'self', name: 'Viewer' }}
+        selfMemberId="self"
+        members={[{ memberId: 'opaque-workspace-member-id' }]}
+        resolveMember={(memberId) =>
+          memberId === 'opaque-workspace-member-id'
+            ? {
+                memberId,
+                displayName: 'Resolved Teammate',
+                role: 'member',
+              }
+            : null}
+      />,
+    );
+    expect(screen.getByText('RT')).toBeTruthy();
+    expect(screen.queryByText('OP')).toBeNull();
   });
 });

@@ -237,6 +237,10 @@ import { localizePluginTitle } from './plugins-home/localization';
 import { DesignSystemPicker } from './DesignSystemPicker';
 import { PresenceBar } from '../collab/PresenceBar';
 import { useProjectCollab } from '../collab/useProjectCollab';
+import {
+  currentUserDirectoryEntry,
+  useTeamMembers,
+} from '../collab/useTeamMembers';
 import { workspaceIdentityCacheKey } from '../collab/workspace-identity';
 import {
   useWorkspaceContext,
@@ -1883,6 +1887,10 @@ export function ProjectView({
     workspaceContextLoading: projectWorkspaceScopeState.loading,
     presenceFilePath: project?.metadata?.entryFile ?? null,
   });
+  const { resolve: resolvePresenceMember } = useTeamMembers(
+    currentUserDirectoryEntry(projectRunWorkspaceContext),
+    projectRunWorkspaceContext,
+  );
   // Tab layout is private browser state for a read-only Team viewer. Keep its
   // identity-partitioned local cache working, but only let a positively proven
   // project writer update the daemon's shared project row. Personal and legacy
@@ -10686,6 +10694,7 @@ export function ProjectView({
             <PresenceBar
               members={projectCollab.present}
               selfMember={projectCollab.member}
+              resolveMember={resolvePresenceMember}
               {...(projectCollab.member ? { selfMemberId: projectCollab.member.memberId } : {})}
             />
           ) : null}

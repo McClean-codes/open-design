@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import type { CollabCloudMemberDirectoryEntry } from '@open-design/contracts';
 import type { CollabPresenceMember } from './collab-client';
 import styles from './PresenceBar.module.css';
 import { useT } from '../i18n';
@@ -11,10 +12,13 @@ export interface PresenceBarProps {
   selfMemberId?: string;
   /** Current viewer identity. Lets the bar render self before the first heartbeat returns. */
   selfMember?: CollabPresenceMember | null;
+  /** Resolve sparse heartbeat member ids through the Workspace directory. */
+  resolveMember?: (
+    memberId: string,
+  ) => CollabCloudMemberDirectoryEntry | null;
 }
 
-function initials(member: CollabPresenceMember): string {
-  const source = (member.name?.trim() || member.memberId).trim();
+function initials(source: string): string {
   const parts = source.split(/\s+/).filter(Boolean);
   if (parts.length >= 2) {
     const first = parts[0]![0] ?? '';
@@ -24,8 +28,10 @@ function initials(member: CollabPresenceMember): string {
   return source.slice(0, 2).toUpperCase();
 }
 
-function displayName(member: CollabPresenceMember): string {
-  return member.name?.trim() || member.memberId;
+function displayName(
+  member: CollabPresenceMember,
+): string {
+  return member.name?.trim() ?? '';
 }
 
 function roleLabel(member: CollabPresenceMember, t: ReturnType<typeof useT>): string {
@@ -69,18 +75,40 @@ export function PresenceBar({
   max = 5,
   selfMemberId,
   selfMember = null,
+  resolveMember,
 }: PresenceBarProps) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const popoverId = useId();
+  const enrich = (member: CollabPresenceMember): CollabPresenceMember => {
+    const directoryEntry = resolveMember?.(member.memberId);
+    if (!directoryEntry) return member;
+    return {
+      ...member,
+      name: directoryEntry.displayName.trim() || member.name,
+      role: directoryEntry.role,
+    };
+  };
   const resolvedSelf =
-    selfMember ??
-    (selfMemberId ? members.find((m) => m.memberId === selfMemberId) ?? { memberId: selfMemberId } : null);
+    (selfMember ? enrich(selfMember) : null) ??
+    (selfMemberId
+      ? enrich(
+          members.find((m) => m.memberId === selfMemberId)
+          ?? { memberId: selfMemberId },
+        )
+      : null);
+  const enrichedMembers = members.map(enrich);
   const others = resolvedSelf
-    ? members.filter((m) => m.memberId !== resolvedSelf.memberId)
-    : members;
-  const ordered = resolvedSelf ? [resolvedSelf, ...others] : others;
+    ? enrichedMembers.filter((m) => m.memberId !== resolvedSelf.memberId)
+    : enrichedMembers;
+  // A Team presence id has already passed membership authorization, so a
+  // missing directory entry is a transient convergence problem, not a license
+  // to expose the transport id or invent a fake "Member" identity. Keep that
+  // avatar hidden until the shared directory store resolves it; the store's
+  // last-good snapshot keeps already resolved identities visible on failures.
+  const ordered = (resolvedSelf ? [resolvedSelf, ...others] : others)
+    .filter((member) => Boolean(displayName(member)));
 
   const shown = ordered.slice(0, max);
   const overflow = ordered.length - shown.length;
@@ -139,7 +167,7 @@ export function PresenceBar({
             data-self={resolvedSelf?.memberId === member.memberId ? 'true' : undefined}
             title={displayName(member)}
           >
-            {initials(member)}
+            {initials(displayName(member))}
           </span>
         ))}
         {overflow > 0 && (
@@ -164,7 +192,7 @@ export function PresenceBar({
                     data-role={member.role ?? 'member'}
                     aria-hidden="true"
                   >
-                    {initials(member)}
+                    {initials(displayName(member))}
                     <span className={styles.onlineDot} />
                   </span>
                   <span className={styles.memberText}>
