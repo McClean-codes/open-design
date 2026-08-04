@@ -97,6 +97,9 @@ import {
 } from './components/amrLoginPolling';
 import { CollabDemoView } from './collab/CollabDemoView';
 import {
+  WorkspaceMemberDirectoryPreloader,
+} from './collab/WorkspaceMemberDirectoryPreloader';
+import {
   beginTeamProjectMetadataRefresh,
   fetchTeamProjectCatalogEntry as fetchScopedTeamProjectCatalogEntry,
   fetchTeamProjectsCatalog,
@@ -779,6 +782,7 @@ export function App() {
   return (
     <MotionConfig reducedMotion="user">
       <IframeKeepAliveProvider>
+        <WorkspaceMemberDirectoryPreloader />
         <AppInner />
       </IframeKeepAliveProvider>
     </MotionConfig>
