@@ -35,6 +35,10 @@ import {
   openExternalUrl,
   projectRawUrl,
 } from '../providers/registry';
+import {
+  workspaceIdentityCacheKey,
+  workspaceResourceUrl,
+} from '../collab/workspace-identity';
 import { buildSrcdoc } from '../runtime/srcdoc';
 import {
   fontStack,
@@ -84,6 +88,7 @@ interface KitLogoProps {
   faviconSize: number;
   className?: string;
   fallbackClassName?: string;
+  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 export function BrandLogo({
@@ -95,17 +100,19 @@ export function BrandLogo({
   faviconSize,
   className,
   fallbackClassName,
+  workspaceContext,
 }: KitLogoProps) {
   const bid = brandId ?? id;
   const first: LogoStage = bid ? 'brand' : logoSrc ? 'custom' : host ? 'favicon' : 'letter';
+  const workspaceIdentity = workspaceIdentityCacheKey(workspaceContext);
   const [stage, setStage] = useState<LogoStage>(first);
   useEffect(() => {
     setStage(first);
-  }, [first, bid, logoSrc, host]);
+  }, [first, bid, logoSrc, host, workspaceIdentity]);
 
   const src =
     stage === 'brand' && bid
-      ? `/api/brands/${encodeURIComponent(bid)}/logo`
+      ? workspaceResourceUrl(`/api/brands/${encodeURIComponent(bid)}/logo`, workspaceContext)
       : stage === 'custom' && logoSrc
         ? logoSrc
         : stage === 'favicon' && host
@@ -1102,6 +1109,7 @@ function DesignKitViewInner({
               faviconSize={128}
               className={styles.coverLogo}
               fallbackClassName={styles.coverLogoFallback}
+              workspaceContext={workspaceContext}
             />
           </button>
         ) : (
@@ -1113,6 +1121,7 @@ function DesignKitViewInner({
             faviconSize={128}
             className={styles.coverLogo}
             fallbackClassName={styles.coverLogoFallback}
+            workspaceContext={workspaceContext}
           />
         )}
       </div>
@@ -1137,6 +1146,7 @@ function DesignKitViewInner({
                 faviconSize={40}
                 className={styles.previewHeadLogoImage}
                 fallbackClassName={styles.previewHeadLogoFallback}
+                workspaceContext={workspaceContext}
               />
             </span>
           ) : null}

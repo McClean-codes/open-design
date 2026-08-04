@@ -83,6 +83,23 @@ export interface WorkspaceContextState {
 }
 
 /**
+ * Exact identity for read-only Workspace resources.
+ *
+ * Production providers always publish `resourceReadIdentity`; when it is
+ * present, its null value is meaningful and must fail closed instead of
+ * falling back to a stale richer context during a Workspace switch. The
+ * `undefined` compatibility lane is only for older test/provider doubles.
+ */
+export function workspaceResourceReadContext(
+  state: WorkspaceContextState,
+): WorkspaceCollabContext | null {
+  if (state.resourceReadIdentity !== undefined) {
+    return state.resourceReadIdentity?.context ?? null;
+  }
+  return state.context;
+}
+
+/**
  * Whether an Open Design Cloud (AMR) run has a cloud identity that could pay
  * for it.
  *

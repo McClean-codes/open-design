@@ -10618,6 +10618,7 @@ export function ProjectView({
                   variant="icon"
                   designSystems={designSystems}
                   selectedId={projectDesignSystemId ?? null}
+                  workspaceContext={projectRunWorkspaceContext}
                   disabled={projectCollab.viewerOnly}
                   onChange={handleChangeDesignSystemId}
                 />
@@ -10765,6 +10766,7 @@ export function ProjectView({
       {contextDesignSystemDetails ? (
         <DesignSystemPreviewModal
           system={contextDesignSystemDetails}
+          workspaceContext={projectRunWorkspaceContext}
           initialViewId="kit"
           onClose={() => setContextDesignSystemDetails(null)}
         />

@@ -28,6 +28,14 @@ export interface CreateWorkspaceOwnedDesignSystemDeps {
   deleteUserDesignSystem?: (root: string, id: string) => Promise<boolean>;
 }
 
+export interface DeleteWorkspaceOwnedDesignSystemDeps {
+  deleteUserDesignSystem?: (root: string, id: string) => Promise<boolean>;
+  deleteWorkspaceResourceByResourceId: (
+    resourceType: 'design_system',
+    resourceId: string,
+  ) => unknown;
+}
+
 /**
  * Persist one user design system and its Workspace ownership envelope.
  *
@@ -86,4 +94,23 @@ export async function createWorkspaceOwnedDesignSystem(
     await remove(root, created.id).catch(() => false);
     throw error;
   }
+}
+
+/**
+ * Delete one user design system and then remove its Workspace envelope.
+ *
+ * The filesystem is the canonical payload. Keep the ownership envelope when
+ * that delete fails so callers do not expose unbound bytes through a later
+ * catalog scan. This mirrors the normal design-system DELETE route ordering.
+ */
+export async function deleteWorkspaceOwnedDesignSystem(
+  root: string,
+  id: string,
+  deps: DeleteWorkspaceOwnedDesignSystemDeps,
+): Promise<boolean> {
+  const remove = deps.deleteUserDesignSystem ?? deleteUserDesignSystem;
+  const removed = await remove(root, id);
+  if (!removed) return false;
+  deps.deleteWorkspaceResourceByResourceId('design_system', id);
+  return true;
 }

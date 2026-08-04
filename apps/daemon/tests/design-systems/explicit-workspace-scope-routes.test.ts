@@ -20,8 +20,10 @@ import {
 import { workspaceContextFromDirectoryItem } from '../../src/collab/vela-workspace-context.js';
 import { registerDesignSystemRoutes } from '../../src/routes/design-systems.js';
 import { registerStaticResourceRoutes } from '../../src/routes/static-resource.js';
+import { registerBrandRoutes } from '../../src/brand-routes.js';
 import type { DesignSystemSummary } from '../../src/design-systems/index.js';
 import * as designSystems from '../../src/design-systems/index.js';
+import { createWorkspaceOwnedDesignSystem } from '../../src/design-systems/workspace-owned-create.js';
 
 let server: http.Server | null = null;
 let tempDir: string | null = null;
@@ -229,6 +231,123 @@ function registerCreateRoute(
 }
 
 describe('design-system explicit Workspace request scope', () => {
+  it('lists a scoped brand draft immediately only for its exact Workspace member', async () => {
+    tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-brand-draft-catalog-'));
+    const routePaths = commonPaths(tempDir);
+    mkdirSync(routePaths.BRANDS_DIR, { recursive: true });
+    mkdirSync(routePaths.PROJECTS_DIR, { recursive: true });
+    mkdirSync(routePaths.SKILLS_DIR, { recursive: true });
+    mkdirSync(routePaths.USER_DESIGN_SYSTEMS_DIR, { recursive: true });
+    const db = openDatabase(tempDir, { dataDir: tempDir });
+    const requestContext = (request: unknown) => {
+      const req = request as express.Request;
+      return workspaceContextFromDirectoryItem({
+      workspaceId: req.get('x-od-workspace-id') ?? '',
+      workspaceName: 'Workspace fixture',
+      workspaceType: 'team',
+      workspaceMemberId: req.get('x-od-workspace-member-id') ?? '',
+      role: 'owner',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+      });
+    };
+    const requestResourceContext = (request: unknown) => {
+      const context = requestContext(request);
+      return {
+        workspaceId: context.workspaceId,
+        workspaceType: context.workspaceType,
+        workspaceTypeAsserted: context.workspaceType,
+        appUserId: context.workspaceMemberId,
+        workspaceMemberId: context.workspaceMemberId,
+        role: context.role,
+        memberStatus: context.memberStatus,
+        lifecycleState: context.lifecycleState,
+        canShareProjects: context.permissions.canShareProjects,
+        canWriteSyncedFiles: context.permissions.canWriteSyncedFiles,
+      };
+    };
+    const app = express();
+    app.use(express.json());
+    registerStaticResourceRoutes(app, {
+      db,
+      verifyWorkspaceRequestAuthority: async (req: unknown) => ({
+        ok: true as const,
+        context: requestContext(req),
+      }),
+      http: {
+        createSseResponse: () => undefined,
+        getPublicBaseUrl: () => '',
+        isLocalSameOrigin: () => true,
+        requireLocalDaemonRequest: (_req: unknown, _res: unknown, next: () => void) => next(),
+        resolvedPortRef: { current: 0 },
+        sendApiError: (res: express.Response, status: number, code: string, message: string) =>
+          res.status(status).json({ error: code, message }),
+        sendLiveArtifactRouteError: () => undefined,
+        sendMulterError: () => undefined,
+      },
+      paths: routePaths,
+      resources: {
+        listAllDesignSystems: async (options?: { workspaceId?: string | null }) =>
+          designSystems.listDesignSystems(routePaths.USER_DESIGN_SYSTEMS_DIR, {
+            idPrefix: 'user:',
+            source: 'user',
+            isEditable: true,
+            defaultStatus: 'draft',
+            ...(options?.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+          }),
+        resolveWorkspaceScope: async (req?: express.Request) =>
+          req?.get('x-od-workspace-id') ?? null,
+        listAllSkills: async () => [],
+        listAllDesignTemplates: async () => [],
+        listAllSkillLikeEntries: async () => [],
+        mimeFor: () => 'application/octet-stream',
+      },
+    });
+    registerBrandRoutes(app, {
+      brandsRoot: routePaths.BRANDS_DIR,
+      userDesignSystemsRoot: routePaths.USER_DESIGN_SYSTEMS_DIR,
+      projectsRoot: routePaths.PROJECTS_DIR,
+      skillsRoot: routePaths.SKILLS_DIR,
+      dataDir: routePaths.RUNTIME_DATA_DIR,
+      db,
+      resolveCreatedProjectHome: async (req) => requestResourceContext(req),
+      resolveDesignSystemWorkspaceId: async (req) => requestContext(req).workspaceId,
+      createWorkspaceOwnedDesignSystem: (root, input, context) =>
+        createWorkspaceOwnedDesignSystem(root, input, context, {
+          ensureWorkspaceResource: (resourceType, workspaceId, resourceId, envelope) =>
+            ensureWorkspaceResource(db, resourceType, workspaceId, resourceId, envelope),
+        }),
+      prefetch: async () => null,
+      logoFallback: async () => ({ changed: false }),
+      imageryFallback: async () => ({ changed: false }),
+    });
+    const baseUrl = await listen(app);
+    const created = await fetch(`${baseUrl}/api/brands`, {
+      method: 'POST',
+      headers: { ...workspaceHeaders(), 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://catalog.example.com' }),
+    });
+    expect(created.status).toBe(200);
+    const createdBody = await created.json() as { designSystemId: string };
+
+    const listIds = async (headers: Record<string, string>) => {
+      const response = await fetch(`${baseUrl}/api/design-systems`, { headers });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { designSystems: Array<{ id: string }> };
+      return body.designSystems.map((system) => system.id);
+    };
+    await expect(listIds(workspaceHeaders())).resolves.toContain(createdBody.designSystemId);
+    await expect(listIds({
+      ...workspaceHeaders(),
+      'x-od-workspace-member-id': 'member-b',
+    })).resolves.not.toContain(createdBody.designSystemId);
+    await expect(listIds({
+      ...workspaceHeaders(),
+      'x-od-workspace-id': 'workspace-b',
+      'x-od-workspace-member-id': 'member-b',
+    })).resolves.not.toContain(createdBody.designSystemId);
+  });
+
   it('rejects an install id already bound to another member before writing any directory entry', async () => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), 'od-ds-install-conflict-'));
     const routePaths = commonPaths(tempDir);

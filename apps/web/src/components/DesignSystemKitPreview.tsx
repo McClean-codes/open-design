@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { BrandSummary } from '@open-design/contracts';
+import type { BrandSummary, WorkspaceCollabContext } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { fetchDesignSystem } from '../providers/registry';
 import {
@@ -12,7 +12,10 @@ import {
   designSystemLogoHost,
   isUserSystem,
 } from './design-system-metadata';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
+import {
+  useWorkspaceContext,
+  workspaceResourceReadContext,
+} from '../collab/useWorkspaceContext';
 
 interface DesignSystemKitPreviewProps {
   system: DesignSystemSummary;
@@ -21,6 +24,7 @@ interface DesignSystemKitPreviewProps {
   showCover?: boolean;
   className?: string;
   dataTestId?: string;
+  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 export function DesignSystemKitPreview({
@@ -30,6 +34,7 @@ export function DesignSystemKitPreview({
   showCover = false,
   className,
   dataTestId = 'design-system-kit-preview',
+  workspaceContext,
 }: DesignSystemKitPreviewProps) {
   if (brandSummary) {
     return (
@@ -39,6 +44,7 @@ export function DesignSystemKitPreview({
         showCover={showCover}
         className={className}
         dataTestId={dataTestId}
+        workspaceContext={workspaceContext}
       />
     );
   }
@@ -50,6 +56,7 @@ export function DesignSystemKitPreview({
       showCover={showCover}
       className={className}
       dataTestId={dataTestId}
+      workspaceContext={workspaceContext}
     />
   );
 }
@@ -60,14 +67,20 @@ function BrandDesignSystemKitPreview({
   showCover,
   className,
   dataTestId,
+  workspaceContext: explicitWorkspaceContext,
 }: {
   summary: BrandSummary;
   variant: 'panel' | 'compact';
   showCover: boolean;
   className?: string;
   dataTestId: string;
+  workspaceContext?: WorkspaceCollabContext | null;
 }) {
-  const kit = brandSummaryToKit(summary);
+  const ambientWorkspaceContext = workspaceResourceReadContext(useWorkspaceContext());
+  const workspaceContext = explicitWorkspaceContext === undefined
+    ? ambientWorkspaceContext
+    : explicitWorkspaceContext;
+  const kit = brandSummaryToKit(summary, workspaceContext);
   return (
     <div className={className} data-testid={dataTestId}>
       <DesignKitView
@@ -75,6 +88,7 @@ function BrandDesignSystemKitPreview({
         variant={variant}
         showCover={showCover}
         dataTestId={`${dataTestId}-view`}
+        workspaceContext={workspaceContext}
       />
     </div>
   );
@@ -86,15 +100,20 @@ function RegistryDesignSystemKitPreview({
   showCover,
   className,
   dataTestId,
+  workspaceContext: explicitWorkspaceContext,
 }: {
   system: DesignSystemSummary;
   variant: 'panel' | 'compact';
   showCover: boolean;
   className?: string;
   dataTestId: string;
+  workspaceContext?: WorkspaceCollabContext | null;
 }) {
   const t = useT();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const ambientWorkspaceContext = workspaceResourceReadContext(useWorkspaceContext());
+  const workspaceContext = explicitWorkspaceContext === undefined
+    ? ambientWorkspaceContext
+    : explicitWorkspaceContext;
   const [detail, setDetail] = useState<DesignSystemDetail | null>(null);
   const [detailResolved, setDetailResolved] = useState(false);
 

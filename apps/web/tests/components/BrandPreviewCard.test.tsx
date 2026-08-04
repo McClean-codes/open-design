@@ -3,7 +3,18 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BrandSummary } from '@open-design/contracts';
+import type { BrandSummary, WorkspaceCollabContext } from '@open-design/contracts';
+
+const workspaceContextState = vi.hoisted(() => ({
+  context: null as WorkspaceCollabContext | null,
+  resourceReadIdentity: undefined,
+  loading: false,
+}));
+
+vi.mock('../../src/collab/useWorkspaceContext', () => ({
+  useWorkspaceContext: () => workspaceContextState,
+  workspaceResourceReadContext: (state: typeof workspaceContextState) => state.context,
+}));
 
 vi.mock('../../src/providers/registry', () => ({
   projectRawUrl: (projectId: string, filePath: string) => `/raw/${projectId}/${filePath}`,
@@ -51,6 +62,7 @@ describe('BrandPreviewCard', () => {
         json: async () => ({}),
       }),
     );
+    workspaceContextState.context = null;
   });
 
   afterEach(() => {
@@ -99,6 +111,55 @@ describe('BrandPreviewCard', () => {
 
     await waitFor(() => {
       expect(screen.queryByRole('dialog', { name: /landing page/i })).toBeNull();
+    });
+  });
+
+  it('keeps the card in place when a canonical scoped delete is denied', async () => {
+    workspaceContextState.context = {
+      workspaceId: 'workspace-delete',
+      workspaceType: 'team',
+      workspaceMemberId: 'member-delete',
+      role: 'member',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+      billingState: 'active',
+      planId: null,
+      providerMode: 'platform_credits',
+      seatSummary: { seatLimit: 3, usedSeats: 2, availableSeats: 1, isSeatFull: false },
+      permissions: {
+        canManageMembers: false,
+        canManageBilling: false,
+        canInviteMembers: false,
+        canManageAutoRecharge: false,
+        canShareProjects: true,
+        canWriteSyncedFiles: false,
+        canViewWorkspaceSettings: false,
+        canManageSharedResources: false,
+      },
+    };
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const fetchMock = vi.mocked(fetch);
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 403 } as Response);
+    const onChanged = vi.fn();
+
+    render(
+      <I18nProvider initial="en">
+        <BrandPreviewCard summary={rampBrand} variant="panel" onChanged={onChanged} />
+      </I18nProvider>,
+    );
+    fireEvent.click(screen.getByTestId('brand-preview-delete'));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/brands/brand-ramp', expect.objectContaining({
+        method: 'DELETE',
+        headers: expect.objectContaining({
+          'x-od-workspace-id': 'workspace-delete',
+          'x-od-workspace-member-id': 'member-delete',
+        }),
+      }));
+      expect(onChanged).not.toHaveBeenCalled();
+      expect(window.location.pathname).toBe('/brands/brand-ramp');
+      expect((screen.getByTestId('brand-preview-delete') as HTMLButtonElement).disabled).toBe(false);
     });
   });
 });

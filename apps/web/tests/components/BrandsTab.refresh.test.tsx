@@ -3,7 +3,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { BrandSummary } from '@open-design/contracts';
+import type { BrandSummary, WorkspaceCollabContext } from '@open-design/contracts';
 
 // EntryShell keeps the Brands sub-view mounted and only toggles visibility, so
 // the route is the signal for "Brands is the active view". A mutable hoisted
@@ -12,6 +12,12 @@ const routerState = vi.hoisted(() => ({
   route: { kind: 'home', view: 'brands', brandId: undefined } as Record<string, unknown>,
 }));
 const fetchBrandsMock = vi.hoisted(() => vi.fn(async (): Promise<BrandSummary[]> => []));
+const runExtractMock = vi.hoisted(() => vi.fn(async () => null));
+const workspaceContextState = vi.hoisted(() => ({
+  context: null as WorkspaceCollabContext | null,
+  resourceReadIdentity: null as { context: WorkspaceCollabContext; generation: string } | null,
+  loading: false,
+}));
 
 vi.mock('../../src/router', () => ({
   useRoute: () => routerState.route,
@@ -21,7 +27,12 @@ vi.mock('../../src/runtime/brands', () => ({
   fetchBrands: fetchBrandsMock,
 }));
 vi.mock('../../src/runtime/useBrandExtract', () => ({
-  useBrandExtract: () => ({ state: { phase: 'idle' }, run: vi.fn() }),
+  useBrandExtract: () => ({ state: { phase: 'idle' }, run: runExtractMock }),
+}));
+vi.mock('../../src/collab/useWorkspaceContext', () => ({
+  useWorkspaceContext: () => workspaceContextState,
+  workspaceResourceReadContext: (state: typeof workspaceContextState) =>
+    state.resourceReadIdentity?.context ?? state.context,
 }));
 vi.mock('../../src/runtime/brand-intent', () => ({
   NEW_BRAND_KIT_INTENT_EVENT: 'od:new-brand-kit-intent',
@@ -34,7 +45,15 @@ vi.mock('../../src/components/BrandPreviewCard', () => ({
   hostnameOf: (url?: string) => url ?? '',
 }));
 vi.mock('../../src/components/BrandReferencePicker', () => ({
-  BrandReferencePicker: () => null,
+  BrandReferencePicker: ({ onPick }: { onPick: (brand: unknown) => void }) => (
+    <button
+      type="button"
+      data-testid="mock-brand-reference"
+      onClick={() => onPick({ name: 'Acme', domain: 'acme.example', category: 'Tools' })}
+    >
+      pick
+    </button>
+  ),
 }));
 vi.mock('../../src/components/NewBrandModal', () => ({
   NewBrandModal: ({
@@ -82,6 +101,11 @@ describe('BrandsTab refresh reconciliation', () => {
     routerState.route = { kind: 'home', view: 'brands', brandId: undefined };
     fetchBrandsMock.mockReset();
     fetchBrandsMock.mockResolvedValue([]);
+    runExtractMock.mockReset();
+    runExtractMock.mockResolvedValue(null);
+    workspaceContextState.context = null;
+    workspaceContextState.resourceReadIdentity = null;
+    workspaceContextState.loading = false;
   });
   afterEach(() => {
     cleanup();
@@ -152,5 +176,43 @@ describe('BrandsTab refresh reconciliation', () => {
     fireEvent.click(screen.getByTestId('mock-new-brand-created'));
 
     expect(onDesignSystemsRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('never uses a provisional read identity for brand extraction mutations', async () => {
+    const provisional = {
+      workspaceId: 'workspace-provisional',
+      workspaceType: 'team',
+      workspaceMemberId: 'member-provisional',
+      role: 'member',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+      billingState: 'active',
+      planId: null,
+      providerMode: 'platform_credits',
+      seatSummary: { seatLimit: 3, usedSeats: 2, availableSeats: 1, isSeatFull: false },
+      permissions: {
+        canManageMembers: false,
+        canManageBilling: false,
+        canInviteMembers: false,
+        canManageAutoRecharge: false,
+        canShareProjects: true,
+        canWriteSyncedFiles: false,
+        canViewWorkspaceSettings: false,
+        canManageSharedResources: false,
+      },
+    } satisfies WorkspaceCollabContext;
+    workspaceContextState.resourceReadIdentity = {
+      context: provisional,
+      generation: 'directory-only',
+    };
+
+    renderBrandsTab();
+    fireEvent.click(await screen.findByTestId('mock-brand-reference'));
+
+    await waitFor(() => {
+      expect(runExtractMock).toHaveBeenCalledWith('acme.example', {
+        workspaceContext: null,
+      });
+    });
   });
 });

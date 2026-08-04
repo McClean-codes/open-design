@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createWorkspaceOwnedDesignSystem } from '../../src/design-systems/workspace-owned-create.js';
+import {
+  createWorkspaceOwnedDesignSystem,
+  deleteWorkspaceOwnedDesignSystem,
+} from '../../src/design-systems/workspace-owned-create.js';
 
 const roots: string[] = [];
 
@@ -120,5 +123,35 @@ describe('createWorkspaceOwnedDesignSystem', () => {
     expect(ensureWorkspaceResource).not.toHaveBeenCalled();
     await expect(access(path.join(root, created.id.slice('user:'.length), 'metadata.json')))
       .resolves.toBeUndefined();
+  });
+});
+
+describe('deleteWorkspaceOwnedDesignSystem', () => {
+  it('keeps the Workspace envelope when filesystem deletion fails', async () => {
+    const deleteUserDesignSystem = vi.fn(async () => false);
+    const deleteWorkspaceResourceByResourceId = vi.fn();
+
+    await expect(deleteWorkspaceOwnedDesignSystem('/design-systems', 'user:brand', {
+      deleteUserDesignSystem,
+      deleteWorkspaceResourceByResourceId,
+    })).resolves.toBe(false);
+
+    expect(deleteUserDesignSystem).toHaveBeenCalledWith('/design-systems', 'user:brand');
+    expect(deleteWorkspaceResourceByResourceId).not.toHaveBeenCalled();
+  });
+
+  it('removes the exact Workspace envelope after filesystem deletion succeeds', async () => {
+    const deleteUserDesignSystem = vi.fn(async () => true);
+    const deleteWorkspaceResourceByResourceId = vi.fn();
+
+    await expect(deleteWorkspaceOwnedDesignSystem('/design-systems', 'user:brand', {
+      deleteUserDesignSystem,
+      deleteWorkspaceResourceByResourceId,
+    })).resolves.toBe(true);
+
+    expect(deleteWorkspaceResourceByResourceId).toHaveBeenCalledWith(
+      'design_system',
+      'user:brand',
+    );
   });
 });

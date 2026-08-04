@@ -332,6 +332,7 @@ import {
 } from './design-systems/index.js';
 import {
   createWorkspaceOwnedDesignSystem as persistWorkspaceOwnedDesignSystem,
+  deleteWorkspaceOwnedDesignSystem as removeWorkspaceOwnedDesignSystem,
 } from './design-systems/workspace-owned-create.js';
 import { createDesignSystemGenerationJobStore } from './design-systems/generation-jobs.js';
 import { createDesignSystemServerServices } from './design-systems/server-services.js';
@@ -591,6 +592,7 @@ import {
   deletePreviewComment,
   deleteProject as dbDeleteProject,
   deleteWorkspaceProject,
+  deleteWorkspaceResourceByResourceId,
   deleteTemplate,
   getConversation,
   getDeployment,
@@ -7129,7 +7131,7 @@ export async function startServer({
       },
     },
   });
-  registerDesignSystemRoutes(app, {
+  const designSystemRouteServices = registerDesignSystemRoutes(app, {
     db,
     paths: pathDeps,
     projectStore: projectStoreDeps,
@@ -7204,6 +7206,26 @@ export async function startServer({
     brandsRoot: BRANDS_DIR,
     userDesignSystemsRoot: USER_DESIGN_SYSTEMS_DIR,
     resolveDesignSystemWorkspaceId: resolveDesignSystemWorkspaceScope,
+    authorizeDesignSystemRead: designSystemRouteServices.authorizeDesignSystemRead,
+    deleteDesignSystemForRequest: designSystemRouteServices.deleteDesignSystemForRequest,
+    isDesignSystemWorkspaceBound: (designSystemId) =>
+      Boolean(getWorkspaceResourceByResourceId(db, 'design_system', designSystemId))
+      || listTeamWorkspaceResourceWorkspaceIds(db).some((workspaceId) =>
+        Boolean(getWorkspaceResource(
+          db,
+          'design_system',
+          workspaceId,
+          workspaceTeamDesignSystemBindingResourceId(workspaceId, designSystemId),
+        )),
+      ),
+    authorizeProjectRequest,
+    createWorkspaceOwnedDesignSystem: createWorkspaceOwnedDesignSystemForContext,
+    deleteWorkspaceOwnedDesignSystem: (root, designSystemId) =>
+      removeWorkspaceOwnedDesignSystem(root, designSystemId, {
+        deleteUserDesignSystem,
+        deleteWorkspaceResourceByResourceId: (resourceType, resourceId) =>
+          deleteWorkspaceResourceByResourceId(db, resourceType, resourceId),
+      }),
     projectsRoot: PROJECTS_DIR,
     skillsRoot: SKILLS_DIR,
     dataDir: RUNTIME_DATA_DIR,

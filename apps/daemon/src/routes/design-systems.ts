@@ -1,4 +1,4 @@
-import type { Express, Response } from 'express';
+import type { Express, Request, Response } from 'express';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import type { RouteDeps } from '../server-context.js';
@@ -184,7 +184,25 @@ function sanitizeArchiveFilename(raw: string): string {
     .slice(0, 80);
 }
 
-export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSystemRoutesDeps) {
+export interface DesignSystemRouteServices {
+  authorizeDesignSystemRead: (
+    req: any,
+    res: Response,
+    id: string,
+    allowNavigationQuery?: boolean,
+  ) => Promise<boolean>;
+  deleteDesignSystemForRequest: (
+    req: Request,
+    res: Response,
+    id: string,
+    options?: { beforeDelete?: () => Promise<boolean> },
+  ) => Promise<boolean>;
+}
+
+export function registerDesignSystemRoutes(
+  app: Express,
+  ctx: RegisterDesignSystemRoutesDeps,
+): DesignSystemRouteServices {
   const { db } = ctx;
   const { CRAFT_DIR, USER_DESIGN_SYSTEMS_DIR } = ctx.paths;
   const {
@@ -945,16 +963,24 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
     }
   });
 
-  app.delete('/api/design-systems/:id', async (req, res) => {
+  async function deleteDesignSystemForRequest(
+    req: Request,
+    res: Response,
+    id: string,
+    options: { beforeDelete?: () => Promise<boolean> } = {},
+  ): Promise<boolean> {
     try {
-      if (!(await authorizeDesignSystemMutation(req, res, req.params.id))) return;
+      if (!(await authorizeDesignSystemMutation(req, res, id))) return false;
       if (isRequestWorkspaceLocked(req)) {
-        return res.status(403).json({ error: 'WORKSPACE_LOCKED' });
+        res.status(403).json({ error: 'WORKSPACE_LOCKED' });
+        return false;
       }
-      const storage = resolveDesignSystemStorage(req, req.params.id);
-      if (!(await canMutateUserDesignSystem(storage.root, req.params.id, req))) {
-        return res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
+      const storage = resolveDesignSystemStorage(req, id);
+      if (!(await canMutateUserDesignSystem(storage.root, id, req))) {
+        res.status(403).json({ error: 'WORKSPACE_RESOURCE_MANAGE_DENIED' });
+        return false;
       }
+      if (options.beforeDelete && !(await options.beforeDelete())) return false;
       // spec 04 §11: drop the hub-side share BEFORE the local delete, so a
       // sharer deleting their OWN design system does not leave the hub index
       // pointing at a canonical directory that is about to stop existing —
@@ -964,10 +990,11 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       // thrown error here (e.g. the caller cannot actually manage the share)
       // aborts before `deleteUserDesignSystem` runs, matching "unshare must
       // succeed before the local delete proceeds".
-      await unshareTeamDesignSystemIfShared(req.params.id, req);
-      const ok = await deleteUserDesignSystem(storage.root, req.params.id);
+      await unshareTeamDesignSystemIfShared(id, req);
+      const ok = await deleteUserDesignSystem(storage.root, id);
       if (!ok) {
-        return res.status(404).json({ error: 'editable design system not found' });
+        res.status(404).json({ error: 'editable design system not found' });
+        return false;
       }
       // Envelope cleanup (spec 9.2): drop the `workspace_resources` binding
       // row too, mirroring skill's DELETE route (routes/static-resource.ts)
@@ -975,11 +1002,17 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       // no ON DELETE CASCADE, so skipping this leaves an orphan row pointing
       // at a design system that no longer exists on disk.
       deleteWorkspaceResourceByResourceId(db, 'design_system', storage.bindingResourceId);
-      res.status(204).end();
+      return true;
     } catch (err) {
-      if (sendWorkspaceScopeError(res, err)) return;
+      if (sendWorkspaceScopeError(res, err)) return false;
       res.status(500).json({ error: String(err) });
+      return false;
     }
+  }
+
+  app.delete('/api/design-systems/:id', async (req, res) => {
+    if (!(await deleteDesignSystemForRequest(req, res, req.params.id))) return;
+    res.status(204).end();
   });
 
   app.get('/api/craft', async (_req, res) => {
@@ -1035,6 +1068,8 @@ export function registerDesignSystemRoutes(app: Express, ctx: RegisterDesignSyst
       res.status(500).json({ error: String(err) });
     }
   });
+
+  return { authorizeDesignSystemRead, deleteDesignSystemForRequest };
 }
 
 export function rewriteDesignSystemShowcaseAssetUrls(

@@ -16,7 +16,10 @@ import type {
   TrackingDesignSystemStatusValue,
 } from '@open-design/contracts/analytics';
 import { useI18n } from '../i18n';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
+import {
+  useWorkspaceContext,
+  workspaceResourceReadContext,
+} from '../collab/useWorkspaceContext';
 import {
   beginWorkspaceScopedRead,
   workspaceIdentityCacheKey,
@@ -1304,7 +1307,7 @@ function useProjectLogoSrc(
 // logo is still loading, so the thumbnail never flashes a broken image first.
 function SystemRowLogo({ system }: { system: DesignSystemSummary }) {
   const host = designSystemLogoHost(system);
-  const { context: workspaceContext } = useWorkspaceContext();
+  const workspaceContext = workspaceResourceReadContext(useWorkspaceContext());
   const projectLogo = useProjectLogoSrc(
     isUserSystem(system) ? system.projectId : undefined,
     workspaceContext,
@@ -1426,7 +1429,7 @@ function DesignSystemDetail({
   unsharing,
 }: DetailProps) {
   const analytics = useAnalytics();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const workspaceContext = workspaceResourceReadContext(useWorkspaceContext());
   const detailWorkspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const isUser = isUserSystem(system);
   const detailResourceScope: TrackingWorkspaceScope =

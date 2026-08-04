@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import type { WorkspaceCollabContext } from '@open-design/contracts';
 import { useAnalytics } from '../analytics/provider';
 import {
   trackDesignSystemsTemplatesModalClick,
@@ -16,12 +17,17 @@ import type { DesignSystemDetail, DesignSystemSummary } from '../types';
 import { DesignSpecView } from './DesignSpecView';
 import { DesignSystemKitPreview } from './DesignSystemKitPreview';
 import { PreviewModal } from './PreviewModal';
-import { useWorkspaceContext } from '../collab/useWorkspaceContext';
+import {
+  useWorkspaceContext,
+  workspaceResourceReadContext,
+} from '../collab/useWorkspaceContext';
 
 interface Props {
   system: DesignSystemSummary;
   onClose: () => void;
   initialViewId?: 'showcase' | 'kit' | 'tokens';
+  /** Exact project scope wins over the shell context while it is resolving. */
+  workspaceContext?: WorkspaceCollabContext | null;
 }
 
 function isDesignSystemDetail(system: DesignSystemSummary): system is DesignSystemDetail {
@@ -31,10 +37,18 @@ function isDesignSystemDetail(system: DesignSystemSummary): system is DesignSyst
 // Full DS preview: keep the brand-kit-style module stack as the default view,
 // while retaining the lazy showcase/tokens tabs and DESIGN.md side panel from
 // the richer modal flow.
-export function DesignSystemPreviewModal({ system, onClose, initialViewId = 'kit' }: Props) {
+export function DesignSystemPreviewModal({
+  system,
+  onClose,
+  initialViewId = 'kit',
+  workspaceContext: explicitWorkspaceContext,
+}: Props) {
   const t = useT();
   const analytics = useAnalytics();
-  const { context: workspaceContext } = useWorkspaceContext();
+  const ambientWorkspaceContext = workspaceResourceReadContext(useWorkspaceContext());
+  const workspaceContext = explicitWorkspaceContext === undefined
+    ? ambientWorkspaceContext
+    : explicitWorkspaceContext;
   const surfaceViewFiredRef = useRef<string | null>(null);
   useEffect(() => {
     if (surfaceViewFiredRef.current === system.id) return;
@@ -128,6 +142,7 @@ export function DesignSystemPreviewModal({ system, onClose, initialViewId = 'kit
           custom: (
             <DesignSystemKitPreview
               system={system}
+              workspaceContext={workspaceContext}
               variant="panel"
               showCover={false}
               className="ds-modal-kit-preview"

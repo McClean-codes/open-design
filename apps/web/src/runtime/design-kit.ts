@@ -440,7 +440,10 @@ export function brandToKit(brand: Brand, opts: BrandKitOptions): DesignKit {
 }
 
 /** Convenience: build a kit straight from a BrandSummary (Brands surfaces). */
-export function brandSummaryToKit(summary: BrandSummary): DesignKit {
+export function brandSummaryToKit(
+  summary: BrandSummary,
+  workspaceContext: WorkspaceCollabContext | null = null,
+): DesignKit {
   const host = hostnameOf(summary.meta.sourceUrl);
   if (!summary.brand) {
     return {
@@ -465,6 +468,7 @@ export function brandSummaryToKit(summary: BrandSummary): DesignKit {
     editable: true,
     host,
     ready: summary.meta.status === 'ready',
+    workspaceContext,
   });
 }
 
