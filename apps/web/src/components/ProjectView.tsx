@@ -2816,9 +2816,9 @@ export function ProjectView({
     // so only react to a genuinely external navigation.
     if (routeConversationId === lastSyncedConversationIdRef.current) return;
     if (lastSeenRouteConversationIdRef.current === routeConversationId) return;
-    lastSeenRouteConversationIdRef.current = routeConversationId;
     const match = conversations.find((c) => c.id === routeConversationId);
     if (!match) return;
+    lastSeenRouteConversationIdRef.current = routeConversationId;
     setActiveConversationId(routeConversationId);
   }, [routeConversationId, conversations, activeConversationId]);
 
@@ -4637,7 +4637,16 @@ export function ProjectView({
       images: File[] = [],
       commentId?: string,
     ) => {
-      if (!activeConversationId) return null;
+      const commentConversationId = activeConversationId ?? routeConversationId;
+      if (!commentConversationId) {
+        setProjectActionsToast({
+          message: t('project.previewCommentSaveFailed'),
+          details: null,
+          tone: 'error',
+          ttlMs: 5000,
+        });
+        return null;
+      }
       // Upload any attached images first so the saved comment carries durable
       // file paths — this is what lets the comment list / re-opened popover
       // re-display the images instead of losing them on echo.
@@ -4649,7 +4658,15 @@ export function ProjectView({
           undefined,
           projectRunWorkspaceContext,
         );
-        if (result.uploaded.length !== images.length) return null;
+        if (result.uploaded.length !== images.length) {
+          setProjectActionsToast({
+            message: t('project.previewCommentSaveFailed'),
+            details: null,
+            tone: 'error',
+            ttlMs: 5000,
+          });
+          return null;
+        }
         uploadedAttachments = result.uploaded.map((file) => ({ path: file.path, name: file.name }));
       }
       const existing = commentId
@@ -4658,7 +4675,7 @@ export function ProjectView({
       const attachments = mergePreviewCommentAttachments(existing?.attachments, uploadedAttachments);
       const saved = await upsertPreviewComment(
         project.id,
-        activeConversationId,
+        commentConversationId,
         {
           ...(commentId ? { id: commentId } : {}),
           target,
@@ -4688,6 +4705,7 @@ export function ProjectView({
     [
       project.id,
       activeConversationId,
+      routeConversationId,
       commitPreviewComments,
       previewComments,
       projectRunWorkspaceContext,
@@ -4697,10 +4715,19 @@ export function ProjectView({
 
   const removePreviewComment = useCallback(
     async (commentId: string): Promise<boolean> => {
-      if (!activeConversationId) return false;
+      const commentConversationId = activeConversationId ?? routeConversationId;
+      if (!commentConversationId) {
+        setProjectActionsToast({
+          message: t('project.previewCommentSaveFailed'),
+          details: null,
+          tone: 'error',
+          ttlMs: 5000,
+        });
+        return false;
+      }
       const ok = await deletePreviewComment(
         project.id,
-        activeConversationId,
+        commentConversationId,
         commentId,
         projectRunWorkspaceContext,
       );
@@ -4717,7 +4744,14 @@ export function ProjectView({
       setAttachedComments((current) => removeAttachedComment(current, commentId));
       return true;
     },
-    [project.id, activeConversationId, commitPreviewComments, projectRunWorkspaceContext, t],
+    [
+      project.id,
+      activeConversationId,
+      routeConversationId,
+      commitPreviewComments,
+      projectRunWorkspaceContext,
+      t,
+    ],
   );
 
   /**
@@ -4734,13 +4768,22 @@ export function ProjectView({
    */
   const reorderPreviewComment = useCallback(
     async (commentId: string, sortKey: number) => {
-      if (!activeConversationId) return;
+      const commentConversationId = activeConversationId ?? routeConversationId;
+      if (!commentConversationId) {
+        setProjectActionsToast({
+          message: t('project.previewCommentReorderFailed'),
+          details: null,
+          tone: 'error',
+          ttlMs: 5000,
+        });
+        return;
+      }
       commitPreviewComments((current) =>
         current.map((comment) => (comment.id === commentId ? { ...comment, sortKey } : comment)),
       );
       const saved = await patchPreviewCommentSortKey(
         project.id,
-        activeConversationId,
+        commentConversationId,
         commentId,
         sortKey,
         projectRunWorkspaceContext,
@@ -4756,7 +4799,14 @@ export function ProjectView({
         });
       }
     },
-    [project.id, activeConversationId, commitPreviewComments, projectRunWorkspaceContext, t],
+    [
+      project.id,
+      activeConversationId,
+      routeConversationId,
+      commitPreviewComments,
+      projectRunWorkspaceContext,
+      t,
+    ],
   );
 
   const attachPreviewComment = useCallback((comment: PreviewComment) => {

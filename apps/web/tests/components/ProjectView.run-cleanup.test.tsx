@@ -43,6 +43,7 @@ const createConversation = vi.fn();
 const patchConversation = vi.fn();
 const patchProject = vi.fn();
 const patchPreviewCommentStatus = vi.fn();
+const upsertPreviewComment = vi.fn();
 const saveTabs = vi.fn();
 const writeProjectTextFile = vi.fn();
 const fetchProjectFileText = vi.fn();
@@ -145,7 +146,7 @@ vi.mock('../../src/providers/registry', () => ({
   fetchProjectFileText: (...args: unknown[]) => fetchProjectFileText(...args),
   fetchSkill: (...args: unknown[]) => fetchSkill(...args),
   patchPreviewCommentStatus: (...args: unknown[]) => patchPreviewCommentStatus(...args),
-  upsertPreviewComment: vi.fn(),
+  upsertPreviewComment: (...args: unknown[]) => upsertPreviewComment(...args),
   writeProjectTextFile: (...args: unknown[]) => writeProjectTextFile(...args),
 }));
 
@@ -504,6 +505,72 @@ describe('ProjectView daemon cleanup', () => {
     vi.useRealTimers();
     globalThis.fetch = originalFetch;
     window.sessionStorage.clear();
+  });
+
+  it('uses the routed conversation as the comment anchor while conversations hydrate', async () => {
+    listConversations.mockReturnValue(new Promise(() => {}));
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: [], activeTabId: null });
+    fetchProjectFiles.mockResolvedValue([]);
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+    upsertPreviewComment.mockResolvedValue({
+      id: 'comment-1',
+      projectId: 'project-comment-route',
+      conversationId: 'conv-route',
+      note: 'Member QA comment',
+      target: { kind: 'point', x: 10, y: 20 },
+      createdAt: 1,
+      updatedAt: 1,
+    });
+
+    render(
+      <ProjectView
+        project={{ id: 'project-comment-route', name: 'Project', skillId: null, designSystemId: null } as never}
+        routeFileName={null}
+        routeConversationId="conv-route"
+        config={{ mode: 'daemon', agentId: 'agent-1', notifications: undefined, agentModels: {} } as never}
+        agents={[{ id: 'agent-1', name: 'OpenCode', models: [] } as never]}
+        skills={[]}
+        designTemplates={[]}
+        designSystems={[]}
+        daemonLive
+        onModeChange={() => {}}
+        onAgentChange={() => {}}
+        onAgentModelChange={() => {}}
+        onRefreshAgents={() => {}}
+        onOpenSettings={() => {}}
+        onBack={() => {}}
+        onClearPendingPrompt={() => {}}
+        onTouchProject={() => {}}
+        onProjectChange={() => {}}
+        onProjectsRefresh={() => {}}
+      />,
+    );
+
+    await waitFor(() => expect(fileWorkspaceSpy).toHaveBeenCalled());
+    const onSavePreviewComment = fileWorkspaceSpy.mock.calls.at(-1)?.[0]
+      ?.onSavePreviewComment as (
+        target: { kind: 'point'; x: number; y: number },
+        note: string,
+        attachAfterSave: boolean,
+      ) => Promise<unknown>;
+
+    await expect(onSavePreviewComment(
+      { kind: 'point', x: 10, y: 20 },
+      'Member QA comment',
+      false,
+    )).resolves.toEqual(expect.objectContaining({ id: 'comment-1' }));
+    expect(upsertPreviewComment).toHaveBeenCalledWith(
+      'project-comment-route',
+      'conv-route',
+      expect.objectContaining({ note: 'Member QA comment' }),
+      null,
+    );
   });
 
   it('does not abort daemon cancel reattach controllers during unmount cleanup', async () => {
