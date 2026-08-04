@@ -2851,11 +2851,15 @@ export interface Dict {
   'chat.amrBalanceGate.signedOutMessage': string;
   'chat.amrBalanceGate.signInCta': string;
   'chat.amrBalanceGate.watchingWallet': string;
+  'chat.amrBalanceGate.generationPrice': string;
   'chat.amrLowBalance.title': string;
   'chat.amrLowBalance.message': string;
   'chat.amrLowBalance.rechargeCta': string;
   'chat.amrLowBalance.proceedCta': string;
   'chat.amrLowBalance.dontRemind': string;
+  'chat.amrLowBalance.currentAllowance': string;
+  'chat.amrLowBalance.generationPrice': string;
+  'chat.amrLowBalance.mediaMessage': string;
   'chat.amrArtifactUpgrade.title': string;
   'chat.amrArtifactUpgrade.message': string;
   'chat.amrArtifactUpgrade.benefit1': string;

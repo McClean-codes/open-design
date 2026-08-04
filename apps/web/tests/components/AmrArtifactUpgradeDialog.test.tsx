@@ -25,17 +25,17 @@ describe('AmrArtifactUpgradeDialog', () => {
 
     expect(screen.getByText('Keep refining with stronger models')).toBeTruthy();
     expect(
-      screen.getByText('Unlock advanced models, more parallel tasks, and more monthly credits.'),
+      screen.getByText('Unlock hosted image and video models, stronger design agents, more parallel tasks, and more monthly allowance.'),
     ).toBeTruthy();
     expect(screen.getByTestId('amr-artifact-upgrade-art')).toHaveAttribute(
       'src',
       '/upgrade/creative-capacity-warm.jpg',
     );
-    expect(screen.getByText('More advanced models, including Fable 5 and GPT-5.6')).toBeTruthy();
+    expect(screen.getByText('Hosted image and video models, no API key setup')).toBeTruthy();
     expect(screen.getByText('Run up to 10× more tasks concurrently')).toBeTruthy();
     expect(screen.getByText('Up to 300× more monthly credits')).toBeTruthy();
     const priorityBenefit = screen.getByText(
-      'Priority queue at peak times for faster generations',
+      'Fixed prices before generation; failures and cancellations are not charged',
     );
     expect(priorityBenefit.tagName).toBe('SPAN');
     expect(priorityBenefit.closest('li')?.hasAttribute('data-priority')).toBe(false);

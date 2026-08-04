@@ -26,6 +26,8 @@ interface Props {
   entrySource: 'home_low_balance_warn_recharge' | 'chat_low_balance_warn_recharge';
   metricsConsent: boolean;
   installationId: string | null | undefined;
+  /** Frontend-review quote for a deterministic image/video generation. */
+  generationPriceUsd?: number | null;
   /** Resolves the pending send: 'proceed' starts the task, anything else parks it. */
   onDecision: (decision: AmrLowBalanceDecision) => void;
 }
@@ -43,6 +45,7 @@ export function AmrLowBalanceDialog({
   entrySource,
   metricsConsent,
   installationId,
+  generationPriceUsd = null,
   onDecision,
 }: Props) {
   const t = useT();
@@ -94,8 +97,25 @@ export function AmrLowBalanceDialog({
       </div>
       <h2 className={styles.title}>{t('chat.amrLowBalance.title')}</h2>
       <p className={styles.message}>
-        {t('chat.amrLowBalance.message', { balance: formattedBalance })}
+        {generationPriceUsd == null
+          ? t('chat.amrLowBalance.message', { balance: formattedBalance })
+          : t('chat.amrLowBalance.mediaMessage', {
+              balance: formattedBalance,
+              price: `$${generationPriceUsd.toFixed(2)}`,
+            })}
       </p>
+      {generationPriceUsd != null ? (
+        <dl className={styles.priceSummary} data-testid="amr-low-balance-dialog-generation-price">
+          <div>
+            <dt>{t('chat.amrLowBalance.currentAllowance')}</dt>
+            <dd>{formattedBalance}</dd>
+          </div>
+          <div>
+            <dt>{t('chat.amrLowBalance.generationPrice')}</dt>
+            <dd>${generationPriceUsd.toFixed(2)}</dd>
+          </div>
+        </dl>
+      ) : null}
       {/* Canonical suppression-dialog footer (macOS alerts, VS Code, JetBrains):
           the "don't ask again" checkbox sits bottom-left as a quiet meta
           option, the actions sit bottom-right in one row with the primary

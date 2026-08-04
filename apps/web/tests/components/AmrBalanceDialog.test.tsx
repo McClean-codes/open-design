@@ -34,6 +34,25 @@ afterEach(() => {
 });
 
 describe('AmrBalanceDialog', () => {
+  it('shows the deterministic media quote when the caller provides one', () => {
+    render(
+      <AmrBalanceDialog
+        reason="insufficient"
+        balanceUsd="0.18"
+        profile={null}
+        entrySource="home_balance_gate_upgrade"
+        metricsConsent={false}
+        installationId={null}
+        generationPriceUsd={1.08}
+        onClose={vi.fn()}
+        onResolved={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId('amr-balance-dialog-generation-price'))
+      .toHaveTextContent('This generation$1.08');
+  });
+
   it('dismisses from the corner close button', () => {
     const onClose = vi.fn();
 

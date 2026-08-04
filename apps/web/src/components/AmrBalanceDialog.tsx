@@ -37,6 +37,8 @@ interface Props {
   entrySource: 'home_balance_gate_upgrade' | 'chat_balance_gate_upgrade';
   metricsConsent: boolean;
   installationId: string | null | undefined;
+  /** Frontend-review quote for a deterministic image/video generation. */
+  generationPriceUsd?: number | null;
   /** Dismissal only ("not now" / Esc); the blocked payload stays parked. */
   onClose: () => void;
   /** The blocking condition just cleared (sign-in completed, or the wallet
@@ -79,6 +81,7 @@ export function AmrBalanceDialog({
   entrySource,
   metricsConsent,
   installationId,
+  generationPriceUsd = null,
   onClose,
   onResolved,
 }: Props) {
@@ -213,6 +216,12 @@ export function AmrBalanceDialog({
             // suspenders for a malformed snapshot.
             t('chat.amrBalanceGate.message', { balance: formattedBalance ?? '$0.00' })}
       </p>
+      {generationPriceUsd != null ? (
+        <div className={styles.priceSummary} data-testid="amr-balance-dialog-generation-price">
+          <span>{t('chat.amrBalanceGate.generationPrice')}</span>
+          <strong>${generationPriceUsd.toFixed(2)}</strong>
+        </div>
+      ) : null}
       <div className={styles.benefitsCard}>
         <span className={styles.benefitsTitle}>
           {t('chat.amrBalanceGate.benefitsTitle')}
