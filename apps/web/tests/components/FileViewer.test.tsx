@@ -724,6 +724,7 @@ describe('FileViewer preview scale', () => {
     await waitFor(() => {
       expect(rawReads).toHaveLength(1);
       expect(document.querySelector('.viewer-loading')).toBeNull();
+      expect(screen.getByTestId('artifact-preview-frame')).toBeTruthy();
     });
     expect(rawReads[0]?.url).toContain('workspaceId=ws-1');
     expect(rawReads[0]?.url).toContain('workspaceMemberId=wm-1');
@@ -731,6 +732,68 @@ describe('FileViewer preview scale', () => {
       'x-od-workspace-id': 'ws-1',
       'x-od-workspace-member-id': 'wm-1',
     });
+  });
+
+  it('recovers the same preview mount when pending authority settles as local', async () => {
+    const file = baseFile({
+      name: 'local-first-open.html',
+      path: 'local-first-open.html',
+      mime: 'text/html',
+      kind: 'html',
+      artifactManifest: {
+        version: 1,
+        kind: 'html',
+        title: 'Local first open',
+        entry: 'local-first-open.html',
+        renderer: 'html',
+        exports: ['html'],
+      },
+    });
+    const rawReads: Array<{ init?: RequestInit; url: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('/raw/local-first-open.html')) {
+        rawReads.push({ init, url });
+        return new Response('<html><body>Local materialized</body></html>', { status: 200 });
+      }
+      if (url.endsWith('/files')) {
+        return new Response(JSON.stringify({ files: [file] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    }));
+
+    const { rerender } = render(
+      <CollabProvider value={{
+        ...projectWorkspaceCollabValue(teamWorkspaceContext()),
+        workspaceContextLoading: true,
+        projectResourceAuthority: 'pending',
+      }}>
+        <FileViewer projectId="project-1" projectKind="prototype" file={file} />
+      </CollabProvider>,
+    );
+
+    expect(document.querySelector('.viewer-loading')).not.toBeNull();
+    expect(screen.queryByTestId('artifact-preview-frame')).toBeNull();
+    expect(rawReads).toEqual([]);
+
+    rerender(
+      <CollabProvider value={{
+        ...projectWorkspaceCollabValue(null),
+        workspaceContextLoading: false,
+        projectResourceAuthority: 'local',
+      }}>
+        <FileViewer projectId="project-1" projectKind="prototype" file={file} />
+      </CollabProvider>,
+    );
+
+    await waitFor(() => {
+      expect(rawReads).toHaveLength(1);
+      expect(document.querySelector('.viewer-loading')).toBeNull();
+      expect(screen.getByTestId('artifact-preview-frame')).toBeTruthy();
+    });
+    expect(rawReads[0]?.url).not.toContain('workspaceId=');
+    expect(rawReads[0]?.url).not.toContain('workspaceMemberId=');
+    expect(rawReads[0]?.init?.headers).toBeUndefined();
   });
 
   it('never downgrades denied project resources to local reads', async () => {

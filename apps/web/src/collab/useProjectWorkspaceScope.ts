@@ -344,7 +344,16 @@ export function useProjectWorkspaceScope(
         : null
       : null;
   const requestAuthorityKey = projectWorkspaceAuthorityKey(requestWorkspaceAuthority);
-  const callerIdentityKey = workspaceIdentityCacheKey(callerWorkspaceContext);
+  // The caller identity is request authority only for an already-bound
+  // project. An unbound project's scope read is deliberately headerless, so a
+  // shell Workspace A -> B change cannot alter that request or invalidate its
+  // answer. Keeping the ambient identity in this key used to abort an in-flight
+  // unbound read and synchronously hide an already-settled unbound scope. The
+  // FileViewer then returned to its fail-closed skeleton even though the
+  // project's resource authority had not changed at all.
+  const callerIdentityKey = boundWorkspaceId
+    ? workspaceIdentityCacheKey(callerWorkspaceContext)
+    : 'none';
   const initialScopeContext = projectWorkspaceContext(initialScope);
   const initialScopeCanSeed = Boolean(
     initialScope
