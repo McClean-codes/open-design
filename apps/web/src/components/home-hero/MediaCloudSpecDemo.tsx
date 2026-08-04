@@ -265,7 +265,7 @@ export function MediaCloudSpecDemoPanel({ surface, value, onChange }: ChangeProp
               description: MEDIA_ASPECT_DESCRIPTIONS[aspect],
             }))}
             onChange={(aspect) => onChange({ ...value, aspect })}
-            triggerClassName={styles.fieldSelectTrigger}
+            triggerClassName={`${styles.fieldSelectTrigger} ${styles.aspectSelectTrigger}`}
             menuClassName={`${styles.fieldSelectMenu} ${styles.aspectSelectMenu}`}
             portal={false}
           />
