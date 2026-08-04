@@ -3,6 +3,7 @@
 import { act, cleanup, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
+import { StrictMode, type ReactNode } from 'react';
 import { workspaceContextFixture } from './helpers/workspace-context';
 import { evictCoalescedGet } from '../src/lib/coalesced-get';
 import { workspaceIdentityCacheKey } from '../src/collab/workspace-identity';
@@ -88,5 +89,59 @@ describe('useTeamMembers shared scheduler', () => {
 
     first.unmount();
     second.unmount();
+  });
+
+  it('keeps the pending first roster through StrictMode effect replay', async () => {
+    let resolveMembers!: (response: Response) => void;
+    const membersReads: number[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL): Promise<Response> => {
+        if (!String(input).includes('/api/workspace/members')) {
+          throw new Error(`unexpected fetch: ${String(input)}`);
+        }
+        membersReads.push(Date.now());
+        return new Promise<Response>((resolve) => {
+          resolveMembers = resolve;
+        });
+      }),
+    );
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <StrictMode>{children}</StrictMode>
+    );
+
+    const hook = renderHook(() => useTeamMembers(), { wrapper });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(membersReads).toHaveLength(1);
+
+    await act(async () => {
+      resolveMembers(
+        new Response(
+          JSON.stringify({
+            members: [
+              {
+                memberId: 'member-peer',
+                displayName: 'Visible peer',
+                role: 'member',
+              },
+            ],
+          }),
+          { status: 200 },
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(hook.result.current.members).toEqual([
+      {
+        memberId: 'member-peer',
+        displayName: 'Visible peer',
+        role: 'member',
+      },
+    ]);
+    expect(membersReads).toHaveLength(1);
+    hook.unmount();
   });
 });

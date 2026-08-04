@@ -45,6 +45,7 @@ class TeamMembersIdentityStore {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private pollIntervalMs: number | null = null;
   private requestEpoch = 0;
+  private retentionGeneration = 0;
   private hasSuccessfulLoad = false;
   private disposed = false;
 
@@ -61,6 +62,10 @@ class TeamMembersIdentityStore {
   };
 
   retain(consumer: symbol): () => void {
+    // Cancel a pending zero-consumer disposal. React StrictMode deliberately
+    // runs setup → cleanup → setup without another render; that replay must
+    // retain this exact store and its pending first read.
+    this.retentionGeneration += 1;
     this.disposed = false;
     this.consumers.add(consumer);
     if (this.consumers.size === 1) {
@@ -70,13 +75,22 @@ class TeamMembersIdentityStore {
       void this.load();
     }
     return () => {
-      this.consumers.delete(consumer);
+      if (!this.consumers.delete(consumer)) return;
       this.connectedConsumers.delete(consumer);
       if (this.consumers.size === 0) {
-        this.dispose();
-        if (teamMembersStores.get(this.identity) === this) {
-          teamMembersStores.delete(this.identity);
-        }
+        const disposalGeneration = ++this.retentionGeneration;
+        queueMicrotask(() => {
+          if (
+            this.consumers.size > 0
+            || this.retentionGeneration !== disposalGeneration
+          ) {
+            return;
+          }
+          this.dispose();
+          if (teamMembersStores.get(this.identity) === this) {
+            teamMembersStores.delete(this.identity);
+          }
+        });
       } else {
         this.rearmPoll();
       }
