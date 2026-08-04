@@ -789,7 +789,7 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
         workspaceId,
         workspaceMemberId,
       });
-      const systems = workspaceId && workspaceMemberId
+      const visibleSystems = workspaceId && workspaceMemberId
         ? catalog.filter((system) => {
             if (system.source !== 'user') return true;
             const teamBinding = getWorkspaceResourceByResourceId(
@@ -827,13 +827,13 @@ export function registerStaticResourceRoutes(app: Express, ctx: RegisterStaticRe
       // per-item disk/hub round trip it already knows the answer to.
       const designSystems = canMutateUserDesignSystem
         ? await Promise.all(
-            systems.map(async ({ body, ...rest }) => (
+            visibleSystems.map(async ({ body, ...rest }) => (
               rest.teamSynced
                 ? { ...rest, canMutate: await canMutateUserDesignSystem(USER_DESIGN_SYSTEMS_DIR, rest.id, req) }
                 : rest
             )),
           )
-        : systems.map(({ body, ...rest }) => rest);
+        : visibleSystems.map(({ body, ...rest }) => rest);
       res.json({ designSystems });
     } catch (err: any) {
       if (sendWorkspaceScopeError(res, err)) return;

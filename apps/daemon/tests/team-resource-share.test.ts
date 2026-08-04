@@ -182,6 +182,45 @@ describe('team resource share permission gate', () => {
     await expect(service.sharedIds(workspaceB)).resolves.toEqual(['skill-b']);
   });
 
+  it('distinguishes a fallback catalog from an authoritative hub listing', async () => {
+    let listing: 'failure' | 'empty' | 'shared' = 'failure';
+    const service = createTeamResourceShareService({
+      kind: 'skill',
+      idPrefix: 'skill',
+      resolveDir: () => '/tmp/skill',
+      run: async (args) => {
+        if (args[0] === 'push') return JSON.stringify({ version: 1 });
+        if (listing === 'failure') throw new Error('hub unavailable');
+        return JSON.stringify({
+          resources: listing === 'shared'
+            ? [{ id: 'skill-skill-a', kind: 'skill', deletedAt: null }]
+            : [],
+        });
+      },
+      env: { OD_WORKSPACE_CONTEXT_SOURCE: 'vela' },
+    });
+
+    await service.share('skill-a', scope);
+    await expect(service.sharedResources(scope)).resolves.toEqual([
+      { id: 'skill-a', canUnshare: true },
+    ]);
+    await expect(
+      service.sharedResources(scope, { authoritative: true }),
+    ).rejects.toThrow('hub unavailable');
+
+    listing = 'empty';
+    await expect(
+      service.sharedResources(scope, { authoritative: true }),
+    ).resolves.toEqual([]);
+
+    listing = 'shared';
+    await expect(
+      service.sharedResources(scope, { authoritative: true }),
+    ).resolves.toEqual([
+      { id: 'skill-a', canUnshare: false },
+    ]);
+  });
+
   it('lists resources already shared through another daemon via Vela CLI', async () => {
     const run = async (args: string[]): Promise<string> => {
       expect(args).toEqual(['shared', '--json']);

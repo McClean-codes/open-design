@@ -80,6 +80,11 @@ const TEAM_LOCKED: WorkspaceFixture = {
   },
 };
 
+const TEAM_UNLOCKED: WorkspaceFixture = {
+  ...TEAM_OWNER,
+  workspaceName: TEAM_LOCKED.workspaceName,
+};
+
 const TEAM_FULL: WorkspaceFixture = {
   ...TEAM_OWNER,
   workspaceName: 'Full Atlas Team',
@@ -186,6 +191,48 @@ test('[P0] workspace switcher changes identity, returns Home, and exposes team n
   ).toHaveAttribute('aria-current', 'true');
 });
 
+test('[P1] New team deep-links Vela creation and exposes the created workspace on return', async ({
+  page,
+}) => {
+  const directory = [PERSONAL];
+  const mocks = await wireWorkspaceMocks(page, PERSONAL, directory);
+  await gotoHome(page);
+  await ensureRailOpen(page);
+
+  await page.getByTestId('workspace-switcher').click();
+  const createTeam = page.getByTestId('entry-nav-create-team');
+  const href = new URL((await createTeam.getAttribute('href'))!);
+  expect(href.origin).toBe('https://console.example.test');
+  expect(href.pathname).toBe('/dashboard');
+  expect(href.searchParams.get('workspaceId')).toBe(PERSONAL.workspaceId);
+  expect(href.searchParams.get('workspace')).toBe('create');
+  await expect(createTeam).toHaveAttribute('target', '_blank');
+
+  await page.locator('.entry-nav-rail__menu-backdrop').click({ position: { x: 2, y: 2 } });
+  directory.push(TEAM_SECOND);
+  // Directory reads are deliberately coalesced for one second. A real console
+  // roundtrip exceeds that window; advance past it so this assertion exercises
+  // the return revalidation instead of the warm response from the first open.
+  await page.waitForTimeout(1_050);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+  });
+
+  await page.getByTestId('workspace-switcher').click();
+  const returnedTeam = page.getByRole('menu').getByRole('menuitem', {
+    name: TEAM_SECOND.workspaceName,
+  });
+  await expect(returnedTeam).toBeVisible({ timeout: T.long });
+  await returnedTeam.click();
+  await expect.poll(() => mocks.activeBodies).toEqual([{
+    workspaceId: TEAM_SECOND.workspaceId,
+    workspaceMemberId: TEAM_SECOND.workspaceMemberId,
+  }]);
+  await expect(page.getByTestId('workspace-switcher')).toContainText(
+    TEAM_SECOND.workspaceName,
+  );
+});
+
 test('[P0] failed workspace switch stays on the original identity and keeps retry available', async ({
   page,
 }) => {
@@ -276,6 +323,51 @@ test('[P0] workspace switch clears the previous project list before the next sco
   releaseTeamProjects();
   await expect(visibleProjectCard(page, SWITCHED_TEAM_DRAFT.id)).toBeVisible();
   await expect(visibleProjectCard(page, PERSONAL_DRAFT.id)).toHaveCount(0);
+});
+
+test('[P1] an unnamed legacy workspace row keeps the switcher usable with a stable id fallback', async ({
+  page,
+}) => {
+  await page.addInitScript(
+    ({ workspaceId, workspaceMemberId }) => {
+      window.sessionStorage.setItem(
+        'od.workspaceSelection.v1',
+        JSON.stringify({ workspaceId, workspaceMemberId }),
+      );
+    },
+    {
+      workspaceId: TEAM_OWNER.workspaceId,
+      workspaceMemberId: TEAM_OWNER.workspaceMemberId,
+    },
+  );
+  await wireWorkspaceMocks(page, TEAM_OWNER, [PERSONAL, TEAM_OWNER]);
+  await page.route('**/api/workspace/directory', async (route) => {
+    const unnamed = { ...TEAM_OWNER } as Partial<typeof TEAM_OWNER>;
+    delete unnamed.workspaceName;
+    await route.fulfill({
+      json: {
+        items: [PERSONAL, unnamed],
+        activeWorkspaceId: null,
+      },
+    });
+  });
+  await page.route('**/api/workspace/context', async (route) => {
+    const context: Partial<WorkspaceFixture> = { ...TEAM_OWNER };
+    delete context.workspaceName;
+    await route.fulfill({ json: { context } });
+  });
+
+  await gotoHome(page);
+  await ensureRailOpen(page);
+  await expect(page.getByTestId('workspace-switcher')).toContainText(TEAM_OWNER.workspaceId);
+  await page.getByTestId('workspace-switcher').click();
+  const menu = page.getByRole('menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('menuitem', { name: TEAM_OWNER.workspaceId })).toHaveAttribute(
+    'aria-current',
+    'true',
+  );
+  await expect(menu.getByRole('menuitem', { name: PERSONAL.workspaceName })).toBeVisible();
 });
 
 test('[P0] switching teams invalidates the shared-project catalog instead of reusing the previous team cache', async ({
@@ -481,6 +573,54 @@ test('[P0] account replacement never paints the previous account workspace or pr
   await expect(visibleProjectCard(page, accountA.project.id)).toHaveCount(0);
 });
 
+test('[P1] two windows for one account keep Personal and Team billing scopes isolated', async ({
+  context,
+  page: personalPage,
+}) => {
+  const teamPage = await context.newPage();
+  await applyStandardMocks(teamPage);
+  let teamBalanceUsd = '19.00';
+
+  await Promise.all([
+    pinWindowWorkspace(personalPage, PERSONAL),
+    pinWindowWorkspace(teamPage, TEAM_OWNER),
+  ]);
+  await Promise.all([
+    wireMultiWindowWorkspaceAuthority(personalPage, () => teamBalanceUsd),
+    wireMultiWindowWorkspaceAuthority(teamPage, () => teamBalanceUsd),
+  ]);
+
+  await Promise.all([gotoHome(personalPage), gotoHome(teamPage)]);
+  await expect(personalPage.getByTestId('workspace-switcher')).toContainText(
+    PERSONAL.workspaceName,
+  );
+  await expect(teamPage.getByTestId('workspace-switcher')).toContainText(
+    TEAM_OWNER.workspaceName,
+  );
+
+  await Promise.all([
+    openAccountMenu(personalPage),
+    openAccountMenu(teamPage),
+  ]);
+  const personalCredits = personalPage.getByTestId('entry-nav-credits-row');
+  const teamCredits = teamPage.getByTestId('entry-nav-credits-row');
+  await expect(personalCredits).toContainText('$7.00');
+  await expect(teamCredits).toContainText('$19.00');
+
+  // A Team-wallet invalidation belongs only to the Team window. Both pages
+  // share one browser account and localStorage, so this catches accidental
+  // process-global selection or billing-cache keys that omit workspace scope.
+  teamBalanceUsd = '11.25';
+  await teamPage.evaluate(() => {
+    window.dispatchEvent(new Event('od:workspace-billing-refresh'));
+  });
+  await expect(teamCredits).toContainText('$11.25', { timeout: T.long });
+  await expect(personalCredits).toContainText('$7.00');
+  await expect(personalPage.getByTestId('workspace-switcher')).toContainText(
+    PERSONAL.workspaceName,
+  );
+});
+
 test('[P0] team owner completes a multi-row invite with explicit roles', async ({ page }) => {
   await page.addInitScript(
     ({ workspaceId, workspaceMemberId }) => {
@@ -567,6 +707,56 @@ test('[P0] full team routes every invite entry to Vela seat resolution without o
   await expect.poll(async () => (await inviteUrls(page))[1]).toContain('invite=auto');
 });
 
+test('[P1] an already-open full team restores the local invite flow when a seat is released', async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const target = window as Window & typeof globalThis & {
+      __workspaceInviteUrls?: string[];
+    };
+    target.__workspaceInviteUrls = [];
+    window.open = ((url?: string | URL) => {
+      target.__workspaceInviteUrls!.push(String(url ?? ''));
+      return null;
+    }) as typeof window.open;
+  });
+  const workspaceMocks = await wireWorkspaceMocks(page, TEAM_FULL, [TEAM_FULL]);
+  await gotoHome(page);
+  await ensureRailOpen(page);
+
+  await page.getByTestId('workspace-switcher').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }).click();
+  await expect(page.getByRole('dialog', { name: 'Invite members' })).toHaveCount(0);
+  await expect.poll(() => inviteUrls(page)).toHaveLength(1);
+
+  // A teammate is removed in Vela while this shell remains mounted. The next
+  // authoritative context refresh must stop treating the Team as full and
+  // restore the in-product invitation path without a reload.
+  workspaceMocks.setCurrent({
+    ...TEAM_FULL,
+    seatSummary: {
+      seatLimit: 2,
+      usedSeats: 1,
+      availableSeats: 1,
+      isSeatFull: false,
+    },
+  });
+  // Context reads are coalesced for one second. The real member-management
+  // roundtrip is slower than that; crossing the window here prevents focus
+  // from legitimately reusing the pre-removal full-seat snapshot.
+  await page.waitForTimeout(1_050);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+  });
+
+  await page.getByTestId('workspace-switcher').click();
+  await page.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }).click();
+  await expect(page.getByRole('dialog', { name: 'Invite members' })).toBeVisible({
+    timeout: T.long,
+  });
+  await expect.poll(() => inviteUrls(page)).toHaveLength(1);
+});
+
 test('[P0] unknown team seat state fails closed across rail and project surfaces', async ({
   page,
 }) => {
@@ -626,6 +816,51 @@ test('[P0] locked workspace removes invite and sharing capabilities while preser
   await expect(settingsExit).toBeVisible();
   await expect(settingsExit).toHaveAttribute('href', TEAM_LOCKED.workspaceSettingsUrl);
   await expect(page.getByTestId('entry-nav-all-projects')).toBeVisible();
+});
+
+test('[P0] an already-open locked workspace restores invite and sharing actions when authority unlocks', async ({
+  page,
+}) => {
+  const workspaceMocks = await wireWorkspaceMocks(page, TEAM_LOCKED, [TEAM_LOCKED]);
+  await wireWorkspaceProjectMocks(page);
+  await gotoHome(page);
+  await ensureRailOpen(page);
+
+  await page.getByTestId('workspace-switcher').click();
+  await expect(
+    page.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }),
+  ).toHaveCount(0);
+  await page.locator('.entry-nav-rail__menu-backdrop').click({ position: { x: 2, y: 2 } });
+  await page.getByTestId('entry-nav-drafts').click();
+  const card = projectCard(page);
+  await openProjectMenu(card);
+  await expect(card.getByRole('menuitem', { name: 'Move to team space' })).toHaveCount(0);
+  await card.getByRole('button', { name: 'More actions' }).click();
+  await expect(card.getByRole('menu')).toHaveCount(0);
+
+  // The same membership becomes active again while the shell stays mounted.
+  // The next authoritative ambient refresh must restore capabilities without
+  // treating this as an account/workspace identity replacement or reloading.
+  workspaceMocks.setCurrent(TEAM_UNLOCKED);
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+  });
+
+  await expect(page.getByTestId('workspace-switcher')).toContainText('Locked Atlas Team', {
+    timeout: T.long,
+  });
+  await page.getByTestId('workspace-switcher').click();
+  await expect(
+    page.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }),
+  ).toBeVisible({ timeout: T.long });
+  await page.locator('.entry-nav-rail__menu-backdrop').click({ position: { x: 2, y: 2 } });
+  await page.getByTestId('entry-nav-drafts').click();
+  await expect(card).toBeVisible({ timeout: T.long });
+  await expect(card.getByRole('button', { name: 'More actions' })).toBeVisible({
+    timeout: T.long,
+  });
+  await openProjectMenu(card);
+  await expect(page.getByRole('menuitem', { name: 'Move to team space' })).toBeVisible();
 });
 
 test('[P0] an already-open move flow fails closed when the workspace locks before commit', async ({
@@ -1210,7 +1445,7 @@ function workspace(
       canWriteSyncedFiles: owner,
     },
     workspaceSettingsUrl:
-      `https://console.example.test/dashboard?workspaceId=${input.workspaceId}`,
+      `https://console.example.test/settings?workspaceId=${input.workspaceId}`,
   };
 }
 
@@ -1333,6 +1568,12 @@ async function wireWorkspaceMocks(
     activeWorkspaceId: () => current.workspaceId,
     setCurrent: (workspaceFixture) => {
       current = workspaceFixture;
+      const directoryIndex = directory.findIndex(
+        (item) =>
+          item.workspaceId === workspaceFixture.workspaceId &&
+          item.workspaceMemberId === workspaceFixture.workspaceMemberId,
+      );
+      if (directoryIndex >= 0) directory[directoryIndex] = workspaceFixture;
     },
     setBalance: (nextBalanceUsd) => {
       balanceUsd = nextBalanceUsd;
@@ -1361,6 +1602,134 @@ function directoryItem(workspaceFixture: WorkspaceFixture) {
   };
 }
 
+async function pinWindowWorkspace(
+  page: Page,
+  workspaceFixture: WorkspaceFixture,
+): Promise<void> {
+  await page.addInitScript(
+    ({ workspaceId, workspaceMemberId }) => {
+      window.sessionStorage.setItem(
+        'od.workspaceSelection.v1',
+        JSON.stringify({ workspaceId, workspaceMemberId }),
+      );
+    },
+    {
+      workspaceId: workspaceFixture.workspaceId,
+      workspaceMemberId: workspaceFixture.workspaceMemberId,
+    },
+  );
+}
+
+async function wireMultiWindowWorkspaceAuthority(
+  page: Page,
+  teamBalanceUsd: () => string,
+): Promise<void> {
+  const directory = [PERSONAL, TEAM_OWNER];
+
+  await page.route('**/api/integrations/vela/status', async (route) => {
+    await route.fulfill({
+      json: {
+        loggedIn: true,
+        loginInFlight: false,
+        profile: 'test',
+        user: {
+          id: 'ui-multi-window-user',
+          email: 'multi-window@example.com',
+          name: 'Multi Window User',
+          plan: 'team_plus',
+        },
+        account: { plan: 'free', balanceUsd: '7.00' },
+        configPath: '/tmp/.amr/config.json',
+      },
+    });
+  });
+
+  await page.route('**/api/workspace/**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const { pathname } = url;
+    const method = request.method();
+
+    if (pathname === '/api/workspace/directory' && method === 'GET') {
+      await route.fulfill({
+        json: {
+          items: directory.map(directoryItem),
+          activeWorkspaceId: null,
+        },
+      });
+      return;
+    }
+    if (pathname === '/api/workspace/context' && method === 'GET') {
+      const headers = await request.allHeaders();
+      const selected = directory.find(
+        (candidate) =>
+          candidate.workspaceId === headers['x-od-workspace-id']
+          && candidate.workspaceMemberId === headers['x-od-workspace-member-id'],
+      );
+      if (!selected) {
+        await route.fulfill({ status: 403, json: { error: 'workspace_context_not_authorized' } });
+        return;
+      }
+      await route.fulfill({ json: { context: selected } });
+      return;
+    }
+    if (pathname === '/api/workspace/active' && method === 'PUT') {
+      const body = request.postDataJSON() as {
+        workspaceId?: string;
+        workspaceMemberId?: string;
+      };
+      const selected = directory.find(
+        (candidate) =>
+          candidate.workspaceId === body.workspaceId
+          && candidate.workspaceMemberId === body.workspaceMemberId,
+      );
+      await route.fulfill(
+        selected
+          ? { json: { context: selected } }
+          : { status: 404, json: { error: 'workspace_not_visible' } },
+      );
+      return;
+    }
+    if (pathname === '/api/workspace/billing' && method === 'GET') {
+      if (url.searchParams.get('scope') === 'account') {
+        await route.fulfill({
+          json: {
+            summary: { membershipTier: 'free', balanceUsd: '7.00' },
+            workspaceBalance: null,
+          },
+        });
+        return;
+      }
+      if (
+        url.searchParams.get('scope') === 'workspace'
+        && url.searchParams.get('workspaceId') === TEAM_OWNER.workspaceId
+      ) {
+        await route.fulfill({
+          json: {
+            summary: null,
+            workspaceBalance: {
+              workspaceId: TEAM_OWNER.workspaceId,
+              workspaceMemberId: TEAM_OWNER.workspaceMemberId,
+              balanceUsd: teamBalanceUsd(),
+              billingScopeVersion: 2,
+              expiresAt: null,
+              updatedAt: '2026-08-03T00:00:00.000Z',
+            },
+          },
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, json: { error: 'unexpected_billing_scope' } });
+      return;
+    }
+    if (pathname === '/api/workspace/projects/team' && method === 'GET') {
+      await route.fulfill({ json: { projects: [] } });
+      return;
+    }
+    await route.fallback();
+  });
+}
+
 async function gotoHome(page: Page): Promise<void> {
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await page.getByText('Loading Open Design…').waitFor({
@@ -1370,6 +1739,14 @@ async function gotoHome(page: Page): Promise<void> {
   await expect(page.getByTestId('home-hero')).toBeVisible({ timeout: T.medium });
   await ensureRailOpen(page);
   await expect(page.getByTestId('workspace-switcher')).toBeAttached();
+}
+
+async function openAccountMenu(page: Page): Promise<void> {
+  await ensureRailOpen(page);
+  await page.getByTestId('entry-nav-account').evaluate((element: HTMLButtonElement) => {
+    element.click();
+  });
+  await expect(page.getByTestId('entry-nav-credits-row')).toBeVisible();
 }
 
 async function inviteUrls(page: Page): Promise<string[]> {

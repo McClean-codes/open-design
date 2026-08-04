@@ -817,6 +817,7 @@ import {
   unshareIfCurrentlyShared,
   type TeamResourceRequestScope,
   type TeamResourceShareRecord,
+  type TeamResourceSharedReadOptions,
   type TeamResourceShareService,
 } from './collab/team-resource-share.js';
 import {
@@ -4976,11 +4977,11 @@ export async function startServer({
           // 'published' ref) or retracted (removed) on the resource hub.
           // `resourceKind` routes to just that kind's reconciler instead of
           // re-checking all of them on every event — see
-          // `reconcileTeamResourcesFromRemote` below (declared later in this
-          // function; referencing it here is safe because this callback only
-          // ever RUNS once an actual SSE event arrives, well after the rest
-          // of `startServer`'s synchronous setup — including that
-          // declaration — has completed).
+          // `reconcileTeamResourcesFromRemote` below (declared
+          // later in this function; referencing it here is safe because this
+          // callback only ever RUNS once an actual SSE event arrives, well
+          // after the rest of `startServer`'s synchronous setup — including
+          // that declaration — has completed).
           void reconcileTeamResourcesFromRemote(
             event.resourceKind,
             eventWorkspaceId,
@@ -5008,7 +5009,7 @@ export async function startServer({
         .catch(() => undefined);
       void collabCloud?.pollOnce().catch(() => undefined);
       workspaceBillingRuntime.reconnect(subscribedWorkspaceId);
-      // Same catch-up principle for the design-system/skill resource
+      // Same catch-up principle for the design-system/plugin/skill resource
       // reconciler: a missed 'team-resources-changed' push during the
       // disconnect window is closed by one full re-check across every kind
       // this daemon drives it for (no resourceKind => reconcile all).
@@ -5624,18 +5625,22 @@ export async function startServer({
         resources: TeamResourceShareRecord[];
       }>>
     >();
+    const materialize = async (
+      scope: TeamResourceRequestScope,
+      readOptions?: TeamResourceSharedReadOptions,
+    ) => {
+      const resources = await share.sharedResources(scope, readOptions);
+      if (sync) {
+        await Promise.all(resources.map((resource) => sync(resource, scope)));
+      }
+      return { ids: resources.map((resource) => resource.id), resources };
+    };
     const read = async (scope: TeamResourceRequestScope) => {
       const key = teamResourceScopeKey(scope);
       let listing = listings.get(key);
       if (!listing) {
         listing = createSwrCache(
-          async () => {
-            const resources = await share.sharedResources(scope);
-            if (sync) {
-              await Promise.all(resources.map((resource) => sync(resource, scope)));
-            }
-            return { ids: resources.map((resource) => resource.id), resources };
-          },
+          () => materialize(scope),
           () => key,
           3000,
         );
@@ -5644,6 +5649,9 @@ export async function startServer({
       return listing();
     };
     return Object.assign(read, {
+      authoritative(scope: TeamResourceRequestScope) {
+        return materialize(scope, { authoritative: true });
+      },
       invalidate(scope: TeamResourceRequestScope) {
         const key = teamResourceScopeKey(scope);
         listings.get(key)?.invalidate();
@@ -5655,9 +5663,14 @@ export async function startServer({
   const runTeamResourceCommand = async (
     args: string[],
     workspaceId?: string,
+    readOptions?: TeamResourceSharedReadOptions,
   ) => {
     if (args.length === 2 && args[0] === 'shared' && args[1] === '--json') {
       if (!workspaceId?.trim()) throw new Error('explicit workspace scope is required');
+      if (readOptions?.authoritative) {
+        const { runVelaResourceCommand } = await import('./collab/vela-cli-resource-adapter.js');
+        return runVelaResourceCommand(args, workspaceId);
+      }
       return sharedTeamResourcesCommand(workspaceId);
     }
     const { runVelaResourceCommand } = await import('./collab/vela-cli-resource-adapter.js');
@@ -5857,8 +5870,8 @@ export async function startServer({
         const marker = await readTeamResourceMaterialization(
           USER_DESIGN_SYSTEMS_DIR,
           workspaceId,
-          entry.name,
           `user:${entry.name}`,
+          entry.name,
         );
         if (!marker || marker.kind !== 'design_system') return;
         ensureWorkspaceResource(
@@ -6005,7 +6018,7 @@ export async function startServer({
   };
   const teamResourceEventCoordinator = createWorkspaceTeamResourceEventCoordinator({
     materializeAndList: async ({ resourceKind, scope }) => {
-      const listing = await teamResourceListByKind[resourceKind](scope);
+      const listing = await teamResourceListByKind[resourceKind].authoritative(scope);
       const incomplete = listing.resources.find(
         (resource) => !teamResourceMaterializationIsReady(resourceKind, resource, scope),
       );
@@ -6099,7 +6112,7 @@ export async function startServer({
           `[od] workspace ${workspaceId} resources poll error:`,
           error,
         ),
-      );
+       );
     }
   }, 15_000);
   teamResourcesPollTimer.unref?.();

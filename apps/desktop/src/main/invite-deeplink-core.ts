@@ -48,6 +48,14 @@ export interface InviteDeeplinkDeps {
   focus?: () => void;
   /** Fired with the resolved workspace context on success (e.g. to nudge the web). */
   onActivated?: (context: unknown) => void;
+  /** Reports completed handling without exposing the deeplink URL. */
+  onCompleted?: (outcome: { ok: boolean; reason?: string; status?: number }) => void;
+  /**
+   * Stable installed executable used for OS protocol registration on Windows.
+   * Packaged payload executables are versioned and may be deleted after an
+   * update, so registering process.execPath would strand future deeplinks.
+   */
+  protocolClientPath?: string | null;
 }
 
 type ContinueInvite = (
@@ -103,12 +111,12 @@ export async function continueInviteFromUrl(
   deps: InviteDeeplinkDeps,
 ): Promise<{ ok: boolean; reason?: string; status?: number }> {
   const parsed = parseInviteDeeplink(url);
-  if (!parsed) return { ok: false, reason: "not_an_invite_deeplink" };
+  if (!parsed) return completeInvite(deps, { ok: false, reason: "not_an_invite_deeplink" });
   let baseUrl: string;
   try {
     baseUrl = await deps.resolveDaemonBaseUrl();
   } catch {
-    return { ok: false, reason: "daemon_unavailable" };
+    return completeInvite(deps, { ok: false, reason: "daemon_unavailable" });
   }
   const fetchImpl = deps.fetch ?? fetch;
   try {
@@ -117,14 +125,26 @@ export async function continueInviteFromUrl(
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ nonce: parsed.nonce }),
     });
-    if (!response.ok) return { ok: false, reason: "consume_failed", status: response.status };
+    if (!response.ok) return completeInvite(deps, { ok: false, reason: "consume_failed", status: response.status });
     const body = (await response.json()) as { context?: unknown };
     deps.onActivated?.(body.context ?? null);
     deps.focus?.();
-    return { ok: true };
+    return completeInvite(deps, { ok: true });
   } catch {
     // The web success page keeps a retry-open affordance, so a transient failure
     // here is recoverable — never throw into the app's url handlers.
-    return { ok: false, reason: "unreachable" };
+    return completeInvite(deps, { ok: false, reason: "unreachable" });
   }
+}
+
+function completeInvite(
+  deps: InviteDeeplinkDeps,
+  outcome: { ok: boolean; reason?: string; status?: number },
+): { ok: boolean; reason?: string; status?: number } {
+  try {
+    deps.onCompleted?.(outcome);
+  } catch {
+    // Completion reporting is observational and must not break OS URL handling.
+  }
+  return outcome;
 }

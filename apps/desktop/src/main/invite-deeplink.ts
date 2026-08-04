@@ -48,6 +48,10 @@ function attachOpenUrlListenerWhenHosted(): void {
 
 attachOpenUrlListenerWhenHosted();
 
+export function dispatchInviteDeeplink(url: string | null): void {
+  deeplinkDispatcher.dispatch(url);
+}
+
 /**
  * Register the `opendesign://` scheme and wire the OS deeplink events to
  * {@link continueInviteFromUrl}. macOS delivers via `open-url`; Windows/Linux via
@@ -55,7 +59,11 @@ attachOpenUrlListenerWhenHosted();
  * holds). A cold start through the deeplink carries it in the initial argv.
  */
 export function registerInviteDeeplink(deps: InviteDeeplinkDeps): void {
-  app.setAsDefaultProtocolClient(INVITE_DEEPLINK_SCHEME);
+  if (process.platform === "win32" && deps.protocolClientPath) {
+    app.setAsDefaultProtocolClient(INVITE_DEEPLINK_SCHEME, deps.protocolClientPath);
+  } else {
+    app.setAsDefaultProtocolClient(INVITE_DEEPLINK_SCHEME);
+  }
   deeplinkDispatcher.setDeps(deps);
 
   if (!secondInstanceHandlerRegistered) {

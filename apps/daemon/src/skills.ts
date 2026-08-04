@@ -209,6 +209,10 @@ function skillVisibleFromBinding(
 ): boolean {
   const ownerId = typeof binding?.workspaceId === "string" ? binding.workspaceId.trim() : "";
   if (scope === undefined) return true;
+  // A retracted teammate mirror stays bound as `visibility: 'team'` so its
+  // origin remains recoverable, but its tombstone removes it from every
+  // scoped catalog. The on-disk copy is intentionally left untouched.
+  if (binding?.visibility === "team" && binding.resourceState === "deleted") return false;
   if (source === "built-in") return true;
   const scopeId = scope?.trim();
   if (!scopeId) return !ownerId;
@@ -438,12 +442,10 @@ export async function listSkills(
         entry.source,
       ),
     )
-    // A binding whose visibility is `'team'` is the puller's copy of a
+    // A live binding whose visibility is `'team'` is the puller's copy of a
     // teammate's share (see `syncSharedTeamSkill`'s `markTeamSynced` in
     // server.ts) — never the sharer's own skill, which is never bound this
-    // way. Surface it so the UI can keep a team-synced skill out of
-    // "Personal" once it stops being actively shared (see `SkillSummary.
-    // teamSynced`'s doc comment for the full rationale).
+    // way. Tombstoned Team bindings were removed by the visibility filter.
     .map(({ entry, binding }) =>
       binding?.visibility === "team" ? { ...entry, teamSynced: true } : entry,
     );

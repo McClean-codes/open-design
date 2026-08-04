@@ -1475,15 +1475,8 @@ async function createBoundTeamProject(
       await route.fallback();
       return;
     }
-    const responseFromDaemon = await route.fetch();
-    const body = (await responseFromDaemon.json()) as {
-      project?: Record<string, unknown>;
-    };
     await route.fulfill({
-      response: responseFromDaemon,
-      json: body.project
-        ? { ...body, project: bindProject(body.project) }
-        : body,
+      json: { project: bindProject(created.project) },
     });
   });
   await page.route(`**/api/projects/${created.project.id}/collab/status`, async (route) => {
@@ -1506,22 +1499,32 @@ async function createBoundTeamProject(
   };
 }
 
-test('[P0] Team project send keeps the exact Team scope confirmed during route bootstrap', async ({ page }) => {
+test('[P0] Team project send keeps exact Team run scope through project bootstrap', async ({ page }) => {
   test.setTimeout(60_000);
-  const prompt = 'Run against the Team workspace while its scope read is still pending.';
+  const prompt = 'Run against the exact Team workspace established during project bootstrap.';
   const balanceRequests = await wireTeamRunBalanceFixtures(page, {
     personalBalanceUsd: '0.00',
     teamBalanceUsd: '99.97',
   });
   const { projectId, conversationId } = await createBoundTeamProject(
     page,
-    'Pending Team scope run witness',
+    'Exact Team scope run witness',
   );
   let scopeRequests = 0;
-  const scopeRequestHeaders: Array<Record<string, string>> = [];
+  let scopedReadHeaders: Record<string, string> | null = null;
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
-    scopeRequestHeaders.push(await route.request().allHeaders());
+    const requestHeaders = await route.request().allHeaders();
+    // Route bootstrap must finish before ProjectView mounts. Capture the first
+    // exact Team read without blocking it, then prove the same witness reaches
+    // the run and billing boundaries below.
+    if (
+      scopedReadHeaders === null
+      && requestHeaders['x-od-workspace-id'] === TEAM_RUN_CONTEXT.workspaceId
+      && requestHeaders['x-od-workspace-member-id'] === TEAM_RUN_CONTEXT.workspaceMemberId
+    ) {
+      scopedReadHeaders = requestHeaders;
+    }
     await route.fulfill({
       json: {
         scope: {
@@ -1551,10 +1554,8 @@ test('[P0] Team project send keeps the exact Team scope confirmed during route b
   await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
   await expectWorkspaceReady(page);
   await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
-  expect(scopeRequestHeaders[0]?.['x-od-workspace-id']).toBeUndefined();
-  expect(scopeRequestHeaders[0]?.['x-od-workspace-member-id']).toBeUndefined();
-  expect(scopeRequestHeaders[1]?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
-  expect(scopeRequestHeaders[1]?.['x-od-workspace-member-id']).toBe(
+  expect(scopedReadHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+  expect(scopedReadHeaders?.['x-od-workspace-member-id']).toBe(
     TEAM_RUN_CONTEXT.workspaceMemberId,
   );
   await expect(page.getByTestId('chat-composer-input')).toBeEditable();
@@ -1597,10 +1598,17 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
     'Empty Team wallet run witness',
   );
   let scopeRequests = 0;
-  const scopeRequestHeaders: Array<Record<string, string>> = [];
+  let scopedReadHeaders: Record<string, string> | null = null;
   await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
     scopeRequests += 1;
-    scopeRequestHeaders.push(await route.request().allHeaders());
+    const requestHeaders = await route.request().allHeaders();
+    if (
+      scopedReadHeaders === null
+      && requestHeaders['x-od-workspace-id'] === TEAM_RUN_CONTEXT.workspaceId
+      && requestHeaders['x-od-workspace-member-id'] === TEAM_RUN_CONTEXT.workspaceMemberId
+    ) {
+      scopedReadHeaders = requestHeaders;
+    }
     await route.fulfill({
       json: {
         scope: {
@@ -1621,11 +1629,9 @@ test('[P0] Team project balance gate ignores funded Personal wallet and blocks o
   await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
   await expectWorkspaceReady(page);
   await expect.poll(() => scopeRequests).toBeGreaterThanOrEqual(2);
-  expect(scopeRequestHeaders).toContainEqual(
-    expect.objectContaining({
-      'x-od-workspace-id': TEAM_RUN_CONTEXT.workspaceId,
-      'x-od-workspace-member-id': TEAM_RUN_CONTEXT.workspaceMemberId,
-    }),
+  expect(scopedReadHeaders?.['x-od-workspace-id']).toBe(TEAM_RUN_CONTEXT.workspaceId);
+  expect(scopedReadHeaders?.['x-od-workspace-member-id']).toBe(
+    TEAM_RUN_CONTEXT.workspaceMemberId,
   );
   await expect(page.getByTestId('chat-composer-input')).toBeEditable();
   balanceRequests.resetBalanceRequests();

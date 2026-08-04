@@ -361,6 +361,7 @@ describe('server.ts wiring (source boundary)', () => {
     expect(sourceGapBody).toContain(
       'workspaceId ?? subscribedWorkspaceId',
     );
+    expect(sourceGapBody).toContain("'catch-up'");
   });
 
   it('polls remembered, subscribed, and persisted Team resource Workspaces instead of only ambient', () => {
@@ -408,7 +409,7 @@ describe('server.ts wiring (source boundary)', () => {
     expect(refreshStart).toBeGreaterThan(coordinatorStart);
     const coordinatorBody = source.slice(coordinatorStart, refreshStart);
     expect(coordinatorBody).toContain(
-      'const listing = await teamResourceListByKind[resourceKind](scope);',
+      'const listing = await teamResourceListByKind[resourceKind].authoritative(scope);',
     );
     expect(coordinatorBody).toContain(
       '!teamResourceMaterializationIsReady(resourceKind, resource, scope)',
@@ -429,6 +430,20 @@ describe('server.ts wiring (source boundary)', () => {
     );
     expect(source.slice(reconcileKindStart, readinessStart)).toContain(
       'if (reconciliationError) throw reconciliationError;',
+    );
+    const designSystemAdoptionStart = source.indexOf(
+      'const adoptLegacyWorkspaceTeamDesignSystemBindings = async (',
+    );
+    const skillAdoptionStart = source.indexOf(
+      'const adoptLegacyWorkspaceTeamSkillBindings = async (',
+      designSystemAdoptionStart,
+    );
+    const designSystemAdoptionBody = source.slice(
+      designSystemAdoptionStart,
+      skillAdoptionStart,
+    );
+    expect(designSystemAdoptionBody).toContain(
+      'workspaceId,\n          `user:${entry.name}`,\n          entry.name,',
     );
 
     const pollStart = source.indexOf(

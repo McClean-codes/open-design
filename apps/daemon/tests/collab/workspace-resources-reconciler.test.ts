@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  createWorkspaceResourceSignatureTracker,
   createWorkspaceTeamResourceEventCoordinator,
   planWorkspaceResourceReconciliation,
   reconcileWorkspaceResourcesWithRemote,
@@ -8,6 +9,40 @@ import {
 } from '../../src/collab/workspace-resources-reconciler.js';
 
 const WORKSPACE_ID = 'team-1';
+
+describe('createWorkspaceResourceSignatureTracker', () => {
+  it('detects shares, retractions, and version moves per Workspace and kind', () => {
+    const tracker = createWorkspaceResourceSignatureTracker();
+
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [])).toBe(false);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [
+      { resourceId: 'shared', versionId: 'v1', version: 1 },
+    ])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [
+      { resourceId: 'shared', versionId: 'v2', version: 2 },
+    ])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [
+      { resourceId: 'shared', versionId: 'v2', version: 2 },
+    ])).toBe(false);
+    expect(tracker.observe(WORKSPACE_ID, 'skill', [])).toBe(true);
+
+    expect(tracker.observe(WORKSPACE_ID, 'plugin', [])).toBe(true);
+    expect(tracker.observe('team-2', 'skill', [])).toBe(true);
+  });
+
+  it('does not treat remote listing order as a change', () => {
+    const tracker = createWorkspaceResourceSignatureTracker();
+    expect(tracker.observe(WORKSPACE_ID, 'design_system', [
+      { resourceId: 'b', versionId: 'v1' },
+      { resourceId: 'a', versionId: 'v2' },
+    ])).toBe(true);
+    expect(tracker.observe(WORKSPACE_ID, 'design_system', [
+      { resourceId: 'a', versionId: 'v2' },
+      { resourceId: 'b', versionId: 'v1' },
+    ])).toBe(false);
+  });
+});
 
 describe('planWorkspaceResourceReconciliation (pure)', () => {
   it('retires a local active-team row the remote listing no longer confirms', () => {
@@ -157,7 +192,7 @@ describe('reconcileWorkspaceResourcesWithRemote (orchestrator)', () => {
         onError,
       }),
     );
-    expect(result).toEqual({ retired: 2 });
+    expect(result).toEqual({ retired: 1 });
     expect(onError).toHaveBeenCalledTimes(1);
     expect(applied).toEqual(['b']);
   });
@@ -265,6 +300,65 @@ describe('createWorkspaceTeamResourceEventCoordinator', () => {
       reason: 'push',
     })).resolves.toEqual({ processedKinds: [], emittedKinds: [], failedKinds: ['skill'] });
     expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('treats an outage, an authoritative empty list, and recovery as distinct states', async () => {
+    const createFixture = () => {
+      let localState: 'active' | 'deleted' = 'active';
+      let remote: 'failure' | 'empty' | 'shared' = 'failure';
+      const coordinator = createWorkspaceTeamResourceEventCoordinator({
+        materializeAndList: async () => {
+          if (remote === 'failure') throw new Error('hub unavailable');
+          return remote === 'shared' ? [{ resourceId: 'skill-1' }] : [];
+        },
+        reconcile: ({ resources }) => reconcileWorkspaceResourcesWithRemote({
+          getWorkspaceIdentity: async () => ({ workspaceId: WORKSPACE_ID }),
+          listRemoteTeamResources: async () => resources,
+          listLocalActiveTeamRows: () => localState === 'active'
+            ? [{
+                resourceId: 'skill-1',
+                workspaceId: WORKSPACE_ID,
+                visibility: 'team',
+                resourceState: 'active',
+              }]
+            : [],
+          applyRetire: () => { localState = 'deleted'; },
+        }),
+        emit: vi.fn(),
+      });
+      return {
+        coordinator,
+        setRemote(value: typeof remote) { remote = value; },
+        localState: () => localState,
+      };
+    };
+
+    const recovery = createFixture();
+    await recovery.coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'poll',
+    });
+    expect(recovery.localState()).toBe('active');
+    recovery.setRemote('shared');
+    await recovery.coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'poll',
+    });
+    expect(recovery.localState()).toBe('active');
+
+    const retraction = createFixture();
+    retraction.setRemote('empty');
+    await retraction.coordinator.refresh({
+      workspaceId: WORKSPACE_ID,
+      scope,
+      resourceKind: 'skill',
+      reason: 'poll',
+    });
+    expect(retraction.localState()).toBe('deleted');
   });
 
   it('suppresses unchanged poll snapshots but emits when the version changes', async () => {

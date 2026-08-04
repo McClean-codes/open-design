@@ -178,6 +178,59 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     await expect(twoPersonPresence.locator('[data-self="true"]')).toHaveCount(1);
     await expect(twoPersonPresence.locator('[title]')).toHaveCount(2);
 
+    // Reopen the same member/project in a second browser page. Each mounted
+    // CollabClient owns a distinct presence lease; closing the replacement
+    // page must release only that lease and leave the original member online.
+    const originalMemberHeartbeat = [...hub.commandLog].reverse().find(
+      (entry) =>
+        entry.memberId === MEMBER.memberId &&
+        entry.args[0] === 'collab' &&
+        entry.args[1] === 'presence' &&
+        entry.args[2] === 'heartbeat' &&
+        entry.args[3] === projectId,
+    );
+    const originalMemberClientId = commandFlag(
+      originalMemberHeartbeat?.args ?? [],
+      '--client-id',
+    );
+    expect(originalMemberClientId).toBeTruthy();
+
+    const replacementMemberPage = await cluster.clients.member!.context.newPage();
+    await applyStandardMocks(replacementMemberPage);
+    await replacementMemberPage.goto(`/projects/${projectId}`, {
+      waitUntil: 'domcontentloaded',
+      timeout: T.xlong,
+    });
+    await expect(replacementMemberPage.getByTestId('file-workspace')).toBeVisible({
+      timeout: T.long,
+    });
+    const replacementHeartbeat = await hub.waitForCommand(
+      (entry) =>
+        entry.memberId === MEMBER.memberId &&
+        entry.args[0] === 'collab' &&
+        entry.args[1] === 'presence' &&
+        entry.args[2] === 'heartbeat' &&
+        entry.args[3] === projectId &&
+        commandFlag(entry.args, '--client-id') !== originalMemberClientId,
+      T.long,
+    );
+    const replacementClientId = commandFlag(replacementHeartbeat.args, '--client-id');
+    expect(replacementClientId).toBeTruthy();
+
+    await replacementMemberPage.close();
+    await hub.waitForCommand(
+      (entry) =>
+        entry.memberId === MEMBER.memberId &&
+        entry.args[0] === 'collab' &&
+        entry.args[1] === 'presence' &&
+        entry.args[2] === 'leave' &&
+        entry.args[3] === projectId &&
+        commandFlag(entry.args, '--client-id') === replacementClientId,
+      T.long,
+    );
+    await expect(twoPersonPresence).toBeVisible({ timeout: T.long });
+    await expect(twoPersonPresence.locator('[title]')).toHaveCount(2);
+
     const memberDocumentMarker = await memberPage.evaluate(() => {
       const target = window as Window & typeof globalThis & {
         __multiClientDocumentMarker?: string;
@@ -573,8 +626,106 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
   }
 });
 
+test('[P0] two active clients converge when a member gains then loses admin access', async ({
+  browser,
+}, testInfo) => {
+  const hubRoot = testInfo.outputPath('fake-role-change-hub');
+  await mkdir(hubRoot, { recursive: true });
+  const hub = await startFakeCollabHub({
+    root: hubRoot,
+    workspaceId: WORKSPACE_ID,
+    workspaceName: 'Multi-client team',
+    clients: [OWNER, MEMBER],
+  });
+  const velaBin = await hub.writeVelaBin(testInfo.outputPath('fake-vela-role-change'));
+  const commonEnv = {
+    OD_COLLAB_TRANSPORT: 'vela-cli',
+    OD_RESOURCE_TRANSPORT: 'vela-cli',
+    OD_TEAM_PROJECTS_TRANSPORT: 'vela-cli',
+    OD_WORKSPACE_CONTEXT_SOURCE: 'vela',
+    VELA_API_URL: hub.url,
+    VELA_BIN: velaBin,
+  };
+  let cluster: CollabCluster | undefined;
+  let failed = false;
+  try {
+    cluster = await test.step('start isolated owner and member clients', async () =>
+      await createCollabCluster(browser, testInfo, [
+        {
+          id: 'owner',
+          env: { ...commonEnv, VELA_CONTROL_KEY: OWNER.controlKey },
+        },
+        {
+          id: 'member',
+          env: { ...commonEnv, VELA_CONTROL_KEY: MEMBER.controlKey },
+        },
+      ]));
+    const ownerPage = cluster.clients.owner!.page;
+    const memberPage = cluster.clients.member!.page;
+    await Promise.all([applyStandardMocks(ownerPage), applyStandardMocks(memberPage)]);
+    // Chromium may suspend a background page while two isolated app origins
+    // perform their first navigation at the same time. Bootstrap each client
+    // deterministically; both remain active for the live role transitions.
+    await test.step('bootstrap owner client', async () =>
+      await openHomeAndPinWorkspace(ownerPage, OWNER.memberId));
+    await test.step('bootstrap member client', async () =>
+      await openHomeAndPinWorkspace(memberPage, MEMBER.memberId));
+    await test.step('connect both clients to workspace events', async () => {
+      await Promise.all([
+        registerWorkspaceEventInterest(ownerPage, 'owner-role-change', OWNER.memberId),
+        registerWorkspaceEventInterest(memberPage, 'member-role-change', MEMBER.memberId),
+      ]);
+      await expect.poll(
+        () => [
+          hub.eventSubscriberCount(OWNER.memberId) > 0,
+          hub.eventSubscriberCount(MEMBER.memberId) > 0,
+        ],
+        { timeout: T.long },
+      ).toEqual([true, true]);
+    });
+
+    // Member -> Admin is delivered to the already-open client and grants the
+    // invite capability. The owner sees the same role in its live roster.
+    await test.step('promote member and converge both clients', async () => {
+      hub.setMemberRole(MEMBER.memberId, 'admin');
+      await expectWorkspaceRole(memberPage, 'admin', true);
+      await expectRosterRole(ownerPage, 'admin');
+      await ensureRailOpen(memberPage);
+      await memberPage.getByTestId('workspace-switcher').click();
+      await expect(
+        memberPage.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }),
+      ).toBeVisible({ timeout: T.long });
+      await memberPage.keyboard.press('Escape');
+    });
+
+    // Admin -> Member revokes the affordance live in the already-open client.
+    await test.step('demote admin and revoke the live affordance', async () => {
+      hub.setMemberRole(MEMBER.memberId, 'member');
+      await expectWorkspaceRole(memberPage, 'member', false);
+      await expectRosterRole(ownerPage, 'member');
+      await ensureRailOpen(memberPage);
+      await memberPage.getByTestId('workspace-switcher').evaluate(
+        (element: HTMLButtonElement) => element.click(),
+      );
+      await expect(
+        memberPage.getByRole('menu').getByRole('menuitem', { name: 'Invite colleague' }),
+      ).toHaveCount(0, { timeout: T.long });
+    });
+  } catch (error) {
+    failed = true;
+    await testInfo.attach('fake-role-change-hub-log', {
+      body: JSON.stringify({ commands: hub.commandLog, events: hub.eventLog }, null, 2),
+      contentType: 'application/json',
+    });
+    throw error;
+  } finally {
+    await cluster?.close({ preserve: failed });
+    await hub.close();
+  }
+});
+
 async function openHomeAndPinWorkspace(page: Page, workspaceMemberId: string): Promise<void> {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.goto('/', { waitUntil: 'domcontentloaded', timeout: T.xlong });
   await expect(page.getByText('Loading Open Design…')).toHaveCount(0, {
     timeout: T.xlong,
   });
@@ -591,10 +742,69 @@ async function openHomeAndPinWorkspace(page: Page, workspaceMemberId: string): P
     timeout: T.long,
   });
   expect(response.ok(), await response.text()).toBeTruthy();
-  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: T.xlong });
   await expect(page.getByText('Loading Open Design…')).toHaveCount(0, {
     timeout: T.xlong,
   });
+}
+
+async function registerWorkspaceEventInterest(
+  page: Page,
+  clientId: string,
+  workspaceMemberId: string,
+): Promise<void> {
+  const response = await page.request.put(
+    `/api/workspace/billing/interests/${clientId}`,
+    {
+      data: {
+        generation: '1',
+        interests: [{ workspaceId: WORKSPACE_ID, workspaceMemberId }],
+      },
+      timeout: T.long,
+    },
+  );
+  expect(response.ok(), await response.text()).toBeTruthy();
+}
+
+async function expectWorkspaceRole(
+  page: Page,
+  role: 'admin' | 'member',
+  canInviteMembers: boolean,
+): Promise<void> {
+  await expect.poll(
+    async () => {
+      const response = await page.request.get('/api/workspace/context', {
+        // Keep the request identity fixed at the member's original role. The
+        // expected role must come from the refreshed Vela context, not from a
+        // test header that mirrors the assertion.
+        headers: workspaceHeaders(MEMBER),
+        timeout: T.long,
+      });
+      if (!response.ok()) return null;
+      const body = await response.json() as {
+        context?: { role?: string; permissions?: { canInviteMembers?: boolean } } | null;
+      };
+      return body.context ?? null;
+    },
+    { timeout: T.long },
+  ).toMatchObject({ role, permissions: { canInviteMembers } });
+}
+
+async function expectRosterRole(page: Page, role: 'admin' | 'member'): Promise<void> {
+  await expect.poll(
+    async () => {
+      const response = await page.request.get('/api/workspace/members', {
+        headers: workspaceHeaders(OWNER),
+        timeout: T.long,
+      });
+      if (!response.ok()) return null;
+      const body = await response.json() as {
+        members?: Array<{ memberId?: string; role?: string }>;
+      };
+      return body.members?.find((entry) => entry.memberId === MEMBER.memberId) ?? null;
+    },
+    { timeout: T.long },
+  ).toMatchObject({ memberId: MEMBER.memberId, role });
 }
 
 async function createProject(page: Page): Promise<string> {
@@ -646,8 +856,8 @@ function workspaceHeaders(identity: typeof OWNER | typeof MEMBER): Record<string
     'x-od-workspace-role': identity.role,
     'x-od-workspace-member-status': 'active',
     'x-od-workspace-lifecycle-state': 'active',
-    'x-od-workspace-can-share-projects': identity.role === 'owner' ? 'true' : 'false',
-    'x-od-workspace-can-write-synced-files': identity.role === 'owner' ? 'true' : 'false',
+    'x-od-workspace-can-share-projects': 'true',
+    'x-od-workspace-can-write-synced-files': 'true',
   };
 }
 
@@ -666,4 +876,9 @@ function projectPullVersion(args: readonly string[]): number {
   const flagIndex = args.indexOf('--expected-version');
   if (flagIndex >= 0) return Number(args[flagIndex + 1] ?? 0);
   return 0;
+}
+
+function commandFlag(args: readonly string[], name: string): string | null {
+  const index = args.indexOf(name);
+  return index >= 0 ? args[index + 1] ?? null : null;
 }

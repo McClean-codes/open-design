@@ -55,7 +55,7 @@ type ProjectResponse = {
 // because cross-app private fixtures must not be reused — see
 // e2e/AGENTS.md "tests must not borrow another app's private source".
 const FAKE_VELA_SCRIPT = `#!/usr/bin/env node
-import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { argv, stdin, stdout, env, exit } from 'node:process';
@@ -65,6 +65,13 @@ const SESSION_ID = 'fake-amr-session-1';
 const LIVE_MODEL_ID = 'glm-5';
 const PRESET_MODELS_JSON = JSON.stringify({ source: 'preset', data: [{ id: LIVE_MODEL_ID }] });
 const REMOTE_MODELS_JSON = JSON.stringify({ source: 'remote', data: [{ id: LIVE_MODEL_ID }] });
+
+function readBalanceState() {
+  if (!env.FAKE_VELA_BALANCE_FILE) {
+    return { accountBalanceUsd: '0.00', teamBalanceUsd: '0.00', walletRevision: 1 };
+  }
+  return JSON.parse(readFileSync(env.FAKE_VELA_BALANCE_FILE, 'utf8'));
+}
 
 if (env.FAKE_VELA_SPAWN_ENV_LOG) {
   appendFileSync(env.FAKE_VELA_SPAWN_ENV_LOG, JSON.stringify({
@@ -118,6 +125,44 @@ if (argv[2] === 'model' && argv[3] === 'list' && argv[4] === '--format' && argv[
   exit(0);
 }
 
+if (argv[2] === 'billing' && argv[3] === 'summary') {
+  const balance = readBalanceState();
+  stdout.write(JSON.stringify({
+    membershipTier: 'free',
+    balanceUsd: balance.accountBalanceUsd,
+    subscriptionStatus: 'inactive',
+    balances: {
+      totalAvailableCredits: 0,
+      subscriptionCredits: 0,
+      rechargeCredits: 0,
+    },
+    availableActions: [],
+  }) + '\\n');
+  exit(0);
+}
+
+if (argv[2] === 'billing' && argv[3] === 'workspace-snapshot') {
+  const balance = readBalanceState();
+  const workspaceId = argv[argv.indexOf('--workspace-id') + 1];
+  stdout.write(JSON.stringify({
+    schemaVersion: 1,
+    workspaceId,
+    workspaceMemberId: env.FAKE_VELA_WORKSPACE_MEMBER_ID,
+    billingScopeVersion: 2,
+    billing: { billingState: 'active', planId: 'team_plus' },
+    wallet: {
+      balanceUsd: balance.teamBalanceUsd,
+      expiresAt: null,
+      updatedAt: new Date().toISOString(),
+    },
+    revisions: {
+      billing: 'billing-1',
+      wallet: 'wallet-' + balance.walletRevision,
+    },
+  }) + '\\n');
+  exit(0);
+}
+
 const sessionsWithModel = new Set();
 let buffer = '';
 stdin.setEncoding('utf8');
@@ -166,6 +211,14 @@ function handle(msg) {
   }
   if (method === 'session/prompt') {
     const sid = (params && params.sessionId) || SESSION_ID;
+    if (env.FAKE_VELA_BALANCE_FILE) {
+      const balance = readBalanceState();
+      writeFileSync(env.FAKE_VELA_BALANCE_FILE, JSON.stringify({
+        ...balance,
+        teamBalanceUsd: env.FAKE_VELA_SETTLED_TEAM_BALANCE_USD || '17.50',
+        walletRevision: Number(balance.walletRevision || 0) + 1,
+      }), 'utf8');
+    }
     writeNotification('session/update', {
       sessionId: sid,
       update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ASSISTANT_TEXT } },
@@ -322,13 +375,22 @@ describe('AMR chat-run end-to-end', () => {
     });
   }, 180_000);
 
-  test('the spawned vela process receives the run project team workspace, not an ambient account scope', async () => {
+  test('the Team run keeps its project scope and settles only that workspace wallet', async () => {
     const suite = await createSmokeSuite('amr-team-workspace-spawn');
     const workspace = {
       workspaceId: 'ws-amr-team-e2e',
       workspaceName: 'AMR Billing Team',
       workspaceType: 'team',
       workspaceMemberId: 'wm-amr-team-e2e',
+      role: 'owner',
+      memberStatus: 'active',
+      lifecycleState: 'active',
+    };
+    const personalWorkspace = {
+      workspaceId: 'personal-amr-team-e2e',
+      workspaceName: 'Workspace Runner workspace',
+      workspaceType: 'personal',
+      workspaceMemberId: 'wm-amr-personal-e2e',
       role: 'owner',
       memberStatus: 'active',
       lifecycleState: 'active',
@@ -348,7 +410,7 @@ describe('AMR chat-run end-to-end', () => {
                 providerMode: 'platform_credits',
                 seatSummary: { seatLimit: 5, usedSeats: 2 },
               }
-            : { items: [workspace] },
+            : { items: [personalWorkspace, workspace] },
         ));
         return;
       }
@@ -365,6 +427,12 @@ describe('AMR chat-run end-to-end', () => {
       join(suite.scratchDir, 'fake-vela-team-workspace'),
     );
     const spawnEnvLog = join(suite.scratchDir, 'vela-spawn-env.jsonl');
+    const balanceStateFile = join(suite.scratchDir, 'vela-balance-state.json');
+    await writeFile(balanceStateFile, JSON.stringify({
+      accountBalanceUsd: '50.00',
+      teamBalanceUsd: '20.00',
+      walletRevision: 1,
+    }));
 
     try {
       await suite.with.toolsDev(
@@ -431,6 +499,31 @@ describe('AMR chat-run end-to-end', () => {
               skillId: null,
             },
           });
+          const initialTeamBilling = await requestJson<{
+            workspaceBalance: { balanceUsd: string } | null;
+            workspaceSnapshot: { revisions: { wallet: string } } | null;
+          }>(
+            webUrl,
+            `/api/workspace/billing?scope=workspace&workspaceId=${workspace.workspaceId}`,
+            { headers },
+          );
+          expect(initialTeamBilling.workspaceBalance?.balanceUsd).toBe('20.00');
+          expect(initialTeamBilling.workspaceSnapshot?.revisions.wallet).toBe('wallet-1');
+          const initialAccountBilling = await requestJson<{
+            summary: { balanceUsd: string } | null;
+          }>(webUrl, '/api/workspace/billing?scope=account');
+          expect(initialAccountBilling.summary?.balanceUsd).toBe('50.00');
+
+          // Re-aim the account-level selection after the Team project has
+          // already been pinned. The spawned AMR process must still use the
+          // project's Team billing address, never this ambient Personal one.
+          await requestJson(webUrl, '/api/workspace/active', {
+            method: 'PUT',
+            body: {
+              workspaceId: personalWorkspace.workspaceId,
+              workspaceMemberId: personalWorkspace.workspaceMemberId,
+            },
+          });
           const t0 = Date.now();
           const run = await requestJson<{ runId: string }>(webUrl, '/api/runs', {
             method: 'POST',
@@ -452,6 +545,24 @@ describe('AMR chat-run end-to-end', () => {
             headers,
             timeoutMs: 30_000,
           });
+
+          // The fake ACP runtime settles this Team run by advancing the exact
+          // workspace wallet revision. An authoritative billing read must see
+          // the debit while the Personal/account wallet remains unchanged.
+          const settledTeamBilling = await requestJson<{
+            workspaceBalance: { balanceUsd: string } | null;
+            workspaceSnapshot: { revisions: { wallet: string } } | null;
+          }>(
+            webUrl,
+            `/api/workspace/billing?scope=workspace&workspaceId=${workspace.workspaceId}&freshness=authoritative`,
+            { headers },
+          );
+          expect(settledTeamBilling.workspaceBalance?.balanceUsd).toBe('17.50');
+          expect(settledTeamBilling.workspaceSnapshot?.revisions.wallet).toBe('wallet-2');
+          const settledAccountBilling = await requestJson<{
+            summary: { balanceUsd: string } | null;
+          }>(webUrl, '/api/workspace/billing?scope=account');
+          expect(settledAccountBilling.summary?.balanceUsd).toBe('50.00');
 
           const childInvocations = (await readFile(spawnEnvLog, 'utf8'))
             .trim()
@@ -478,6 +589,9 @@ describe('AMR chat-run end-to-end', () => {
         {
           env: {
             FAKE_VELA_SPAWN_ENV_LOG: spawnEnvLog,
+            FAKE_VELA_BALANCE_FILE: balanceStateFile,
+            FAKE_VELA_SETTLED_TEAM_BALANCE_USD: '17.50',
+            FAKE_VELA_WORKSPACE_MEMBER_ID: workspace.workspaceMemberId,
             OD_WORKSPACE_CONTEXT_SOURCE: 'vela',
             VELA_API_URL: authorityUrl,
             VELA_CONTROL_KEY: 'e2e-amr-workspace-control-key',

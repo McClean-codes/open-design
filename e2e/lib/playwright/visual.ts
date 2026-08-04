@@ -363,6 +363,52 @@ export async function configureVisualPage(page: Page, options: VisualPageOptions
     await fulfillGet(route, { projects });
   });
 
+  // A project deep link no longer borrows the shell's ambient Workspace. If
+  // the project list has not settled first, App bootstraps the route through
+  // an authoritative scope witness followed by the matching project detail.
+  // Keep those reads inside the visual fixture instead of letting the generic
+  // API catch-all turn normal list/bootstrap scheduling into a 404 race.
+  await page.route('**/api/projects/*/workspace-scope', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const projectId = decodeURIComponent(
+      new URL(route.request().url()).pathname.split('/').at(-2) ?? '',
+    );
+    const project = projects.find((candidate) => candidate.id === projectId);
+    if (!project) {
+      await route.fulfill({ status: 404, json: { error: `unknown project ${projectId}` } });
+      return;
+    }
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'unbound',
+          projectId,
+          workspaceId: null,
+          context: null,
+        },
+      },
+    });
+  });
+
+  await page.route('**/api/projects/*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    const projectId = decodeURIComponent(
+      new URL(route.request().url()).pathname.split('/').at(-1) ?? '',
+    );
+    const project = projects.find((candidate) => candidate.id === projectId);
+    if (!project) {
+      await route.fulfill({ status: 404, json: { error: `unknown project ${projectId}` } });
+      return;
+    }
+    await route.fulfill({ json: { project: { ...project, workspaceId: null } } });
+  });
+
   // The conversation boundary. `ProjectView` renders `ChatPane` — and therefore
   // the composer every workspace capture waits for — only once a conversation
   // resolves (`activeConversationId || conversationLoadError`), and both
@@ -661,7 +707,9 @@ export async function waitForVisualProjects(page: Page, projects: readonly Visua
     return;
   }
 
-  await expect(page.getByText(projects[0]?.name ?? '')).toBeVisible();
+  await expect(
+    page.getByTestId('recent-projects-strip').getByText(projects[0]?.name ?? '', { exact: true }),
+  ).toBeVisible();
 }
 
 export async function gotoVisualHome(page: Page): Promise<void> {
@@ -670,6 +718,10 @@ export async function gotoVisualHome(page: Page): Promise<void> {
 }
 
 export async function gotoVisualWorkspace(page: Page): Promise<void> {
+  // Project workspace captures navigate immediately after Home becomes
+  // visible. Wait on the catalog they consume so slower CI scheduling cannot
+  // leave the route guard and deep-link bootstrap racing the mocked list.
+  await waitForVisualProjects(page, VISUAL_PROJECTS);
   await page.goto('/projects/visual-project-launchpad', { waitUntil: 'domcontentloaded' });
   await page.getByText('Loading Open Design…').waitFor({ state: 'hidden', timeout: T.long });
   await expect(page).toHaveURL(/\/projects\/visual-project-launchpad/, { timeout: T.medium });

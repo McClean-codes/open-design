@@ -109,6 +109,13 @@ export interface WorkspaceMembersChangedSsePayload {
   at?: number;
 }
 
+/** A shared Team resource changed; clients re-read only the affected catalog. */
+export interface WorkspaceTeamResourcesChangedSsePayload {
+  type: 'team-resources-changed';
+  resourceKind: 'design_system' | 'plugin' | 'skill';
+  at?: number;
+}
+
 /** Seat count / entitlement / role / lifecycle in the workspace context changed. */
 export interface WorkspaceContextChangedSsePayload {
   type: 'workspace-context-changed';

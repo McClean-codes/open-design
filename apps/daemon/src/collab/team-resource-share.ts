@@ -92,11 +92,22 @@ export interface TeamResourceShareService {
   /** Ids of resources shared to the team. */
   sharedIds(scope: TeamResourceRequestScope): Promise<string[]>;
   /** Resources shared to the team, including best-effort display metadata. */
-  sharedResources(scope: TeamResourceRequestScope): Promise<TeamResourceShareRecord[]>;
+  sharedResources(
+    scope: TeamResourceRequestScope,
+    options?: TeamResourceSharedReadOptions,
+  ): Promise<TeamResourceShareRecord[]>;
   /** True once a resource has been shared to the team. */
   isShared(resourceId: string, scope: TeamResourceRequestScope): boolean;
   /** Whether the login-backed Vela transport is wired. */
   readonly configured: boolean;
+}
+
+export interface TeamResourceSharedReadOptions {
+  /**
+   * Require a live hub response. Reconciliation must use this mode so a
+   * transport failure can never be confused with an authoritative empty list.
+   */
+  authoritative?: boolean;
 }
 
 export interface CreateTeamResourceShareOptions {
@@ -111,7 +122,11 @@ export interface CreateTeamResourceShareOptions {
   /** Optional resource-index metadata shown in teammate team lists. */
   describeResource?: (resourceId: string) => Record<string, unknown> | null | Promise<Record<string, unknown> | null>;
   /** Injectable Vela resource runner for tests. */
-  run?: (args: string[], workspaceId?: string) => Promise<string>;
+  run?: (
+    args: string[],
+    workspaceId?: string,
+    readOptions?: TeamResourceSharedReadOptions,
+  ) => Promise<string>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -124,7 +139,12 @@ export function createTeamResourceShareService(
       share: async () => null,
       unshare: async () => false,
       sharedIds: async () => [],
-      sharedResources: async () => [],
+      sharedResources: async (_scope, readOptions) => {
+        if (readOptions?.authoritative) {
+          throw new Error('authoritative Team resource listing is unavailable');
+        }
+        return [];
+      },
       isShared: () => false,
       configured: false,
     };
@@ -192,13 +212,14 @@ export function createTeamResourceShareService(
     async sharedIds(scope) {
       return (await this.sharedResources(scope)).map((resource) => resource.id);
     },
-    async sharedResources(scope) {
+    async sharedResources(scope, readOptions) {
       const { principal } = scope;
       const shared = sharedFor(principal.teamId);
       try {
         const out = await (options.run ?? defaultRun)(
           ['shared', '--json'],
           principal.teamId,
+          readOptions,
         );
         const scopedResources = parseSharedResourceRecords(out, options.kind, scopedIdPrefixFor(principal));
         const legacyResources = principal.workspaceType === 'personal'
@@ -220,7 +241,8 @@ export function createTeamResourceShareService(
             return resource;
           })
           .sort((a, b) => a.id.localeCompare(b.id));
-      } catch {
+      } catch (error) {
+        if (readOptions?.authoritative) throw error;
         return [...shared].sort().map((id) => ({ id, canUnshare: true }));
       }
     },

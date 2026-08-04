@@ -495,6 +495,48 @@ describe('GET /api/skills — teamSynced projection', () => {
     expect(skill?.teamSynced).toBe(true);
   });
 
+  it('hides a tombstoned Team mirror while retaining its recovery copy and attribution', async () => {
+    const workspaceId = 'ws-teamsynced-tombstone';
+    const skillId = `wsteamsynced-tombstone-${Date.now()}`;
+    const materialized = await materializeWorkspaceScopedTeamResource({
+      kindRoot: userSkillsDir,
+      storageName: skillId,
+      identity: {
+        kind: 'skill',
+        workspaceId,
+        resourceId: skillId,
+        hubResourceId: `skill-${workspaceId}-${skillId}`,
+      },
+      pullInto: (directory) => writeFile(
+        path.join(directory, 'SKILL.md'),
+        `---\nname: "${skillId}"\ndescription: "Test Team skill ${skillId}."\n---\n\nBody for ${skillId}.\n`,
+      ),
+      verifyWorkspaceScope: async () => true,
+      verifyStillShared: async () => true,
+    });
+    expect(materialized.status).toBe('committed');
+    const folder = materialized.status === 'committed' ? materialized.targetDir : '';
+    const db = openDatabase(process.cwd(), { dataDir: process.env.OD_DATA_DIR! });
+    const bindingId = workspaceTeamSkillBindingResourceId(workspaceId, skillId);
+    ensureWorkspaceResource(db, 'skill', workspaceId, bindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: 'member-owner',
+    });
+
+    expect(await fetchSkillIds(workspaceId)).toContain(skillId);
+
+    updateWorkspaceResource(db, 'skill', workspaceId, bindingId, { resourceState: 'deleted' });
+
+    expect(await fetchSkillIds(workspaceId)).not.toContain(skillId);
+    expect(existsSync(folder)).toBe(true);
+    expect(getWorkspaceResourceByResourceId(db, 'skill', bindingId)).toMatchObject({
+      workspaceId,
+      visibility: 'team',
+      resourceState: 'deleted',
+    });
+  });
+
   it('omits teamSynced for a personal-visibility bound skill (the sharer\'s own copy)', async () => {
     const skillId = `wsteamsynced-personal-${Date.now()}`;
     await seedSkillFolder(skillId);
