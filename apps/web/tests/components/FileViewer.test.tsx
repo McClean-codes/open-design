@@ -7021,6 +7021,19 @@ describe('FileViewer tweaks toolbar', () => {
 
   it('uses a project-scoped preview base for runtime-created relative assets in srcDoc', async () => {
     const context = teamWorkspaceContext();
+    const file = htmlPreviewFile({ name: 'brand.html', path: 'brand.html' });
+    const srcDocHtml = '<!doctype html><html><head></head><body><script>location.reload(); const img = document.createElement("img"); img.src = "logos/mark.png";</script></body></html>';
+    const urlLoadHtml = '<!doctype html><html><body>URL loaded</body></html>';
+    const renderViewer = (liveHtml: string) => (
+      <CollabProvider value={projectWorkspaceCollabValue(context)}>
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={file}
+          liveHtml={liveHtml}
+        />
+      </CollabProvider>
+    );
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input.toString();
       if (url.includes('/api/projects/project-1/preview-url')) {
@@ -7036,15 +7049,7 @@ describe('FileViewer tweaks toolbar', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    renderWithProjectWorkspace(
-      <FileViewer
-        projectId="project-1"
-        projectKind="prototype"
-        file={htmlPreviewFile({ name: 'brand.html', path: 'brand.html' })}
-        liveHtml={'<!doctype html><html><head></head><body><script>location.reload(); const img = document.createElement("img"); img.src = "logos/mark.png";</script></body></html>'}
-      />,
-      context,
-    );
+    const { rerender } = render(renderViewer(srcDocHtml));
 
     const frame = await waitFor(() => {
       const activeFrame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
@@ -7067,6 +7072,28 @@ describe('FileViewer tweaks toolbar', () => {
         }),
       }),
     );
+
+    rerender(renderViewer(urlLoadHtml));
+    await waitFor(() => {
+      expect(
+        (screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement)
+          .getAttribute('data-od-render-mode'),
+      ).toBe('url-load');
+    });
+    await act(async () => {
+      rerender(renderViewer(srcDocHtml));
+      await Promise.resolve();
+    });
+    await waitFor(() => {
+      const activeFrame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+      expect(activeFrame.getAttribute('data-od-render-mode')).toBe('srcdoc');
+      expect(activeFrame.srcdoc).toContain(
+        '<base href="/api/projects/project-1/preview/scope-1/">',
+      );
+    });
+    expect(fetchMock.mock.calls.filter(([input]) => (
+      String(input).includes('/api/projects/project-1/preview-url')
+    ))).toHaveLength(1);
   });
 
   it('keeps the URL-loaded iframe active when opening Draw after the URL preview bridge is ready', async () => {

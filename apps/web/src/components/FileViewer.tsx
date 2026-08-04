@@ -9506,6 +9506,7 @@ function HtmlViewer({
   useEffect(() => {
     if (
       useUrlLoadPreview
+      || effectiveScopedSrcDocPreviewBase
       || !workspaceActive
       || projectResourceReadBlocked
       || !workspaceContext
@@ -9520,6 +9521,7 @@ function HtmlViewer({
       cancelled = true;
     };
   }, [
+    effectiveScopedSrcDocPreviewBase,
     file.name,
     projectId,
     projectResourceReadBlocked,
