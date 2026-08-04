@@ -12,7 +12,6 @@ import {
   amrPlansUrlForProfile,
   amrPlansUrlForWorkspace,
 } from '../runtime/amr-guidance';
-import { Icon } from './Icon';
 import styles from './DeepSeekV4FlashCampaign.module.css';
 
 const SEEN_KEY = `open-design:campaign-seen:${campaign.id}`;
@@ -124,49 +123,49 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
       backdropClassName={styles.backdrop}
       data-testid="deepseek-v4-flash-campaign-dialog"
     >
-      <Button
-        variant="ghost"
-        size="icon"
-        className={styles.close}
-        aria-label="关闭"
-        onClick={closeModal}
-      >
-        <Icon name="close" size={17} strokeWidth={1.8} />
-      </Button>
+      <img
+        alt=""
+        className={styles.cover}
+        data-testid="deepseek-v4-flash-campaign-cover"
+        src="/campaigns/deepseek-v4-flash-free-week-v1.png"
+      />
 
-      <p className={styles.eyebrow}>{presentation.eyebrow}</p>
-      <h2 id={titleId} className={styles.title}>{campaign.headline}</h2>
-      <p id={descriptionId} className={styles.lead}>{campaign.description}</p>
+      <div className={styles.content}>
+        <p className={styles.eyebrow}>{presentation.eyebrow}</p>
+        <h2 id={titleId} className={styles.title}>{campaign.headline}</h2>
+        <p id={descriptionId} className={styles.lead}>{campaign.description}</p>
 
-      <div className={styles.modelCard}>
-        <span className={styles.modelMark} aria-hidden="true">DS</span>
-        <span className={styles.modelCopy}>
-          <strong>{campaign.benefit}</strong>
-          <small>{presentation.status}</small>
-        </span>
-        <span className={paid ? styles.available : styles.locked}>
-          {paid ? '已解锁' : '待解锁'}
-        </span>
+        <div className={styles.modelCard}>
+          <span className={styles.modelMark} aria-hidden="true">
+            <img alt="" src="/agent-icons/deepseek.svg" />
+          </span>
+          <span className={styles.modelCopy}>
+            <strong>{campaign.benefit}</strong>
+            <small>{presentation.status}</small>
+          </span>
+          <span className={paid ? styles.available : styles.locked}>
+            {paid ? '已解锁' : '待解锁'}
+          </span>
+        </div>
+
+        <div className={styles.countdown} aria-label="活动倒计时">
+          <span className={styles.countdownLabel}>活动倒计时</span>
+          <strong data-testid="deepseek-v4-flash-campaign-countdown">
+            {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
+          </strong>
+          <small>{campaign.window.label} · 一周免费用</small>
+        </div>
+
+        <p className={styles.boundary}>{campaign.boundary}</p>
       </div>
 
-      <div className={styles.countdown} aria-label="活动倒计时">
-        <span className={styles.countdownLabel}>活动倒计时</span>
-        <strong data-testid="deepseek-v4-flash-campaign-countdown">
-          {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
-        </strong>
-        <small>{campaign.window.label} · 一周免费用</small>
-      </div>
-
-      <p className={styles.boundary}>{campaign.boundary}</p>
-      <div className={styles.actions}>
-        <Button className={styles.primaryAction} onClick={takeAction}>
+      <div className={styles.footer}>
+        <Button className={styles.dismissAction} onClick={closeModal}>
+          {paid ? '稍后再说' : '关闭'}
+        </Button>
+        <Button variant="primary" className={styles.primaryAction} onClick={takeAction}>
           {presentation.cta}
         </Button>
-        {paid ? (
-          <Button variant="ghost" className={styles.laterAction} onClick={closeModal}>
-            稍后再说
-          </Button>
-        ) : null}
       </div>
     </Dialog>,
     document.body,

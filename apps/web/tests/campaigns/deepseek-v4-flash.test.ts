@@ -84,8 +84,9 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the paid modal actions on the final approved interaction', () => {
     expect(campaignDialogSource).toContain('{presentation.cta}');
     expect(campaignDialogSource).toContain('稍后再说');
-    expect(campaignDialogSource).toMatch(/paid\s*\?\s*\(/);
-    expect(campaignDialogSource).toMatch(/className=\{styles\.laterAction\}/);
+    expect(campaignDialogSource).toContain('/campaigns/deepseek-v4-flash-free-week-v1.png');
+    expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-cover');
+    expect(campaignDialogSource).toMatch(/className=\{styles\.dismissAction\}/);
     expect(campaignDialogSource).toMatch(/onClick=\{closeModal\}/);
   });
 
@@ -103,7 +104,7 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the unpaid action on the upgrade flow without showing the paid secondary action', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.cta).toBe('升级套餐，立即使用');
     expect(campaignDialogSource).toContain("window.open(plansUrl, '_blank', 'noopener,noreferrer')");
-    expect(campaignDialogSource).toMatch(/\{paid \? \([\s\S]*稍后再说[\s\S]*\) : null\}/);
+    expect(campaignDialogSource).toContain("{paid ? '稍后再说' : '关闭'}");
   });
 
   it('opens for every paid user only inside the shared half-open window', () => {
