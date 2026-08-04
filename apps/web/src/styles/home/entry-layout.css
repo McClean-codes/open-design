@@ -1062,21 +1062,21 @@
   gap: 7px;
   min-height: 32px;
   padding: 7px 11px 7px 13px;
-  border: 1px solid color-mix(in srgb, currentColor 58%, transparent);
+  border: 1px solid var(--green-border);
   border-radius: 999px;
-  color: #205b16;
-  background: transparent;
+  color: var(--green);
+  background: var(--green-bg);
   box-shadow: none;
   font-size: 12px;
-  font-weight: 760;
+  font-weight: 700;
   line-height: 1;
   text-decoration: none;
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
 .entry-deepseek-campaign-badge:hover {
-  border-color: color-mix(in srgb, #68f22e 76%, var(--line));
-  background: var(--bg-subtle);
+  border-color: color-mix(in srgb, var(--green) 42%, var(--green-border));
+  background: color-mix(in srgb, var(--green) 8%, var(--bg-panel));
   transform: translateY(-1px);
 }
 

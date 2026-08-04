@@ -32,15 +32,17 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(entryShellSource).toContain('rel="noopener noreferrer"');
   });
 
-  it('keeps the campaign badge visually lightweight without a green fill', () => {
+  it('uses the shared success-state color tokens for the campaign badge', () => {
     const badgeRule = entryLayoutStyles.match(
       /\.entry-deepseek-campaign-badge\s*\{([^}]*)\}/,
     )?.[1];
 
-    expect(badgeRule).toContain('background: transparent');
+    expect(badgeRule).toContain('background: var(--green-bg)');
+    expect(badgeRule).toContain('color: var(--green)');
+    expect(badgeRule).toContain('border: 1px solid var(--green-border)');
     expect(badgeRule).toContain('box-shadow: none');
-    expect(badgeRule).toContain('border: 1px solid');
-    expect(badgeRule).toContain('currentColor 58%');
+    expect(badgeRule).not.toContain('#205b16');
+    expect(badgeRule).not.toContain('background: transparent');
   });
 
   it('models the unpaid review URL as a signed-in user with existing models', () => {
