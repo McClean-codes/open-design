@@ -14,10 +14,11 @@ import { BrandLogo, BrandPreviewCard, hostnameOf } from './BrandPreviewCard';
 import { BrandReferencePicker } from './BrandReferencePicker';
 import { NewBrandModal } from './NewBrandModal';
 import styles from './BrandsTab.module.css';
+import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import {
-  useWorkspaceContext,
-  workspaceResourceReadContext,
-} from '../collab/useWorkspaceContext';
+  resolveWorkspaceResourceReadIdentity,
+  workspaceResourceReadIdentityKey,
+} from '../collab/workspace-identity';
 
 export interface BrandsTabProps {
   /**
@@ -36,7 +37,9 @@ export function BrandsTab({ onApplyDesignSystem, onOpenProject, onDesignSystemsR
   const t = useT();
   const workspaceState = useWorkspaceContext();
   const mutationWorkspaceContext = workspaceState.context;
-  const workspaceContext = workspaceResourceReadContext(workspaceState);
+  const resourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
+  const workspaceContext = resourceReadIdentity?.context ?? null;
+  const workspaceReadGeneration = workspaceResourceReadIdentityKey(resourceReadIdentity);
   const route = useRoute();
   // A `/brands/:id` deep-link (from the rail, a chat link, or a shared URL)
   // preselects which brand the inline preview renders. Undefined on `/brands`.
@@ -214,6 +217,7 @@ export function BrandsTab({ onApplyDesignSystem, onOpenProject, onDesignSystemsR
                 active={summary.meta.id === selectedBrandId}
                 onSelect={handleSelect}
                 workspaceContext={workspaceContext}
+                workspaceReadGeneration={workspaceReadGeneration}
               />
             ))
           )}
@@ -263,9 +267,16 @@ interface ListItemProps {
   active: boolean;
   onSelect: (id: string) => void;
   workspaceContext: WorkspaceCollabContext | null;
+  workspaceReadGeneration: string;
 }
 
-function BrandListItem({ summary, active, onSelect, workspaceContext }: ListItemProps) {
+function BrandListItem({
+  summary,
+  active,
+  onSelect,
+  workspaceContext,
+  workspaceReadGeneration,
+}: ListItemProps) {
   const t = useT();
   const { meta, brand } = summary;
   const host = hostnameOf(meta.sourceUrl);
@@ -290,6 +301,7 @@ function BrandListItem({ summary, active, onSelect, workspaceContext }: ListItem
           className={styles.itemLogo}
           fallbackClassName={styles.itemLogoFallback}
           workspaceContext={workspaceContext}
+          readGeneration={workspaceReadGeneration}
         />
       </span>
       <span className={styles.itemMeta}>

@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { BrandSummary, WorkspaceCollabContext } from '@open-design/contracts';
+import { workspaceContextFixture } from '../helpers/workspace-context';
 
 // EntryShell keeps the Brands sub-view mounted and only toggles visibility, so
 // the route is the signal for "Brands is the active view". A mutable hoisted
@@ -38,12 +39,17 @@ vi.mock('../../src/runtime/brand-intent', () => ({
   NEW_BRAND_KIT_INTENT_EVENT: 'od:new-brand-kit-intent',
   consumePendingNewBrandKit: () => false,
 }));
-// Heavy children are out of scope for the refresh contract.
-vi.mock('../../src/components/BrandPreviewCard', () => ({
-  BrandPreviewCard: () => null,
-  BrandLogo: () => null,
-  hostnameOf: (url?: string) => url ?? '',
-}));
+// Keep the list row's real BrandLogo so Workspace read-identity regressions
+// exercise the actual BrandsTab caller. Only the heavy detail card is stubbed.
+vi.mock('../../src/components/BrandPreviewCard', async () => {
+  const actual = await vi.importActual<typeof import('../../src/components/BrandPreviewCard')>(
+    '../../src/components/BrandPreviewCard',
+  );
+  return {
+    ...actual,
+    BrandPreviewCard: () => null,
+  };
+});
 vi.mock('../../src/components/BrandReferencePicker', () => ({
   BrandReferencePicker: ({ onPick }: { onPick: (brand: unknown) => void }) => (
     <button
@@ -133,6 +139,39 @@ describe('BrandsTab refresh reconciliation', () => {
     );
 
     await waitFor(() => expect(fetchBrandsMock).toHaveBeenCalledTimes(2));
+  });
+
+  it('retries the scoped list logo when only the exact read generation advances', async () => {
+    const context = workspaceContextFixture({
+      workspaceId: 'workspace-logo',
+      workspaceType: 'personal',
+      workspaceMemberId: 'member-logo',
+    });
+    fetchBrandsMock.mockResolvedValue([brandSummary('acme', 'ready')]);
+    workspaceContextState.context = context;
+    workspaceContextState.resourceReadIdentity = { context, generation: 'generation-a' };
+
+    const view = renderBrandsTab();
+    const logo = await waitFor(() => {
+      const image = screen.getByTestId('brand-item-acme').querySelector('img');
+      expect(image?.getAttribute('src')).toContain('/api/brands/acme/logo');
+      return image as HTMLImageElement;
+    });
+    fireEvent.error(logo);
+    expect(screen.getByTestId('brand-item-acme').querySelector('img')?.getAttribute('src'))
+      .toContain('google.com/s2/favicons');
+
+    workspaceContextState.resourceReadIdentity = { context, generation: 'generation-b' };
+    view.rerender(
+      <I18nProvider initial="en">
+        <BrandsTab />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('brand-item-acme').querySelector('img')?.getAttribute('src'))
+        .toContain('/api/brands/acme/logo');
+    });
   });
 
   it('polls while a brand is extracting and stops once it settles', async () => {

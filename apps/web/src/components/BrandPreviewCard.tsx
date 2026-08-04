@@ -19,11 +19,12 @@ import { trackDesignSystemEditClick } from '../analytics/events';
 import { requestHomeChip } from '../runtime/home-intent';
 import { brandSummaryToKit } from '../runtime/design-kit';
 import { DesignKitView } from './DesignKitView';
+import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import {
-  useWorkspaceContext,
-  workspaceResourceReadContext,
-} from '../collab/useWorkspaceContext';
-import { workspaceProjectHeaders } from '../collab/workspace-identity';
+  resolveWorkspaceResourceReadIdentity,
+  workspaceProjectHeaders,
+  workspaceResourceReadIdentityKey,
+} from '../collab/workspace-identity';
 import styles from './BrandPreviewCard.module.css';
 
 // Re-exports preserving the previous public surface of this module.
@@ -53,7 +54,9 @@ export function BrandPreviewCard({
   const analytics = useAnalytics();
   const workspaceState = useWorkspaceContext();
   const mutationWorkspaceContext = workspaceState.context;
-  const workspaceContext = workspaceResourceReadContext(workspaceState);
+  const resourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
+  const workspaceContext = resourceReadIdentity?.context ?? null;
+  const workspaceReadGeneration = workspaceResourceReadIdentityKey(resourceReadIdentity);
   const compact = variant === 'compact';
   const { meta, brand } = summary;
   const name = brand?.name?.trim() || (meta.sourceUrl ? new URL(meta.sourceUrl).hostname.replace(/^www\./, '') : 'Brand');
@@ -226,6 +229,7 @@ export function BrandPreviewCard({
     <DesignKitView
       kit={kit}
       workspaceContext={workspaceContext}
+      workspaceReadGeneration={workspaceReadGeneration}
       variant={variant}
       badgeSlot={badgeSlot}
       actionsSlot={actionsSlot}
