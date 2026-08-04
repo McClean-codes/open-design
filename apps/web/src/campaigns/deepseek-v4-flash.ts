@@ -29,7 +29,7 @@ export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
     modelBadge: '已暂停',
     tooltip: '检测到异常的大规模使用，本活动权益已暂停；如有疑问请联系支持。',
   },
-  boundary: '活动期间不设个人免费额度；仅对大规模盗刷等违规行为采取限制措施。',
+  boundary: '套餐内的无限制模型额度与免费生成次数，仅可通过 Open Design使用；无法在 MCP / CLI/ API及其他场景使用。解释权归官方所有。',
 } as const;
 
 export const DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM = 'deepseek-v4-flash';

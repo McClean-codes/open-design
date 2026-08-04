@@ -19,7 +19,7 @@ test('cloud team upgrade demo leads the benefit list with the campaign entitleme
   assert.match(source, /campaignCountdown\.textContent = `活动剩余 \$\{days\}天/);
   assert.match(source, /campaignCountdownEndsAt = Date\.now\(\) \+ 7 \* 24 \* 60 \* 60 \* 1000/);
   assert.match(source, /\.campaign-banner \{[^}]*border:\s*0;/);
-  assert.match(source, /套餐内的无限制模型额度与免费生成次数/);
+  assert.match(source, /套餐内的无限制模型额度与免费生成次数，仅可通过 Open Design使用；无法在 MCP \/ CLI\/ API及其他场景使用。解释权归官方所有。/);
   assert.doesNotMatch(source, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
   assert.doesNotMatch(source, /\.campaign-disclaimer strong/);
   assert.ok(

@@ -61,7 +61,9 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip).toContain('8 月 13 日');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.modelBadge).toBe('已暂停');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.tooltip).toContain('异常的大规模使用');
-    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.boundary).toContain('不设个人免费额度');
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.boundary).toBe(
+      '套餐内的无限制模型额度与免费生成次数，仅可通过 Open Design使用；无法在 MCP / CLI/ API及其他场景使用。解释权归官方所有。',
+    );
 
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'plus',
