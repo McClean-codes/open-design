@@ -580,8 +580,10 @@ describe('reconcileWorkspaceProjectsWithRemote, verified through the real worksp
     registerProjectRoutes(app, buildProjectRoutesDeps({ list: async () => [] }));
     const routeServer = await listen(app);
     const detailUrl = `${routeServer.url}/api/projects/${projectId}`;
+    const scopeUrl = `${routeServer.url}/api/projects/${projectId}/workspace-scope`;
     const filesUrl = `${routeServer.url}/api/projects/${projectId}/files`;
     const rawUrl = `${routeServer.url}/api/projects/${projectId}/raw/index.html`;
+    const previewUrl = `${routeServer.url}/api/projects/${projectId}/preview-url`;
     expect((await fetch(detailUrl, { headers: readerTeamHeaders() })).status).toBe(200);
 
     // The owner has since unshared (or deleted) the project: the hub's team
@@ -603,8 +605,10 @@ describe('reconcileWorkspaceProjectsWithRemote, verified through the real worksp
       teamMirrorRevokedAt: expect.any(Number),
     });
     expect((await fetch(detailUrl, { headers: readerTeamHeaders() })).status).toBe(403);
+    expect((await fetch(scopeUrl, { headers: readerTeamHeaders() })).status).toBe(403);
     expect((await fetch(filesUrl, { headers: readerTeamHeaders() })).status).toBe(404);
     expect((await fetch(rawUrl, { headers: readerTeamHeaders() })).status).toBe(404);
+    expect((await fetch(previewUrl, { headers: readerTeamHeaders() })).status).toBe(404);
 
     try {
       const teamResp = await fetch(

@@ -255,6 +255,53 @@ describe('useProjectWorkspaceScope', () => {
     hook.unmount();
   });
 
+  it('fails closed when a project-catalog event revokes the currently open project', async () => {
+    const initial = teamScope(
+      'project-unshared',
+      'workspace-unshared',
+      'member-reader',
+    );
+    if (initial.scope.kind === 'team') initial.scope.visibility = 'team';
+    const caller = initial.scope.context as WorkspaceCollabContext;
+    const fetchMock = vi.fn(async () => new Response('{}', { status: 403 }));
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubGlobal('EventSource', OpeningEventSource as unknown as typeof EventSource);
+
+    const hook = renderHook(() => useProjectWorkspaceScope(
+      'project-unshared',
+      caller,
+      caller.workspaceId,
+      initial.scope,
+    ));
+
+    expect(hook.result.current).toMatchObject({
+      loading: false,
+      scope: initial.scope,
+    });
+    await act(async () => {
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      OpeningEventSource.instances[0]?.emit('team-projects-changed', {
+        type: 'team-projects-changed',
+        projectId: 'project-unshared',
+        kind: 'catalog',
+      });
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => {
+      expect(hook.result.current).toEqual({
+        loading: false,
+        scope: null,
+        failure: 'forbidden',
+      });
+    });
+  });
+
   it('revalidates and hides a stale scope when the same member authority changes', async () => {
     const first = teamScope('project-role', 'workspace-role', 'member-role');
     const second = deferred<Response>();
