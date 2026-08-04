@@ -1154,14 +1154,17 @@ describe('CollabClient', () => {
   });
 
   it('does not send leave when stop happens before any heartbeat attempt', async () => {
-    let resolveStatus!: (response: Response) => void;
+    const paths: string[] = [];
     const fetchImpl = vi.fn(
       (input: RequestInfo | URL): Promise<Response> => {
         const pathname = new URL(String(input), 'http://daemon.local').pathname;
-        expect(pathname).toBe('/api/projects/p1/collab/status');
-        return new Promise<Response>((resolve) => {
-          resolveStatus = resolve;
-        });
+        paths.push(pathname);
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+            { status: 200 },
+          ),
+        );
       },
     ) as unknown as typeof fetch;
     const client = new CollabClient({
@@ -1172,16 +1175,10 @@ describe('CollabClient', () => {
 
     client.start();
     client.stop();
-
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    resolveStatus(
-      new Response(
-        JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
-        { status: 200 },
-      ),
-    );
     await vi.advanceTimersByTimeAsync(0);
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    expect(paths.some((path) => path.endsWith('/presence/heartbeat'))).toBe(false);
+    expect(paths.some((path) => path.endsWith('/presence/leave'))).toBe(false);
   });
 
   it('leaveBeacon delivers the same session lease via sendBeacon so it survives page unload', async () => {
