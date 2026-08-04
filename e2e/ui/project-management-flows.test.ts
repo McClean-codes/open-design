@@ -540,9 +540,15 @@ test('[P0] @critical project detail composer design system switch carries into t
   await page.route('**/api/design-systems', async (route) => {
     await route.fulfill({ json: { designSystems: DESIGN_SYSTEMS } });
   });
+  // This helper creates through APIRequestContext, bypassing the browser-side
+  // same-session creation witness. Pin the scenario to an exact writable
+  // Personal owner so a slow catalog/status read cannot turn it viewer-only.
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Header design system run context');
+  await createProject(page, 'Header design system run context', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
   const trigger = projectDesignSystemTrigger(page);
@@ -2934,12 +2940,20 @@ test('[P0] @critical project detail share menu publish action opens the deploy f
       },
     });
   });
+  // Match the other writable share scenarios: APIRequestContext creation does
+  // not register the browser's same-session owner witness, so provide the
+  // exact Personal authority this test intends to exercise.
+  await mockWritablePersonalProjectScope(page);
 
   await page.goto('/');
-  await createProject(page, 'Deploy action flow');
+  await createProject(page, 'Deploy action flow', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await expectWorkspaceReady(page);
 
-  const uploadedName = await uploadTinyHtml(page, 'deploy-action.html', '<!doctype html><html><body><h1>Deploy action</h1></body></html>');
+  const uploadedName = await uploadTinyHtml(page, 'deploy-action.html', '<!doctype html><html><body><h1>Deploy action</h1></body></html>', {
+    headers: AMR_PERSONAL_WORKSPACE_HEADERS,
+  });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
   await openShareExportTab(page);
