@@ -1284,6 +1284,7 @@ function injectBeforeBodyEnd(doc: string, payload: string): string {
 }
 
 function injectBaseHref(doc: string, baseHref: string): string {
+  if (/<base\b/i.test(doc)) return doc;
   const safeHref = escapeAttr(baseHref);
   const tag = `<base href="${safeHref}">`;
   if (/<head[^>]*>/i.test(doc)) {

@@ -98,6 +98,7 @@ import {
   fetchProjectFileVersion,
   fetchProjectFileVersions,
   fetchProjectFilePreview,
+  fetchProjectPreviewBaseHref,
   fetchProjectFiles,
   fetchProjectFilePublicPublication,
   fetchProjectFileText,
@@ -7576,6 +7577,16 @@ function HtmlViewer({
   const initialSource = liveHtml ?? initialSourceSnapshot?.source ?? null;
   const [source, setSource] = useState<string | null>(initialSource);
   const [routingSource, setRoutingSource] = useState<string | null>(initialSource);
+  const srcDocPreviewBaseIdentity =
+    `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}`;
+  const [scopedSrcDocPreviewBase, setScopedSrcDocPreviewBase] = useState<{
+    identity: string;
+    href: string;
+  } | null>(null);
+  const effectiveScopedSrcDocPreviewBase =
+    scopedSrcDocPreviewBase?.identity === srcDocPreviewBaseIdentity
+      ? scopedSrcDocPreviewBase.href
+      : null;
   const [serverPoweredPreviewRequired, setServerPoweredPreviewRequired] = useState(false);
   const [previewAssetWarning, setPreviewAssetWarning] = useState<PreviewAssetWarning | null>(null);
   const [inlinedSource, setInlinedSource] = useState<string | null>(null);
@@ -9086,6 +9097,26 @@ function HtmlViewer({
   ]);
 
   useEffect(() => {
+    if (!workspaceActive || projectResourceReadBlocked || !workspaceContext) return;
+    let cancelled = false;
+    const identity = srcDocPreviewBaseIdentity;
+    void fetchProjectPreviewBaseHref(projectId, file.name, workspaceContext).then((href) => {
+      if (cancelled || !href) return;
+      setScopedSrcDocPreviewBase({ identity, href });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    file.name,
+    projectId,
+    projectResourceReadBlocked,
+    srcDocPreviewBaseIdentity,
+    workspaceActive,
+    workspaceContext,
+  ]);
+
+  useEffect(() => {
     if (!workspaceActive) return;
     const requestSeq = ++deploymentsLoadSeqRef.current;
     let cancelled = false;
@@ -9787,10 +9818,12 @@ function HtmlViewer({
       workspaceContext,
     ],
   );
+  const srcDocBaseHref = effectiveScopedSrcDocPreviewBase
+    ?? projectRawUrl(projectId, baseDirFor(file.name), workspaceContext);
   const srcDoc = useMemo(
     () => (previewSource ? buildSrcdoc(previewSource, {
       deck: effectiveDeck,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+      baseHref: srcDocBaseHref,
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       hideDeckChrome: effectiveDeck,
       selectionBridge: true,
@@ -9821,7 +9854,7 @@ function HtmlViewer({
       reloadKey,
       transportPreviewMeasurementDocumentEpoch,
       srcDocTransportGeneration,
-      workspaceContext,
+      srcDocBaseHref,
     ],
   );
   const expectedSrcDocTransportGenerationRef = useRef(srcDocTransportGeneration);
@@ -9868,7 +9901,7 @@ function HtmlViewer({
   const presentationSrcDoc = useMemo(
     () => (deckVisualSource && inTabPresent ? buildSrcdoc(deckVisualSource, {
       deck: effectiveDeck,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+      baseHref: srcDocBaseHref,
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       hideDeckChrome: effectiveDeck,
       deckClickNavigation: effectiveDeck,
@@ -9881,7 +9914,7 @@ function HtmlViewer({
       projectId,
       file.name,
       previewStateKey,
-      workspaceContext,
+      srcDocBaseHref,
     ],
   );
   // Per-slide thumbnail documents are built lazily by DeckThumbnailRail, one
@@ -9893,13 +9926,13 @@ function HtmlViewer({
   const buildDeckThumbnailSrcDoc = useCallback(
     (index: number) => buildSrcdoc(deckVisualSource ?? '', {
       deck: true,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+      baseHref: srcDocBaseHref,
       initialSlideIndex: index,
       hideDeckChrome: true,
       previewFocusGuard: true,
       freezeMotion: true,
     }),
-    [deckVisualSource, projectId, file.name, workspaceContext],
+    [deckVisualSource, srcDocBaseHref],
   );
   // Parse the deck once per source into per-slide shadow-root render data. When
   // renderable, DeckThumbnailRail mounts a single cloned slide per thumbnail
@@ -9911,10 +9944,10 @@ function HtmlViewer({
     if (!effectiveDeck || !deckVisualSource) return null;
     const parsed = parseDeckThumbnails(
       deckVisualSource,
-      projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+      srcDocBaseHref,
     );
     return parsed.renderable ? parsed : null;
-  }, [effectiveDeck, deckVisualSource, projectId, file.name, workspaceContext]);
+  }, [effectiveDeck, deckVisualSource, srcDocBaseHref]);
   // Stable thunk so HtmlViewer's frequent re-renders (slide state, streaming
   // edits) never invalidate the memoized rail; the ref always calls the
   // freshest goToSlide closure.
@@ -11749,7 +11782,7 @@ function HtmlViewer({
     const count = Math.max(deckSlideCount, speakerNotes.length, 1);
     const presenterPreviewHtmlBySlide = Array.from({ length: count }, (_, index) => buildSrcdoc(deckVisualSource, {
       deck: true,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+      baseHref: srcDocBaseHref,
       initialSlideIndex: index,
       hideDeckChrome: true,
       previewFocusGuard: true,
@@ -12169,7 +12202,7 @@ function HtmlViewer({
     if (!source) return;
     openSandboxedPreviewInNewTab(source, exportTitle, {
       deck: effectiveDeck,
-      baseHref: projectRawUrl(projectId, baseDirFor(file.name), workspaceContext),
+      baseHref: srcDocBaseHref,
       initialSlideIndex: htmlPreviewSlideState.get(previewStateKey)?.active ?? 0,
       hideDeckChrome: effectiveDeck,
       deckClickNavigation: effectiveDeck,

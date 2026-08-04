@@ -24,6 +24,7 @@ import {
   fetchLiveArtifactRefreshes,
   fetchLiveArtifacts,
   fetchProjectFileText,
+  fetchProjectPreviewBaseHref,
   fetchProjectFileVersion,
   fetchProjectFiles,
   fetchProjectDeployments,
@@ -91,6 +92,52 @@ afterEach(() => {
 });
 
 describe('persisted project Workspace transport scope', () => {
+  it('mints a srcDoc preview base under the exact captured Workspace identity', async () => {
+    const workspaceA = teamContext('workspace-a', 'member-a');
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({
+      url: '/api/projects/project-1/preview/scope-1/pages/brand.html',
+      file: 'pages/brand.html',
+      csp: "default-src 'none'",
+      iframeSandbox: 'allow-scripts allow-forms',
+      opaqueOrigin: true,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchProjectPreviewBaseHref(
+      'project-1',
+      'pages/brand.html',
+      workspaceA,
+    )).resolves.toBe('/api/projects/project-1/preview/scope-1/pages/');
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/project-1/preview-url?file=pages%2Fbrand.html&workspaceId=workspace-a&workspaceMemberId=member-a',
+      expect.objectContaining({
+        cache: 'no-store',
+        headers: expect.objectContaining({
+          'x-od-workspace-id': 'workspace-a',
+          'x-od-workspace-member-id': 'member-a',
+        }),
+      }),
+    );
+  });
+
+  it('rejects a preview base response for a different project', async () => {
+    const workspaceA = teamContext('workspace-a', 'member-a');
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({
+      url: '/api/projects/project-2/preview/scope-2/brand.html',
+      file: 'brand.html',
+      csp: "default-src 'none'",
+      iframeSandbox: 'allow-scripts allow-forms',
+      opaqueOrigin: true,
+    })));
+
+    await expect(fetchProjectPreviewBaseHref(
+      'project-1',
+      'brand.html',
+      workspaceA,
+    )).resolves.toBeNull();
+  });
+
   it('keeps browser-owned project and SSE URLs on captured A after shell B exists', () => {
     const workspaceA = teamContext('workspace-a', 'member-a');
     const workspaceB = teamContext('workspace-b', 'member-b');

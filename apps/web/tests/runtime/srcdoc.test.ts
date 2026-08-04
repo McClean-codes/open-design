@@ -29,6 +29,18 @@ const brokenDeckStageHtml = `<!doctype html>
 </html>`;
 
 describe('buildSrcdoc', () => {
+  it('preserves an artifact-authored base instead of overriding its navigation semantics', () => {
+    const authored = '<base href="https://cdn.example/assets/">';
+    const doc = buildSrcdoc(
+      `<!doctype html><html><head>${authored}</head><body></body></html>`,
+      { baseHref: '/api/projects/project-1/preview/scope-1/' },
+    );
+
+    expect(doc).toContain(authored);
+    expect(doc).not.toContain('/api/projects/project-1/preview/scope-1/');
+    expect(new JSDOM(doc).window.document.querySelectorAll('base')).toHaveLength(1);
+  });
+
   it('echoes the witnessed content-size generation with separate scroll and client widths', () => {
     const doc = buildSrcdoc('<main>Preview</main>', {
       previewMeasurementEpoch: 'revision-42',

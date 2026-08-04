@@ -18,6 +18,7 @@ import type {
   ReplaceProjectWorkingDirResponse,
   ProjectFileTextPreviewResponse,
   ProjectFileResponse,
+  ProjectPreviewUrlResponse,
   ProjectFileVersion,
   ProjectFileVersionSource,
   ProjectFileVersionResponse,
@@ -2258,6 +2259,41 @@ export function projectFileUrl(
   workspaceContext?: WorkspaceCollabContext | null,
 ): string {
   return projectRawUrl(projectId, name, workspaceContext);
+}
+
+/**
+ * Mint the existing daemon-owned, project-scoped preview capability and return
+ * its directory URL for srcDoc relative-resource resolution. The daemon binds
+ * the capability to the exact Workspace identity and re-authorizes every asset
+ * read, so callers must not manufacture a base from raw-file query scope.
+ */
+export async function fetchProjectPreviewBaseHref(
+  projectId: string,
+  name: string,
+  workspaceContext: WorkspaceCollabContext,
+): Promise<string | null> {
+  const params = new URLSearchParams({ file: name });
+  const requestUrl = workspaceResourceUrl(
+    `/api/projects/${encodeURIComponent(projectId)}/preview-url?${params.toString()}`,
+    workspaceContext,
+  );
+  try {
+    const response = await fetch(requestUrl, {
+      cache: 'no-store',
+      headers: workspaceProjectHeaders(workspaceContext),
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as ProjectPreviewUrlResponse;
+    if (typeof body.url !== 'string' || !body.url.startsWith('/')) return null;
+    const parsed = new URL(body.url, 'http://open-design.local');
+    const expectedPrefix = `/api/projects/${encodeURIComponent(projectId)}/preview/`;
+    if (!parsed.pathname.startsWith(expectedPrefix)) return null;
+    const directoryEnd = parsed.pathname.lastIndexOf('/') + 1;
+    if (directoryEnd <= expectedPrefix.length) return null;
+    return parsed.pathname.slice(0, directoryEnd);
+  } catch {
+    return null;
+  }
 }
 
 export interface ProjectFilePreviewSection {

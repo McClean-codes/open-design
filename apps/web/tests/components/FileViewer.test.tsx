@@ -6980,6 +6980,56 @@ describe('FileViewer tweaks toolbar', () => {
     expect((screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement).srcdoc).toBe(frame.srcdoc);
   });
 
+  it('uses a project-scoped preview base for runtime-created relative assets in srcDoc', async () => {
+    const context = teamWorkspaceContext();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url.includes('/api/projects/project-1/preview-url')) {
+        return new Response(JSON.stringify({
+          url: '/api/projects/project-1/preview/scope-1/brand.html',
+          file: 'brand.html',
+          csp: "default-src 'none'",
+          iframeSandbox: 'allow-scripts allow-forms',
+          opaqueOrigin: true,
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProjectWorkspace(
+      <FileViewer
+        projectId="project-1"
+        projectKind="prototype"
+        file={htmlPreviewFile({ name: 'brand.html', path: 'brand.html' })}
+        liveHtml={'<!doctype html><html><head></head><body><script>location.reload(); const img = document.createElement("img"); img.src = "logos/mark.png";</script></body></html>'}
+      />,
+      context,
+    );
+
+    const frame = await waitFor(() => {
+      const activeFrame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+      expect(activeFrame.getAttribute('data-od-render-mode')).toBe('srcdoc');
+      expect(activeFrame.srcdoc).toContain(
+        '<base href="/api/projects/project-1/preview/scope-1/">',
+      );
+      return activeFrame;
+    });
+    expect(frame.srcdoc).toContain('img.src = "logos/mark.png"');
+    expect(frame.srcdoc).not.toContain('/api/projects/project-1/raw/?workspaceId=');
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(
+        '/api/projects/project-1/preview-url?file=brand.html&workspaceId=ws-1&workspaceMemberId=wm-1',
+      ),
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          'x-od-workspace-id': 'ws-1',
+          'x-od-workspace-member-id': 'wm-1',
+        }),
+      }),
+    );
+  });
+
   it('keeps the URL-loaded iframe active when opening Draw after the URL preview bridge is ready', async () => {
     const { container } = render(
       <FileViewer projectId="project-1" projectKind="prototype" file={htmlPreviewFile()}
