@@ -15,10 +15,16 @@ const teamPlans = [
 ];
 
 const personalPlans = [
-  { name: 'Plus', original: '$20', price: '$14', saving: '年付省 30%', note: '个人创作入门' },
-  { name: 'Pro', original: '$100', price: '$60', saving: '年付省 40%', note: '高频创作与交付', featured: true },
-  { name: 'Max', original: '$200', price: '$98', saving: '年付省 51%', note: '专业级规模化生成' },
+  { name: 'Free', original: '', price: '$0', saving: '永久免费', note: '配置自己的 Agent 或 BYOK', campaignEligible: false },
+  { name: 'Plus', original: '$20', price: '$14', saving: '年付省 30%', note: '个人创作入门', campaignEligible: true },
+  { name: 'Pro', original: '$100', price: '$60', saving: '年付省 40%', note: '高频创作与交付', featured: true, campaignEligible: true },
+  { name: 'Max', original: '$200', price: '$98', saving: '年付省 51%', note: '专业级规模化生成', campaignEligible: true },
 ];
+
+const campaignBenefit = {
+  title: 'DeepSeek V4 Flash 无限使用',
+  note: '8 月 6 日—8 月 13 日 · 一周免费用',
+};
 ---
 
 <!doctype html>
@@ -76,6 +82,21 @@ const personalPlans = [
           <button class="close" aria-label="关闭">×</button>
         </header>
 
+        <div class="campaign-header-wrap">
+          <aside class="campaign-header-banner" aria-label="DeepSeek V4 Flash 活动">
+            <span class="campaign-header-badge">无限使用</span>
+            <div class="campaign-header-copy">
+              <strong>这次，别省着用。DeepSeek V4 Flash 无限用。</strong>
+              <p>8 月 6 日 20:00—8 月 13 日 20:00，一周免费用</p>
+            </div>
+            <div class="campaign-header-window" aria-label="活动倒计时">
+              <span>活动倒计时</span>
+              <strong data-campaign-countdown>7天 00:00:00</strong>
+            </div>
+          </aside>
+          <p class="campaign-header-disclaimer">套餐内的无限制模型额度与免费生成次数，仅可通过 Open Design使用；无法在 MCP / CLI/ API及其他场景使用。解释权归官方所有。</p>
+        </div>
+
         <div class="modal-body">
           <div class="modal-tabs">
             <div class="audience-tabs" role="tablist" aria-label="套餐类型">
@@ -113,6 +134,13 @@ const personalPlans = [
                   <div class="price-line"><del>{plan.original}</del><b>{plan.price}</b><small>/ 席 / 月</small></div>
                   <em>{plan.saving}</em>
                   <p>{plan.note}</p>
+                  <div class="plan-campaign-benefit">
+                    <span aria-hidden="true">✓</span>
+                    <div>
+                      <strong>{campaignBenefit.title}</strong>
+                      <small>{campaignBenefit.note}</small>
+                    </div>
+                  </div>
                 </article>
               ))}
             </div>
@@ -124,20 +152,17 @@ const personalPlans = [
                   <div class="price-line"><del>{plan.original}</del><b>{plan.price}</b><small>/ 月</small></div>
                   <em>{plan.saving}</em>
                   <p>{plan.note}</p>
+                  {plan.campaignEligible && (
+                    <div class="plan-campaign-benefit">
+                      <span aria-hidden="true">✓</span>
+                      <div>
+                        <strong>{campaignBenefit.title}</strong>
+                        <small>{campaignBenefit.note}</small>
+                      </div>
+                    </div>
+                  )}
                 </article>
               ))}
-            </div>
-
-            <div class="campaign-banner">
-              <div class="campaign-benefit">
-                <span class="campaign-icon">✦</span>
-                <div>
-                  <strong>DeepSeek V4 Flash 无限使用</strong>
-                  <span>8 月 6 日—8 月 13 日 · 个人与团队付费用户同步生效</span>
-                </div>
-                <b data-campaign-countdown>活动剩余 7天 00:00:00</b>
-              </div>
-              <p class="campaign-disclaimer">套餐内的无限制模型额度与免费生成次数，仅可通过 Open Design使用；无法在 MCP / CLI/ API及其他场景使用。解释权归官方所有。</p>
             </div>
 
             <div class="benefits" data-team-only>
@@ -177,7 +202,7 @@ const personalPlans = [
     const hours = Math.floor((totalSeconds % 86400) / 3600);
     const minutes = Math.floor((totalSeconds % 3600) / 60);
     const seconds = totalSeconds % 60;
-    campaignCountdown.textContent = `活动剩余 ${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    campaignCountdown.textContent = `${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }
 
   function setAudience(audience: 'personal' | 'team') {
@@ -235,12 +260,22 @@ const personalPlans = [
   .person { display: grid; gap: 4px; }
   .person small { color: #8c9089; }
   .backdrop { position: fixed; inset: 0; background: rgba(20, 24, 18, .34); backdrop-filter: blur(3.2px); z-index: 5; }
-  .upgrade-modal { position: fixed; z-index: 6; width: min(820px, calc(100vw - 32px)); left: 50%; top: 50%; transform: translate(-50%, -50%); background: #fff; border-radius: 14px; box-shadow: 0 28px 80px rgba(18, 24, 16, .26); overflow: hidden; }
+  .upgrade-modal { position: fixed; z-index: 6; width: min(980px, calc(100vw - 32px)); left: 50%; top: 50%; transform: translate(-50%, -50%); background: #fff; border-radius: 14px; box-shadow: 0 28px 80px rgba(18, 24, 16, .26); overflow: hidden; }
   .modal-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 18px; border-bottom: 1px solid #e5e7e3; }
   .modal-header h2 { font-size: 18px; margin: 0 0 5px; letter-spacing: -.2px; }
   .modal-header p { margin: 0; color: #73776f; font-size: 13px; }
   .close { border: 0; background: transparent; color: #626760; font-size: 22px; cursor: pointer; }
-  .modal-body { display: grid; grid-template-columns: 108px 1fr; padding: 18px 24px 0; max-height: calc(100vh - 190px); overflow: auto; }
+  .campaign-header-wrap { padding: 16px 24px 0; }
+  .campaign-header-banner { display: flex; align-items: center; gap: 14px; padding: 13px 15px; border: 1px solid rgba(104, 242, 46, .34); border-radius: 13px; background: radial-gradient(circle at 88% 20%, rgba(104, 242, 46, .16), transparent 28%), rgba(104, 242, 46, .075); }
+  .campaign-header-badge { flex: 0 0 auto; padding: 4px 9px; border-radius: 999px; color: #102b05; background: #68f22e; font-size: 11px; font-weight: 800; white-space: nowrap; }
+  .campaign-header-copy { flex: 1; min-width: 0; }
+  .campaign-header-copy strong { color: #1c241a; font-size: 14px; }
+  .campaign-header-copy p { margin: 3px 0 0; color: #687064; font-size: 11px; }
+  .campaign-header-window { flex: 0 0 auto; display: grid; gap: 3px; text-align: right; }
+  .campaign-header-window span { color: #71786d; font-size: 10px; }
+  .campaign-header-window strong { color: #1c241a; font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .campaign-header-disclaimer { margin: 6px 0 0; color: #687168; font-size: 10px; line-height: 1.5; opacity: .76; }
+  .modal-body { display: grid; grid-template-columns: 108px 1fr; padding: 12px 24px 0; max-height: calc(100vh - 285px); overflow: auto; }
   .modal-tabs { display: grid; align-content: start; gap: 15px; padding-right: 16px; }
   .audience-tabs, .billing-tabs { display: grid; gap: 7px; }
   .audience-tabs { padding-bottom: 14px; border-bottom: 1px solid #e5e8e2; }
@@ -260,7 +295,7 @@ const personalPlans = [
   .stepper button { width: 30px; height: 30px; border-radius: 50%; background: #fff; border: 1px solid #dfe3dc; color: #6e746b; }
   .stepper b { font-size: 13px; }
   .plan-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 13px; }
-  .plan-card { min-height: 136px; border: 1px solid #dfe3dc; border-radius: 11px; padding: 13px; display: flex; flex-direction: column; }
+  .plan-card { min-height: 224px; border: 1px solid #dfe3dc; border-radius: 11px; padding: 13px; display: flex; flex-direction: column; }
   .plan-card.featured { border: 1.5px solid #41c54b; background: #efffec; box-shadow: inset 0 0 0 1px rgba(65, 197, 75, .1); }
   .plan-title { display: flex; align-items: center; gap: 7px; font-size: 13px; }
   .plan-title span { border-radius: 12px; padding: 2px 6px; color: #fff; background: #20b936; font-size: 10px; }
@@ -269,17 +304,14 @@ const personalPlans = [
   .price-line b { font-size: 18px; }
   .price-line small { color: #7c8179; font-size: 10px; }
   .plan-card > em { color: #209c33; font-style: normal; font-size: 11px; margin-top: 7px; font-weight: 600; }
-  .plan-card > p { color: #72776f; font-size: 11px; margin: auto 0 0; }
+  .plan-card > p { color: #72776f; font-size: 11px; margin: 10px 0 12px; }
   .plan-card:nth-child(4) { grid-column: auto; }
-  .personal-plan-grid { grid-template-columns: repeat(3, 1fr); }
-  .campaign-banner { margin-top: 14px; border: 0; border-radius: 12px; padding: 13px 14px 10px; background: radial-gradient(circle at 90% 10%, rgba(109, 240, 87, .2), transparent 34%), linear-gradient(135deg, #f4fff2, #e9ffe5); }
-  .campaign-benefit { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; }
-  .campaign-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; color: #145f20; background: #bffcb5; font-weight: 800; }
-  .campaign-benefit > div { display: grid; gap: 2px; }
-  .campaign-benefit strong { font-size: 13px; font-weight: 760; color: #1a361d; }
-  .campaign-benefit > div > span { color: #58705a; font-size: 11px; }
-  .campaign-benefit > b { color: #1d7c2a; padding: 5px 0; font-size: 11px; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .campaign-disclaimer { margin: 9px 0 0 44px; padding-top: 8px; border-top: 1px solid rgba(86, 179, 74, .2); color: #667166; font-size: 10px; line-height: 1.5; }
+  .personal-plan-grid { grid-template-columns: repeat(4, 1fr); }
+  .plan-campaign-benefit { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: 5px; align-items: start; margin-top: auto; padding: 8px 8px 8px 7px; border: 1px solid rgba(104, 242, 46, .28); border-radius: 9px; background: rgba(104, 242, 46, .075); }
+  .plan-campaign-benefit > span { color: #238d24; font-size: 11px; font-weight: 800; line-height: 1.35; text-align: center; }
+  .plan-campaign-benefit > div { display: grid; gap: 3px; min-width: 0; }
+  .plan-campaign-benefit strong { color: #243123; font-size: 10px; line-height: 1.35; }
+  .plan-campaign-benefit small { color: #687567; font-size: 9px; line-height: 1.35; }
   .benefits { padding: 9px 0 18px; }
   .benefits > p { display: flex; align-items: center; gap: 8px; margin: 7px 0; font-size: 12px; color: #555a53; }
   .benefits > p span { color: #31362f; font-weight: 700; }
@@ -299,8 +331,7 @@ const personalPlans = [
     .plan-grid { grid-template-columns: 1fr 1fr; }
     .personal-plan-grid { grid-template-columns: 1fr; }
     .plan-card:nth-child(4) { grid-column: auto; }
-    .campaign-benefit { grid-template-columns: 34px 1fr; }
-    .campaign-benefit > b { grid-column: 2; justify-self: start; }
-    .campaign-disclaimer { margin-left: 0; }
+    .campaign-header-banner { align-items: flex-start; flex-wrap: wrap; }
+    .campaign-header-window { width: 100%; text-align: left; padding-left: 0; }
   }
 </style>
