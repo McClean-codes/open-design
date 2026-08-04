@@ -8,6 +8,7 @@ from pathlib import Path
 GITHUB_HOSTED = ["ubuntu-24.04"]
 WINDOWS_HOSTED = ["windows-latest"]
 NEXU_SMALL = ["nexu-runners-small"]
+NEXU_MEDIUM = ["nexu-runners-medium"]
 
 
 def compact_json(value):
@@ -22,17 +23,18 @@ def normalize_mode(raw_mode):
 
 
 def resolve_contract(mode):
-    linux = GITHUB_HOSTED if mode == "economic" else NEXU_SMALL
+    control = GITHUB_HOSTED if mode == "economic" else NEXU_SMALL
+    workload = GITHUB_HOSTED if mode == "economic" else NEXU_MEDIUM
 
     return {
         "runs_on": {
-            "control": linux,
-            "general_medium": linux,
-            "workspace_unit": linux,
+            "control": control,
+            "general_medium": workload,
+            "workspace_unit": workload,
             "windows_tools": WINDOWS_HOSTED,
-            "js_hot": linux,
-            "ui_hot": linux,
-            "visual_hot": linux,
+            "js_hot": workload,
+            "ui_hot": workload,
+            "visual_hot": workload,
         },
         "decision": {
             "schema_version": 1,
