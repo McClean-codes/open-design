@@ -18,11 +18,12 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DesignSystemSummary } from '@open-design/contracts';
+import type { DesignSystemSummary, WorkspaceCollabContext } from '@open-design/contracts';
 
 import { DesignSystemsTab } from '../../src/components/DesignSystemsTab';
 import { I18nProvider } from '../../src/i18n';
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
+import { workspaceContextFixture } from '../helpers/workspace-context';
 
 const workspaceInvalidationHarness = vi.hoisted(() => ({
   handlers: [] as Array<Record<string, (payload: any) => void>>,
@@ -68,16 +69,13 @@ vi.mock('../../src/providers/registry', async (importOriginal) => {
   };
 });
 
-const TEAM_CONTEXT = {
+const TEAM_CONTEXT = workspaceContextFixture({
   workspaceId: 'ws-team',
+  teamId: 'ws-team',
   workspaceType: 'team',
   workspaceMemberId: 'mem-owner',
-  role: 'member',
-  memberStatus: 'active',
-  lifecycleState: 'active',
   billingState: 'free',
   planId: null,
-  teamId: 'ws-team',
   permissions: {
     canManageMembers: false,
     canManageBilling: false,
@@ -88,16 +86,16 @@ const TEAM_CONTEXT = {
     canViewWorkspaceSettings: false,
     canManageSharedResources: true,
   },
-};
+});
 
-const SECOND_TEAM_CONTEXT = {
+const SECOND_TEAM_CONTEXT = workspaceContextFixture({
   ...TEAM_CONTEXT,
   workspaceId: 'ws-second',
   teamId: 'ws-second',
   workspaceMemberId: 'mem-second',
-};
+});
 
-let workspaceContext = TEAM_CONTEXT;
+let workspaceContext: WorkspaceCollabContext | null = TEAM_CONTEXT;
 
 vi.mock('../../src/collab/useWorkspaceContext', () => ({
   useWorkspaceContext: () => ({ context: workspaceContext, loading: false, refresh: vi.fn() }),
@@ -120,10 +118,9 @@ const MY_SHARED_SYSTEM: DesignSystemSummary = {
   updatedAt: '2026-07-24T00:00:00.000Z',
 };
 
-// A teammate's PULLED copy of someone else's share: `teamSynced: true` is the
-// marker that only ever lands on the puller's side (never the sharer's own),
-// so `canManageTeamSynced` in DesignSystemsTab.tsx falls through to the
-// `canUnshareFromTeam` check instead of short-circuiting true.
+// A workspace-materialized Team copy: `teamSynced: true` is stamped on the
+// pulled mirror, including an owner's fresh-device mirror. The author's exact
+// local original remains Personal and does not receive this marker.
 const TEAMMATE_PULLED_SYSTEM: DesignSystemSummary = {
   id: 'user:teammate-ds',
   title: 'Teammate Design System',
@@ -202,12 +199,18 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
 function renderTab(
   systems: DesignSystemSummary[],
-  options: { isActive?: boolean; onSystemsRefresh?: () => void } = {},
+  options: {
+    isActive?: boolean;
+    onSystemsRefresh?: (refreshOptions?: {
+      materializedTeamIds?: readonly string[];
+    }) => void | Promise<void>;
+  } = {},
 ) {
   return render(
     <I18nProvider initial="en">
@@ -232,6 +235,118 @@ async function openTeamTabAndSelect(id = 'user:teammate-ds') {
 }
 
 describe('DesignSystemsTab — repeat share reads as "sync" once already team-shared', () => {
+  it('refreshes a missing parent catalog entry from the same materialized Team snapshot', async () => {
+    workspaceInvalidationHarness.autoActivate = false;
+    mockFetch(true, TEAMMATE_PULLED_SYSTEM.id);
+    const refreshOptions: Array<{ materializedTeamIds?: readonly string[] } | undefined> = [];
+
+    function CatalogHarness() {
+      const [catalog, setCatalog] = React.useState<DesignSystemSummary[]>([]);
+      return (
+        <I18nProvider initial="en">
+          <DesignSystemsTab
+            loading={false}
+            systems={catalog}
+            selectedId={null}
+            onSelect={() => {}}
+            onCreate={() => {}}
+            onOpenSystem={() => {}}
+            onSystemsRefresh={(options) => {
+              refreshOptions.push(options);
+              setCatalog([TEAMMATE_PULLED_SYSTEM]);
+            }}
+          />
+        </I18nProvider>
+      );
+    }
+
+    render(<CatalogHarness />);
+
+    await waitFor(() => expect(teamReadHeaders).toHaveLength(1));
+    const teamTab = screen.getByRole('tab', { name: /Team/i });
+    await waitFor(() => expect(teamTab.textContent).toContain('1'));
+    fireEvent.click(teamTab);
+    expect(await screen.findByTestId('design-kit-view-user:teammate-ds')).toBeTruthy();
+    expect(refreshOptions).toEqual([{
+      materializedTeamIds: [TEAMMATE_PULLED_SYSTEM.id],
+    }]);
+  });
+
+  it('starts one exact Team-index read on first active mount without waiting for SSE or the poll timer', async () => {
+    vi.useFakeTimers();
+    workspaceInvalidationHarness.autoActivate = false;
+    mockFetch(true);
+
+    renderTab([MY_SHARED_SYSTEM]);
+
+    await act(async () => Promise.resolve());
+    expect(teamReadHeaders).toHaveLength(1);
+    expect(teamReadHeaders[0]?.get('x-od-workspace-id')).toBe('ws-team');
+    expect(teamReadHeaders[0]?.get('x-od-workspace-member-id')).toBe('mem-owner');
+    await act(async () => vi.advanceTimersByTimeAsync(249));
+    expect(teamReadHeaders).toHaveLength(1);
+  });
+
+  it('does not issue a Team-index request for a Personal workspace', async () => {
+    workspaceInvalidationHarness.autoActivate = false;
+    workspaceContext = {
+      ...TEAM_CONTEXT,
+      workspaceId: 'ws-personal',
+      teamId: undefined,
+      workspaceType: 'personal',
+      workspaceMemberId: 'mem-personal',
+    };
+    mockFetch(true);
+
+    renderTab([MY_SHARED_SYSTEM]);
+    await act(async () => Promise.resolve());
+
+    expect(teamReadHeaders).toHaveLength(0);
+    expect(screen.queryByRole('tab', { name: /Team/i })).toBeNull();
+  });
+
+  it('does not commit an older Workspace A Team index after switching to B', async () => {
+    workspaceInvalidationHarness.autoActivate = false;
+    const workspaceA = deferred<Response>();
+    const workspaceB = deferred<Response>();
+    globalThis.fetch = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      teamReadHeaders.push(headers);
+      return headers.get('x-od-workspace-id') === 'ws-team'
+        ? workspaceA.promise
+        : workspaceB.promise;
+    }) as typeof fetch;
+    const view = renderTab([MY_SHARED_SYSTEM]);
+    await waitFor(() => expect(teamReadHeaders).toHaveLength(1));
+
+    workspaceContext = SECOND_TEAM_CONTEXT;
+    view.rerender(
+      <I18nProvider initial="en">
+        <DesignSystemsTab
+          loading={false}
+          systems={[MY_SHARED_SYSTEM]}
+          selectedId={null}
+          onSelect={() => {}}
+          onCreate={() => {}}
+          onOpenSystem={() => {}}
+        />
+      </I18nProvider>,
+    );
+    await waitFor(() => expect(teamReadHeaders).toHaveLength(2));
+    workspaceB.resolve(jsonResponse({ ids: [], resources: [] }));
+    await act(async () => Promise.resolve());
+    workspaceA.resolve(jsonResponse({
+      ids: [MY_SHARED_SYSTEM.id],
+      resources: [{ id: MY_SHARED_SYSTEM.id, canUnshare: true }],
+    }));
+    await act(async () => Promise.resolve());
+
+    fireEvent.click(screen.getByRole('tab', { name: /Team/i }));
+    expect(screen.queryByTestId('design-kit-view-user:my-ds')).toBeNull();
+    expect(teamReadHeaders.map((headers) => headers.get('x-od-workspace-id')))
+      .toEqual(['ws-team', 'ws-second']);
+  });
+
   it('parks hidden invalidations and performs one exact Team-index catch-up when active', async () => {
     mockFetch(true);
     const onSystemsRefresh = vi.fn();

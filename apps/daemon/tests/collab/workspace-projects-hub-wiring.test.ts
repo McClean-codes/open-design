@@ -484,6 +484,28 @@ describe('server.ts wiring (source boundary)', () => {
     expect(source.slice(reconcileKindStart, readinessStart)).toContain(
       'if (reconciliationError) throw reconciliationError;',
     );
+    const coordinatorStartAfterReadiness = source.indexOf(
+      'const teamResourceEventCoordinator = createWorkspaceTeamResourceEventCoordinator({',
+      readinessStart,
+    );
+    const readinessBody = source.slice(readinessStart, coordinatorStartAfterReadiness);
+    expect(readinessBody).toContain("if (resourceType === 'design_system')");
+    expect(readinessBody).toContain('ownedDesignSystemSourceIsReady({');
+    expect(readinessBody).not.toContain(
+      'if (resource.ownerMemberId === scope.principal.memberId) return true;',
+    );
+
+    const designSystemSyncStart = source.indexOf(
+      'async function syncSharedTeamDesignSystem(',
+    );
+    const skillSyncStart = source.indexOf(
+      'async function syncSharedTeamSkill(',
+      designSystemSyncStart,
+    );
+    const designSystemSyncBody = source.slice(designSystemSyncStart, skillSyncStart);
+    expect(designSystemSyncBody).toContain('const ownerLocalSourceReady = ownedDesignSystemSourceIsReady({');
+    expect(designSystemSyncBody).toContain('if (ownerLocalSourceReady) return;');
+    expect(designSystemSyncBody).not.toContain('if (isOwnedByCurrentMember) return;');
     const designSystemAdoptionStart = source.indexOf(
       'const adoptLegacyWorkspaceTeamDesignSystemBindings = async (',
     );

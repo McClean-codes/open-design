@@ -2338,6 +2338,7 @@ function AppInner() {
 
   const refreshDesignSystems = useCallback(async (options?: {
     forceTeamMaterialization?: boolean;
+    materializedTeamIds?: readonly string[];
   }) => {
     // Carry the captured Workspace/member identity on the request. The daemon
     // verifies that exact membership instead of consulting mutable ambient

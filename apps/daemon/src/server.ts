@@ -341,6 +341,7 @@ import {
   designSystemLogicalResourceId,
   workspaceTeamDesignSystemBindingResourceId,
 } from './design-systems/workspace-team-binding.js';
+import { ownedDesignSystemSourceIsReady } from './design-systems/team-owner-materialization.js';
 import { prepareDesignTokenContractRebuild } from './design-systems/token-contract-rebuild.js';
 import { registerBrandRoutes } from './brand-routes.js';
 import {
@@ -5371,10 +5372,14 @@ export async function startServer({
       resource.id,
       dirId,
     );
-    const isOwnedByCurrentMember =
-      typeof resource.ownerMemberId === 'string' &&
-      resource.ownerMemberId === scope.principal.memberId;
     const workspaceId = scope.principal.teamId;
+    const ownerLocalSourceReady = ownedDesignSystemSourceIsReady({
+      ownerMemberId: resource.ownerMemberId,
+      currentMemberId: scope.principal.memberId,
+      workspaceId,
+      localSourceExists: fs.existsSync(path.join(USER_DESIGN_SYSTEMS_DIR, dirId)),
+      binding: getWorkspaceResourceByResourceId(db, 'design_system', resource.id),
+    });
     const hubResourceId =
       resource.hubResourceId ??
       `ds-${workspaceId.replace(/[^a-zA-Z0-9_-]/g, '-')}-${resource.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
@@ -5383,7 +5388,6 @@ export async function startServer({
       resource.id,
     );
     async function markTeamSynced(): Promise<void> {
-      if (isOwnedByCurrentMember) return;
       const metadataPath = path.join(targetDir, 'metadata.json');
       let metadata: Record<string, unknown> = {};
       try {
@@ -5427,7 +5431,12 @@ export async function startServer({
         });
       }
     }
-    if (isOwnedByCurrentMember) return;
+    // The hub naming this member as owner is not proof that this device still
+    // has the author's local source. A fresh data root (or a second device)
+    // must pull the published Team copy just like any teammate. Skip only when
+    // the exact Workspace's original Personal binding and directory are both
+    // present; the predicate rejects foreign, Team-mirror, and retired rows.
+    if (ownerLocalSourceReady) return;
     if (
       fs.existsSync(targetDir) &&
       workspaceId &&
@@ -6067,8 +6076,22 @@ export async function startServer({
     resource: TeamResourceShareRecord,
     scope: TeamResourceRequestScope,
   ): boolean => {
-    if (resource.ownerMemberId === scope.principal.memberId) return true;
     const workspaceId = scope.principal.teamId;
+    if (resourceType === 'design_system') {
+      const dirId = stripPrefixAndValidateId(resource.id, 'user:');
+      if (
+        dirId
+        && ownedDesignSystemSourceIsReady({
+          ownerMemberId: resource.ownerMemberId,
+          currentMemberId: scope.principal.memberId,
+          workspaceId,
+          localSourceExists: fs.existsSync(path.join(USER_DESIGN_SYSTEMS_DIR, dirId)),
+          binding: getWorkspaceResourceByResourceId(db, 'design_system', resource.id),
+        })
+      ) return true;
+    } else if (resource.ownerMemberId === scope.principal.memberId) {
+      return true;
+    }
     const bindingResourceId = resourceType === 'plugin'
       ? workspaceTeamPluginBindingResourceId(workspaceId, resource.id)
       : resourceType === 'design_system'

@@ -554,6 +554,12 @@ export interface FetchDesignSystemsOptions {
    * in-flight snapshot merely because they arrived inside one burst window.
    */
   forceTeamMaterialization?: boolean;
+  /**
+   * Exact Team ids returned by a workspace-scoped Team-index read that just
+   * completed in the caller. Reuse that witness while reading the unified
+   * catalog instead of issuing a duplicate `/team` materialization request.
+   */
+  materializedTeamIds?: readonly string[];
 }
 
 async function materializeTeamDesignSystems(
@@ -562,6 +568,9 @@ async function materializeTeamDesignSystems(
 ): Promise<ReadonlySet<string>> {
   if (!workspaceContext || !workspaceContextHasTeamIdentity(workspaceContext)) {
     return new Set();
+  }
+  if (options?.materializedTeamIds) {
+    return new Set(options.materializedTeamIds);
   }
 
   // Team systems live in a workspace-scoped materialization directory. Prime

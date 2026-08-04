@@ -157,6 +157,42 @@ describe('design-system Workspace scope', () => {
     });
   });
 
+  it('reuses an exact Team-index witness instead of materializing the same scope twice', async () => {
+    const context = {
+      ...teamWorkspaceContext(),
+      workspaceId: 'ws-team-index-already-materialized',
+      teamId: 'ws-team-index-already-materialized',
+    };
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      calls.push(url);
+      return new Response(JSON.stringify({
+        designSystems: [{
+          id: 'user:already-materialized',
+          title: 'Already Materialized',
+          category: 'Custom',
+          summary: 'The Team index was read by the caller.',
+          source: 'user',
+          status: 'published',
+        }],
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(fetchDesignSystemsResult(context, {
+      materializedTeamIds: ['user:already-materialized'],
+    })).resolves.toMatchObject({
+      ok: true,
+      designSystems: [expect.objectContaining({
+        id: 'user:already-materialized',
+        teamShared: true,
+      })],
+    });
+
+    expect(calls).toEqual(['/api/design-systems']);
+  });
+
   it('forces a fresh Team materialization after a remote resource invalidation', async () => {
     const context = {
       ...teamWorkspaceContext(),

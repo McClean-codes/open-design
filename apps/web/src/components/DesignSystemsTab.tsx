@@ -66,7 +66,9 @@ interface Props {
   loading?: boolean;
   onCreate?: () => void;
   onOpenSystem?: (id: string) => void;
-  onSystemsRefresh?: () => Promise<void> | void;
+  onSystemsRefresh?: (options?: {
+    materializedTeamIds?: readonly string[];
+  }) => Promise<void> | void;
   templates?: ProjectTemplate[];
 }
 
@@ -214,6 +216,8 @@ export function DesignSystemsTab({
   const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
+  const systemsRef = useRef(systems);
+  systemsRef.current = systems;
   const isActiveRef = useRef(isActive);
   isActiveRef.current = isActive;
   const teamSharedStaleRef = useRef(false);
@@ -480,6 +484,14 @@ export function DesignSystemsTab({
             });
           }
         }
+        const catalogIds = new Set(systemsRef.current.map((system) => system.id));
+        const catalogMissesTeamEntry = [...next].some((id) => !catalogIds.has(id));
+        const catalogKeepsRetiredTeamMirror = systemsRef.current.some((system) => (
+          system.teamSynced === true && !next.has(system.id)
+        ));
+        const shouldRefreshSystems = options.refreshSystems
+          || catalogMissesTeamEntry
+          || catalogKeepsRetiredTeamMirror;
         setTeamSharedState((prev) => (
           prev.workspaceIdentity === scopedWorkspaceIdentity &&
           setsEqual(prev.ids, next) &&
@@ -487,7 +499,12 @@ export function DesignSystemsTab({
             ? prev
             : { workspaceIdentity: scopedWorkspaceIdentity, ids: next, meta }
         ));
-        if (options.refreshSystems) await onSystemsRefresh?.();
+        if (shouldRefreshSystems) {
+          // `/team` has already materialized this exact Workspace snapshot.
+          // Pass its ids through so the parent catalog refresh does not repeat
+          // the same remote/materialization request before GET /design-systems.
+          await onSystemsRefresh?.({ materializedTeamIds: [...next] });
+        }
       }
     } catch {
       // Non-fatal: leave the team collection empty on a transient failure.
@@ -496,14 +513,20 @@ export function DesignSystemsTab({
 
   useEffect(() => {
     if (!isActive) return;
-    if (hasTeamWorkspace) return;
+    // Do not wait for the Workspace SSE stream's activation fallback (or the
+    // 10s poll) before reading the Team index. The request is already keyed
+    // and authorized by the exact Workspace/member identity, and coalescedGet
+    // joins a simultaneous onActive refresh instead of double-fetching.
     void refreshTeamShared();
-  }, [hasTeamWorkspace, isActive, refreshTeamShared]);
+  }, [isActive, refreshTeamShared]);
 
   const handleTeamIndexStreamActive = useWorkspaceSnapshotActivation({
     enabled: isActive && hasTeamWorkspace,
     identity: workspaceIdentity,
-    refresh: () => { void refreshTeamShared({ fresh: true }); },
+    // The active-mount read above is the initial exact-scope snapshot. Join it
+    // when stream activation lands concurrently; real change events still use
+    // `invalidate: true` below and therefore supersede any older snapshot.
+    refresh: () => { void refreshTeamShared(); },
   });
 
   useWorkspaceInvalidation(
