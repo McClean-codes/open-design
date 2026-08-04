@@ -84,7 +84,7 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the paid modal actions on the final approved interaction', () => {
     expect(campaignDialogSource).toContain('{presentation.cta}');
     expect(campaignDialogSource).toContain('稍后再说');
-    expect(campaignDialogSource).toContain('/campaigns/deepseek-v4-flash-free-week-poster-v4.png');
+    expect(campaignDialogSource).toContain('/campaigns/deepseek-v4-flash-free-week-poster-v5.png');
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-cover');
     expect(campaignDialogSource).toMatch(/className=\{styles\.dismissAction\}/);
     expect(campaignDialogSource).toMatch(/onClick=\{closeModal\}/);
@@ -99,6 +99,9 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(formatDeepSeekV4FlashCampaignCountdown(end)).toBe('活动已结束');
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-countdown');
     expect(campaignDialogSource).toContain('一周免费用');
+    expect(campaignDialogSource.indexOf('styles.countdown')).toBeLessThan(
+      campaignDialogSource.indexOf('styles.modelCard'),
+    );
   });
 
   it('keeps the unpaid action on the upgrade flow without showing the paid secondary action', () => {

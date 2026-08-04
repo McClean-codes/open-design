@@ -127,13 +127,20 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
         alt=""
         className={styles.cover}
         data-testid="deepseek-v4-flash-campaign-cover"
-        src="/campaigns/deepseek-v4-flash-free-week-poster-v4.png"
+        src="/campaigns/deepseek-v4-flash-free-week-poster-v5.png"
       />
 
       <div className={styles.content}>
-        <p className={styles.eyebrow}>{presentation.eyebrow}</p>
-        <h2 id={titleId} className={styles.title}>{campaign.headline}</h2>
-        <p id={descriptionId} className={styles.lead}>{campaign.description}</p>
+        <h2 id={titleId} className={styles.srOnly}>{campaign.headline}</h2>
+        <p id={descriptionId} className={styles.srOnly}>{campaign.description}</p>
+
+        <div className={styles.countdown} aria-label="活动倒计时">
+          <span className={styles.countdownLabel}>活动倒计时</span>
+          <strong data-testid="deepseek-v4-flash-campaign-countdown">
+            {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
+          </strong>
+          <small>{campaign.window.label} · 一周免费用</small>
+        </div>
 
         <div className={styles.modelCard}>
           <span className={styles.modelMark} aria-hidden="true">
@@ -146,14 +153,6 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
           <span className={paid ? styles.available : styles.locked}>
             {paid ? '已解锁' : '待解锁'}
           </span>
-        </div>
-
-        <div className={styles.countdown} aria-label="活动倒计时">
-          <span className={styles.countdownLabel}>活动倒计时</span>
-          <strong data-testid="deepseek-v4-flash-campaign-countdown">
-            {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
-          </strong>
-          <small>{campaign.window.label} · 一周免费用</small>
         </div>
 
         <p className={styles.boundary}>{campaign.boundary}</p>
