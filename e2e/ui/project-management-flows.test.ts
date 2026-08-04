@@ -322,6 +322,82 @@ test('[P0] projects empty state create action opens the new project flow', async
   await expect(page.locator('.newproj-title')).toContainText('New prototype');
 });
 
+test('[P0] UI-created Personal project recovers preview and write authority after reload', async ({ page }) => {
+  await mockWritablePersonalProjectScope(page);
+  await stubCatalogsEmpty(page);
+
+  await page.goto('/');
+  await openNewProjectModal(page);
+  await page.getByTestId('new-project-tab-prototype').click();
+  await page.getByTestId('new-project-name').fill('Reloaded Personal authority');
+  await expect(page.getByTestId('create-project')).toBeEnabled();
+  await page.getByTestId('create-project').click();
+  await expectWorkspaceReady(page);
+
+  const uploadedName = await uploadTinyHtml(
+    page,
+    'reload-personal-authority.html',
+    '<!doctype html><html><body><h1>Reloaded Personal preview</h1></body></html>',
+    { headers: AMR_PERSONAL_WORKSPACE_HEADERS },
+  );
+  await openUploadedHtmlArtifactPreview(page, uploadedName);
+  await expect(artifactPreviewFrame(page).getByRole('heading', {
+    name: 'Reloaded Personal preview',
+  })).toBeVisible();
+
+  let releaseScope!: () => void;
+  const scopeGate = new Promise<void>((resolve) => {
+    releaseScope = resolve;
+  });
+  let releaseStatus!: () => void;
+  const statusGate = new Promise<void>((resolve) => {
+    releaseStatus = resolve;
+  });
+  await page.route('**/api/projects/*/workspace-scope', async (route) => {
+    await scopeGate;
+    const projectId = getProjectIdFromApiPath(route.request().url());
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'personal',
+          projectId,
+          workspaceId: AMR_PERSONAL_WORKSPACE_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: AMR_PERSONAL_WORKSPACE_CONTEXT,
+        },
+      },
+    });
+  });
+  await page.route('**/api/projects/*/collab/status', async (route) => {
+    await statusGate;
+    await route.fulfill({
+      json: {
+        publishedVersion: null,
+        materializedVersion: null,
+        syncState: 'local_only',
+        ownerMemberId: null,
+      },
+    });
+  });
+
+  // A hard reload drops the module-local same-session creation witness. Keep
+  // both authority reads unresolved long enough to observe the fail-closed
+  // state, then release them independently. The persisted Personal binding —
+  // not that ephemeral witness — must reconnect the already-ready artifact.
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await expect(page.getByTestId('file-workspace')).toBeVisible();
+  await expect(page.locator('.viewer-loading')).toBeVisible();
+
+  releaseScope();
+  await expect(artifactPreviewFrame(page).getByRole('heading', {
+    name: 'Reloaded Personal preview',
+  })).toBeVisible();
+
+  releaseStatus();
+  await expect(page.getByTestId('chat-composer-input')).not.toHaveAttribute('aria-readonly', 'true');
+  await expect(page.getByRole('button', { name: /^Share$/i })).toBeVisible();
+});
+
 test('[P1] design system multi-select stores primary and inspiration metadata', async ({ page }) => {
   await stubEmptyProjectsNewProjectData(page);
   await openNewProjectFromProjectsView(page);

@@ -11,7 +11,7 @@
 // hook a same-session signal it can trust immediately, independent of either
 // network read.
 
-import { cleanup, renderHook, waitFor } from '@testing-library/react';
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -30,6 +30,11 @@ import {
   duplicatePluginAsProject,
   duplicateProject,
 } from '../src/state/projects';
+import {
+  projectWorkspaceContext,
+  projectWorkspaceScopeReady,
+  useProjectWorkspaceScope,
+} from '../src/collab/useProjectWorkspaceScope';
 import {
   lastResolvedTeamProjects,
   resetTeamProjectsCache,
@@ -62,6 +67,27 @@ function teamContext(
 }
 
 const DEFAULT_TEAM_CONTEXT = teamContext();
+
+const PERSONAL_CONTEXT: WorkspaceCollabContext = {
+  ...teamContext({
+    workspaceId: 'ws-personal',
+    workspaceMemberId: 'wm-personal',
+  }),
+  workspaceType: 'personal',
+  role: 'owner',
+  permissions: buildWorkspacePermissions({
+    role: 'owner',
+    lifecycleState: 'active',
+  }),
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 /** Resolves the workspace context only; the team catalog and collab status
  *  both hang forever — modeling the residual window where a brand-new
@@ -352,5 +378,83 @@ describe('useProjectCollab: project created by the viewer this session', () => {
       expect(project.result.current.syncState).toBe('synced');
     });
     expect(project.result.current.viewerOnly).toBe(true);
+  });
+
+  it('recovers a reloaded Personal project from delayed scope and status reads without a creation marker', async () => {
+    const scopeResponse = deferred<Response>();
+    const statusResponse = deferred<Response>();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const pathname = new URL(String(input), 'http://d.local').pathname;
+      if (pathname.endsWith('/workspace-scope')) return scopeResponse.promise;
+      if (pathname.endsWith('/collab/status')) return statusResponse.promise;
+      if (pathname.endsWith('/presence/heartbeat')) {
+        return Promise.resolve(Response.json({
+          present: [{ memberId: PERSONAL_CONTEXT.workspaceMemberId }],
+        }));
+      }
+      return Promise.resolve(Response.json({ ok: true }));
+    });
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    // resetProjectsCreatedByViewerCache() in beforeEach models a hard reload:
+    // the browser's same-session creation witness no longer exists. The
+    // persisted project binding and fresh daemon answers must be sufficient.
+    const project = renderHook(() => {
+      const scope = useProjectWorkspaceScope(
+        'p-reloaded-personal',
+        PERSONAL_CONTEXT,
+        PERSONAL_CONTEXT.workspaceId,
+      );
+      const collab = useProjectCollab('p-reloaded-personal', {
+        workspaceContext: projectWorkspaceContext(scope.scope),
+        workspaceContextLoading: scope.loading,
+      });
+      return {
+        scope,
+        collab,
+        previewAuthorized: projectWorkspaceScopeReady(scope.scope),
+      };
+    });
+
+    expect(project.result.current.previewAuthorized).toBe(false);
+    expect(project.result.current.collab.viewerOnly).toBe(true);
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/workspace-scope'),
+        expect.any(Object),
+      );
+    });
+
+    await act(async () => {
+      scopeResponse.resolve(Response.json({
+        scope: {
+          kind: 'personal',
+          projectId: 'p-reloaded-personal',
+          workspaceId: PERSONAL_CONTEXT.workspaceId,
+          visibility: 'personal',
+          context: PERSONAL_CONTEXT,
+        },
+      }));
+    });
+    await waitFor(() => {
+      expect(project.result.current.previewAuthorized).toBe(true);
+      expect(fetchMock).toHaveBeenCalledWith(
+        expect.stringContaining('/collab/status'),
+        expect.any(Object),
+      );
+    });
+
+    await act(async () => {
+      statusResponse.resolve(Response.json({
+        publishedVersion: null,
+        materializedVersion: null,
+        syncState: 'local_only',
+        ownerMemberId: null,
+      }));
+    });
+    await waitFor(() => {
+      expect(project.result.current.collab.viewerOnly).toBe(false);
+      expect(project.result.current.collab.writerAuthority).toBe('allowed');
+    });
   });
 });
