@@ -36,12 +36,18 @@ function sseResponse(frames: string[]) {
 }
 
 describe('handleHubTeamProjectsChanged', () => {
-  it('emits the thin display-cache signal AND kicks a reconciliation pass', async () => {
+  it('emits the thin display-cache signal only after reconciliation finishes', async () => {
     const emit = vi.fn();
-    const reconcile = vi.fn(async () => undefined);
+    let finishReconcile!: () => void;
+    const reconcile = vi.fn(() => new Promise<void>((resolve) => {
+      finishReconcile = resolve;
+    }));
     handleHubTeamProjectsChanged(emit, reconcile);
-    expect(emit).toHaveBeenCalledTimes(1);
     expect(reconcile).toHaveBeenCalledTimes(1);
+    expect(emit).not.toHaveBeenCalled();
+
+    finishReconcile();
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(1));
   });
 
   it('never lets a reconciliation failure throw or reject out of the hub event handler', async () => {
@@ -192,14 +198,25 @@ describe('server.ts wiring (source boundary)', () => {
     return source.slice(switchStart, i + 1);
   }
 
-  it('calls handleHubTeamProjectsChanged from exactly one case: team-projects-changed', () => {
+  it('routes both project catalog event families through project reconciliation', () => {
     const switchBody = extractOnEventSwitchBody();
     const cases = switchBody.split(/(?=case '[a-z-]+':)/g).filter((chunk) => chunk.startsWith("case '"));
     expect(cases.length).toBeGreaterThanOrEqual(7);
 
     const casesCallingReconcile = cases.filter((chunk) => /handleHubTeamProjectsChanged\(/.test(chunk));
     const caseNames = casesCallingReconcile.map((chunk) => chunk.match(/^case '([a-z-]+)':/)?.[1]);
-    expect(caseNames).toEqual(['team-projects-changed']);
+    expect(caseNames).toEqual(['team-projects-changed', 'team-resources-changed']);
+  });
+
+  it('routes project resource retractions through project reconciliation instead of the generic resource lane', () => {
+    const switchBody = extractOnEventSwitchBody();
+    const teamResourcesCase = switchBody
+      .split(/(?=case '[a-z-]+':)/g)
+      .find((chunk) => chunk.startsWith("case 'team-resources-changed':"));
+
+    expect(teamResourcesCase).toContain("event.resourceKind === 'project'");
+    expect(teamResourcesCase).toContain('handleHubTeamProjectsChanged(');
+    expect(teamResourcesCase).toContain('reconcileWorkspaceProjectsFromRemote(');
   });
 
   it('runs targeted metadata reconciliation only from project-metadata-changed', () => {

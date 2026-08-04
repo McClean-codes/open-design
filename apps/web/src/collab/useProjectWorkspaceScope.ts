@@ -412,8 +412,20 @@ export function useProjectWorkspaceScope(
     revalidateInBackground();
   }, [revalidateInBackground]);
 
+  const revalidateOnTeamProjectsChanged = useCallback((payload: {
+    projectId?: string;
+    kind?: 'catalog' | 'metadata';
+  }) => {
+    if (payload.kind === 'metadata') return;
+    if (payload.projectId && payload.projectId !== projectId) return;
+    revalidateInBackground();
+  }, [projectId, revalidateInBackground]);
+
   useWorkspaceInvalidation(
-    { 'workspace-context-changed': revalidateInBackground },
+    {
+      'workspace-context-changed': revalidateInBackground,
+      'team-projects-changed': revalidateOnTeamProjectsChanged,
+    },
     {
       workspaceContext: projectWorkspaceContext(state.scope),
       onActive: revalidateOnActive,

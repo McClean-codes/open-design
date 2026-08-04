@@ -5024,6 +5024,24 @@ export async function startServer({
           });
           break;
         case 'team-resources-changed': {
+          // Project publish/retract operations are Resource Hub mutations and
+          // therefore arrive on this generic event family. Projects have their
+          // own binding model and non-destructive mirror quarantine; the
+          // generic resource coordinator intentionally handles only design
+          // systems, plugins, and skills.
+          if (event.resourceKind === 'project') {
+            handleHubTeamProjectsChanged(
+              () => emitTeamProjectsChanged(
+                eventWorkspaceId,
+                {
+                  ...(event.projectId ? { projectId: event.projectId } : {}),
+                  kind: 'catalog',
+                },
+              ),
+              () => reconcileWorkspaceProjectsFromRemote(eventWorkspaceId),
+            );
+            break;
+          }
           // A design-system/plugin/skill resource was shared (moved the
           // 'published' ref) or retracted (removed) on the resource hub.
           // `resourceKind` routes to just that kind's reconciler instead of
