@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   defaultMediaCloudDemoValue,
+  formatMediaCloudDemoUnitPrice,
   formatMediaCloudDemoUsd,
   mediaCloudDemoPriceUsd,
 } from '../../src/components/home-hero/media-cloud-demo';
@@ -53,5 +54,10 @@ describe('media cloud review pricing', () => {
       resolution: value.resolution,
     })).toBeNull();
     expect(formatMediaCloudDemoUsd(1.2)).toBe('$1.20');
+  });
+
+  it('labels image quotes by image and video quotes by priced duration', () => {
+    expect(formatMediaCloudDemoUnitPrice('image', 0.035)).toBe('$0.04 / image');
+    expect(formatMediaCloudDemoUnitPrice('video', 0.42, 5)).toBe('$0.42 / 5 sec');
   });
 });

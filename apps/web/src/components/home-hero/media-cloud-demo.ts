@@ -232,3 +232,13 @@ export function mediaCloudDemoPriceUsd(input: {
 export function formatMediaCloudDemoUsd(value: number): string {
   return `$${value.toFixed(2)}`;
 }
+
+export function formatMediaCloudDemoUnitPrice(
+  surface: MediaCloudDemoSurface,
+  value: number,
+  duration = 5,
+): string {
+  return surface === 'image'
+    ? `${formatMediaCloudDemoUsd(value)} / image`
+    : `${formatMediaCloudDemoUsd(value)} / ${duration} sec`;
+}

@@ -5,7 +5,7 @@ import {
   defaultMediaCloudDemoModel,
   defaultMediaCloudDemoValue,
   findMediaCloudDemoModel,
-  formatMediaCloudDemoUsd,
+  formatMediaCloudDemoUnitPrice,
   MEDIA_CLOUD_DEMO_MODELS,
   mediaCloudDemoPriceUsd,
   type MediaCloudDemoModel,
@@ -142,7 +142,11 @@ export function MediaCloudModelDemoPicker({
                   <strong>{option.label}</strong>
                   {expanded && optionPrice != null ? (
                     <span className={styles.modelOptionPrice}>
-                      ~{formatMediaCloudDemoUsd(optionPrice)}
+                      ~{formatMediaCloudDemoUnitPrice(
+                        surface,
+                        optionPrice,
+                        option.durations?.[0],
+                      )}
                     </span>
                   ) : null}
                   {selected ? <Icon name="check" size={13} /> : null}
