@@ -324,6 +324,7 @@ import {
   readUserDesignSystemFile,
   readUserDesignSystemFileBytes,
   resolveDesignSystemAssets,
+  resolveDesignSystemRuntimePromptContext,
   stripPrefixAndValidateId,
   syncUserDesignSystemAssetsFromFiles,
   updateUserDesignSystem,
@@ -7413,6 +7414,7 @@ export async function startServer({
     http: httpDeps,
     paths: pathDeps,
     projects: { getProject: (id: string) => getProject(db, id) },
+    runs: { getRun: (id: string) => design.runs.get(id) },
   });
   app.use('/artifacts', express.static(ARTIFACTS_DIR));
   app.use(
@@ -8389,6 +8391,8 @@ export async function startServer({
     let designSystemComponentsManifest;
     let designSystemFixtureHtml;
     let designSystemPullIndex;
+    let designSystemIntentIndex;
+    let designSystemRuntimeIssue;
     let designSystemImportMode;
     let designSystemCraftApplies = [];
     let designSystemCraftExemptions = [];
@@ -8455,6 +8459,13 @@ export async function startServer({
         designSystemImportMode = assets.importMode;
         designSystemCraftApplies = Array.isArray(assets.craftApplies) ? assets.craftApplies : [];
         designSystemCraftExemptions = Array.isArray(assets.craftExemptions) ? assets.craftExemptions : [];
+        const runtimePromptContext = await resolveDesignSystemRuntimePromptContext(
+          effectiveDesignSystemId,
+          DESIGN_SYSTEMS_DIR,
+          USER_DESIGN_SYSTEMS_DIR,
+        );
+        designSystemIntentIndex = runtimePromptContext.intentIndex;
+        designSystemRuntimeIssue = runtimePromptContext.issue;
         if (typeof designSystemBody === 'string' && designSystemBody.length > 0) {
           activeDesignSystemId = effectiveDesignSystemId;
           designSystemDigest = digestDesignSystemContext({
@@ -8466,6 +8477,8 @@ export async function startServer({
             componentsManifest: designSystemComponentsManifest,
             fixtureHtml: designSystemFixtureHtml,
             pullIndex: designSystemPullIndex,
+            intentIndex: designSystemIntentIndex,
+            runtimeIssue: designSystemRuntimeIssue,
             importMode: designSystemImportMode,
           });
         }
@@ -8652,6 +8665,8 @@ export async function startServer({
       designSystemComponentsManifest,
       designSystemFixtureHtml,
       designSystemPullIndex,
+      designSystemIntentIndex,
+      designSystemRuntimeIssue,
       designSystemImportMode,
       craftBody,
       craftSections,

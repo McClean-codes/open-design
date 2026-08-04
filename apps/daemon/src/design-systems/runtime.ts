@@ -98,6 +98,29 @@ export async function loadDesignSystemRuntimePackage(
   };
 }
 
+/**
+ * Compact push-layer index for the system prompt. Component implementations,
+ * property definitions, and state selectors stay out of the prompt and are
+ * returned only when the agent resolves one of these canonical intents.
+ */
+export function summarizeDesignSystemIntentMapForPrompt(
+  bundle: DesignSystemRuntimeBundle,
+): string {
+  const componentNames = new Map(
+    bundle.components.map(({ definition }) => [definition.id, definition.name]),
+  );
+  const lines = bundle.intentMap.mappings.map((mapping) => {
+    const component = componentNames.get(mapping.component) ?? mapping.component;
+    const target = `${component}${mapping.variant ? `.${mapping.variant}` : ''}`;
+    const description = mapping.description?.trim();
+    return `- \`${mapping.intent}\` → ${target}${description ? ` — ${description}` : ''}`;
+  });
+  return [
+    'Canonical business intents declared by the active design system:',
+    ...lines,
+  ].join('\n');
+}
+
 async function readRuntimeJson<T>(
   brandRoot: string,
   relativePath: string,

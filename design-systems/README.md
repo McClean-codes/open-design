@@ -120,7 +120,18 @@ rules/lint.json                 generation checks
 rules/fallback.json             no-match and multiple-match behavior
 ```
 
-The daemon validates the graph before returning a structured intent selection.
+The daemon validates the graph and pushes only a compact canonical-intent index
+into the prompt. A filesystem agent resolves the selected intent on demand with:
+
+```bash
+"$OD_NODE_BIN" "$OD_BIN" tools design-systems resolve \
+  --intent account.settings.save
+```
+
+The result contains the reusable implementation, selectors, variant,
+properties, required states, and the package lint policy. Missing or ambiguous
+matches execute `rules/fallback.json`; the agent must honor confirmation gates
+and `allowInventComponent` instead of creating a visually similar near-copy.
 If `runtime` is absent, the package keeps the existing `DESIGN.md` prompt path.
 If `runtime` is present but invalid, it is reported as invalid rather than
 silently treated as a legacy package. The production schema versions and shared

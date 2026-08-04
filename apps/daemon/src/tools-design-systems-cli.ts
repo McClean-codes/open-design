@@ -7,12 +7,14 @@ interface ToolCliResult {
 interface ParsedOptions {
   command: string | undefined;
   path?: string;
+  intent?: string;
   designSystemId?: string;
   help: boolean;
 }
 
 const DESIGN_SYSTEMS_USAGE = `Usage:
   od tools design-systems read --path <manifest-declared-path> [--design-system <id>]
+  od tools design-systems resolve --intent <canonical-intent> [--design-system <id>]
 
 Environment:
   OD_NODE_BIN     Node-compatible runtime for agent wrapper invocations
@@ -22,6 +24,7 @@ Environment:
 
 Agent runtime invocation:
   "$OD_NODE_BIN" "$OD_BIN" tools design-systems read --path preview/colors.html
+  "$OD_NODE_BIN" "$OD_BIN" tools design-systems resolve --intent account.settings.save
 `;
 
 function writeJson(value: unknown, stream: NodeJS.WriteStream = process.stdout): void {
@@ -46,6 +49,10 @@ function parseOptions(args: string[]): ParsedOptions | { error: string } {
       const value = rest[++index];
       if (!value) return { error: '--path requires a relative file path' };
       options.path = value;
+    } else if (arg === '--intent') {
+      const value = rest[++index];
+      if (!value) return { error: '--intent requires a canonical intent id' };
+      options.intent = value;
     } else if (arg === '--design-system') {
       const value = rest[++index];
       if (!value) return { error: '--design-system requires an id' };
@@ -144,6 +151,19 @@ export async function runDesignSystemsToolCli(args: string[]): Promise<ToolCliRe
   if ('error' in baseUrl) return fail(baseUrl.error);
   const token = toolToken();
   if (typeof token !== 'string') return fail(token.error);
+
+  if (options.command === 'resolve') {
+    if (!options.intent) return fail('resolve requires --intent <canonical-intent>');
+    return printApiResult(
+      await requestJson(baseUrl, token, '/api/tools/design-systems/resolve-intent', {
+        method: 'POST',
+        body: JSON.stringify({
+          intent: options.intent,
+          ...(options.designSystemId ? { designSystemId: options.designSystemId } : {}),
+        }),
+      }),
+    );
+  }
 
   if (options.command !== 'read') return fail(`unknown design-systems command: ${options.command}`);
   if (!options.path) return fail('read requires --path <manifest-declared-path>');

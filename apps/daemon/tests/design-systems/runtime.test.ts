@@ -5,7 +5,12 @@ import path from 'node:path';
 import { resolveDesignSystemIntent } from '@open-design/contracts';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { readDesignSystemRuntime } from '../../src/design-systems/index.js';
+import {
+  readDesignSystemRuntime,
+  resolveDesignSystemRuntime,
+  resolveDesignSystemRuntimePromptContext,
+} from '../../src/design-systems/index.js';
+import { summarizeDesignSystemIntentMapForPrompt } from '../../src/design-systems/runtime.js';
 
 const fixturesRoot = path.resolve(import.meta.dirname, '../fixtures/design-systems');
 const temporaryRoots: string[] = [];
@@ -23,6 +28,9 @@ describe('design-system structured runtime', () => {
     expect(result.bundle.components.map((component) => component.definition.id)).toEqual(['Button']);
     expect(result.bundle.lint.requireDeclaredStates).toBe(true);
     expect(result.bundle.fallback.noMatch.allowInventComponent).toBe(false);
+    expect(summarizeDesignSystemIntentMapForPrompt(result.bundle)).toContain(
+      '`account.settings.save` → Button.primary',
+    );
 
     const resolution = resolveDesignSystemIntent(result.bundle, 'account.settings.save');
     expect(resolution).toMatchObject({
@@ -37,10 +45,37 @@ describe('design-system structured runtime', () => {
         ],
       }],
     });
+
+    await expect(resolveDesignSystemRuntimePromptContext(
+      'runtime-v3',
+      fixturesRoot,
+      path.join(fixturesRoot, 'missing-user-root'),
+    )).resolves.toEqual({
+      intentIndex: expect.stringContaining('`account.settings.save` → Button.primary'),
+    });
   });
 
   it('keeps manifest-free packages on the legacy path', async () => {
     await expect(readDesignSystemRuntime(fixturesRoot, 'legacy')).resolves.toEqual({ mode: 'legacy' });
+  });
+
+  it('resolves built-in packages first and user-prefixed packages from the installed root', async () => {
+    const userRoot = await mkdtemp(path.join(os.tmpdir(), 'od-ds-runtime-user-'));
+    temporaryRoots.push(userRoot);
+    await cp(
+      path.join(fixturesRoot, 'runtime-v3'),
+      path.join(userRoot, 'custom'),
+      { recursive: true },
+    );
+    const manifestPath = path.join(userRoot, 'custom', 'manifest.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { id: string };
+    manifest.id = 'custom';
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    await expect(resolveDesignSystemRuntime('runtime-v3', fixturesRoot, userRoot))
+      .resolves.toMatchObject({ mode: 'structured' });
+    await expect(resolveDesignSystemRuntime('user:custom', fixturesRoot, userRoot))
+      .resolves.toMatchObject({ mode: 'structured' });
   });
 
   it('reports dangling intent references instead of silently falling back', async () => {
@@ -62,6 +97,13 @@ describe('design-system structured runtime', () => {
     expect(result.errors).toContain(
       'intent mapping account.settings.save at index 0 references unknown component MissingButton',
     );
+    await expect(resolveDesignSystemRuntimePromptContext(
+      'runtime-v3',
+      root,
+      path.join(root, 'missing-user-root'),
+    )).resolves.toEqual({
+      issue: expect.stringContaining('unknown component MissingButton'),
+    });
   });
 
   it('does not downgrade a declared but malformed runtime to the legacy path', async () => {

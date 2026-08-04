@@ -28,6 +28,7 @@ import type { FrontmatterObject, FrontmatterValue } from './frontmatter.js';
 import { extractSwiftColors } from './swift-colors.js';
 import {
   loadDesignSystemRuntimePackage,
+  summarizeDesignSystemIntentMapForPrompt,
   type DesignSystemRuntimeLoadResult,
 } from './runtime.js';
 import { workspaceTeamDesignSystemBindingResourceId } from './workspace-team-binding.js';
@@ -565,6 +566,43 @@ export async function readDesignSystemRuntime(
   return loadDesignSystemRuntimePackage(brandRoot, parsedRuntime.data);
 }
 
+/** Resolve the active package with the same built-in → installed precedence used by prompt assets. */
+export async function resolveDesignSystemRuntime(
+  designSystemId: string,
+  builtInRoot: string,
+  userInstalledRoot: string,
+): Promise<DesignSystemRuntimeLoadResult> {
+  if (designSystemId.startsWith('user:')) {
+    return readDesignSystemRuntime(userInstalledRoot, designSystemId, { idPrefix: 'user:' });
+  }
+
+  const builtIn = await readDesignSystemRuntime(builtInRoot, designSystemId);
+  if (builtIn.mode !== 'legacy') return builtIn;
+  return readDesignSystemRuntime(userInstalledRoot, designSystemId);
+}
+
+export type DesignSystemRuntimePromptContext = {
+  intentIndex?: string;
+  issue?: string;
+};
+
+export async function resolveDesignSystemRuntimePromptContext(
+  designSystemId: string,
+  builtInRoot: string,
+  userInstalledRoot: string,
+): Promise<DesignSystemRuntimePromptContext> {
+  const runtime = await resolveDesignSystemRuntime(
+    designSystemId,
+    builtInRoot,
+    userInstalledRoot,
+  );
+  if (runtime.mode === 'structured') {
+    return { intentIndex: summarizeDesignSystemIntentMapForPrompt(runtime.bundle) };
+  }
+  if (runtime.mode === 'invalid') return { issue: runtime.errors.join('\n') };
+  return {};
+}
+
 async function listAvailableDesignSystemPackageFiles(
   brandRoot: string,
   manifest: DesignSystemProjectManifest,
@@ -769,6 +807,8 @@ export function digestDesignSystemContext(input: {
   componentsManifest?: string | null;
   fixtureHtml?: string | null;
   pullIndex?: string | null;
+  intentIndex?: string | null;
+  runtimeIssue?: string | null;
   importMode?: string | null;
 }): string | null {
   const hasContent = [
@@ -778,6 +818,8 @@ export function digestDesignSystemContext(input: {
     input.componentsManifest,
     input.fixtureHtml,
     input.pullIndex,
+    input.intentIndex,
+    input.runtimeIssue,
     input.importMode,
   ].some((value) => typeof value === 'string' && value.length > 0);
   if (!hasContent) return null;
@@ -791,6 +833,8 @@ export function digestDesignSystemContext(input: {
     componentsManifest: input.componentsManifest ?? null,
     fixtureHtml: input.fixtureHtml ?? null,
     pullIndex: input.pullIndex ?? null,
+    intentIndex: input.intentIndex ?? null,
+    runtimeIssue: input.runtimeIssue ?? null,
     importMode: input.importMode ?? null,
   };
   return createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex');

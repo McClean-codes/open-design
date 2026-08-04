@@ -671,11 +671,19 @@ export interface ComposeInput {
   // - `designSystemPullIndex`          — lightweight manifest-derived
   //                                      list of richer files available
   //                                      for later pull-channel work.
+  // - `designSystemIntentIndex`        — compact list of canonical business
+  //                                      intents; component details are pulled
+  //                                      only after an intent is selected.
+  // - `designSystemRuntimeIssue`       — visible validation failure for a DS
+  //                                      that declared, but could not load, a
+  //                                      structured runtime.
   designSystemUsageMd?: string | undefined;
   designSystemTokensCss?: string | undefined;
   designSystemComponentsManifest?: string | undefined;
   designSystemFixtureHtml?: string | undefined;
   designSystemPullIndex?: string | undefined;
+  designSystemIntentIndex?: string | undefined;
+  designSystemRuntimeIssue?: string | undefined;
   designSystemImportMode?: 'normalized' | 'hybrid' | 'verbatim' | undefined;
   // Craft references the active skill opted into via `od.craft.requires`.
   // The daemon resolves the slug list to file contents and concatenates
@@ -802,6 +810,8 @@ export function composeSystemPrompt({
   designSystemComponentsManifest,
   designSystemFixtureHtml,
   designSystemPullIndex,
+  designSystemIntentIndex,
+  designSystemRuntimeIssue,
   designSystemImportMode,
   craftBody,
   craftSections,
@@ -1159,6 +1169,21 @@ export function composeSystemPrompt({
   } else if (designSystemFixtureHtml && designSystemFixtureHtml.trim().length > 0) {
     parts.push(
       `\n\n## Reference fixture${designSystemTitle ? ` — ${designSystemTitle}` : ''}\n\nA self-contained worked artifact in this design system. Match its component shapes (button structure, card structure, type-scale rhythm, focus ring, spacing cadence) when generating new artifacts. Copying fragments is encouraged as long as you keep the \`var(--*)\` references intact — they are already wired to the tokens above.\n\n\`\`\`html\n${designSystemFixtureHtml.trim()}\n\`\`\``,
+    );
+  }
+
+  if (designSystemIntentIndex && designSystemIntentIndex.trim().length > 0) {
+    const resolutionInstruction = resolvedExecutionProfile === 'text_artifact'
+      ? 'This runtime cannot call the resolver. Use the visible intent-to-component mapping to choose the component, but do not invent hidden variants, properties, states, or implementation details.'
+      : 'Before writing UI for a listed business intent, run `"$OD_NODE_BIN" "$OD_BIN" tools design-systems resolve --intent <canonical-intent>` once. Reuse the returned implementation and selectors, apply its variant and properties, and include every required state. If the result requires confirmation or forbids invention, follow that decision instead of creating a near-copy.';
+    parts.push(
+      `\n\n## Structured component intent routing${designSystemTitle ? ` — ${designSystemTitle}` : ''}\n\nIdentify the page's business intent first, then choose from the canonical ids below. ${resolutionInstruction}\n\n\`\`\`text\n${designSystemIntentIndex.trim()}\n\`\`\``,
+    );
+  }
+
+  if (designSystemRuntimeIssue && designSystemRuntimeIssue.trim().length > 0) {
+    parts.push(
+      `\n\n## Structured design-system runtime unavailable${designSystemTitle ? ` — ${designSystemTitle}` : ''}\n\nThis package declares a structured runtime, but it failed validation. Do not silently treat it as a valid legacy component map and do not claim structured component reuse. You may still apply DESIGN.md and tokens.css for visual styling; if the task requires mapped component reuse, report this issue for repair.\n\n\`\`\`text\n${designSystemRuntimeIssue.trim()}\n\`\`\``,
     );
   }
 

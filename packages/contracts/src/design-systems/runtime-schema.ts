@@ -11,6 +11,8 @@ const ComponentIdSchema = NonEmptyStringSchema.regex(/^[A-Za-z][A-Za-z0-9_-]*$/)
 const IntentSchema = NonEmptyStringSchema.regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/);
 const JsonPrimitiveSchema = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
 
+export const DesignSystemIntentIdSchema = IntentSchema;
+
 export function isSafeDesignSystemRuntimePath(value: string): boolean {
   if (value.length === 0 || value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) return false;
   if (value.includes('\\')) return false;
@@ -269,6 +271,20 @@ export type DesignSystemIntentResolution =
   | { status: 'matched'; intent: string; matches: [DesignSystemIntentSelection] }
   | { status: 'ambiguous'; intent: string; matches: DesignSystemIntentSelection[] };
 
+export type DesignSystemGenerationResolution = {
+  intent: string;
+  status: 'matched' | 'confirmation-required' | 'fallback';
+  reason: 'single-match' | 'highest-priority' | 'no-match' | 'ambiguous';
+  action:
+    | 'reuse-components'
+    | 'request-human-confirmation'
+    | 'use-neutral-placeholder'
+    | 'allow-generation';
+  allowInventComponent: boolean;
+  outputMarker?: string;
+  matches: DesignSystemIntentSelection[];
+};
+
 export function resolveDesignSystemIntent(
   bundle: DesignSystemRuntimeBundle,
   intent: string,
@@ -320,6 +336,79 @@ export function resolveDesignSystemIntent(
   if (matches.length === 0) return { status: 'no-match', intent, matches: [] };
   if (matches.length === 1) return { status: 'matched', intent, matches: [matches[0]!] };
   return { status: 'ambiguous', intent, matches };
+}
+
+/**
+ * Apply a package's fallback policy to the raw intent matches. This is the
+ * generation-facing decision: callers receive either concrete component
+ * selections to reuse, an explicit human-confirmation gate, or the declared
+ * no-match fallback. No caller has to reinterpret the policy prose.
+ */
+export function resolveDesignSystemIntentForGeneration(
+  bundle: DesignSystemRuntimeBundle,
+  intent: string,
+): DesignSystemGenerationResolution {
+  const resolution = resolveDesignSystemIntent(bundle, intent);
+  if (resolution.status === 'matched') {
+    return {
+      intent,
+      status: 'matched',
+      reason: 'single-match',
+      action: 'reuse-components',
+      allowInventComponent: false,
+      matches: resolution.matches,
+    };
+  }
+
+  if (resolution.status === 'no-match') {
+    const fallback = bundle.fallback.noMatch;
+    return {
+      intent,
+      status: fallback.action === 'request-human-confirmation'
+        ? 'confirmation-required'
+        : 'fallback',
+      reason: 'no-match',
+      action: fallback.action,
+      allowInventComponent: fallback.allowInventComponent,
+      ...(fallback.outputMarker === undefined ? {} : { outputMarker: fallback.outputMarker }),
+      matches: [],
+    };
+  }
+
+  const multipleMatches = bundle.fallback.multipleMatches;
+  if (multipleMatches.action === 'prefer-highest-priority') {
+    return {
+      intent,
+      status: 'matched',
+      reason: 'highest-priority',
+      action: 'reuse-components',
+      allowInventComponent: false,
+      matches: [resolution.matches[0]!],
+    };
+  }
+
+  if (
+    multipleMatches.action === 'prefer-priority-then-request-human'
+    && resolution.matches[0]!.priority > resolution.matches[1]!.priority
+  ) {
+    return {
+      intent,
+      status: 'matched',
+      reason: 'highest-priority',
+      action: 'reuse-components',
+      allowInventComponent: false,
+      matches: [resolution.matches[0]!],
+    };
+  }
+
+  return {
+    intent,
+    status: 'confirmation-required',
+    reason: 'ambiguous',
+    action: 'request-human-confirmation',
+    allowInventComponent: multipleMatches.allowInventComponent,
+    matches: resolution.matches,
+  };
 }
 
 function reportDuplicates(

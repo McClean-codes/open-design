@@ -116,10 +116,28 @@ Declare all four entry paths together in `manifest.json`:
 
 `intent-map.json` references component ids and selects only declared variants,
 properties, and states; it does not repeat selectors or implementation details.
-The daemon resolves those references from the component definition and returns a
-structured selection. Omitting `runtime` preserves the legacy prompt-based path.
+The prompt receives only a compact list of canonical intent ids. For a listed
+intent, a filesystem agent resolves the full selection on demand:
+
+```bash
+"$OD_NODE_BIN" "$OD_BIN" tools design-systems resolve \
+  --intent account.settings.save
+```
+
+The daemon derives the active design system from the token's run (falling back
+to its project binding), then returns the reusable implementation, selectors,
+variant, properties, required states, and lint policy. It also applies
+`rules/fallback.json`: a unique highest-priority mapping may be selected, while
+ambiguous or missing mappings can require human confirmation instead of letting
+the agent invent a near-copy.
+
+Omitting `runtime` preserves the legacy prompt-based path.
 Declaring only part of the graph, using unsafe paths, or leaving dangling
-references fails validation.
+references fails validation and is surfaced to the agent rather than silently
+downgraded to the legacy component path. Text-artifact runtimes that cannot call
+the resolver may use the visible intent-to-component index, but are explicitly
+forbidden from inventing hidden variants, properties, states, or implementation
+details.
 
 ## 2. Catalog metadata precedence
 

@@ -160,10 +160,19 @@ describe('readDesignSystemAssets', () => {
       body: '# Sample',
       tokensCss: ':root { --accent: #222; }',
     });
+    const changedIntent = digestDesignSystemContext({
+      id: 'sample',
+      title: 'Sample',
+      body: '# Sample',
+      tokensCss: ':root { --accent: #111; }',
+      intentIndex: '- `account.settings.save` → Button.primary',
+    });
 
     expect(base).toMatch(/^[a-f0-9]{64}$/);
     expect(changed).toMatch(/^[a-f0-9]{64}$/);
     expect(changed).not.toBe(base);
+    expect(changedIntent).toMatch(/^[a-f0-9]{64}$/);
+    expect(changedIntent).not.toBe(base);
     expect(digestDesignSystemContext({ id: 'empty' })).toBeNull();
   });
 

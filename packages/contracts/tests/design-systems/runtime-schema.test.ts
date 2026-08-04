@@ -6,9 +6,11 @@ import {
   DESIGN_SYSTEM_INTENT_MAP_SCHEMA_VERSION,
   DesignSystemComponentDefinitionSchema,
   DesignSystemRuntimePathsSchema,
+  resolveDesignSystemIntentForGeneration,
   validateDesignSystemRuntimeReferences,
   type DesignSystemComponentsIndex,
   type DesignSystemIntentMap,
+  type DesignSystemRuntimeBundle,
 } from '../../src/design-systems/runtime-schema.js';
 
 const button = DesignSystemComponentDefinitionSchema.parse({
@@ -32,6 +34,42 @@ const componentsIndex: DesignSystemComponentsIndex = {
   schemaVersion: DESIGN_SYSTEM_COMPONENTS_SCHEMA_VERSION,
   components: [{ id: 'Button', path: 'components/Button/component.json' }],
 };
+
+function runtimeBundle(mappings: DesignSystemIntentMap['mappings']): DesignSystemRuntimeBundle {
+  return {
+    paths: {
+      components: 'manifests/components.json',
+      intents: 'manifests/intent-map.json',
+      lint: 'rules/lint.json',
+      fallback: 'rules/fallback.json',
+    },
+    componentsIndex,
+    components: [{ path: 'components/Button/component.json', definition: button }],
+    intentMap: {
+      schemaVersion: DESIGN_SYSTEM_INTENT_MAP_SCHEMA_VERSION,
+      mappings,
+    },
+    lint: {
+      schemaVersion: 'od-design-system-lint/v1',
+      requireMappedComponentReuse: true,
+      requireTokenReferences: true,
+      forbidUnauthorizedColorLiteralsOutsideTokenDefinitions: true,
+      requireDeclaredStates: true,
+    },
+    fallback: {
+      schemaVersion: 'od-design-system-fallback/v1',
+      noMatch: {
+        action: 'request-human-confirmation',
+        allowInventComponent: false,
+        outputMarker: 'data-ds-fallback="no-match"',
+      },
+      multipleMatches: {
+        action: 'prefer-priority-then-request-human',
+        allowInventComponent: false,
+      },
+    },
+  };
+}
 
 describe('design-system runtime schema', () => {
   it('accepts a complete set of safe manifest paths', () => {
@@ -109,5 +147,68 @@ describe('design-system runtime schema', () => {
       'intent mapping account.settings.save at index 0 references unknown property icon on Button',
       'intent mapping account.settings.save at index 0 references unknown state loading on Button',
     ]);
+  });
+
+  it('turns an intent match into a concrete component reuse decision', () => {
+    const result = resolveDesignSystemIntentForGeneration(runtimeBundle([{
+      intent: 'account.settings.save',
+      component: 'Button',
+      variant: 'primary',
+      properties: { label: 'Save' },
+      states: ['focus'],
+      priority: 100,
+    }]), 'account.settings.save');
+
+    expect(result).toMatchObject({
+      status: 'matched',
+      reason: 'single-match',
+      action: 'reuse-components',
+      allowInventComponent: false,
+      matches: [{
+        component: { id: 'Button', implementation: expect.stringContaining('<button') },
+        variant: { id: 'primary' },
+        properties: { label: 'Save' },
+        states: [{ id: 'focus', required: true }],
+      }],
+    });
+  });
+
+  it('returns the declared no-match fallback instead of silently inventing a component', () => {
+    const result = resolveDesignSystemIntentForGeneration(runtimeBundle([{
+      intent: 'account.settings.save',
+      component: 'Button',
+    }]), 'workspace.delete.confirm');
+
+    expect(result).toEqual({
+      intent: 'workspace.delete.confirm',
+      status: 'confirmation-required',
+      reason: 'no-match',
+      action: 'request-human-confirmation',
+      allowInventComponent: false,
+      outputMarker: 'data-ds-fallback="no-match"',
+      matches: [],
+    });
+  });
+
+  it('uses a unique highest-priority mapping and asks for confirmation on a tie', () => {
+    const preferred = runtimeBundle([
+      { intent: 'account.settings.save', component: 'Button', priority: 100 },
+      { intent: 'account.settings.save', component: 'Button', priority: 10 },
+    ]);
+    expect(resolveDesignSystemIntentForGeneration(preferred, 'account.settings.save')).toMatchObject({
+      status: 'matched',
+      reason: 'highest-priority',
+      matches: [{ priority: 100 }],
+    });
+
+    const tied = runtimeBundle([
+      { intent: 'account.settings.save', component: 'Button', priority: 100 },
+      { intent: 'account.settings.save', component: 'Button', priority: 100 },
+    ]);
+    expect(resolveDesignSystemIntentForGeneration(tied, 'account.settings.save')).toMatchObject({
+      status: 'confirmation-required',
+      reason: 'ambiguous',
+      matches: [{ priority: 100 }, { priority: 100 }],
+    });
   });
 });
