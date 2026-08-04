@@ -15,6 +15,22 @@ import {
 } from './media-cloud-demo';
 import styles from './MediaCloudSpecDemo.module.css';
 
+function AspectRatioIcon({ aspect }: { aspect: string }) {
+  const [sourceWidth = 1, sourceHeight = 1] = aspect.split(':').map(Number);
+  const scale = Math.min(16 / sourceWidth, 12 / sourceHeight);
+  const width = sourceWidth * scale;
+  const height = sourceHeight * scale;
+
+  return (
+    <span className={styles.aspectRatioIcon}>
+      <span
+        className={styles.aspectRatioIconShape}
+        style={{ width: `${width}px`, height: `${height}px` }}
+      />
+    </span>
+  );
+}
+
 export interface MediaCloudSpecDemoState {
   image: MediaCloudDemoValue;
   video: MediaCloudDemoValue;
@@ -245,6 +261,7 @@ export function MediaCloudSpecDemoPanel({ surface, value, onChange }: ChangeProp
             options={aspectOptions.map((aspect) => ({
               value: aspect,
               label: aspect,
+              leadingVisual: <AspectRatioIcon aspect={aspect} />,
               description: MEDIA_ASPECT_DESCRIPTIONS[aspect],
             }))}
             onChange={(aspect) => onChange({ ...value, aspect })}

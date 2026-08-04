@@ -139,6 +139,31 @@
   gap: 8px;
 }
 
+.aspectRatioIcon {
+  display: inline-grid;
+  width: 20px;
+  height: 16px;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.aspectRatioIconShape {
+  box-sizing: border-box;
+  display: block;
+  border: 1.25px solid currentColor;
+  border-radius: 2px;
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  transition:
+    color 140ms cubic-bezier(0.23, 1, 0.32, 1),
+    background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
+}
+
+.aspectSelectMenu :global(.od-select-option:hover) .aspectRatioIcon,
+.aspectSelectMenu :global(.od-select-option.active) .aspectRatioIcon,
+.aspectSelectMenu :global(.od-select-option.selected) .aspectRatioIcon {
+  color: var(--text-strong);
+}
+
 .aspectSelectMenu :global(.od-select-option-details) {
   display: grid;
   min-width: 0;

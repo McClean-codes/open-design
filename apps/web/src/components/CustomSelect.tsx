@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent } from 'react';
+import type { KeyboardEvent, ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { Icon } from './Icon';
 
 export interface CustomSelectOption {
   value: string;
   label: string;
+  leadingVisual?: ReactNode;
   description?: string;
   disabled?: boolean;
 }
@@ -300,7 +301,12 @@ export function CustomSelect({
         onFocus={onFocus}
       >
         <span id={`${idBase}-value`} className="od-select-value">
-          {selectedLabel}
+          {selected?.leadingVisual ? (
+            <span className="od-select-leading-visual" aria-hidden>
+              {selected.leadingVisual}
+            </span>
+          ) : null}
+          <span className="od-select-value-label">{selectedLabel}</span>
         </span>
         <Icon name="chevron-down" size={14} />
       </button>
@@ -348,7 +354,14 @@ function SelectOptionButton({
       {option.description ? (
         <>
           <span className="od-select-option-main">
-            <span className="od-select-option-label">{option.label}</span>
+            <span className="od-select-option-content">
+              {option.leadingVisual ? (
+                <span className="od-select-leading-visual" aria-hidden>
+                  {option.leadingVisual}
+                </span>
+              ) : null}
+              <span className="od-select-option-label">{option.label}</span>
+            </span>
             <span className="od-select-option-check" aria-hidden>
               <Icon name="check" size={14} />
             </span>
@@ -361,7 +374,14 @@ function SelectOptionButton({
         </>
       ) : (
         <>
-          <span className="od-select-option-label">{option.label}</span>
+          <span className="od-select-option-content">
+            {option.leadingVisual ? (
+              <span className="od-select-leading-visual" aria-hidden>
+                {option.leadingVisual}
+              </span>
+            ) : null}
+            <span className="od-select-option-label">{option.label}</span>
+          </span>
           <span className="od-select-option-check" aria-hidden>
             <Icon name="check" size={14} />
           </span>

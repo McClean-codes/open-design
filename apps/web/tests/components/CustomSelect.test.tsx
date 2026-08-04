@@ -126,4 +126,25 @@ describe('CustomSelect', () => {
     fireEvent.keyDown(trigger, { key: 'ArrowDown' });
     expect(screen.getByText('Instagram Reels · TikTok · Stories')).not.toBeNull();
   });
+
+  it('shows a leading visual in both the trigger and menu option', () => {
+    render(
+      <CustomSelect
+        ariaLabel="Ratio"
+        value="16:9"
+        options={[
+          {
+            value: '16:9',
+            label: '16:9',
+            leadingVisual: <span data-testid="ratio-visual" />,
+          },
+        ]}
+        onChange={() => undefined}
+      />,
+    );
+
+    expect(screen.getAllByTestId('ratio-visual')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('combobox', { name: 'Ratio: 16:9' }));
+    expect(screen.getAllByTestId('ratio-visual')).toHaveLength(2);
+  });
 });
