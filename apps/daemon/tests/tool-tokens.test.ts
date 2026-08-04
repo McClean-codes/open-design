@@ -91,6 +91,11 @@ describe('run-scoped tool tokens', () => {
     expect(MEDIA_TASK_WAIT_TOOL_ENDPOINT).toBe('/api/media/tasks/:id/wait');
     expect(grant.allowedEndpoints).toContain(MEDIA_TASK_WAIT_TOOL_ENDPOINT);
     expect(grant.allowedOperations).toEqual([...CHAT_TOOL_OPERATIONS]);
+    expect(registry.validate(grant.token, {
+      endpoint: '/api/tools/design-systems/resolve-intent',
+      operation: 'design-systems:resolve-intent',
+      nowMs: 1_001,
+    })).toMatchObject({ ok: true });
     registry.clear();
   });
 });

@@ -1,5 +1,5 @@
 import express from 'express';
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import http from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -59,19 +59,23 @@ async function startRouteServer(options: {
   builtInRoot: string;
   userRoot: string;
   activeDesignSystemId: string | null;
+  runDesignSystemId?: string | null;
 }): Promise<string> {
   const app = express();
   app.use(express.json());
   registerDesignSystemToolRoutes(app, {
     auth: {
       authorizeToolRequest: (_req, _res, operation) => {
-        expect(operation).toBe('design-systems:read');
+        expect(['design-systems:read', 'design-systems:resolve-intent']).toContain(operation);
         return {
           token: 'token',
           runId: 'run-1',
           projectId: 'project-1',
-          allowedEndpoints: ['/api/tools/design-systems/read'],
-          allowedOperations: ['design-systems:read'],
+          allowedEndpoints: [
+            '/api/tools/design-systems/read',
+            '/api/tools/design-systems/resolve-intent',
+          ],
+          allowedOperations: ['design-systems:read', 'design-systems:resolve-intent'],
           issuedAt: new Date(0).toISOString(),
           expiresAt: new Date(60_000).toISOString(),
         };
@@ -91,6 +95,11 @@ async function startRouteServer(options: {
         id: 'project-1',
         designSystemId: options.activeDesignSystemId,
       }),
+    },
+    runs: {
+      getRun: () => options.runDesignSystemId === undefined
+        ? undefined
+        : { designSystemId: options.runDesignSystemId },
     },
   });
 
@@ -145,6 +154,132 @@ describe('design-system pull tool route', () => {
       encoding: 'utf8',
       content: expect.stringContaining('od-design-tokens/v1'),
     });
+  });
+
+  it('resolves a canonical intent to component implementation, variant, properties, and states', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'runtime-v3'),
+      { recursive: true },
+    );
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'project-default',
+      runDesignSystemId: 'runtime-v3',
+    });
+
+    const matched = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+    expect(matched.status, JSON.stringify(matched.body)).toBe(200);
+    expect(matched.body).toMatchObject({
+      designSystemId: 'runtime-v3',
+      runtime: 'structured',
+      resolution: {
+        status: 'matched',
+        action: 'reuse-components',
+        matches: [{
+          component: { id: 'Button', implementation: expect.stringContaining('<button') },
+          variant: { id: 'primary' },
+          properties: { label: 'Save changes', disabled: false },
+          states: [{ id: 'hover' }, { id: 'focus' }],
+        }],
+      },
+      lint: {
+        requireMappedComponentReuse: true,
+        requireDeclaredStates: true,
+      },
+    });
+
+    const noMatch = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'workspace.delete.confirm',
+    });
+    expect(noMatch.status).toBe(200);
+    expect(noMatch.body.resolution).toMatchObject({
+      status: 'confirmation-required',
+      reason: 'no-match',
+      action: 'request-human-confirmation',
+      allowInventComponent: false,
+      outputMarker: 'data-ds-fallback="no-match"',
+    });
+
+    const invalidIntent = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'Account settings save',
+    });
+    expect(invalidIntent.status).toBe(400);
+    expect(invalidIntent.body.error.code).toBe('INVALID_INPUT');
+  });
+
+  it('reports legacy and malformed runtime packages without downgrading them', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    writeHybridDesignSystem(builtInRoot, 'legacy-brand');
+    const legacyUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'legacy-brand',
+    });
+    const legacy = await jsonFetch(`${legacyUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+    expect(legacy.status).toBe(409);
+    expect(legacy.body.error.code).toBe('DESIGN_SYSTEM_RUNTIME_UNAVAILABLE');
+
+    await new Promise<void>((resolve, reject) => {
+      server?.close((error?: Error) => (error ? reject(error) : resolve()));
+    });
+    server = undefined;
+
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'broken-runtime'),
+      { recursive: true },
+    );
+    const brokenManifestPath = path.join(builtInRoot, 'broken-runtime', 'manifest.json');
+    const brokenManifest = JSON.parse(readFileSync(brokenManifestPath, 'utf8')) as Record<string, unknown>;
+    brokenManifest.id = 'broken-runtime';
+    const intentPath = path.join(builtInRoot, 'broken-runtime', 'manifests', 'intent-map.json');
+    const brokenIntent = JSON.parse(readFileSync(intentPath, 'utf8')) as {
+      mappings: Array<{ component: string }>;
+    };
+    brokenIntent.mappings[0]!.component = 'MissingButton';
+    writeFileSync(brokenManifestPath, `${JSON.stringify(brokenManifest, null, 2)}\n`);
+    writeFileSync(intentPath, `${JSON.stringify(brokenIntent, null, 2)}\n`);
+
+    const brokenUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'broken-runtime',
+    });
+    const broken = await jsonFetch(`${brokenUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+    expect(broken.status).toBe(422);
+    expect(broken.body.error).toMatchObject({
+      code: 'DESIGN_SYSTEM_RUNTIME_INVALID',
+      details: { errors: [expect.stringContaining('unknown component MissingButton')] },
+    });
+  });
+
+  it('does not expose a project default when the active run explicitly disabled its design system', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    writeHybridDesignSystem(builtInRoot, 'project-default');
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'project-default',
+      runDesignSystemId: null,
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/read`, {
+      path: 'preview/colors.html',
+    });
+    expect(response.status).toBe(404);
+    expect(response.body.error.code).toBe('DESIGN_SYSTEM_NOT_FOUND');
   });
 
   it('rejects unlisted files and non-active design-system ids', async () => {

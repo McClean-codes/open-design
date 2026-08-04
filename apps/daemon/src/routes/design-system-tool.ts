@@ -1,7 +1,15 @@
 import type { Express, Request, Response } from 'express';
 
+import {
+  DesignSystemIntentIdSchema,
+  resolveDesignSystemIntentForGeneration,
+} from '@open-design/contracts';
+
 import type { ToolTokenGrant } from '../tool-tokens.js';
-import { readDesignSystemPullFile } from '../design-systems/index.js';
+import {
+  readDesignSystemPullFile,
+  resolveDesignSystemRuntime,
+} from '../design-systems/index.js';
 
 type ProjectRecord = {
   id: string;
@@ -30,6 +38,9 @@ export type RegisterDesignSystemToolRoutesDeps = {
   projects: {
     getProject: (id: string) => ProjectRecord | null | undefined;
   };
+  runs?: {
+    getRun: (id: string) => { designSystemId?: string | null } | null | undefined;
+  };
 };
 
 export function registerDesignSystemToolRoutes(
@@ -44,17 +55,16 @@ export function registerDesignSystemToolRoutes(
       const grant = authorizeToolRequest(req, res, 'design-systems:read');
       if (!grant) return;
 
-      const project = ctx.projects.getProject(grant.projectId);
-      const activeDesignSystemId = project?.designSystemId;
+      const activeDesignSystemId = activeDesignSystemIdForGrant(ctx, grant);
       if (!activeDesignSystemId) {
-        return sendApiError(res, 404, 'DESIGN_SYSTEM_NOT_FOUND', 'project has no active design system');
+        return sendApiError(res, 404, 'DESIGN_SYSTEM_NOT_FOUND', 'run or project has no active design system');
       }
 
       const requestedDesignSystemId = typeof req.body?.designSystemId === 'string'
         ? req.body.designSystemId
         : undefined;
       if (requestedDesignSystemId !== undefined && requestedDesignSystemId !== activeDesignSystemId) {
-        return sendApiError(res, 403, 'DESIGN_SYSTEM_DENIED', 'designSystemId is derived from the tool token project', {
+        return sendApiError(res, 403, 'DESIGN_SYSTEM_DENIED', 'designSystemId is derived from the active tool-token run or project', {
           details: { requestedDesignSystemId, activeDesignSystemId },
         });
       }
@@ -85,6 +95,82 @@ export function registerDesignSystemToolRoutes(
       sendApiError(res, 500, 'INTERNAL_ERROR', error instanceof Error ? error.message : String(error));
     }
   });
+
+  app.post('/api/tools/design-systems/resolve-intent', async (req, res) => {
+    try {
+      const grant = authorizeToolRequest(req, res, 'design-systems:resolve-intent');
+      if (!grant) return;
+
+      const activeDesignSystemId = activeDesignSystemIdForGrant(ctx, grant);
+      if (!activeDesignSystemId) {
+        return sendApiError(res, 404, 'DESIGN_SYSTEM_NOT_FOUND', 'run or project has no active design system');
+      }
+
+      const requestedDesignSystemId = typeof req.body?.designSystemId === 'string'
+        ? req.body.designSystemId
+        : undefined;
+      if (requestedDesignSystemId !== undefined && requestedDesignSystemId !== activeDesignSystemId) {
+        return sendApiError(res, 403, 'DESIGN_SYSTEM_DENIED', 'designSystemId is derived from the active tool-token run or project', {
+          details: { requestedDesignSystemId, activeDesignSystemId },
+        });
+      }
+
+      const parsedIntent = DesignSystemIntentIdSchema.safeParse(req.body?.intent);
+      if (!parsedIntent.success) {
+        return sendApiError(res, 400, 'INVALID_INPUT', 'intent must be a canonical design-system intent id');
+      }
+      const intent = parsedIntent.data;
+
+      const runtime = await resolveDesignSystemRuntime(
+        activeDesignSystemId,
+        ctx.paths.DESIGN_SYSTEMS_DIR,
+        ctx.paths.USER_DESIGN_SYSTEMS_DIR,
+      );
+      if (runtime.mode === 'legacy') {
+        return sendApiError(
+          res,
+          409,
+          'DESIGN_SYSTEM_RUNTIME_UNAVAILABLE',
+          'active design system does not declare a structured runtime',
+        );
+      }
+      if (runtime.mode === 'invalid') {
+        return sendApiError(
+          res,
+          422,
+          'DESIGN_SYSTEM_RUNTIME_INVALID',
+          'active design system declares an invalid structured runtime',
+          { details: { errors: runtime.errors } },
+        );
+      }
+
+      res.json({
+        designSystemId: activeDesignSystemId,
+        runtime: 'structured',
+        resolution: resolveDesignSystemIntentForGeneration(runtime.bundle, intent),
+        lint: runtime.bundle.lint,
+      });
+    } catch (error) {
+      sendApiError(res, 500, 'INTERNAL_ERROR', error instanceof Error ? error.message : String(error));
+    }
+  });
+}
+
+function activeDesignSystemIdForGrant(
+  ctx: RegisterDesignSystemToolRoutesDeps,
+  grant: ToolTokenGrant,
+): string | null {
+  const run = ctx.runs?.getRun(grant.runId);
+  if (run !== null && run !== undefined) {
+    const runDesignSystemId = run.designSystemId;
+    return typeof runDesignSystemId === 'string' && runDesignSystemId.length > 0
+      ? runDesignSystemId
+      : null;
+  }
+  const projectDesignSystemId = ctx.projects.getProject(grant.projectId)?.designSystemId;
+  return typeof projectDesignSystemId === 'string' && projectDesignSystemId.length > 0
+    ? projectDesignSystemId
+    : null;
 }
 
 async function readActiveDesignSystemPullFile(

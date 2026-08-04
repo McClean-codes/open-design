@@ -1,0 +1,88 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { runDesignSystemsToolCli } from '../src/tools-design-systems-cli.js';
+
+const ORIGINAL_ENV = { ...process.env };
+
+describe('design-system tool CLI', () => {
+  let stdoutWrite: { mockRestore: () => void };
+  let stderrWrite: { mockRestore: () => void };
+  let stdoutOutput: string[];
+  let stderrOutput: string[];
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    process.env = {
+      ...ORIGINAL_ENV,
+      OD_DAEMON_URL: 'http://127.0.0.1:7456/base/',
+      OD_TOOL_TOKEN: 'agent-run-token',
+    };
+    stdoutOutput = [];
+    stderrOutput = [];
+    stdoutWrite = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      stdoutOutput.push(String(chunk));
+      return true;
+    });
+    stderrWrite = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderrOutput.push(String(chunk));
+      return true;
+    });
+    fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      designSystemId: 'runtime-v3',
+      runtime: 'structured',
+      resolution: {
+        intent: 'account.settings.save',
+        status: 'matched',
+        action: 'reuse-components',
+        matches: [{ component: { id: 'Button' } }],
+      },
+    }), {
+      headers: { 'Content-Type': 'application/json' },
+      status: 200,
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    stdoutWrite.mockRestore();
+    stderrWrite.mockRestore();
+    process.env = ORIGINAL_ENV;
+  });
+
+  it('resolves a canonical intent through the active project design system', async () => {
+    const result = await runDesignSystemsToolCli([
+      'resolve',
+      '--intent',
+      'account.settings.save',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledWith(
+      'http://127.0.0.1:7456/base/api/tools/design-systems/resolve-intent',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          Authorization: 'Bearer agent-run-token',
+        }),
+        body: JSON.stringify({ intent: 'account.settings.save' }),
+      }),
+    );
+    expect(JSON.parse(stdoutOutput.join(''))).toMatchObject({
+      ok: true,
+      resolution: { status: 'matched', action: 'reuse-components' },
+    });
+    expect(stderrOutput.join('')).toBe('');
+  });
+
+  it('rejects a missing intent before sending a request', async () => {
+    const result = await runDesignSystemsToolCli(['resolve']);
+
+    expect(result.exitCode).toBe(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.parse(stderrOutput.join(''))).toEqual({
+      ok: false,
+      error: { message: 'resolve requires --intent <canonical-intent>' },
+    });
+  });
+});
