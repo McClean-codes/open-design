@@ -325,6 +325,147 @@ describe('CollabClient', () => {
     await vi.advanceTimersByTimeAsync(0);
   });
 
+  it('shows the daemon cached roster before a slow Team heartbeat settles', async () => {
+    let resolveStatus!: (response: Response) => void;
+    let resolveHeartbeat!: (response: Response) => void;
+    const requestPaths: string[] = [];
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        requestPaths.push(pathname);
+        if (pathname.endsWith('/collab/status')) {
+          return new Promise<Response>((resolve) => {
+            resolveStatus = resolve;
+          });
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          return new Promise<Response>((resolve) => {
+            resolveHeartbeat = resolve;
+          });
+        }
+        if (pathname.endsWith('/presence')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                present: [
+                  { memberId: 'member-viewer' },
+                  { memberId: 'member-peer' },
+                ],
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p-cached-presence',
+      member: { memberId: 'member-viewer' },
+      workspaceContext: TEAM_CONTEXT,
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(requestPaths.indexOf('/api/projects/p-cached-presence/presence'))
+      .toBeGreaterThanOrEqual(0);
+    expect(requestPaths.indexOf('/api/projects/p-cached-presence/presence'))
+      .toBeLessThan(
+        requestPaths.indexOf('/api/projects/p-cached-presence/presence/heartbeat'),
+      );
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'member-viewer' },
+      { memberId: 'member-peer' },
+    ]);
+
+    client.stop();
+    resolveHeartbeat(
+      new Response(JSON.stringify({ present: [] }), { status: 200 }),
+    );
+    resolveStatus(
+      new Response(
+        JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it('does not let a slow cached start read overwrite the heartbeat roster', async () => {
+    let resolveStatus!: (response: Response) => void;
+    let resolveCachedPresence!: (response: Response) => void;
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return new Promise<Response>((resolve) => {
+            resolveStatus = resolve;
+          });
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                present: [
+                  { memberId: 'member-viewer' },
+                  { memberId: 'authoritative-peer' },
+                ],
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (pathname.endsWith('/presence')) {
+          return new Promise<Response>((resolve) => {
+            resolveCachedPresence = resolve;
+          });
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p-ordered-presence',
+      member: { memberId: 'member-viewer' },
+      workspaceContext: TEAM_CONTEXT,
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'member-viewer' },
+      { memberId: 'authoritative-peer' },
+    ]);
+
+    resolveCachedPresence(
+      new Response(
+        JSON.stringify({
+          present: [
+            { memberId: 'member-viewer' },
+            { memberId: 'stale-peer' },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'member-viewer' },
+      { memberId: 'authoritative-peer' },
+    ]);
+
+    client.stop();
+    resolveStatus(
+      new Response(
+        JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
   it('does not optimistically heartbeat a Personal or unscoped session', async () => {
     const pendingStatus = new Promise<Response>(() => {});
     const fetchMock = vi.fn(

@@ -185,6 +185,13 @@ export class CollabClient {
     if (this.running) return;
     this.running = true;
     void this.pollStatus();
+    // The daemon keeps a short-lived, authority-checked presence roster cache.
+    // Consume that hot path before issuing the write heartbeat: the latter may
+    // still need a slow Vela round trip, but a teammate already known to the
+    // daemon should appear immediately. Only an exact Team scope may use this
+    // pre-status path; legacy/unscoped and Personal sessions still wait for
+    // authoritative project status.
+    if (this.hasExplicitTeamScope()) void this.readCachedPresence();
     // Immediate first heartbeat: the presence roster comes from the heartbeat
     // RESPONSE, so without this the avatars only appear on the interval's
     // first tick — a 10s blank presence bar on every project open. This also
@@ -320,6 +327,24 @@ export class CollabClient {
       }
     } catch (error) {
       this.onError?.(error);
+    }
+  }
+
+  /** Read the daemon's non-blocking SWR roster on an explicitly scoped start. */
+  private async readCachedPresence(): Promise<void> {
+    const requestGeneration = ++this.presenceRequestGeneration;
+    try {
+      const body = await this.get('/presence');
+      if (Array.isArray(body?.present)) {
+        this.applyPresenceResponse(
+          requestGeneration,
+          body.present as CollabPresenceMember[],
+        );
+      }
+    } catch {
+      // This is a best-effort latency optimization. The immediately following
+      // heartbeat (or later authoritative status) owns failure reporting; do
+      // not surface the same cold-start authority/network failure twice.
     }
   }
 
@@ -491,6 +516,12 @@ export class CollabClient {
 
   private isSharedProject(): boolean {
     return this.snapshot.syncState !== null && this.snapshot.syncState !== 'local_only';
+  }
+
+  private hasExplicitTeamScope(): boolean {
+    return this.workspaceContext?.workspaceType === 'team'
+      && Boolean(this.workspaceContext.workspaceId.trim())
+      && Boolean(this.workspaceContext.workspaceMemberId.trim());
   }
 
   private async get(path: string): Promise<Record<string, unknown> | null> {
