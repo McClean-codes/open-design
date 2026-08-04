@@ -125,6 +125,8 @@ export class CollabClient {
    */
   private presenceRequestGeneration = 0;
   private presenceAppliedRequestGeneration = 0;
+  /** Suppresses the status-transition echo of an optimistic Team heartbeat. */
+  private presenceAttemptedForMember = false;
   private running = false;
   private onVisibilityChange: (() => void) | null = null;
 
@@ -162,13 +164,20 @@ export class CollabClient {
     if (nextMemberId !== previousMemberId) {
       this.presenceRequestGeneration += 1;
       this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
+      this.presenceAttemptedForMember = false;
     }
     if (
       this.running
       && member
       && nextMemberId !== previousMemberId
     ) {
-      void this.heartbeat();
+      // Defer one microtask so React StrictMode can run its mount-cleanup-
+      // remount probe before the network side effect starts. The retired
+      // client's heartbeat then sees `running === false`; the live client
+      // still announces in the same browser task without waiting for status.
+      void Promise.resolve().then(() => {
+        if (!this.presenceAttemptedForMember) return this.heartbeat();
+      });
     }
   }
 
@@ -248,10 +257,27 @@ export class CollabClient {
     // No identity yet (status polling can be running well before `member`
     // resolves — see setMember) — presence has nothing to announce.
     if (!this.member) return;
-    if (!this.isSharedProject()) {
+    // A Personal identity can never register Team presence, even if an
+    // inconsistent status response claims the project is shared. Legacy
+    // unscoped clients retain their old post-status behavior, but may not use
+    // the optimistic cold-start path below.
+    if (
+      this.workspaceContext
+      && this.workspaceContext.workspaceType !== 'team'
+    ) {
       if (this.snapshot.present.length > 0) this.update({ present: [] });
       return;
     }
+    const explicitTeamStatusPending =
+      this.snapshot.syncState === null
+      && this.workspaceContext?.workspaceType === 'team'
+      && Boolean(this.workspaceContext.workspaceId.trim())
+      && Boolean(this.workspaceContext.workspaceMemberId.trim());
+    if (!this.isSharedProject() && !explicitTeamStatusPending) {
+      if (this.snapshot.present.length > 0) this.update({ present: [] });
+      return;
+    }
+    this.presenceAttemptedForMember = true;
     const requestGeneration = ++this.presenceRequestGeneration;
     try {
       const body = await this.post('/presence/heartbeat', {
@@ -265,6 +291,7 @@ export class CollabClient {
         );
       }
     } catch (error) {
+      this.presenceAttemptedForMember = false;
       this.onError?.(error);
     }
   }
@@ -362,7 +389,13 @@ export class CollabClient {
         this.contentTransferStateGeneration += 1;
       }
       this.update(next);
-      if (!wasShared && this.isSharedProject()) void this.heartbeat();
+      if (
+        !wasShared
+        && this.isSharedProject()
+        && !this.presenceAttemptedForMember
+      ) {
+        void this.heartbeat();
+      }
     } catch (error) {
       this.onError?.(error);
     }

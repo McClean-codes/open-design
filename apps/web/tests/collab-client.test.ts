@@ -269,6 +269,136 @@ describe('CollabClient', () => {
     client.stop();
   });
 
+  it('starts a scoped Team heartbeat without waiting for a slow status response', async () => {
+    let resolveStatus!: (response: Response) => void;
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return new Promise<Response>((resolve) => {
+            resolveStatus = resolve;
+          });
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({
+                present: [
+                  { memberId: 'member-viewer' },
+                  { memberId: 'member-peer' },
+                ],
+              }),
+              { status: 200 },
+            ),
+          );
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    );
+    const fetchImpl = fetchMock as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p-slow-status',
+      member: { memberId: 'member-viewer' },
+      workspaceContext: TEAM_CONTEXT,
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(resolveStatus).toBeTypeOf('function');
+    expect(fetchMock.mock.calls.some(([input]) =>
+      String(input).endsWith('/presence/heartbeat'))).toBe(true);
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'member-viewer' },
+      { memberId: 'member-peer' },
+    ]);
+
+    client.stop();
+    resolveStatus(
+      new Response(
+        JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+  });
+
+  it('does not optimistically heartbeat a Personal or unscoped session', async () => {
+    const pendingStatus = new Promise<Response>(() => {});
+    const fetchMock = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) return pendingStatus;
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    );
+    const fetchImpl = fetchMock as unknown as typeof fetch;
+    const personalContext = {
+      ...TEAM_CONTEXT,
+      workspaceType: 'personal' as const,
+      teamId: undefined,
+    };
+    const personal = new CollabClient({
+      projectId: 'p-personal',
+      member: { memberId: 'member-viewer' },
+      workspaceContext: personalContext,
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+    const unscoped = new CollabClient({
+      projectId: 'p-unscoped',
+      member: { memberId: 'member-viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    personal.start();
+    unscoped.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    expect(fetchMock.mock.calls.filter(([input]) =>
+      String(input).endsWith('/presence/heartbeat'))).toHaveLength(0);
+    personal.stop();
+    unscoped.stop();
+  });
+
+  it('keeps the local roster empty when optimistic Team heartbeat authority is rejected', async () => {
+    const errors: unknown[] = [];
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return new Promise<Response>(() => {});
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ error: 'WORKSPACE_ACCESS_DENIED' }),
+              { status: 403 },
+            ),
+          );
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p-denied',
+      member: { memberId: 'member-viewer' },
+      workspaceContext: TEAM_CONTEXT,
+      fetch: fetchImpl,
+      onError: (error) => errors.push(error),
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(errors).toHaveLength(1);
+    expect(client.getSnapshot().present).toEqual([]);
+    client.stop();
+  });
+
   it('does not heartbeat for a local-only project', async () => {
     const { fetchImpl, calls } = makeFetch({ syncState: 'local_only' });
     const client = new CollabClient({
