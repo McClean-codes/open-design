@@ -1152,7 +1152,7 @@ export function NewProjectPanel({
               disabled={folderImport.importing}
               onClick={() => void folderImport.openFolder()}
             >
-              <Icon name="folder" size={13} />
+              <Icon name="folder" size={14} />
               <span>
                 {folderImport.importing
                   ? t('newproj.openingFolder')
