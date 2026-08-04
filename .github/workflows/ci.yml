@@ -31,7 +31,13 @@ concurrency:
 jobs:
   runners:
     name: Resolve runner profiles
-    runs-on: ubuntu-24.04
+    # Resolve on the Nexu ARC fleet for trusted branches, but do not expose a
+    # private runner to workflow code supplied by an external fork.
+    runs-on: >-
+      ${{ github.event_name == 'pull_request'
+        && github.event.pull_request.head.repo.full_name != github.repository
+        && 'ubuntu-24.04'
+        || 'nexu-runners-small' }}
     outputs:
       runs_on: ${{ steps.runners.outputs.runs_on }}
       decision: ${{ steps.runners.outputs.decision }}
@@ -470,7 +476,7 @@ jobs:
     name: UI P0 (${{ matrix.name }})
     needs: [scopes, runners]
     if: ${{ needs.scopes.outputs.run_ui_p0 == 'true' }}
-    runs-on: ${{ fromJSON(needs.runners.outputs.runs_on).ui_p0 }}
+    runs-on: ${{ fromJSON(needs.runners.outputs.runs_on).ui_hot }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -487,14 +493,14 @@ jobs:
       - name: Setup workspace
         uses: ./.github/actions/setup-workspace
         with:
-          runner-labels: ${{ toJSON(fromJSON(needs.runners.outputs.runs_on).ui_p0) }}
+          runner-labels: ${{ toJSON(fromJSON(needs.runners.outputs.runs_on).ui_hot) }}
 
       - name: Setup Playwright
         uses: ./.github/actions/setup-playwright
         with:
           package-json-path: e2e/package.json
           install-command: pnpm -C e2e exec playwright install --with-deps chromium
-          runner-labels: ${{ toJSON(fromJSON(needs.runners.outputs.runs_on).ui_p0) }}
+          runner-labels: ${{ toJSON(fromJSON(needs.runners.outputs.runs_on).ui_hot) }}
 
       - name: Prebuild workspace type declarations
         run: |

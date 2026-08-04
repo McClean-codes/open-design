@@ -7,8 +7,6 @@ from pathlib import Path
 
 GITHUB_HOSTED = ["ubuntu-24.04"]
 WINDOWS_HOSTED = ["windows-latest"]
-CONTABO_CONTROL = ["self-hosted", "Linux", "X64", "od-persistent-ci", "od-ci-hot-poc"]
-BLACKSMITH_4V = ["blacksmith-4vcpu-ubuntu-2404"]
 NEXU_SMALL = ["nexu-runners-small"]
 
 
@@ -24,21 +22,17 @@ def normalize_mode(raw_mode):
 
 
 def resolve_contract(mode):
-    general_medium = BLACKSMITH_4V if mode == "performance" else GITHUB_HOSTED
-    hot_path = GITHUB_HOSTED if mode == "economic" else BLACKSMITH_4V
-    ui_p0 = GITHUB_HOSTED if mode == "economic" else NEXU_SMALL
-    control = CONTABO_CONTROL if mode == "default" else GITHUB_HOSTED
+    linux = GITHUB_HOSTED if mode == "economic" else NEXU_SMALL
 
     return {
         "runs_on": {
-            "control": control,
-            "general_medium": general_medium,
-            "workspace_unit": GITHUB_HOSTED,
+            "control": linux,
+            "general_medium": linux,
+            "workspace_unit": linux,
             "windows_tools": WINDOWS_HOSTED,
-            "js_hot": hot_path,
-            "ui_p0": ui_p0,
-            "ui_hot": hot_path,
-            "visual_hot": hot_path,
+            "js_hot": linux,
+            "ui_hot": linux,
+            "visual_hot": linux,
         },
         "decision": {
             "schema_version": 1,

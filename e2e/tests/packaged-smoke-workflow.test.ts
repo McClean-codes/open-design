@@ -1108,7 +1108,7 @@ process.stdin.on("end", () => {
     );
   });
 
-  it("[P2] routes default CI through cost-sensitive runner tiers", async () => {
+  it("[P2] routes trusted Linux CI through the Nexu runner fleet", async () => {
     const workflow = await readFile(ciWorkflowPath, "utf8");
     const runners = sectionBetween(workflow, "  runners:", "  scopes:");
     const scopes = sectionBetween(workflow, "  scopes:", "  static_gate:");
@@ -1120,7 +1120,8 @@ process.stdin.on("end", () => {
     const uiP0 = sectionBetween(workflow, "  ui_p0:", "  playwright_visual:");
     const visual = sectionBetween(workflow, "  playwright_visual:", "  validate:");
 
-    expect(runners).toContain("runs-on: ubuntu-24.04");
+    expect(runners).toContain("|| 'nexu-runners-small'");
+    expect(runners).toContain("&& 'ubuntu-24.04'");
     expect(runners).toContain("runs_on: ${{ steps.runners.outputs.runs_on }}");
     expect(runners).toContain("decision: ${{ steps.runners.outputs.decision }}");
     expect(runners).toContain("python3 .github/scripts/runners.py");
@@ -1138,8 +1139,8 @@ process.stdin.on("end", () => {
     expect(e2eVitest).not.toContain('"od-persistent-ci"');
     expect(preflight).toContain("fromJSON(needs.runners.outputs.runs_on).general_medium");
     expect(preflight).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).general_medium)");
-    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0");
-    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_p0)");
+    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_hot");
+    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_hot)");
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
@@ -1235,25 +1236,17 @@ process.stdin.on("end", () => {
       "general_medium",
       "js_hot",
       "ui_hot",
-      "ui_p0",
       "visual_hot",
       "windows_tools",
       "workspace_unit",
     ]);
-    expect(defaultRunsOn.control).toEqual([
-      "self-hosted",
-      "Linux",
-      "X64",
-      "od-persistent-ci",
-      "od-ci-hot-poc",
-    ]);
-    expect(defaultRunsOn.general_medium).toEqual(["ubuntu-24.04"]);
-    expect(defaultRunsOn.workspace_unit).toEqual(["ubuntu-24.04"]);
+    expect(defaultRunsOn.control).toEqual(["nexu-runners-small"]);
+    expect(defaultRunsOn.general_medium).toEqual(["nexu-runners-small"]);
+    expect(defaultRunsOn.workspace_unit).toEqual(["nexu-runners-small"]);
     expect(defaultRunsOn.windows_tools).toEqual(["windows-latest"]);
-    expect(defaultRunsOn.js_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
-    expect(defaultRunsOn.ui_p0).toEqual(["nexu-runners-small"]);
-    expect(defaultRunsOn.ui_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
-    expect(defaultRunsOn.visual_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
+    expect(defaultRunsOn.js_hot).toEqual(["nexu-runners-small"]);
+    expect(defaultRunsOn.ui_hot).toEqual(["nexu-runners-small"]);
+    expect(defaultRunsOn.visual_hot).toEqual(["nexu-runners-small"]);
     expect(defaultProfiles).not.toHaveProperty("contabo_control");
     expect(defaultProfiles).not.toHaveProperty("hosted_or_blacksmith");
     expect(defaultProfiles).not.toHaveProperty("blacksmith_default");
@@ -1261,14 +1254,13 @@ process.stdin.on("end", () => {
     const performanceProfiles = await runRunners("performance");
     const performanceRunsOn = runnerRunsOn(performanceProfiles);
     expect(runnerDecision(performanceProfiles)).toEqual({ schema_version: 1, mode: "performance" });
-    expect(performanceRunsOn.control).toEqual(["ubuntu-24.04"]);
-    expect(performanceRunsOn.general_medium).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
-    expect(performanceRunsOn.workspace_unit).toEqual(["ubuntu-24.04"]);
+    expect(performanceRunsOn.control).toEqual(["nexu-runners-small"]);
+    expect(performanceRunsOn.general_medium).toEqual(["nexu-runners-small"]);
+    expect(performanceRunsOn.workspace_unit).toEqual(["nexu-runners-small"]);
     expect(performanceRunsOn.windows_tools).toEqual(["windows-latest"]);
-    expect(performanceRunsOn.js_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
-    expect(performanceRunsOn.ui_p0).toEqual(["nexu-runners-small"]);
-    expect(performanceRunsOn.ui_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
-    expect(performanceRunsOn.visual_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
+    expect(performanceRunsOn.js_hot).toEqual(["nexu-runners-small"]);
+    expect(performanceRunsOn.ui_hot).toEqual(["nexu-runners-small"]);
+    expect(performanceRunsOn.visual_hot).toEqual(["nexu-runners-small"]);
 
     const economicProfiles = await runRunners("economic");
     const economicRunsOn = runnerRunsOn(economicProfiles);
@@ -1278,7 +1270,6 @@ process.stdin.on("end", () => {
     expect(economicRunsOn.workspace_unit).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(economicRunsOn.js_hot).toEqual(["ubuntu-24.04"]);
-    expect(economicRunsOn.ui_p0).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.ui_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.visual_hot).toEqual(["ubuntu-24.04"]);
   });
