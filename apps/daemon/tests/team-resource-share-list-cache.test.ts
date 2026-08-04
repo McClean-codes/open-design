@@ -176,6 +176,46 @@ describe('team resource share /team listing', () => {
     ]);
   });
 
+  it('fans out a committed linked mutation only after its exact list cache is invalidated', async () => {
+    const order: string[] = [];
+    const service = {
+      async share() {
+        order.push('share');
+        return { version: 1 };
+      },
+      async unshare() {
+        order.push('unshare');
+        return true;
+      },
+    } as unknown as TeamResourceShareService;
+    const listTeam = Object.assign(
+      async () => ({ ids: [], resources: [] }),
+      { invalidate: () => { order.push('invalidate-resource-list'); } },
+    );
+    const req = await startServer({
+      basePath: 'design-systems',
+      share: service,
+      listTeam,
+      onMutationCommitted: (resourceId, requestScope, visibility) => {
+        order.push(`emit:${requestScope.principal.teamId}:${resourceId}:${visibility}`);
+      },
+    });
+
+    await expect(req.post('/api/workspace/design-systems/user%3Abrand/share'))
+      .resolves.toMatchObject({ status: 200, body: { shared: true } });
+    await expect(req.del('/api/workspace/design-systems/user%3Abrand/share'))
+      .resolves.toMatchObject({ status: 200, body: { unshared: true } });
+
+    expect(order).toEqual([
+      'share',
+      'invalidate-resource-list',
+      'emit:ws-1:user:brand:team',
+      'unshare',
+      'invalidate-resource-list',
+      'emit:ws-1:user:brand:personal',
+    ]);
+  });
+
   it.each([
     [400, 'WORKSPACE_CONTEXT_REQUIRED'],
     [403, 'WORKSPACE_ACCESS_DENIED'],

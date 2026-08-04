@@ -342,6 +342,10 @@ import {
   workspaceTeamDesignSystemBindingResourceId,
 } from './design-systems/workspace-team-binding.js';
 import { ownedDesignSystemSourceIsReady } from './design-systems/team-owner-materialization.js';
+import {
+  createDesignSystemBackingProjectPreparer,
+  createLinkedProjectTeamResourceShareService,
+} from './design-systems/team-project-share.js';
 import { prepareDesignTokenContractRebuild } from './design-systems/token-contract-rebuild.js';
 import { registerBrandRoutes } from './brand-routes.js';
 import {
@@ -5756,7 +5760,7 @@ export async function startServer({
     const { runVelaResourceCommand } = await import('./collab/vela-cli-resource-adapter.js');
     return runVelaResourceCommand(args, workspaceId);
   };
-  const designSystemsTeamShare = createTeamResourceShareService({
+  const designSystemsTeamResourceShare = createTeamResourceShareService({
     kind: 'design_system',
     idPrefix: 'ds',
     resolveDir: (id) => resolveUserDesignSystemShareDirectory(db, id),
@@ -5770,10 +5774,69 @@ export async function startServer({
     },
     run: runTeamResourceCommand,
   });
+  const designSystemBackingProjects = new Map<string, string>();
+  const designSystemBackingProjectKey = (
+    workspaceId: string,
+    resourceId: string,
+  ) => JSON.stringify([workspaceId, resourceId]);
+  const designSystemsTeamShare = createLinkedProjectTeamResourceShareService({
+    resource: designSystemsTeamResourceShare,
+    prepare: createDesignSystemBackingProjectPreparer({
+      resolveProjectId: async (resourceId) =>
+        (await listAllDesignSystems())
+          .find((candidate) => candidate.id === resourceId)
+          ?.projectId ?? null,
+      projectExists: (projectId) => Boolean(getProject(db, projectId)),
+      getProjectBinding: (projectId) =>
+        getWorkspaceProjectByProjectId(db, projectId),
+      publishProject: (projectId, scope) =>
+        collab.requestTeamShare(projectId, scope.principal),
+      unpublishProject: (projectId, scope) =>
+        collab.requestTeamUnshare(projectId, scope.principal),
+      persistVisibility: ({ projectId, scope, visibility }) =>
+        persistWorkspaceProjectVisibility({
+          projectId,
+          principal: scope.principal,
+          visibility,
+          ownerMemberId: scope.principal.memberId,
+          updatedByMemberId: scope.principal.memberId,
+        }),
+      onPrepared: ({ resourceId, projectId, scope }) => {
+        designSystemBackingProjects.set(
+          designSystemBackingProjectKey(scope.principal.teamId, resourceId),
+          projectId,
+        );
+      },
+    }),
+  });
   const designSystemsTeamList = cachedTeamResourceList(
     designSystemsTeamShare,
     syncSharedTeamDesignSystem,
   );
+  const notifyDesignSystemLinkedMutation = (
+    resourceId: string,
+    scope: TeamResourceRequestScope,
+    visibility: 'personal' | 'team',
+  ) => {
+    const workspaceId = scope.principal.teamId;
+    const key = designSystemBackingProjectKey(workspaceId, resourceId);
+    const projectId = designSystemBackingProjects.get(key);
+    // The linked service already persisted the backing project before it
+    // resolved. `emitTeamProjectsChanged` invalidates the exact Workspace's
+    // project catalogs before emitting; the resource route invalidates its
+    // own listing before it calls this helper.
+    emitTeamProjectsChanged(workspaceId, {
+      ...(projectId ? { projectId } : {}),
+      kind: 'catalog',
+    });
+    emitWorkspaceEvent(workspaceId, {
+      type: 'team-resources-changed',
+      resourceKind: 'design_system',
+      resourceId,
+      at: Date.now(),
+    });
+    if (visibility === 'personal') designSystemBackingProjects.delete(key);
+  };
   registerTeamResourceShareRoutes(app, {
     basePath: 'design-systems',
     resolveScope: resolveTeamResourceScope,
@@ -5791,6 +5854,7 @@ export async function startServer({
     syncSharedResource: syncSharedTeamDesignSystem,
     share: designSystemsTeamShare,
     listTeam: designSystemsTeamList,
+    onMutationCommitted: notifyDesignSystemLinkedMutation,
   });
   const pluginsTeamShare = createTeamResourceShareService({
     kind: 'plugin',
@@ -7239,11 +7303,17 @@ export async function startServer({
             code: 'WORKSPACE_ACCESS_DENIED',
           });
         }
-        return unshareIfCurrentlyShared(
+        const rememberedScope = rememberTeamResourceScope(scope);
+        const unshared = await unshareIfCurrentlyShared(
           designSystemsTeamShare,
           id,
-          rememberTeamResourceScope(scope),
+          rememberedScope,
         );
+        if (unshared) {
+          designSystemsTeamList.invalidate(rememberedScope);
+          notifyDesignSystemLinkedMutation(id, rememberedScope, 'personal');
+        }
+        return unshared;
       },
       ensureUserDesignSystemWorkspaceProject,
       listAllDesignSystems,

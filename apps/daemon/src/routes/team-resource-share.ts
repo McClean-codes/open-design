@@ -55,6 +55,16 @@ export interface RegisterTeamResourceShareRoutesDeps {
   listTeam?: ((scope: TeamResourceRequestScope) => Promise<TeamResourceShareListing>) & {
     invalidate?: (scope: TeamResourceRequestScope) => void;
   };
+  /**
+   * Local fan-out after the authoritative mutation and the list-cache
+   * invalidation have both completed. Linked resources use this to invalidate
+   * every projection before the success response escapes.
+   */
+  onMutationCommitted?: (
+    resourceId: string,
+    scope: TeamResourceRequestScope,
+    visibility: 'personal' | 'team',
+  ) => void;
 }
 
 /**
@@ -141,6 +151,7 @@ export function registerTeamResourceShareRoutes(
       // freshMs, or worse, the client's slower background poll once SSE
       // lowers its cadence.
       invalidateListTeam(scope);
+      deps.onMutationCommitted?.(id, scope, 'team');
       res.json({ shared: true, version: result.version });
     } catch (error) {
       if (error instanceof TeamResourceShareForbiddenError) {
@@ -159,7 +170,10 @@ export function registerTeamResourceShareRoutes(
     if (!scope) return;
     try {
       const unshared = await share.unshare(id, scope);
-      if (unshared) invalidateListTeam(scope);
+      if (unshared) {
+        invalidateListTeam(scope);
+        deps.onMutationCommitted?.(id, scope, 'personal');
+      }
       res.json({ unshared });
     } catch (error) {
       if (error instanceof TeamResourceShareForbiddenError) {
