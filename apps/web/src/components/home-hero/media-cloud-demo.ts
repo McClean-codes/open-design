@@ -23,6 +23,7 @@ export interface MediaCloudDemoValue {
   resolution: string;
   aspect: string;
   duration: number;
+  quantity: number;
   generateAudio: boolean;
 }
 
@@ -212,6 +213,7 @@ export function defaultMediaCloudDemoValue(
     resolution: model.resolutions[0]!,
     aspect: surface === 'video' ? '16:9' : '1:1',
     duration: model.durations?.[0] ?? 5,
+    quantity: 1,
     generateAudio: false,
   };
 }
@@ -229,6 +231,7 @@ export function mediaCloudDemoPriceUsd(input: {
   modelId: string;
   resolution: string;
   duration?: number;
+  quantity?: number;
   generateAudio?: boolean;
 }): number | null {
   if (input.mode !== 'cloud') return null;
@@ -238,11 +241,12 @@ export function mediaCloudDemoPriceUsd(input: {
     ? model.audioPriceUsd?.[input.resolution] ?? model.basePriceUsd[input.resolution]
     : model.basePriceUsd[input.resolution];
   if (base == null) return null;
-  if (input.surface === 'image') return base;
+  const quantity = Math.max(1, Math.min(4, Math.floor(input.quantity ?? 1)));
+  if (input.surface === 'image') return base * quantity;
   const duration = model.durations?.includes(input.duration ?? 5)
     ? input.duration ?? 5
     : model.durations?.[0] ?? 5;
-  return base * (duration / 5);
+  return base * (duration / 5) * quantity;
 }
 
 export function formatMediaCloudDemoUsd(value: number): string {

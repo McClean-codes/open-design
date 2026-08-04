@@ -96,6 +96,7 @@ export function MediaCloudModelDemoPicker({
       resolution: nextModel.resolutions[0]!,
       aspect: surface === 'video' ? '16:9' : '1:1',
       duration: nextModel.durations?.[0] ?? 5,
+      quantity: value.quantity,
       generateAudio: value.generateAudio,
     });
     onOpenChange(false);
@@ -227,6 +228,7 @@ export function MediaCloudSpecDemoPanel({ surface, value, onChange }: ChangeProp
   const resolutionOptions = model.resolutions;
   const aspectOptions = model.aspects;
   const durationOptions = model.durations ?? [5];
+  const quantityOptions = [1, 2, 3, 4];
 
   return (
     <section
@@ -272,40 +274,58 @@ export function MediaCloudSpecDemoPanel({ surface, value, onChange }: ChangeProp
         </div>
 
         {surface === 'video' ? (
-          <>
-            <div className={styles.field}>
-              <span>Duration</span>
-              <CustomSelect
-                key={`${surface}:duration`}
-                ariaLabel="Duration"
-                value={String(durationOptions.includes(value.duration) ? value.duration : durationOptions[0])}
-                options={durationOptions.map((duration) => ({
-                  value: String(duration),
-                  label: `${duration} seconds`,
-                }))}
-                onChange={(duration) => onChange({ ...value, duration: Number(duration) })}
-                triggerClassName={styles.fieldSelectTrigger}
-                menuClassName={styles.fieldSelectMenu}
-                portal={false}
-              />
-            </div>
-            <div className={styles.field}>
-              <span>Audio</span>
-              <CustomSelect
-                key={`${surface}:audio`}
-                ariaLabel="Audio"
-                value={value.generateAudio ? 'on' : 'off'}
-                options={[
-                  { value: 'off', label: 'Off' },
-                  { value: 'on', label: 'On' },
-                ]}
-                onChange={(audio) => onChange({ ...value, generateAudio: audio === 'on' })}
-                triggerClassName={styles.fieldSelectTrigger}
-                menuClassName={styles.fieldSelectMenu}
-                portal={false}
-              />
-            </div>
-          </>
+          <div className={styles.field}>
+            <span>Duration</span>
+            <CustomSelect
+              key={`${surface}:duration`}
+              ariaLabel="Duration"
+              value={String(durationOptions.includes(value.duration) ? value.duration : durationOptions[0])}
+              options={durationOptions.map((duration) => ({
+                value: String(duration),
+                label: `${duration} seconds`,
+              }))}
+              onChange={(duration) => onChange({ ...value, duration: Number(duration) })}
+              triggerClassName={styles.fieldSelectTrigger}
+              menuClassName={styles.fieldSelectMenu}
+              portal={false}
+            />
+          </div>
+        ) : null}
+
+        <div className={styles.field}>
+          <span>Quantity</span>
+          <CustomSelect
+            key={`${surface}:quantity`}
+            ariaLabel="Quantity"
+            value={String(quantityOptions.includes(value.quantity) ? value.quantity : 1)}
+            options={quantityOptions.map((quantity) => ({
+              value: String(quantity),
+              label: formatQuantity(surface, quantity),
+            }))}
+            onChange={(quantity) => onChange({ ...value, quantity: Number(quantity) })}
+            triggerClassName={styles.fieldSelectTrigger}
+            menuClassName={styles.fieldSelectMenu}
+            portal={false}
+          />
+        </div>
+
+        {surface === 'video' ? (
+          <div className={styles.field}>
+            <span>Audio</span>
+            <CustomSelect
+              key={`${surface}:audio`}
+              ariaLabel="Audio"
+              value={value.generateAudio ? 'on' : 'off'}
+              options={[
+                { value: 'off', label: 'Off' },
+                { value: 'on', label: 'On' },
+              ]}
+              onChange={(audio) => onChange({ ...value, generateAudio: audio === 'on' })}
+              triggerClassName={styles.fieldSelectTrigger}
+              menuClassName={styles.fieldSelectMenu}
+              portal={false}
+            />
+          </div>
         ) : null}
       </div>
     </section>
@@ -380,4 +400,9 @@ function ModelMark({ model }: { model: MediaCloudDemoModel }) {
 
 function formatResolution(value: string): string {
   return value.endsWith('k') ? value.toUpperCase() : value;
+}
+
+function formatQuantity(surface: MediaCloudDemoSurface, quantity: number): string {
+  const unit = surface === 'image' ? 'image' : 'video';
+  return `${quantity} ${unit}${quantity === 1 ? '' : 's'}`;
 }

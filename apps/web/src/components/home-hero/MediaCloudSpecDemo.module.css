@@ -16,11 +16,11 @@
 }
 
 .panelImage {
-  width: min(286px, calc(100vw - 24px));
+  width: min(408px, calc(100vw - 24px));
 }
 
 .panelVideo {
-  width: min(520px, calc(100vw - 24px));
+  width: min(620px, calc(100vw - 24px));
 }
 
 .settingsPicker {
@@ -40,11 +40,11 @@
 }
 
 .fieldsImage {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .fieldsVideo {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .field {

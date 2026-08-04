@@ -136,6 +136,10 @@ describe('HomeView media composer options', () => {
     const imageResolution = screen.getByRole('combobox', { name: 'Resolution: 2K' });
     expect(imageResolution).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Ratio: 1:1' })).toBeTruthy();
+    const imageQuantity = screen.getByRole('combobox', { name: 'Quantity: 1 image' });
+    fireEvent.click(imageQuantity);
+    fireEvent.click(screen.getByRole('option', { name: '4 images' }));
+    expect(screen.getByRole('combobox', { name: 'Quantity: 4 images' })).toBeTruthy();
     expect(screen.queryByRole('combobox', { name: 'Duration: 5 seconds' })).toBeNull();
     expect(screen.getByTestId('media-cloud-spec-demo-panel')).not.toHaveTextContent('~$0.04');
     expect(screen.getByTestId('media-cloud-spec-demo-panel')).not.toHaveTextContent('Hosted');
@@ -156,6 +160,7 @@ describe('HomeView media composer options', () => {
     expect(screen.getByRole('button', { name: 'video model: Seedance 2.5' })).toBeTruthy();
     const videoDuration = screen.getByRole('combobox', { name: 'Duration: 5 seconds' });
     expect(videoDuration).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: 'Quantity: 1 video' })).toBeTruthy();
     const videoAudio = screen.getByRole('combobox', { name: 'Audio: Off' });
     expect(videoAudio).toBeTruthy();
     fireEvent.click(videoAudio);
@@ -248,7 +253,7 @@ describe('HomeView media composer options', () => {
       expect(summary.className).toContain('od-tooltip');
       expect(summary.getAttribute('data-tooltip')).toBe('Multi-shot video with native audio and voice control');
     });
-    const hoverPrice = within(kling).getByText('~$0.63');
+    const hoverPrice = within(kling).getByText('~$0.63 / 5 sec');
     expect(hoverPrice).toBeTruthy();
     expect(hoverPrice.parentElement?.className).toContain('modelOptionTop');
 

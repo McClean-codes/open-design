@@ -44,6 +44,24 @@ describe('media cloud review pricing', () => {
     })).toBe(1.26);
   });
 
+  it('scales image and video prices by output quantity', () => {
+    expect(mediaCloudDemoPriceUsd({
+      surface: 'image',
+      mode: 'cloud',
+      modelId: 'cloud/seedream-5-lite',
+      resolution: '2k',
+      quantity: 4,
+    })).toBe(0.14);
+    expect(mediaCloudDemoPriceUsd({
+      surface: 'video',
+      mode: 'cloud',
+      modelId: 'cloud/kling-3-standard',
+      resolution: '1080p',
+      duration: 10,
+      quantity: 3,
+    })).toBeCloseTo(2.52);
+  });
+
   it('shows no OpenDesign quote in BYOK mode', () => {
     const value = defaultMediaCloudDemoValue('image');
 
