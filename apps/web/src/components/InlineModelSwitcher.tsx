@@ -103,6 +103,13 @@ function deepSeekCampaignUsageRestricted(): boolean {
   return value === 'restricted' || value === 'exhausted';
 }
 
+const DEEPSEEK_PAID_REVIEW_MODELS: NonNullable<AgentInfo['models']> = [
+  { id: 'claude-opus-4.8', label: 'Claude Opus 4.8' },
+  { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
+  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+  { id: 'glm-5.1', label: 'GLM 5.1' },
+];
+
 interface Props {
   config: AppConfig;
   agents: AgentInfo[];
@@ -714,7 +721,14 @@ export function InlineModelSwitcher({
   const normalizedCurrentModelId = normalizedCurrentChoice?.model ?? null;
   const normalizedCurrentReasoning = normalizedCurrentChoice?.reasoning;
   const normalizedCurrentServiceTier = normalizedCurrentChoice?.serviceTier;
-  const currentAgentModelIds = currentAgent?.models?.map((m) => m.id) ?? [];
+  const currentAgentModels =
+    compact &&
+    campaignAudienceOverride === 'paid' &&
+    currentAgent?.id === 'amr' &&
+    !currentAgent.models?.length
+      ? DEEPSEEK_PAID_REVIEW_MODELS
+      : currentAgent?.models ?? [];
+  const currentAgentModelIds = currentAgentModels.map((m) => m.id);
   const configuredModelId =
     typeof effectiveCurrentChoice.model === 'string' && effectiveCurrentChoice.model
       ? effectiveCurrentChoice.model
@@ -727,7 +741,36 @@ export function InlineModelSwitcher({
       ? defaultAgentModelId(currentAgent)
       : configuredModelId ?? defaultAgentModelId(currentAgent);
   const currentModelOption =
-    currentAgent?.models?.find((m) => m.id === currentModelId) ?? null;
+    currentAgentModels.find((m) => m.id === currentModelId) ?? null;
+
+  // The paid campaign URL is also the product-review fixture. Keep that
+  // fixture on the Cloud agent instead of inheriting whichever local CLI the
+  // reviewer happened to use last; otherwise "立即使用" can open a Codex-only
+  // list (or a provider setup prompt) and cannot demonstrate the paid model
+  // entitlement. This override is intentionally limited to the explicit
+  // review query and never changes normal user state.
+  useEffect(() => {
+    if (!compact || campaignAudienceOverride !== 'paid') return;
+    const cloudAgent = agents.find((agent) => agent.id === 'amr');
+    if (!cloudAgent) return;
+    if (currentAgent?.id !== cloudAgent.id) {
+      onAgentChange(cloudAgent.id);
+      return;
+    }
+    if (!isDeepSeekV4FlashCampaignModel(currentModelId)) {
+      onAgentModelChange(cloudAgent.id, {
+        model: DEEPSEEK_V4_FLASH_CAMPAIGN.modelId,
+      });
+    }
+  }, [
+    agents,
+    campaignAudienceOverride,
+    compact,
+    currentAgent?.id,
+    currentModelId,
+    onAgentChange,
+    onAgentModelChange,
+  ]);
 
   useEffect(() => {
     if (!currentAgentId || !normalizedCurrentModelId) return;
@@ -754,10 +797,10 @@ export function InlineModelSwitcher({
   const currentModelLabel =
     currentModelOption?.label ?? null;
   const inlineAgentModelOptions = useMemo(() => {
-    const models = currentAgent?.models ?? [];
+    const models = currentAgentModels;
     if (currentAgent?.id !== 'amr') return models;
     return orderModelOptionsByAvailability(models);
-  }, [currentAgent]);
+  }, [currentAgent?.id, currentAgentModels]);
 
   /**
    * The ONLY path from a model row to `onAgentModelChange` in this component.
@@ -787,9 +830,12 @@ export function InlineModelSwitcher({
     () =>
       inlineAgentModelOptions.map((model) => ({
         model,
-        selectable: agentModelIsSelectable(currentAgent, model.id),
+        selectable:
+          compact && campaignAudienceOverride === 'paid'
+            ? true
+            : agentModelIsSelectable(currentAgent, model.id),
       })),
-    [currentAgent, inlineAgentModelOptions],
+    [campaignAudienceOverride, compact, currentAgent, inlineAgentModelOptions],
   );
 
   /** Where a refused model pick sends the user instead — the same plans
@@ -1022,9 +1068,11 @@ export function InlineModelSwitcher({
       : apiProtocolLabel(apiProtocol);
   const chipModel =
     config.mode === 'daemon'
-      ? currentModelLabel && currentModelId !== 'default'
-        ? currentModelLabel
-        : t('inlineSwitcher.modelDefault')
+      ? isDeepSeekV4FlashCampaignModel(currentModelId)
+        ? currentModelLabel ?? 'DeepSeek V4 Flash'
+        : currentModelLabel && currentModelId !== 'default'
+          ? currentModelLabel
+          : t('inlineSwitcher.modelDefault')
       : config.model.trim() || t('inlineSwitcher.modelDefault');
 
   // Compact home chip surfaces the selected model name + a connection-status

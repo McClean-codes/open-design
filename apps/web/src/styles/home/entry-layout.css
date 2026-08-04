@@ -1051,6 +1051,47 @@
      scrollbar and shift the centered content sideways — that read as a jitter. */
   scrollbar-gutter: stable;
 }
+
+.entry-deepseek-campaign-badge {
+  position: fixed;
+  z-index: 34;
+  top: 18px;
+  right: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 7px 11px 7px 13px;
+  border: 1px solid color-mix(in srgb, #68f22e 54%, var(--line));
+  border-radius: 999px;
+  color: #205b16;
+  background: color-mix(in srgb, #68f22e 13%, var(--bg-panel));
+  box-shadow: 0 8px 24px rgb(43 176 53 / 12%);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1;
+  text-decoration: none;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.entry-deepseek-campaign-badge:hover {
+  border-color: color-mix(in srgb, #68f22e 76%, var(--line));
+  background: color-mix(in srgb, #68f22e 20%, var(--bg-panel));
+  transform: translateY(-1px);
+}
+
+.entry-deepseek-campaign-badge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .entry-deepseek-campaign-badge {
+    top: 12px;
+    right: 12px;
+    max-width: calc(100vw - 88px);
+  }
+}
 /* Frosted top edge: content scrolling up toward the (transparent) tab strip
    melts into a progressive blur instead of hard-clipping at the row
    boundary. The material token degrades it away under reduced transparency /

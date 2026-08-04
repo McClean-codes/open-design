@@ -120,22 +120,24 @@ const deepSeekCampaign = locale.startsWith('zh')
   ? {
       badge: '无限使用',
       headline: '这次，别省着用。DeepSeek V4 Flash 无限用。',
-      body: '8 月 8 日—8 月 14 日，一周免费用',
+      body: '8 月 6 日 20:00—8 月 13 日 20:00，一周免费用',
       windowLabel: '活动倒计时',
       windowValue: '7天 00:00:00',
       modelBenefit: 'DeepSeek V4 Flash 无限使用',
-      paidBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用',
-      teamBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用',
+      paidBenefitNote: '8 月 6 日 20:00—8 月 13 日 20:00 · 一周免费用',
+      teamBenefitNote: '8 月 6 日 20:00—8 月 13 日 20:00 · 一周免费用',
+      disclaimer: '套餐内的无限制模型额度与免费生成次数，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。',
     }
   : {
       badge: 'Unlimited',
       headline: 'Stop rationing. Use DeepSeek V4 Flash without limits.',
-      body: 'FREE all week, Aug 8—Aug 14',
+      body: 'FREE all week, Aug 6, 20:00—Aug 13, 20:00 (UTC+8)',
       windowLabel: 'Campaign countdown',
       windowValue: '7d 00:00:00',
       modelBenefit: 'Unlimited DeepSeek V4 Flash',
-      paidBenefitNote: 'Aug 8—Aug 14 · FREE all week',
-      teamBenefitNote: 'Aug 8—Aug 14 · FREE all week',
+      paidBenefitNote: 'Aug 6, 20:00—Aug 13, 20:00 (UTC+8) · FREE all week',
+      teamBenefitNote: 'Aug 6, 20:00—Aug 13, 20:00 (UTC+8) · FREE all week',
+      disclaimer: 'Unlimited model quota and free generations included in a plan are available only in open design, not through MCP, CLI, API, or other scenarios.',
     };
 
 // Vela's grant already includes the advertised Pro/Max uplift. The percentage
@@ -242,7 +244,7 @@ const jsonLd = [
   </nav>
 
   <article class="info-page pr-page" data-pricing-root data-audience="creator" data-interval="yearly">
-    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign" data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at="2026-08-08T00:00:00+08:00" data-campaign-end-at="2026-08-15T00:00:00+08:00">
+    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign" data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at="2026-08-06T20:00:00+08:00" data-campaign-end-at="2026-08-13T20:00:00+08:00">
       <span class="pr-campaign-badge">{deepSeekCampaign.badge}</span>
       <div class="pr-campaign-copy">
         <strong>{deepSeekCampaign.headline}</strong>
@@ -252,6 +254,11 @@ const jsonLd = [
         <span>{deepSeekCampaign.windowLabel}</span>
         <strong data-pricing-campaign-countdown>{deepSeekCampaign.windowValue}</strong>
       </div>
+      <p class="pr-campaign-disclaimer">
+        {locale.startsWith('zh') ? (
+          <>套餐内的<strong>无限制模型额度</strong>与<strong>免费生成次数</strong>，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。</>
+        ) : deepSeekCampaign.disclaimer}
+      </p>
     </aside>
     <header class="pr-hero">
       <h1 class="pr-hero-heading">{L.heroTitle}</h1>
@@ -1107,6 +1114,16 @@ const jsonLd = [
   .pr-campaign-copy { flex: 1; }
   .pr-campaign strong { font-size: 1rem; }
   .pr-campaign p { margin: 4px 0 0; color: var(--muted); font-size: .82rem; }
+  .pr-campaign .pr-campaign-disclaimer {
+    flex: 0 0 100%;
+    margin: 0;
+    padding-top: 10px;
+    border-top: 1px solid color-mix(in srgb, #68f22e 24%, var(--border));
+    color: var(--muted);
+    font-size: .72rem;
+    line-height: 1.5;
+  }
+  .pr-campaign .pr-campaign-disclaimer strong { font-size: inherit; font-weight: 760; }
   .pr-campaign-window { flex: 0 0 auto; display: grid; gap: 4px; text-align: right; }
   .pr-campaign-window > span { color: var(--muted); font-size: .7rem; }
   .pr-campaign-window strong {

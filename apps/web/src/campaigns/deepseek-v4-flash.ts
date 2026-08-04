@@ -2,28 +2,28 @@ export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
   id: 'deepseek-v4-flash-unlimited-2026',
   modelId: 'deepseek-v4-flash',
   window: {
-    startAt: '2026-08-08T00:00:00+08:00',
-    endAtExclusive: '2026-08-15T00:00:00+08:00',
-    label: '8 月 8 日—8 月 14 日',
+    startAt: '2026-08-06T20:00:00+08:00',
+    endAtExclusive: '2026-08-13T20:00:00+08:00',
+    label: '8 月 6 日 20:00—8 月 13 日 20:00',
   },
   headline: '这次，别省着用。DeepSeek V4 Flash 无限用。',
   description: '落地页、网站、幻灯片、图片，无限做，做到满意',
   badge: '无限使用',
   benefit: 'DeepSeek V4 Flash 无限使用',
-  timing: '8 月 8 日至 8 月 14 日，活动期间免费使用',
-  ruleSummary: '8 月 8 日至 8 月 14 日，付费用户可在产品内免费使用；大规模盗刷等违规行为将暂停活动权益。',
+  timing: '8 月 6 日 20:00 至 8 月 13 日 20:00，活动期间免费使用',
+  ruleSummary: '8 月 6 日 20:00 至 8 月 13 日 20:00，付费用户可在产品内免费使用；大规模盗刷等违规行为将暂停活动权益。',
   paid: {
     eyebrow: '7 天免费开放',
-    status: '已解锁 · 8 月 8 日—8 月 14 日',
+    status: '已解锁 · 8 月 6 日 20:00—8 月 13 日 20:00',
     cta: '立即使用',
     modelBadge: '无限使用',
   },
   unpaid: {
     eyebrow: '付费用户免费开放',
-    status: '升级后可用 · 截止 8 月 14 日',
+    status: '升级后可用 · 截止 8 月 13 日 20:00',
     cta: '升级套餐，立即使用',
     modelBadge: '升级可用',
-    tooltip: '活动窗口内订阅付费套餐后可用，统一于 8 月 15 日 00:00 结束。',
+    tooltip: '活动窗口内订阅付费套餐后可用，统一于 8 月 13 日 20:00 结束。',
   },
   restricted: {
     modelBadge: '已暂停',
@@ -64,8 +64,11 @@ export function formatDeepSeekV4FlashCampaignMockRemaining(remainingMs: number):
 export function formatDeepSeekV4FlashCampaignCountdown(now: number): string {
   const startAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
   const endAtExclusive = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
-  if (now < startAt) return `距开始 ${formatCampaignRemaining(startAt - now)}`;
-  if (now < endAtExclusive) return `活动剩余 ${formatCampaignRemaining(endAtExclusive - now)}`;
+  // The surrounding UI already labels this value as “活动倒计时”. Keep the
+  // value itself neutral so the review fixture never exposes a confusing
+  // pre-launch state such as “距开始 X 天”.
+  if (now < startAt) return formatCampaignRemaining(startAt - now);
+  if (now < endAtExclusive) return formatCampaignRemaining(endAtExclusive - now);
   return '活动已结束';
 }
 

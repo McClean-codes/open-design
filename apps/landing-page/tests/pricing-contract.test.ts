@@ -86,10 +86,12 @@ describe("pricing contract", () => {
     assert.match(page, /mockCampaignCountdownDurationMs = 7 \* 24 \* 60 \* 60 \* 1000/);
     assert.doesNotMatch(page, /距开始/);
     assert.match(page, /FREE all week/);
-    assert.match(page, /paidBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用'/);
-    assert.match(page, /teamBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用'/);
-    assert.match(page, /2026-08-08T00:00:00\+08:00/);
-    assert.match(page, /2026-08-15T00:00:00\+08:00/);
+    assert.match(page, /paidBenefitNote: '8 月 6 日 20:00—8 月 13 日 20:00 · 一周免费用'/);
+    assert.match(page, /teamBenefitNote: '8 月 6 日 20:00—8 月 13 日 20:00 · 一周免费用'/);
+    assert.match(page, /2026-08-06T20:00:00\+08:00/);
+    assert.match(page, /2026-08-13T20:00:00\+08:00/);
+    assert.match(page, /class="pr-campaign-disclaimer"/);
+    assert.match(page, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
     assert.doesNotMatch(page, /权益生效后连续 7 天/);
     assert.doesNotMatch(page, /2026-08-22T00:00:00\+08:00/);
     assert.doesNotMatch(page, /限时抢购/);

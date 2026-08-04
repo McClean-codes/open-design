@@ -35,7 +35,7 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the fixed window out of the primary headline and badge', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.headline).not.toContain('限时');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.badge).toBe('无限使用');
-    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).toContain('8 月 8 日至 8 月 14 日');
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).toContain('8 月 6 日 20:00 至 8 月 13 日 20:00');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).not.toContain('权益生效后');
   });
 
@@ -54,7 +54,7 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.cta).toContain('升级套餐');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge).toBe('无限使用');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge).toBe('升级可用');
-    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip).toContain('8 月 15 日 00:00');
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip).toContain('8 月 13 日 20:00');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.modelBadge).toBe('已暂停');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.tooltip).toContain('异常的大规模使用');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.boundary).toContain('不设个人免费额度');
@@ -95,8 +95,9 @@ describe('DeepSeek V4 Flash campaign', () => {
     const start = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
     const end = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
 
-    expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).toContain('距开始');
-    expect(formatDeepSeekV4FlashCampaignCountdown(start)).toContain('活动剩余');
+    expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).toBe('0天 00:00:01');
+    expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).not.toContain('距开始');
+    expect(formatDeepSeekV4FlashCampaignCountdown(start)).toBe('7天 00:00:00');
     expect(formatDeepSeekV4FlashCampaignCountdown(end)).toBe('活动已结束');
     expect(formatDeepSeekV4FlashCampaignMockRemaining(7 * 24 * 60 * 60 * 1000)).toBe(
       '7天 00:00:00',

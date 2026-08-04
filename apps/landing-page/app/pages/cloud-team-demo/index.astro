@@ -7,11 +7,17 @@ const benefits = [
   '自定义网站部署域名',
 ];
 
-const plans = [
+const teamPlans = [
   { name: 'Team Basic', original: '$5', price: '$3.50', saving: '年付省 30%', note: '基础团队协作，不含模型额度' },
   { name: 'Team Plus', original: '$25', price: '$17.50', saving: '年付省 30%', note: '小团队协作入门' },
   { name: 'Team Pro', original: '$105', price: '$63', saving: '年付省 40%', note: '常规项目协作', featured: true },
   { name: 'Team Max', original: '$205', price: '$100.63', saving: '年付省 51%', note: '高频生成与评审' },
+];
+
+const personalPlans = [
+  { name: 'Plus', original: '$20', price: '$14', saving: '年付省 30%', note: '个人创作入门' },
+  { name: 'Pro', original: '$100', price: '$60', saving: '年付省 40%', note: '高频创作与交付', featured: true },
+  { name: 'Max', original: '$200', price: '$98', saving: '年付省 51%', note: '专业级规模化生成' },
 ];
 ---
 
@@ -44,6 +50,7 @@ const plans = [
         <header>
           <button class="language">简</button>
           <button class="workspace-switcher">工作空间&nbsp;&nbsp; Huihua Zhang's workspace⌄</button>
+          <a class="campaign-corner-badge" href="/pricing/">DeepSeek V4无限免费用 <span>→</span></a>
         </header>
         <div class="workspace-content">
           <h1>成员</h1>
@@ -64,19 +71,25 @@ const plans = [
         <header class="modal-header">
           <div>
             <h2 id="upgrade-title">升级更高版本，获得更多模型额度</h2>
-            <p>团队版按席位按月计费，最少 3 席。</p>
+            <p data-modal-subtitle>团队版按席位按月计费，最少 3 席。</p>
           </div>
           <button class="close" aria-label="关闭">×</button>
         </header>
 
         <div class="modal-body">
-          <div class="billing-tabs" aria-label="计费周期">
-            <button>月付</button>
-            <button class="selected">年付</button>
+          <div class="modal-tabs">
+            <div class="audience-tabs" role="tablist" aria-label="套餐类型">
+              <button type="button" role="tab" data-audience-tab="personal" aria-selected="false">个人版</button>
+              <button type="button" class="selected" role="tab" data-audience-tab="team" aria-selected="true">团队版</button>
+            </div>
+            <div class="billing-tabs" aria-label="计费周期">
+              <button>月付</button>
+              <button class="selected">年付</button>
+            </div>
           </div>
 
           <div class="plan-area">
-            <div class="seat-selector">
+            <div class="seat-selector" data-team-only>
               <div>
                 <strong>席位数</strong>
                 <span>按年计费 · $2268/年 · 每年省 $1512</span>
@@ -85,9 +98,17 @@ const plans = [
               <div class="stepper"><button>−</button><b>3 席位</b><button>＋</button></div>
             </div>
 
-            <div class="plan-grid">
-              {plans.map((plan) => (
-                <article class:list={['plan-card', { featured: plan.featured }]}> 
+            <div class="personal-summary" data-personal-only hidden>
+              <div>
+                <strong>个人订阅</strong>
+                <span>按年付费可享最高 51% 优惠，模型额度按月发放。</span>
+              </div>
+              <em>DeepSeek V4 Flash 活动权益已包含</em>
+            </div>
+
+            <div class="plan-grid team-plan-grid" data-team-only>
+              {teamPlans.map((plan) => (
+                <article class:list={['plan-card', { featured: plan.featured }]}>
                   <div class="plan-title"><strong>{plan.name}</strong>{plan.featured && <span>推荐</span>}</div>
                   <div class="price-line"><del>{plan.original}</del><b>{plan.price}</b><small>/ 席 / 月</small></div>
                   <em>{plan.saving}</em>
@@ -96,25 +117,78 @@ const plans = [
               ))}
             </div>
 
-            <div class="benefits">
-              <p class="campaign-benefit">
-                <span>✓</span>
-                <strong>DeepSeek V4 Flash 无限使用</strong>
-                <small>8 月 8 日—8 月 14 日 · 付费团队成员免费使用</small>
-              </p>
+            <div class="plan-grid personal-plan-grid" data-personal-only hidden>
+              {personalPlans.map((plan) => (
+                <article class:list={['plan-card', { featured: plan.featured }]}>
+                  <div class="plan-title"><strong>{plan.name}</strong>{plan.featured && <span>推荐</span>}</div>
+                  <div class="price-line"><del>{plan.original}</del><b>{plan.price}</b><small>/ 月</small></div>
+                  <em>{plan.saving}</em>
+                  <p>{plan.note}</p>
+                </article>
+              ))}
+            </div>
+
+            <div class="campaign-banner">
+              <div class="campaign-benefit">
+                <span class="campaign-icon">✦</span>
+                <div>
+                  <small class="campaign-label">限时活动权益</small>
+                  <strong>DeepSeek V4 Flash 无限使用</strong>
+                  <span>8 月 6 日 20:00—8 月 13 日 20:00 · 个人与团队付费用户同步生效</span>
+                </div>
+                <b>7 天免费</b>
+              </div>
+              <p class="campaign-disclaimer">套餐内的<strong>无限制模型额度</strong>与<strong>免费生成次数</strong>，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。</p>
+            </div>
+
+            <div class="benefits" data-team-only>
               {benefits.map((benefit) => <p><span>✓</span>{benefit}</p>)}
+            </div>
+            <div class="benefits personal-benefits" data-personal-only hidden>
+              <p><span>✓</span>套餐模型额度按月发放</p>
+              <p><span>✓</span>落地页、网站、幻灯片与图片生成</p>
+              <p><span>✓</span>个人项目与设计资产统一管理</p>
+              <p><span>✓</span>自定义网站部署域名</p>
             </div>
           </div>
         </div>
 
         <footer class="modal-footer">
           <button class="secondary">暂不升级</button>
-          <button class="primary"><span>✦</span>升级 Team Pro</button>
+          <button class="primary"><span>✦</span><span data-upgrade-label>升级 Team Pro</span></button>
         </footer>
       </section>
     </main>
   </body>
 </html>
+
+<script>
+  const audienceTabs = document.querySelectorAll<HTMLButtonElement>('[data-audience-tab]');
+  const personalOnly = document.querySelectorAll<HTMLElement>('[data-personal-only]');
+  const teamOnly = document.querySelectorAll<HTMLElement>('[data-team-only]');
+  const upgradeLabel = document.querySelector<HTMLElement>('[data-upgrade-label]');
+  const modalSubtitle = document.querySelector<HTMLElement>('[data-modal-subtitle]');
+
+  function setAudience(audience: 'personal' | 'team') {
+    audienceTabs.forEach((tab) => {
+      const selected = tab.dataset.audienceTab === audience;
+      tab.classList.toggle('selected', selected);
+      tab.setAttribute('aria-selected', String(selected));
+    });
+    personalOnly.forEach((element) => { element.hidden = audience !== 'personal'; });
+    teamOnly.forEach((element) => { element.hidden = audience !== 'team'; });
+    if (upgradeLabel) upgradeLabel.textContent = audience === 'team' ? '升级 Team Pro' : '升级 Pro';
+    if (modalSubtitle) modalSubtitle.textContent = audience === 'team'
+      ? '团队版按席位按月计费，最少 3 席。'
+      : '个人版按月或按年订阅，模型额度按月发放。';
+  }
+
+  audienceTabs.forEach((tab) => {
+    tab.addEventListener('click', () => setAudience(tab.dataset.audienceTab === 'personal' ? 'personal' : 'team'));
+  });
+  const requestedAudience = new URLSearchParams(window.location.search).get('planAudience');
+  setAudience(requestedAudience === 'personal' ? 'personal' : 'team');
+</script>
 
 <style>
   :global(*) { box-sizing: border-box; }
@@ -132,6 +206,8 @@ const plans = [
   .sidebar-bottom { margin-top: auto; border-top: 1px solid #e3e5e1; padding-top: 14px; }
   .workspace { flex: 1; min-width: 0; background: #fff; }
   .workspace > header { height: 68px; border-bottom: 1px solid #eceeeb; display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 0 32px; }
+  .campaign-corner-badge { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid #9fe995; border-radius: 999px; background: linear-gradient(120deg, #efffec, #dcffd5); color: #176d24; text-decoration: none; font-size: 12px; font-weight: 750; box-shadow: 0 5px 16px rgba(43, 176, 53, .12); }
+  .campaign-corner-badge span { font-size: 14px; }
   .language, .workspace-switcher { border: 1px solid #e0e3de; background: #fff; border-radius: 8px; padding: 9px 13px; color: #4c504a; }
   .workspace-content { padding: 38px 46px; }
   h1 { font-size: 24px; margin: 0 0 25px; }
@@ -152,14 +228,21 @@ const plans = [
   .modal-header p { margin: 0; color: #73776f; font-size: 13px; }
   .close { border: 0; background: transparent; color: #626760; font-size: 22px; cursor: pointer; }
   .modal-body { display: grid; grid-template-columns: 108px 1fr; padding: 18px 24px 0; max-height: calc(100vh - 190px); overflow: auto; }
-  .billing-tabs { display: grid; align-content: start; gap: 7px; padding-right: 16px; }
-  .billing-tabs button { border: 0; border-radius: 7px; text-align: left; padding: 10px 12px; background: transparent; color: #555a53; }
-  .billing-tabs button.selected { background: #edf0eb; font-weight: 600; }
+  .modal-tabs { display: grid; align-content: start; gap: 15px; padding-right: 16px; }
+  .audience-tabs, .billing-tabs { display: grid; gap: 7px; }
+  .audience-tabs { padding-bottom: 14px; border-bottom: 1px solid #e5e8e2; }
+  .audience-tabs button, .billing-tabs button { border: 0; border-radius: 7px; text-align: left; padding: 10px 12px; background: transparent; color: #555a53; }
+  .audience-tabs button.selected, .billing-tabs button.selected { background: #edf0eb; font-weight: 650; color: #242822; }
   .seat-selector { border: 1px solid #dfe3dc; border-radius: 11px; padding: 14px 16px; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
   .seat-selector > div:first-child { display: grid; gap: 5px; }
   .seat-selector strong { font-size: 14px; }
   .seat-selector span { color: #6d726a; font-size: 12px; }
   .seat-selector em { color: #239f36; font-size: 12px; font-style: normal; font-weight: 600; }
+  .personal-summary { border: 1px solid #dfe3dc; border-radius: 11px; padding: 14px 16px; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+  .personal-summary > div { display: grid; gap: 5px; }
+  .personal-summary strong { font-size: 14px; }
+  .personal-summary span { color: #6d726a; font-size: 12px; }
+  .personal-summary em { color: #239f36; font-size: 12px; font-style: normal; font-weight: 650; text-align: right; }
   .stepper { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
   .stepper button { width: 30px; height: 30px; border-radius: 50%; background: #fff; border: 1px solid #dfe3dc; color: #6e746b; }
   .stepper b { font-size: 13px; }
@@ -175,12 +258,21 @@ const plans = [
   .plan-card > em { color: #209c33; font-style: normal; font-size: 11px; margin-top: 7px; font-weight: 600; }
   .plan-card > p { color: #72776f; font-size: 11px; margin: auto 0 0; }
   .plan-card:nth-child(4) { grid-column: auto; }
-  .benefits { padding: 15px 0 18px; }
+  .personal-plan-grid { grid-template-columns: repeat(3, 1fr); }
+  .campaign-banner { margin-top: 14px; border: 1px solid #a8e99d; border-radius: 12px; padding: 13px 14px 10px; background: radial-gradient(circle at 90% 10%, rgba(109, 240, 87, .2), transparent 34%), linear-gradient(135deg, #f4fff2, #e9ffe5); box-shadow: inset 0 0 0 1px rgba(83, 205, 65, .07); }
+  .campaign-benefit { display: grid; grid-template-columns: 34px 1fr auto; gap: 10px; align-items: center; }
+  .campaign-icon { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; color: #145f20; background: #bffcb5; font-weight: 800; }
+  .campaign-benefit > div { display: grid; gap: 2px; }
+  .campaign-benefit strong { font-size: 13px; font-weight: 760; color: #1a361d; }
+  .campaign-benefit > div > span { color: #58705a; font-size: 11px; }
+  .campaign-label { color: #228b31; font-size: 10px; font-weight: 700; }
+  .campaign-benefit > b { color: #1d7c2a; background: rgba(255,255,255,.72); border: 1px solid #a8e99d; border-radius: 999px; padding: 5px 8px; font-size: 10px; white-space: nowrap; }
+  .campaign-disclaimer { margin: 9px 0 0 44px; padding-top: 8px; border-top: 1px solid rgba(86, 179, 74, .2); color: #667166; font-size: 10px; line-height: 1.5; }
+  .campaign-disclaimer strong { color: #445045; font-weight: 700; }
+  .benefits { padding: 9px 0 18px; }
   .benefits > p { display: flex; align-items: center; gap: 8px; margin: 7px 0; font-size: 12px; color: #555a53; }
   .benefits > p span { color: #31362f; font-weight: 700; }
-  .benefits > p.campaign-benefit { font-size: 13px; color: #30342f; }
-  .campaign-benefit strong { font-weight: 650; }
-  .campaign-benefit small { color: #747970; font-size: 11px; font-weight: 400; }
+  [hidden] { display: none !important; }
   .modal-footer { border-top: 1px solid #e4e7e2; padding: 14px 24px; display: flex; justify-content: flex-end; gap: 10px; }
   .modal-footer button { border-radius: 20px; padding: 9px 18px; font-weight: 650; cursor: pointer; }
   .secondary { border: 1px solid #d8dcd5; color: #5e635b; background: #fff; }
@@ -189,9 +281,15 @@ const plans = [
   @media (max-width: 760px) {
     .sidebar { display: none; }
     .modal-body { grid-template-columns: 1fr; }
-    .billing-tabs { grid-template-columns: 1fr 1fr; padding: 0 0 12px; }
-    .billing-tabs button { text-align: center; }
+    .modal-tabs { padding: 0 0 12px; }
+    .audience-tabs, .billing-tabs { grid-template-columns: 1fr 1fr; }
+    .audience-tabs { padding-bottom: 8px; }
+    .audience-tabs button, .billing-tabs button { text-align: center; }
     .plan-grid { grid-template-columns: 1fr 1fr; }
+    .personal-plan-grid { grid-template-columns: 1fr; }
     .plan-card:nth-child(4) { grid-column: auto; }
+    .campaign-benefit { grid-template-columns: 34px 1fr; }
+    .campaign-benefit > b { grid-column: 2; justify-self: start; }
+    .campaign-disclaimer { margin-left: 0; }
   }
 </style>

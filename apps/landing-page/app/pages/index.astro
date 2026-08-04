@@ -121,14 +121,16 @@ const campaignCopy = locale.startsWith('zh')
   ? {
       badge: '活动倒计时',
       title: '这次，别省着用。DeepSeek V4 Flash 无限用。',
-      detail: '8 月 8 日—8 月 14 日，一周免费用',
+      detail: '8 月 6 日 20:00—8 月 13 日 20:00，一周免费用',
+      disclaimer: '套餐内的无限制模型额度与免费生成次数，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。',
       linkLabel: '查看活动权益',
       closeLabel: '关闭活动横幅',
     }
   : {
       badge: 'Campaign countdown',
       title: 'Stop rationing. Use DeepSeek V4 Flash without limits.',
-      detail: 'Aug 8—Aug 14 · FREE all week',
+      detail: 'Aug 6, 20:00—Aug 13, 20:00 (UTC+8) · FREE all week',
+      disclaimer: 'Unlimited model quota and free generations included in a plan are available only in open design, not through MCP, CLI, API, or other scenarios.',
       linkLabel: 'View campaign benefits',
       closeLabel: 'Dismiss campaign banner',
     };
@@ -229,7 +231,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
     <script is:inline type="application/ld+json" set:html={JSON.stringify(homepageGraph)} />
   </head>
   <body>
-    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at="2026-08-08T00:00:00+08:00" data-campaign-end-at="2026-08-15T00:00:00+08:00">
+    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at="2026-08-06T20:00:00+08:00" data-campaign-end-at="2026-08-13T20:00:00+08:00">
       <a class="home-campaign-banner__link" href={campaignPricingHref} aria-label={`${campaignCopy.title} · ${campaignCopy.linkLabel}`}>
         <span class="home-campaign-banner__badge" data-home-campaign-countdown>{campaignCopy.badge}</span>
         <span class="home-campaign-banner__divider" aria-hidden="true">|</span>
@@ -237,12 +239,17 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         <span class="home-campaign-banner__divider" aria-hidden="true">|</span>
         <span class="home-campaign-banner__detail">{campaignCopy.detail}</span>
         <span class="home-campaign-banner__cta" aria-hidden="true">→</span>
+        <span class="home-campaign-banner__disclaimer">
+          {locale.startsWith('zh') ? (
+            <>套餐内的<strong>无限制模型额度</strong>与<strong>免费生成次数</strong>，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。</>
+          ) : campaignCopy.disclaimer}
+        </span>
       </a>
       <button class="home-campaign-banner__close" type="button" aria-label={campaignCopy.closeLabel} data-home-campaign-close>×</button>
     </div>
     <Fragment set:html={pageHtml} />
     <style is:global>
-      :root { --home-campaign-banner-height: 44px; }
+      :root { --home-campaign-banner-height: 66px; }
       .home-campaign-banner {
         position: fixed;
         z-index: 70;
@@ -261,11 +268,13 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
       }
       .home-campaign-banner__link {
         display: flex;
+        align-content: center;
         align-items: center;
         justify-content: center;
+        flex-wrap: wrap;
         gap: 12px;
         min-height: var(--home-campaign-banner-height);
-        padding: 8px 64px 8px 24px;
+        padding: 8px 64px 7px 24px;
         color: inherit;
         text-decoration: none;
       }
@@ -283,6 +292,16 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
       }
       .home-campaign-banner__divider { color: color-mix(in srgb, var(--ink) 26%, transparent); }
       .home-campaign-banner__detail { color: var(--ink-mute); }
+      .home-campaign-banner__disclaimer {
+        flex: 0 0 100%;
+        order: 2;
+        margin-top: -5px;
+        color: color-mix(in srgb, var(--ink-mute) 90%, transparent);
+        font-size: 10px;
+        line-height: 1.2;
+        text-align: center;
+      }
+      .home-campaign-banner__disclaimer strong { font-weight: 750; }
       .home-campaign-banner__cta {
         flex: 0 0 auto;
         padding: 5px 10px;
@@ -318,12 +337,19 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
       html.home-campaign-banner-dismissed .home-campaign-banner { display: none; }
       .site-chrome { top: var(--home-campaign-banner-height); }
       @media (max-width: 680px) {
-        :root { --home-campaign-banner-height: 58px; }
+        :root { --home-campaign-banner-height: 82px; }
         .home-campaign-banner__link {
           justify-content: flex-start;
           gap: 8px;
           padding: 8px 48px 8px 14px;
           font-size: 12px;
+        }
+        .home-campaign-banner__disclaimer {
+          margin-top: -2px;
+          padding-right: 18px;
+          font-size: 9px;
+          line-height: 1.25;
+          text-align: left;
         }
         .home-campaign-banner__divider,
         .home-campaign-banner__detail { display: none; }

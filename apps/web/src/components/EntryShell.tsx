@@ -228,6 +228,9 @@ import {
 import { enterpriseUrl } from './enterpriseUrl';
 import { resolveByokModelPreference } from './byok/validation';
 
+const DEEPSEEK_CAMPAIGN_PRICING_URL =
+  'https://open-design.ai/zh/pricing/?source=desktop_campaign_badge';
+
 // Persist the entry nav-rail open/collapsed state so it survives both a
 // home -> project -> home navigation (EntryShell unmounts on the project
 // route) and a full reload. Without this the rail always reset to its
@@ -1493,6 +1496,19 @@ export function EntryShell({
               lives in the rail footer, and everything below is fixed-position
               or portalled so it occupies no layout space here. */}
           <WhatsNewPopup active={view === 'home'} />
+          {view === 'home' && deepSeekV4FlashCampaignAudience !== 'unknown' ? (
+            <a
+              className="entry-deepseek-campaign-badge"
+              href={DEEPSEEK_CAMPAIGN_PRICING_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label="DeepSeek V4 无限免费用，查看官网 Pricing"
+              data-testid="deepseek-campaign-pricing-badge"
+            >
+              <span>DeepSeek V4无限免费用</span>
+              <Icon name="arrow-right" size={13} />
+            </a>
+          ) : null}
           {amrBalanceGateBlock ? (
             <AmrBalanceDialog
               reason={amrBalanceGateBlock.reason}
