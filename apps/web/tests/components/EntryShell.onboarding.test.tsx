@@ -329,11 +329,18 @@ describe('EntryShell settings menu', () => {
 });
 
 describe('EntryShell design systems view', () => {
-  it('refreshes the design-system catalog when the view is active', async () => {
+  it('leaves workspace-scoped design-system activation to the mounted tab', async () => {
     const onDesignSystemsRefresh = vi.fn();
     renderHome({ onDesignSystemsRefresh }, '/design-systems');
 
-    await waitFor(() => expect(onDesignSystemsRefresh).toHaveBeenCalledTimes(1));
+    expect(await screen.findByTestId('entry-view-design-systems')).toHaveAttribute(
+      'data-active',
+      'true',
+    );
+    // DesignSystemsTab owns its Team SSE activation and fallback snapshot.
+    // Calling the App-level catalog refresh here as well creates a duplicate,
+    // differently-scoped request every time the route becomes active.
+    expect(onDesignSystemsRefresh).not.toHaveBeenCalled();
   });
 });
 

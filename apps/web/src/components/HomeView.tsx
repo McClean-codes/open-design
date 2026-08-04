@@ -743,6 +743,7 @@ export function HomeView({
   useEffect(() => {
     if (!desiredPluginCatalogKey) return;
     let cancelled = false;
+    let ownedPromise: Promise<void> | null = null;
     const issuedCatalogKey = desiredPluginCatalogKey;
     // On mount use the cache-aware loader (skips the network when warm); an
     // explicit plugins-changed event forces a fresh fetch.
@@ -767,6 +768,7 @@ export function HomeView({
         }
       });
       pluginCatalogReloadInFlightRef.current = { key: issuedCatalogKey, promise };
+      ownedPromise = promise;
       return promise;
     };
     pluginCatalogReloadRef.current = load;
@@ -781,6 +783,16 @@ export function HomeView({
     window.addEventListener('open-design:plugins-changed', onChanged);
     return () => {
       cancelled = true;
+      // A Workspace-directory refresh can briefly mask the catalog identity
+      // (K -> null -> K). Do not let the remounted K effect join this effect's
+      // cancelled promise: its response is intentionally prevented from
+      // committing, so reusing it would leave the new surface in the cold
+      // `pluginsLoading` state forever even though `/api/plugins` succeeded.
+      // A newer request has a different promise and must remain registered.
+      const inFlight = pluginCatalogReloadInFlightRef.current;
+      if (ownedPromise && inFlight?.promise === ownedPromise) {
+        pluginCatalogReloadInFlightRef.current = null;
+      }
       if (pluginCatalogReloadRef.current === load) {
         pluginCatalogReloadRef.current = async () => {};
       }

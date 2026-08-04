@@ -1635,6 +1635,10 @@ export async function installGeneratedPluginFolder(
   relativePath: string,
   workspaceContext?: WorkspaceCollabContext | null,
 ): Promise<PluginInstallOutcome> {
+  // Capture the account boundary before the request starts. If sign-in changes
+  // while the install is in flight, the successful response must evict the
+  // catalog that authorized this mutation, never the next account's cache.
+  const accountGeneration = currentWorkspaceAccountGeneration();
   try {
     const request: ProjectPluginFolderInstallRequest = { path: relativePath };
     const resp = await fetch(
@@ -1649,8 +1653,19 @@ export async function installGeneratedPluginFolder(
       },
     );
     const outcome = await readPluginInstallOutcome(resp);
-    if (outcome.ok && typeof window !== 'undefined') {
-      window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
+    if (outcome.ok) {
+      // The event refreshes mounted consumers, but it is not durable: Home may
+      // be unmounted or identity-masked while a project installs its generated
+      // plugin. Evict the exact warm partition first so a later mount cannot
+      // reuse the pre-install catalog for the full TTL. Other Workspaces stay
+      // warm and avoid an unrelated refresh/performance regression.
+      invalidatePluginCatalogCache({
+        workspaceContext: workspaceContext ?? null,
+        accountGeneration,
+      });
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('open-design:plugins-changed'));
+      }
     }
     return outcome;
   } catch (err) {

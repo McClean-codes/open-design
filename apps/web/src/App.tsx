@@ -2028,7 +2028,7 @@ function AppInner() {
         fetchDaemonConfig(),
         fetchComposioConfigFromDaemon(),
         fetchMediaProvidersFromDaemon(),
-      ]).then(([
+      ]).then(async ([
         daemonConfig,
         daemonComposioConfig,
         daemonMediaProvidersResult,
@@ -2064,6 +2064,24 @@ function AppInner() {
         if (!hasLocalComposioKey && daemonComposioConfig) {
           next.composio = daemonComposioConfig;
         }
+        // The Composio PUT treats an explicit empty apiKey as a destructive
+        // clear. Bootstrap used to issue that write unconditionally, which
+        // allowed the empty startup request to arrive after the user's first
+        // explicit Save and erase the freshly stored key (plus connector
+        // credentials). Startup only needs to write when migrating a legacy
+        // plaintext key. Keep the credentials surface locked until that one
+        // migration settles so an older key cannot race a user replacement.
+        if (hasLocalComposioKey) {
+          const migrated = await syncComposioConfigToDaemon(next.composio);
+          if (cancelled) return;
+          // Only remove the legacy plaintext after the daemon confirms it was
+          // stored. A failed migration deliberately leaves the existing local
+          // draft intact so the user can retry Save instead of losing the only
+          // remaining copy of the credential.
+          if (migrated) {
+            next.composio = normalizeSavedComposioConfig(next.composio);
+          }
+        }
         saveConfig(next);
         if (
           daemonMediaProvidersResult.status === 'ok'
@@ -2078,7 +2096,6 @@ function AppInner() {
         // endpoint. If daemon already had values the merge above used them;
         // writing back is idempotent and keeps both sides in sync.
         void syncConfigToDaemon(next);
-        void syncComposioConfigToDaemon(next.composio);
         latestPersistedConfigRef.current = next;
         setConfig(next);
 

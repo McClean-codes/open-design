@@ -5318,8 +5318,24 @@ describe('SettingsDialog pets interactions', () => {
 });
 
 describe('IntegrationsView skills tab', () => {
+  beforeEach(() => {
+    // SkillsSection deliberately waits for an authoritative Workspace answer
+    // before reading a catalog. These filter tests exercise the legal
+    // signed-out/headerless path, so terminate that boundary explicitly rather
+    // than letting jsdom's relative fetch fail into `unavailable` (which must
+    // remain fail-closed).
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspace/directory')) {
+        return workspaceDirectoryResponse(null);
+      }
+      throw new Error(`Unexpected IntegrationsView request: ${url}`);
+    }));
+  });
+
   afterEach(() => {
     cleanup();
+    vi.unstubAllGlobals();
   });
 
   it('lists functional skills and filters them by mode + search', async () => {

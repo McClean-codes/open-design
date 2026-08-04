@@ -281,6 +281,71 @@ describe('HomeView workspace-scoped plugin catalog', () => {
     expect(projectCreates).toHaveLength(0);
   });
 
+  it('restarts a cold plugin read after a transient identity mask instead of joining the cancelled request', async () => {
+    const firstRead = deferred<Response>();
+    const recoveredRead = deferred<Response>();
+    let pluginReads = 0;
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === '/api/plugins') {
+        pluginReads += 1;
+        return pluginReads === 1 ? firstRead.promise : recoveredRead.promise;
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } });
+    }));
+
+    workspaceMock.state = {
+      context: null,
+      loading: false,
+      identityChangePending: false,
+      failure: undefined,
+    };
+    const view = renderHome();
+    await waitFor(() => expect(pluginReads).toBe(1));
+
+    workspaceMock.state = {
+      ...workspaceMock.state,
+      identityChangePending: true,
+    };
+    view.rerender(
+      <HomeView
+        projects={[]}
+        onSubmit={() => undefined}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+    expect(screen.getByTestId('plugin-catalog').textContent).toBe('loading');
+
+    workspaceMock.state = {
+      ...workspaceMock.state,
+      identityChangePending: false,
+    };
+    view.rerender(
+      <HomeView
+        projects={[]}
+        onSubmit={() => undefined}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+
+    await waitFor(() => expect(pluginReads).toBe(2));
+    recoveredRead.resolve(new Response(JSON.stringify({ plugins: [plugin('recovered-plugin')] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    await waitFor(() => {
+      expect(screen.getByTestId('plugin-catalog').textContent).toBe('recovered-plugin');
+    });
+
+    firstRead.resolve(new Response(JSON.stringify({ plugins: [plugin('cancelled-plugin')] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+    await act(async () => Promise.resolve());
+    expect(screen.getByTestId('plugin-catalog').textContent).toBe('recovered-plugin');
+  });
+
   it('does not reuse a warm catalog across accounts with identical workspace fields', async () => {
     let requestCount = 0;
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (input) => {

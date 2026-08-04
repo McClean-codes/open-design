@@ -1806,7 +1806,7 @@ test('[P0] @critical project detail composer opens Execution settings where BYOK
   test.setTimeout(60_000);
   let config = {
     mode: 'daemon',
-    apiKey: 'test-byok-key',
+    apiKey: 'sk-openai-test',
     apiProtocol: 'openai',
     apiVersion: '',
     baseUrl: 'https://api.openai.com/v1',

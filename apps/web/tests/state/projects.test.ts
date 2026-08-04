@@ -1050,6 +1050,66 @@ describe('installGeneratedPluginFolder', () => {
     expect(dispatchEvent).toHaveBeenCalled();
   });
 
+  it('evicts only the installed plugin Workspace catalog even when no listener is mounted', async () => {
+    const dispatchEvent = vi.fn();
+    vi.stubGlobal('window', { dispatchEvent });
+    const workspaceA = teamWorkspaceContext({
+      workspaceId: 'workspace-install-a',
+      workspaceMemberId: 'member-install-a',
+    });
+    const workspaceB = teamWorkspaceContext({
+      workspaceId: 'workspace-install-b',
+      workspaceMemberId: 'member-install-b',
+    });
+    let installed = false;
+    const pluginReads: string[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = String(input);
+      if (url.endsWith('/plugins/install-folder')) {
+        installed = true;
+        return Response.json({
+          ok: true,
+          plugin: { id: 'generated-plugin', title: 'Generated Plugin' },
+          warnings: [],
+          message: 'Installed Generated Plugin.',
+          log: [],
+        });
+      }
+      const workspaceId = new Headers(init?.headers).get('x-od-workspace-id') ?? 'unscoped';
+      pluginReads.push(workspaceId);
+      return Response.json({
+        plugins: [{
+          id: `${workspaceId}:${installed ? 'after-install' : 'before-install'}`,
+          manifest: {},
+        }],
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const optionsA = { workspaceContext: workspaceA };
+    const optionsB = { workspaceContext: workspaceB };
+    expect((await listPluginsFresh(optionsA))[0]?.id).toContain('before-install');
+    const cachedB = await listPluginsFresh(optionsB);
+
+    const outcome = await installGeneratedPluginFolder(
+      'project-1',
+      'generated-plugin',
+      workspaceA,
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect((await listPluginsFresh(optionsA))[0]?.id).toBe(
+      'workspace-install-a:after-install',
+    );
+    expect(await listPluginsFresh(optionsB)).toEqual(cachedB);
+    expect(pluginReads).toEqual([
+      'workspace-install-a',
+      'workspace-install-b',
+      'workspace-install-a',
+    ]);
+    expect(dispatchEvent).toHaveBeenCalledTimes(1);
+  });
+
   it('preserves install diagnostics from non-2xx project folder responses', async () => {
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(
       JSON.stringify({
