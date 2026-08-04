@@ -32,6 +32,7 @@ import type { DesignSystemSummary } from '../../src/design-systems/index.js';
 import { closeDatabase, openDatabase } from '../../src/db.js';
 import {
   createTeamResourceShareService,
+  TeamResourceAuthorityUnavailableError,
   unshareIfCurrentlyShared,
   type TeamResourceRequestScope,
 } from '../../src/collab/team-resource-share.js';
@@ -300,5 +301,30 @@ describe('DELETE /api/design-systems/:id unshares from the team hub first', () =
     // The hub entry survives untouched — the abort really stopped the whole
     // chain, not just the local delete.
     expect(hub.resources.has('ds-t-1-user-my-brand')).toBe(true);
+  });
+
+  it('returns retryable 503 and preserves the local system when Team authority is unavailable', async () => {
+    const hub = fakeHub();
+    const app = express();
+    app.use(express.json());
+    const { deleteUserDesignSystem } = registerRoutes(app, {
+      hub,
+      unshareTeamDesignSystemIfShared: async () => {
+        throw new TeamResourceAuthorityUnavailableError(new Error('hub offline'));
+      },
+    });
+    const baseUrl = await listen(app);
+
+    const res = await fetch(`${baseUrl}/api/design-systems/user:my-brand`, {
+      method: 'DELETE',
+    });
+
+    expect(res.status).toBe(503);
+    await expect(res.json()).resolves.toEqual({
+      error: 'WORKSPACE_RESOURCE_AUTHORITY_UNAVAILABLE',
+      message: 'team resource authority is temporarily unavailable',
+      retryable: true,
+    });
+    expect(deleteUserDesignSystem).not.toHaveBeenCalled();
   });
 });

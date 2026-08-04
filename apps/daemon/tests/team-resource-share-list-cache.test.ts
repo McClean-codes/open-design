@@ -9,6 +9,7 @@ import type {
   TeamResourceShareRecord,
   TeamResourceShareService,
 } from '../src/collab/team-resource-share.js';
+import { TeamResourceAuthorityUnavailableError } from '../src/collab/team-resource-share.js';
 
 let server: http.Server | null = null;
 const SCOPE: TeamResourceRequestScope = {
@@ -102,6 +103,27 @@ const record = (id: string): TeamResourceShareRecord =>
   ({ id, localId: id, version: 1 }) as unknown as TeamResourceShareRecord;
 
 describe('team resource share /team listing', () => {
+  it('returns retryable 503 when unshare cannot read the authoritative Team index', async () => {
+    const service = {
+      async unshare() {
+        throw new TeamResourceAuthorityUnavailableError(new Error('hub offline'));
+      },
+    } as unknown as TeamResourceShareService;
+    const req = await startServer({
+      basePath: 'design-systems',
+      share: service,
+    });
+
+    const response = await req.del('/api/workspace/design-systems/user%3Abrand/share');
+
+    expect(response.status).toBe(503);
+    expect(response.body).toEqual({
+      error: 'WORKSPACE_RESOURCE_AUTHORITY_UNAVAILABLE',
+      message: 'team resource authority is temporarily unavailable',
+      retryable: true,
+    });
+  });
+
   it('rejects a share when the resource-owner gate denies it', async () => {
     let shareCalls = 0;
     const service = {

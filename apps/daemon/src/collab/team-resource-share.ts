@@ -27,6 +27,23 @@ export class TeamResourceShareForbiddenError extends Error {
   }
 }
 
+/**
+ * Thrown when an operation requires a live Team hub read but the authority
+ * cannot be reached. Callers must distinguish this from an authoritative
+ * empty list: retrying is safe, while proceeding from a cached fallback is
+ * not.
+ */
+export class TeamResourceAuthorityUnavailableError extends Error {
+  readonly status = 503;
+  readonly code = 'WORKSPACE_RESOURCE_AUTHORITY_UNAVAILABLE';
+  readonly retryable = true;
+
+  constructor(cause?: unknown) {
+    super('team resource authority is temporarily unavailable', { cause });
+    this.name = 'TeamResourceAuthorityUnavailableError';
+  }
+}
+
 export interface TeamResourceShareRecord {
   id: string;
   hubResourceId?: string;
@@ -281,10 +298,15 @@ export async function unshareIfCurrentlyShared(
   resourceId: string,
   scope: TeamResourceRequestScope,
 ): Promise<boolean> {
-  const resources = await service.sharedResources(scope);
+  let resources: TeamResourceShareRecord[];
+  try {
+    resources = await service.sharedResources(scope, { authoritative: true });
+  } catch (error) {
+    if (error instanceof TeamResourceAuthorityUnavailableError) throw error;
+    throw new TeamResourceAuthorityUnavailableError(error);
+  }
   if (!resources.some((resource) => resource.id === resourceId)) return false;
-  await service.unshare(resourceId, scope);
-  return true;
+  return service.unshare(resourceId, scope);
 }
 
 interface SharedResourceListPayload {

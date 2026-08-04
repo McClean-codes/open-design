@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import {
+  TeamResourceAuthorityUnavailableError,
   TeamResourceShareForbiddenError,
   type TeamResourceRequestScope,
   type TeamResourceShareRecord,
@@ -178,6 +179,13 @@ export function registerTeamResourceShareRoutes(
     } catch (error) {
       if (error instanceof TeamResourceShareForbiddenError) {
         return res.status(403).json({ error: 'WORKSPACE_RESOURCE_UNSHARE_DENIED' });
+      }
+      if (error instanceof TeamResourceAuthorityUnavailableError) {
+        return res.status(503).json({
+          error: error.code,
+          message: error.message,
+          retryable: true,
+        });
       }
       res.status(500).json({ error: error instanceof Error ? error.message : 'unshare failed' });
     }

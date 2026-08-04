@@ -4,6 +4,7 @@ import {
   createLinkedProjectTeamResourceShareService,
 } from '../../src/design-systems/team-project-share.js';
 import {
+  TeamResourceAuthorityUnavailableError,
   TeamResourceShareForbiddenError,
   type TeamResourceRequestScope,
   type TeamResourceShareService,
@@ -31,6 +32,10 @@ function fixture() {
   let failNextProjectShare = false;
   let projectUnshareFailuresRemaining = 0;
   let failNextProjectPersist = false;
+  let authoritativeShared: Set<string> | null = null;
+  let authoritativeReadError: Error | null = null;
+  let authoritativeCanUnshare = true;
+  let projectCreatorMemberId: string | null = 'member-owner';
 
   const resource: TeamResourceShareService = {
     configured: true,
@@ -52,7 +57,12 @@ function fixture() {
     async sharedIds() {
       return [...shared];
     },
-    async sharedResources() {
+    async sharedResources(_scope, readOptions) {
+      if (readOptions?.authoritative) {
+        if (authoritativeReadError) throw authoritativeReadError;
+        return [...(authoritativeShared ?? shared)]
+          .map((id) => ({ id, canUnshare: authoritativeCanUnshare }));
+      }
       return [...shared].map((id) => ({ id, canUnshare: true }));
     },
     isShared(resourceId) {
@@ -67,7 +77,7 @@ function fixture() {
     projectExists: (projectId) => projectVisibility.has(projectId),
     getProjectBinding: () => ({
       workspaceId: 'ws-a',
-      createdByWorkspaceMemberId: 'member-owner',
+      createdByWorkspaceMemberId: projectCreatorMemberId,
     }),
     async publishProject(projectId) {
       calls.push(`project:team:${projectId}`);
@@ -106,6 +116,18 @@ function fixture() {
     failNextProjectShare: () => { failNextProjectShare = true; },
     failNextProjectUnshare: () => { projectUnshareFailuresRemaining = 1; },
     failNextProjectPersist: () => { failNextProjectPersist = true; },
+    setAuthoritativeShared: (ids: string[]) => {
+      authoritativeShared = new Set(ids);
+    },
+    failAuthoritativeRead: () => {
+      authoritativeReadError = new Error('authoritative hub unavailable');
+    },
+    denyAuthoritativeUnshare: () => {
+      authoritativeCanUnshare = false;
+    },
+    clearProjectCreator: () => {
+      projectCreatorMemberId = null;
+    },
   };
 }
 
@@ -264,13 +286,81 @@ describe('design-system team share linked backing project', () => {
     const f = fixture();
     await f.service.share('user:brand', scope());
     f.calls.length = 0;
-    f.service.sharedResources = async () => [{ id: 'user:brand', canUnshare: false }];
+    f.denyAuthoritativeUnshare();
 
     await expect(f.service.unshare('user:brand', scope()))
       .rejects.toBeInstanceOf(TeamResourceShareForbiddenError);
 
     expect(f.projectVisibility.get('project-brand')).toBe('team');
     expect(f.calls).toEqual([]);
+  });
+
+  it('treats an authoritative empty list as an idempotent unshare without touching the project', async () => {
+    const f = fixture();
+    await f.service.share('user:brand', scope());
+    f.calls.length = 0;
+    f.setAuthoritativeShared([]);
+
+    await expect(f.service.unshare('user:brand', scope())).resolves.toBe(false);
+
+    expect(f.projectVisibility.get('project-brand')).toBe('team');
+    expect(f.calls).toEqual([]);
+  });
+
+  it('does not undo an independent project share on a repeated design-system DELETE', async () => {
+    const f = fixture();
+    await f.service.share('user:brand', scope());
+    await expect(f.service.unshare('user:brand', scope())).resolves.toBe(true);
+
+    // The design system is already absent from the authoritative Team index,
+    // while the backing project has since been shared independently.
+    f.projectVisibility.set('project-brand', 'team');
+    f.calls.length = 0;
+
+    await expect(f.service.unshare('user:brand', scope())).resolves.toBe(false);
+
+    expect(f.projectVisibility.get('project-brand')).toBe('team');
+    expect(f.calls).toEqual([]);
+  });
+
+  it('fails before touching the project when the authoritative Team index is unavailable', async () => {
+    const f = fixture();
+    await f.service.share('user:brand', scope());
+    f.calls.length = 0;
+    f.failAuthoritativeRead();
+
+    await expect(f.service.unshare('user:brand', scope()))
+      .rejects.toBeInstanceOf(TeamResourceAuthorityUnavailableError);
+
+    expect(f.projectVisibility.get('project-brand')).toBe('team');
+    expect(f.calls).toEqual([]);
+  });
+
+  it('downgrades hub owner/admin permission when the linked project creator gate denies mutation', async () => {
+    const f = fixture();
+    await f.service.share('user:brand', scope());
+    const adminScope: TeamResourceRequestScope = {
+      principal: {
+        ...scope().principal,
+        memberId: 'member-admin',
+        role: 'admin',
+      },
+      canShare: true,
+    };
+
+    await expect(f.service.sharedResources(adminScope)).resolves.toEqual([
+      { id: 'user:brand', canUnshare: false },
+    ]);
+  });
+
+  it('fails closed when no exact linked-project creator can be proven', async () => {
+    const f = fixture();
+    await f.service.share('user:brand', scope());
+    f.clearProjectCreator();
+
+    await expect(f.service.sharedResources(scope())).resolves.toEqual([
+      { id: 'user:brand', canUnshare: false },
+    ]);
   });
 
   it('fails closed across Workspace A→B before either hub mutation runs', async () => {

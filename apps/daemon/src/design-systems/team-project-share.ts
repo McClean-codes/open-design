@@ -1,4 +1,5 @@
 import {
+  TeamResourceAuthorityUnavailableError,
   TeamResourceShareForbiddenError,
   type TeamResourceRequestScope,
   type TeamResourceShareService,
@@ -85,10 +86,7 @@ export function createDesignSystemBackingProjectPreparer(
     if (binding?.workspaceId && binding.workspaceId !== workspaceId) {
       throw new Error('design system backing project belongs to another workspace');
     }
-    if (
-      binding?.createdByWorkspaceMemberId
-      && binding.createdByWorkspaceMemberId !== memberId
-    ) {
+    if (binding?.createdByWorkspaceMemberId !== memberId) {
       throw new TeamResourceShareForbiddenError();
     }
     options.onPrepared?.({ resourceId, projectId, scope });
@@ -207,12 +205,18 @@ export function createLinkedProjectTeamResourceShareService(
       return result;
     },
     async unshare(resourceId, scope) {
-      // The linked project must not move before the resource's authoritative
-      // owner/admin gate has approved this exact caller. `resource.unshare`
-      // repeats the same check immediately before its write.
-      const sharedResource = (await service.sharedResources(scope))
-        .find((candidate) => candidate.id === resourceId);
-      if (sharedResource && !sharedResource.canUnshare) {
+      // This live read is the idempotency boundary. A cached/session fallback
+      // may still remember an already-removed design system, so it must never
+      // authorize moving the independently shareable backing project.
+      let sharedResource;
+      try {
+        sharedResource = (await resource.sharedResources(scope, { authoritative: true }))
+          .find((candidate) => candidate.id === resourceId);
+      } catch (error) {
+        throw new TeamResourceAuthorityUnavailableError(error);
+      }
+      if (!sharedResource) return false;
+      if (!sharedResource.canUnshare) {
         throw new TeamResourceShareForbiddenError();
       }
       const linkedProject = await options.prepare(resourceId, scope);
@@ -241,8 +245,23 @@ export function createLinkedProjectTeamResourceShareService(
       }
     },
     sharedIds: (scope) => resource.sharedIds(scope),
-    sharedResources: (scope, readOptions) =>
-      resource.sharedResources(scope, readOptions),
+    async sharedResources(scope, readOptions) {
+      const resources = await resource.sharedResources(scope, readOptions);
+      await Promise.all(resources.map(async (candidate) => {
+        if (!candidate.canUnshare) return;
+        try {
+          // Reuse the exact same creator/Workspace preflight as the mutation
+          // path. The generic hub grants owner/admin broadly, but linked
+          // design-system projects are deliberately single-writer.
+          await options.prepare(candidate.id, scope);
+        } catch {
+          // Mutate in place to preserve the non-enumerable hubResourceId used
+          // by teammate materialization.
+          candidate.canUnshare = false;
+        }
+      }));
+      return resources;
+    },
     isShared: (resourceId, scope) => resource.isShared(resourceId, scope),
   };
   return service;
