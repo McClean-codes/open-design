@@ -1141,14 +1141,47 @@ describe('CollabClient', () => {
     expect(leave?.body).toMatchObject({
       memberId: 'm1',
       clientId: expect.any(String),
+      sequence: 2,
     });
     expect((leave?.body as { clientId: string }).clientId).toBe(
       (heartbeat?.body as { clientId: string }).clientId,
     );
+    expect(heartbeat?.body).toMatchObject({ sequence: 1 });
 
     const afterStop = calls.length;
     await vi.advanceTimersByTimeAsync(30_000);
     expect(calls.length).toBe(afterStop); // timers cleared — no further polling
+  });
+
+  it('does not send leave when stop happens before any heartbeat attempt', async () => {
+    let resolveStatus!: (response: Response) => void;
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        expect(pathname).toBe('/api/projects/p1/collab/status');
+        return new Promise<Response>((resolve) => {
+          resolveStatus = resolve;
+        });
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: { memberId: 'm1' },
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    client.stop();
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    resolveStatus(
+      new Response(
+        JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it('leaveBeacon delivers the same session lease via sendBeacon so it survives page unload', async () => {
@@ -1173,6 +1206,7 @@ describe('CollabClient', () => {
     expect(JSON.parse(await beacons[0]!.body)).toEqual({
       memberId: 'm1',
       clientId: (heartbeat?.body as { clientId: string }).clientId,
+      sequence: 2,
     });
     // Beacon path used — no keepalive fetch fallback.
     expect(calls.some((c) => c.url.endsWith('/presence/leave'))).toBe(false);
@@ -1181,18 +1215,22 @@ describe('CollabClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('leaveBeacon falls back to a keepalive fetch when sendBeacon is unavailable', () => {
+  it('leaveBeacon falls back to a keepalive fetch when sendBeacon is unavailable', async () => {
     const { fetchImpl, calls } = makeFetch();
     vi.stubGlobal('navigator', {});
     const client = new CollabClient({ projectId: 'p1', member: { memberId: 'm-x' }, fetch: fetchImpl });
 
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
     client.leaveBeacon();
 
+    const heartbeat = calls.find((c) => c.url.endsWith('/presence/heartbeat'));
     const leave = calls.find((c) => c.url.endsWith('/presence/leave'));
     expect(leave?.method).toBe('POST');
     expect(leave?.body).toMatchObject({
       memberId: 'm-x',
-      clientId: expect.any(String),
+      clientId: (heartbeat?.body as { clientId: string }).clientId,
+      sequence: 2,
     });
     vi.unstubAllGlobals();
   });

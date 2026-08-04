@@ -211,6 +211,90 @@ describe('collab presence routes', () => {
     ]);
   });
 
+  it('keeps a sequenced session closed when its older heartbeat finishes after leave', async () => {
+    const leases = new Map<string, string>();
+    let releaseOldHeartbeat!: () => void;
+    const oldHeartbeatGate = new Promise<void>((resolve) => {
+      releaseOldHeartbeat = resolve;
+    });
+    let markOldHeartbeatStarted!: () => void;
+    const oldHeartbeatStarted = new Promise<void>((resolve) => {
+      markOldHeartbeatStarted = resolve;
+    });
+    let heartbeatCalls = 0;
+    const roster = () => [...leases.values()].map((memberId) => ({ memberId }));
+    const cloud: CollabPresenceCloudClient = {
+      async heartbeatPresence(_projectId, input) {
+        heartbeatCalls += 1;
+        if (heartbeatCalls === 1) {
+          markOldHeartbeatStarted();
+          await oldHeartbeatGate;
+        }
+        leases.set(input.clientId ?? input.member.memberId, input.member.memberId);
+        return roster();
+      },
+      async listPresence() {
+        return roster();
+      },
+      async leavePresence(_projectId, input) {
+        leases.delete(input.clientId ?? input.memberId);
+        return roster();
+      },
+    };
+    const api = await startPresenceServer(cloud);
+
+    const oldHeartbeat = api.json('/api/projects/p1/presence/heartbeat', {
+      method: 'POST',
+      body: {
+        memberId: 'm1',
+        clientId: 'old-session',
+        sequence: 1,
+      },
+    });
+    await oldHeartbeatStarted;
+
+    const left = await api.json('/api/projects/p1/presence/leave', {
+      method: 'POST',
+      body: {
+        memberId: 'm1',
+        clientId: 'old-session',
+        sequence: 2,
+      },
+    });
+    expect(left.body.present).toEqual([]);
+    expect(leases.size).toBe(0);
+
+    // The old cloud heartbeat mutates only after leave has completed. Its
+    // response must trigger the closed-session fence instead of resurrecting
+    // the lease in the authoritative roster.
+    releaseOldHeartbeat();
+    await oldHeartbeat;
+    expect(leases.size).toBe(0);
+    expect((await api.json('/api/projects/p1/presence')).body.present).toEqual([]);
+
+    // A replacement mount has a distinct client id and starts its own sequence.
+    const replacement = await api.json('/api/projects/p1/presence/heartbeat', {
+      method: 'POST',
+      body: {
+        memberId: 'm1',
+        clientId: 'replacement-session',
+        sequence: 1,
+      },
+    });
+    expect(replacement.body.present).toEqual([{ memberId: 'm1' }]);
+
+    // Replaying the old session's close cannot remove the replacement lease.
+    await api.json('/api/projects/p1/presence/leave', {
+      method: 'POST',
+      body: {
+        memberId: 'm1',
+        clientId: 'old-session',
+        sequence: 2,
+      },
+    });
+    expect(leases).toEqual(new Map([['replacement-session', 'm1']]));
+  });
+
   it('does not publish presence for a project that is no longer team-shared', async () => {
     const calls: Array<{ op: string; projectId: string; input?: unknown }> = [];
     const cloud: CollabPresenceCloudClient = {

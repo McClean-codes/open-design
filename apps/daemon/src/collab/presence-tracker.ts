@@ -25,7 +25,7 @@ export interface CollabPresenceTrackerOptions {
 
 interface Entry {
   member: PresenceMember;
-  lastSeen: number;
+  leases: Map<string, number>;
 }
 
 const DEFAULT_TTL_MS = 30_000;
@@ -43,17 +43,30 @@ export class CollabPresenceTracker {
   }
 
   /** Mark a member present in a project (call on view + on each poll). */
-  heartbeat(projectId: string, member: PresenceMember): void {
+  heartbeat(
+    projectId: string,
+    member: PresenceMember,
+    clientId = member.memberId,
+  ): void {
     const entries = this.ensure(projectId);
     const isNew = !entries.has(member.memberId);
-    entries.set(member.memberId, { member, lastSeen: this.now() });
+    const entry = entries.get(member.memberId) ?? {
+      member,
+      leases: new Map<string, number>(),
+    };
+    entry.member = member;
+    entry.leases.set(clientId, this.now());
+    entries.set(member.memberId, entry);
     if (isNew) this.emit(projectId);
   }
 
   /** Explicit departure (tab closed / left the project). */
-  leave(projectId: string, memberId: string): void {
+  leave(projectId: string, memberId: string, clientId = memberId): void {
     const entries = this.projects.get(projectId);
-    if (!entries || !entries.delete(memberId)) return;
+    const entry = entries?.get(memberId);
+    if (!entries || !entry || !entry.leases.delete(clientId)) return;
+    if (entry.leases.size > 0) return;
+    entries.delete(memberId);
     if (entries.size === 0) this.projects.delete(projectId);
     this.emit(projectId);
   }
@@ -64,7 +77,10 @@ export class CollabPresenceTracker {
     if (!entries) return [];
     const cutoff = this.now() - this.ttlMs;
     for (const [memberId, entry] of entries) {
-      if (entry.lastSeen < cutoff) entries.delete(memberId);
+      for (const [clientId, lastSeen] of entry.leases) {
+        if (lastSeen < cutoff) entry.leases.delete(clientId);
+      }
+      if (entry.leases.size === 0) entries.delete(memberId);
     }
     if (entries.size === 0) {
       this.projects.delete(projectId);

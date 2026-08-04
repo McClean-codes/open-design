@@ -135,6 +135,10 @@ export class CollabClient {
    * untouched: this fence only decides whether a queued first poll launches.
    */
   private lifecycleGeneration = 0;
+  /** Monotonic write ordering for this clientId's remote presence lease. */
+  private presenceSessionSequence = 0;
+  /** A leave is necessary only after a heartbeat request could have made a lease. */
+  private presenceLeaseMemberId: string | null = null;
   private running = false;
   private onVisibilityChange: (() => void) | null = null;
 
@@ -310,10 +314,16 @@ export class CollabClient {
     }
     this.presenceAttemptedForMember = true;
     const requestGeneration = ++this.presenceRequestGeneration;
+    const sequence = ++this.presenceSessionSequence;
+    const member = this.member;
+    // Set before fetch: a timed-out or in-flight request may still establish a
+    // remote lease, so stop() must close every heartbeat that was attempted.
+    this.presenceLeaseMemberId = member.memberId;
     try {
       const body = await this.post('/presence/heartbeat', {
-        ...this.member,
+        ...member,
         clientId: this.clientId,
+        sequence,
       });
       if (Array.isArray(body?.present)) {
         this.applyPresenceResponse(
@@ -463,11 +473,14 @@ export class CollabClient {
   }
 
   private async leave(): Promise<void> {
-    if (!this.member) return;
+    const memberId = this.presenceLeaseMemberId;
+    if (!memberId) return;
+    const sequence = ++this.presenceSessionSequence;
     try {
       await this.post('/presence/leave', {
-        memberId: this.member.memberId,
+        memberId,
         clientId: this.clientId,
+        sequence,
       });
     } catch (error) {
       this.onError?.(error);
@@ -482,11 +495,14 @@ export class CollabClient {
    * the page is gone, so the present set drops promptly.
    */
   leaveBeacon(): void {
-    if (!this.member) return;
+    const memberId = this.presenceLeaseMemberId;
+    if (!memberId) return;
+    const sequence = ++this.presenceSessionSequence;
     const url = this.url('/presence/leave');
     const body = JSON.stringify({
-      memberId: this.member.memberId,
+      memberId,
       clientId: this.clientId,
+      sequence,
     });
     // sendBeacon cannot attach workspace headers. Retain it only for legacy
     // unscoped clients; real workspace sessions use keepalive fetch so the

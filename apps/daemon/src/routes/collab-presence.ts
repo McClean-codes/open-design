@@ -315,41 +315,69 @@ export function createCollabPresenceCloudClient(
 
 function readHeartbeat(body: unknown): {
   member: PresenceMember;
-  clientId?: string;
+  clientId: string;
+  sequence?: number;
   filePath?: string | null;
   activity?: PresenceMember['activity'];
 } | null {
   const raw = (body ?? {}) as Record<string, unknown>;
   const memberId = typeof raw.memberId === 'string' ? raw.memberId.trim() : '';
   if (!memberId) return null;
+  const sequence = readPresenceSequence(raw);
+  if (sequence === null) return null;
   const member: PresenceMember = { memberId };
   if (typeof raw.name === 'string' && raw.name.trim()) member.name = raw.name.trim();
   if (raw.role === 'owner' || raw.role === 'admin' || raw.role === 'member') member.role = raw.role;
   if (typeof raw.avatarUrl === 'string' || raw.avatarUrl === null) member.avatarUrl = raw.avatarUrl;
   if (typeof raw.filePath === 'string' || raw.filePath === null) member.filePath = raw.filePath;
   if (raw.activity !== undefined) member.activity = raw.activity as PresenceActivity;
-  const clientId = typeof raw.clientId === 'string' && raw.clientId.trim()
+  const explicitClientId = typeof raw.clientId === 'string' && raw.clientId.trim()
     ? raw.clientId.trim()
-    : memberId;
+    : '';
+  // A sequence only has meaning inside a stable session identity. Legacy
+  // requests may still omit both fields and retain the member-id fallback.
+  if (sequence !== undefined && !explicitClientId) return null;
+  const clientId = explicitClientId || memberId;
   const filePath = typeof raw.filePath === 'string' || raw.filePath === null
     ? raw.filePath
     : undefined;
   return {
     member,
     clientId,
+    ...(sequence !== undefined ? { sequence } : {}),
     ...(filePath !== undefined ? { filePath } : {}),
     ...(member.activity !== undefined ? { activity: member.activity } : {}),
   };
 }
 
-function readLeave(body: unknown): { memberId: string; clientId?: string } | null {
+function readLeave(body: unknown): {
+  memberId: string;
+  clientId: string;
+  sequence?: number;
+} | null {
   const raw = (body ?? {}) as Record<string, unknown>;
   const memberId = typeof raw.memberId === 'string' ? raw.memberId.trim() : '';
   if (!memberId) return null;
-  const clientId = typeof raw.clientId === 'string' && raw.clientId.trim()
+  const sequence = readPresenceSequence(raw);
+  if (sequence === null) return null;
+  const explicitClientId = typeof raw.clientId === 'string' && raw.clientId.trim()
     ? raw.clientId.trim()
-    : memberId;
-  return { memberId, clientId };
+    : '';
+  if (sequence !== undefined && !explicitClientId) return null;
+  return {
+    memberId,
+    clientId: explicitClientId || memberId,
+    ...(sequence !== undefined ? { sequence } : {}),
+  };
+}
+
+function readPresenceSequence(
+  raw: Record<string, unknown>,
+): number | undefined | null {
+  if (!Object.prototype.hasOwnProperty.call(raw, 'sequence')) return undefined;
+  return Number.isSafeInteger(raw.sequence) && Number(raw.sequence) > 0
+    ? Number(raw.sequence)
+    : null;
 }
 
 function cloudError(res: Response, error: unknown) {
@@ -385,6 +413,138 @@ function sendWorkspaceVerificationFailure(
   });
 }
 
+interface PresenceSessionFenceState {
+  latestSequence: number;
+  closed: boolean;
+  inflightHeartbeats: number;
+}
+
+interface PresenceHeartbeatFenceToken {
+  state: PresenceSessionFenceState;
+  accepted: boolean;
+}
+
+const MAX_PRESENCE_SESSION_FENCES = 4_096;
+
+/**
+ * Process-local ordering for the Web → daemon presence protocol.
+ *
+ * A close tombstone rejects heartbeats that arrive after leave, while an
+ * already-running heartbeat observes the same state when it settles and sends
+ * one compensating leave. Legacy requests without a sequence retain their old
+ * behavior; new sessions use random client ids, so a closed old mount cannot
+ * affect its replacement.
+ */
+function createPresenceSessionFence() {
+  const states = new Map<string, PresenceSessionFenceState>();
+  const keyFor = (
+    projectId: string,
+    context: WorkspaceCollabContext | null,
+    memberId: string,
+    clientId: string,
+  ) => JSON.stringify([
+    context?.workspaceId?.trim() ?? '',
+    projectId,
+    memberId,
+    clientId,
+  ]);
+  const touch = (key: string, state: PresenceSessionFenceState) => {
+    states.delete(key);
+    states.set(key, state);
+    while (states.size > MAX_PRESENCE_SESSION_FENCES) {
+      let removed = false;
+      for (const [candidateKey, candidate] of states) {
+        if (candidate.inflightHeartbeats > 0) continue;
+        states.delete(candidateKey);
+        removed = true;
+        break;
+      }
+      if (!removed) break;
+    }
+  };
+  const stateFor = (key: string): PresenceSessionFenceState => {
+    const existing = states.get(key);
+    if (existing) return existing;
+    const created: PresenceSessionFenceState = {
+      latestSequence: 0,
+      closed: false,
+      inflightHeartbeats: 0,
+    };
+    touch(key, created);
+    return created;
+  };
+
+  return {
+    beginHeartbeat(input: {
+      projectId: string;
+      context: WorkspaceCollabContext | null;
+      memberId: string;
+      clientId: string;
+      sequence?: number;
+    }): PresenceHeartbeatFenceToken | null {
+      if (input.sequence === undefined) return null;
+      const key = keyFor(
+        input.projectId,
+        input.context,
+        input.memberId,
+        input.clientId,
+      );
+      const state = stateFor(key);
+      const accepted = !state.closed && input.sequence > state.latestSequence;
+      if (accepted) {
+        state.latestSequence = input.sequence;
+        state.inflightHeartbeats += 1;
+      }
+      touch(key, state);
+      return { state, accepted };
+    },
+
+    close(input: {
+      projectId: string;
+      context: WorkspaceCollabContext | null;
+      memberId: string;
+      clientId: string;
+      sequence?: number;
+    }): boolean {
+      if (input.sequence === undefined) return true;
+      const key = keyFor(
+        input.projectId,
+        input.context,
+        input.memberId,
+        input.clientId,
+      );
+      const state = stateFor(key);
+      if (input.sequence < state.latestSequence) {
+        touch(key, state);
+        return false;
+      }
+      // Repeating the same close is a valid retry. The first upstream leave
+      // may have failed after the local tombstone was recorded, and deleting
+      // the same client lease again is idempotent.
+      if (input.sequence === state.latestSequence) {
+        touch(key, state);
+        return state.closed;
+      }
+      state.latestSequence = input.sequence;
+      state.closed = true;
+      touch(key, state);
+      return true;
+    },
+
+    isClosed(token: PresenceHeartbeatFenceToken | null): boolean {
+      return token?.state.closed === true;
+    },
+
+    finishHeartbeat(token: PresenceHeartbeatFenceToken | null): void {
+      if (!token?.accepted) return;
+      token.state.inflightHeartbeats = Math.max(
+        0,
+        token.state.inflightHeartbeats - 1,
+      );
+    },
+  };
+}
+
 /**
  * Team collaboration presence (presence) capability. Members heartbeat while viewing a
  * shared project; clients poll the present set (live cursors were cut, content
@@ -403,6 +563,7 @@ export function registerCollabPresenceRoutes(
     ),
     now: deps.presenceListCacheNow ?? Date.now,
   });
+  const presenceSessions = createPresenceSessionFence();
 
   async function projectIsShared(
     projectId: string,
@@ -513,30 +674,73 @@ export function registerCollabPresenceRoutes(
     ) {
       return res.status(403).json({ error: 'WORKSPACE_PROJECT_PRESENCE_DENIED' });
     }
-    if (
-      !cloudAuthorizesProject(req.params.id) &&
-      !(await projectIsShared(req.params.id, context))
-    ) {
-      if (cloud) presenceLists.publish(req.params.id, context, []);
+    const heartbeatFence = presenceSessions.beginHeartbeat({
+      projectId: req.params.id,
+      context,
+      memberId: heartbeat.member.memberId,
+      clientId: heartbeat.clientId,
+      ...(heartbeat.sequence !== undefined
+        ? { sequence: heartbeat.sequence }
+        : {}),
+    });
+    if (heartbeatFence && !heartbeatFence.accepted) {
       return res.json({ present: [] });
     }
-    if (cloud) {
-      try {
-        const present = await cloud.heartbeatPresence(
-          req.params.id,
-          heartbeat,
-          context,
-        );
-        presenceLists.publish(req.params.id, context, present);
-        return res.json({
-          present,
-        });
-      } catch (error) {
-        return cloudError(res, error);
+    try {
+      if (
+        !cloudAuthorizesProject(req.params.id) &&
+        !(await projectIsShared(req.params.id, context))
+      ) {
+        if (cloud) presenceLists.publish(req.params.id, context, []);
+        return res.json({ present: [] });
       }
+      if (presenceSessions.isClosed(heartbeatFence)) {
+        return res.json({ present: [] });
+      }
+      if (cloud) {
+        let present: CollabPresenceMember[] | null = null;
+        let heartbeatError: unknown = null;
+        try {
+          present = await cloud.heartbeatPresence(
+            req.params.id,
+            heartbeat,
+            context,
+          );
+        } catch (error) {
+          heartbeatError = error;
+        }
+        if (presenceSessions.isClosed(heartbeatFence)) {
+          // leave may already have completed while this heartbeat was still in
+          // flight. Close the same client lease once more after the old write
+          // settles so its late side effect cannot resurrect the session.
+          present = await cloud.leavePresence(
+            req.params.id,
+            {
+              memberId: heartbeat.member.memberId,
+              clientId: heartbeat.clientId,
+            },
+            context,
+          );
+          heartbeatError = null;
+        }
+        if (heartbeatError) throw heartbeatError;
+        const settledPresent = present ?? [];
+        presenceLists.publish(req.params.id, context, settledPresent);
+        return res.json({ present: settledPresent });
+      }
+      if (!presenceSessions.isClosed(heartbeatFence)) {
+        presence.heartbeat(
+          req.params.id,
+          heartbeat.member,
+          heartbeat.clientId,
+        );
+      }
+      return res.json({ present: presence.present(req.params.id) });
+    } catch (error) {
+      return cloudError(res, error);
+    } finally {
+      presenceSessions.finishHeartbeat(heartbeatFence);
     }
-    presence.heartbeat(req.params.id, heartbeat.member);
-    res.json({ present: presence.present(req.params.id) });
   });
 
   app.post('/api/projects/:id/presence/leave', async (req, res) => {
@@ -554,6 +758,16 @@ export function registerCollabPresenceRoutes(
     ) {
       return res.status(403).json({ error: 'WORKSPACE_PROJECT_PRESENCE_DENIED' });
     }
+    const leaveAccepted = presenceSessions.close({
+      projectId: req.params.id,
+      context,
+      memberId: leave.memberId,
+      clientId: leave.clientId,
+      ...(leave.sequence !== undefined ? { sequence: leave.sequence } : {}),
+    });
+    if (!leaveAccepted) {
+      return res.json({ ok: true, present: [] });
+    }
     if (cloud) {
       try {
         const present = await cloud.leavePresence(
@@ -570,7 +784,7 @@ export function registerCollabPresenceRoutes(
         return cloudError(res, error);
       }
     }
-    presence.leave(req.params.id, leave.memberId);
+    presence.leave(req.params.id, leave.memberId, leave.clientId);
     res.json({ ok: true, present: presence.present(req.params.id) });
   });
 

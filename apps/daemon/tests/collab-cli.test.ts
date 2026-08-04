@@ -58,6 +58,10 @@ async function startCollabStubServer(): Promise<StubServer> {
         res.end(JSON.stringify({ present: [{ memberId: 'm-42', name: 'Ma Shu', role: 'member' }] }));
         return;
       }
+      if (method === 'POST' && url === '/api/projects/p1/presence/leave') {
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
       if (method === 'GET' && url === '/api/projects/p1/collab/status') {
         res.end(JSON.stringify({
           publishedVersion: 7,
@@ -183,6 +187,41 @@ describe('od collab CLI', () => {
     expect(stub.requests).toHaveLength(1);
     expect(stub.requests[0]).toMatchObject({ method: 'POST', url: '/api/projects/p1/presence/heartbeat' });
     expect(JSON.parse(stub.requests[0]!.body)).toEqual({ memberId: 'm-42', name: 'Ma Shu', role: 'member' });
+  });
+
+  it('sends monotonic session fields for a fenced heartbeat and leave', async () => {
+    stub = await startCollabStubServer();
+    const sharedArgs = [
+      '--workspace', 'team-1', '--workspace-member', 'm-42',
+      '--member', 'm-42', '--client-id', 'cli-session',
+      '--daemon-url', stub.baseUrl,
+    ];
+
+    const heartbeat = await runCli([
+      'collab', 'heartbeat', 'p1', ...sharedArgs, '--sequence', '1',
+    ]);
+    const leave = await runCli([
+      'collab', 'leave', 'p1', ...sharedArgs, '--sequence', '2',
+    ]);
+
+    expect(heartbeat.code).toBe(0);
+    expect(leave.code).toBe(0);
+    expect(stub.requests.map((request) => ({
+      method: request.method,
+      url: request.url,
+      body: JSON.parse(request.body),
+    }))).toEqual([
+      {
+        method: 'POST',
+        url: '/api/projects/p1/presence/heartbeat',
+        body: { memberId: 'm-42', clientId: 'cli-session', sequence: 1 },
+      },
+      {
+        method: 'POST',
+        url: '/api/projects/p1/presence/leave',
+        body: { memberId: 'm-42', clientId: 'cli-session', sequence: 2 },
+      },
+    ]);
   });
 
   it('requests a publish and prints the published version', async () => {

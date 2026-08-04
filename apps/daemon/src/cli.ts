@@ -218,7 +218,7 @@ const CONFIG_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
 const AMR_STRING_FLAGS = new Set(['daemon-url']);
 const AMR_BOOLEAN_FLAGS = new Set(['help', 'h', 'json', 'refresh']);
 const COLLAB_STRING_FLAGS = new Set([
-  'daemon-url', 'project', 'member', 'name', 'role', 'design-system',
+  'daemon-url', 'project', 'member', 'name', 'role', 'client-id', 'sequence', 'design-system',
   'workspace', 'workspace-member',
 ]);
 const COLLAB_BOOLEAN_FLAGS = new Set(['help', 'h', 'json']);
@@ -906,8 +906,8 @@ function printCollabHelp() {
   console.log(`Usage:
   od collab status <projectId> --workspace <id> --workspace-member <id> [--json]
   od collab presence <projectId> --workspace <id> --workspace-member <id> [--json]
-  od collab heartbeat <projectId> --workspace <id> --workspace-member <id> --member <id> [--name <name>] [--role owner|admin|member] [--json]
-  od collab leave <projectId> --workspace <id> --workspace-member <id> --member <id> [--json]
+  od collab heartbeat <projectId> --workspace <id> --workspace-member <id> --member <id> [--client-id <id> --sequence <n>] [--name <name>] [--role owner|admin|member] [--json]
+  od collab leave <projectId> --workspace <id> --workspace-member <id> --member <id> [--client-id <id> --sequence <n>] [--json]
   od collab changed <projectId> --workspace <id> --workspace-member <id> [--json]
   od collab publish <projectId> --workspace <id> --workspace-member <id> [--json]
   od collab share <projectId> --workspace <id> --workspace-member <id> [--json]
@@ -934,6 +934,8 @@ Options:
   --workspace <id>        Explicit workspace id for request authorization.
   --workspace-member <id> Explicit workspace member id for request authorization.
   --member <id>           Member id for the presence heartbeat / leave.
+  --client-id <id>        Stable id for one presence session.
+  --sequence <n>          Positive monotonic operation number for --client-id.
   --name <name>           Display name attached to a heartbeat.
   --role <role>           owner | admin | member.
   --json                  Emit raw JSON.
@@ -1115,8 +1117,10 @@ async function runCollab(args) {
         console.error('missing --member <id>');
         process.exit(2);
       }
+      const presenceSession = readCollabPresenceSessionFlags(flags);
       const memberBody = {
         memberId: flags.member,
+        ...presenceSession,
         ...(flags.name ? { name: flags.name } : {}),
         ...(flags.role ? { role: flags.role } : {}),
       };
@@ -1131,7 +1135,10 @@ async function runCollab(args) {
         console.error('missing --member <id>');
         process.exit(2);
       }
-      const body = await request('POST', '/presence/leave', { memberId: flags.member });
+      const body = await request('POST', '/presence/leave', {
+        memberId: flags.member,
+        ...readCollabPresenceSessionFlags(flags),
+      });
       return emit(body, () => console.log('left'));
     }
     case 'changed': {
@@ -1146,6 +1153,26 @@ async function runCollab(args) {
       console.error(`unknown subcommand: od collab ${sub}`);
       process.exit(2);
   }
+}
+
+function readCollabPresenceSessionFlags(flags) {
+  const clientId = typeof flags['client-id'] === 'string'
+    ? flags['client-id'].trim()
+    : '';
+  const rawSequence = typeof flags.sequence === 'string'
+    ? flags.sequence.trim()
+    : '';
+  if (!rawSequence) return clientId ? { clientId } : {};
+  if (!clientId) {
+    console.error('--sequence requires --client-id <id>');
+    process.exit(2);
+  }
+  const sequence = Number(rawSequence);
+  if (!Number.isSafeInteger(sequence) || sequence <= 0) {
+    console.error('--sequence must be a positive safe integer');
+    process.exit(2);
+  }
+  return { clientId, sequence };
 }
 // Subcommand: od message-center …
 // ---------------------------------------------------------------------------

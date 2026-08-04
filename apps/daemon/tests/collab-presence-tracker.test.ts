@@ -47,6 +47,18 @@ describe('CollabPresenceTracker', () => {
     expect(ids(tracker.present('p1'))).toEqual(['m2']);
   });
 
+  it('does not let an old client leave remove a replacement session', () => {
+    const tracker = new CollabPresenceTracker({ ttlMs: 10_000, now });
+    tracker.heartbeat('p1', { memberId: 'm1' }, 'old-client');
+    tracker.heartbeat('p1', { memberId: 'm1' }, 'replacement-client');
+
+    tracker.leave('p1', 'm1', 'old-client');
+
+    expect(ids(tracker.present('p1'))).toEqual(['m1']);
+    tracker.leave('p1', 'm1', 'replacement-client');
+    expect(tracker.present('p1')).toEqual([]);
+  });
+
   it('fires onChange on join and leave, but not on a refresh heartbeat', () => {
     const onChange = vi.fn();
     const tracker = new CollabPresenceTracker({ ttlMs: 10_000, now, onChange });

@@ -56,6 +56,12 @@ export interface CollabPresenceHeartbeatRequest {
   name?: string;
   role?: CollabMemberRole;
   clientId?: string;
+  /**
+   * Monotonic operation number within one clientId lease. New clients send it
+   * so a leave tombstone can reject an older heartbeat that arrives late.
+   * Optional for compatibility with older web and CLI callers.
+   */
+  sequence?: number;
   filePath?: string | null;
   activity?: string | { label?: string } | Record<string, unknown> | null;
 }
@@ -64,6 +70,8 @@ export interface CollabPresenceHeartbeatRequest {
 export interface CollabPresenceLeaveRequest {
   memberId: string;
   clientId?: string;
+  /** See {@link CollabPresenceHeartbeatRequest.sequence}. */
+  sequence?: number;
 }
 
 export interface CollabPresenceLeaveResponse extends OkResponse {
