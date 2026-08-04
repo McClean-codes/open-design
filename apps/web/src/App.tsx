@@ -77,6 +77,7 @@ import {
   fetchAgentsStream,
   fetchDesignSystems,
   fetchDesignTemplates,
+  invalidateProjectFilesCache,
   fetchPromptTemplates,
   fetchSkills,
   openExternalUrl,
@@ -592,6 +593,9 @@ async function pullTeamSharedProjectIfAvailable(
       method: 'POST',
       headers: workspaceProjectHeaders(workspaceContext),
     });
+    if (pullResponse.ok) {
+      invalidateProjectFilesCache(projectId, workspaceContext);
+    }
     return { isTeamShared: true, pulled: pullResponse.ok };
   } catch {
     return { isTeamShared: false, pulled: false };
@@ -723,6 +727,7 @@ export async function hydrateReadyTeamProject(
     listWorkspaceProjects: (
       context: WorkspaceCollabContext,
     ) => Promise<WorkspaceProjectSummary[]>;
+    onReady?: (project: Project, context: WorkspaceCollabContext) => void;
     applyProject: (project: Project) => void;
   },
 ): Promise<Project | null> {
@@ -768,6 +773,7 @@ export async function hydrateReadyTeamProject(
     summary.syncState === 'synced'
   );
   if (!summary || !hasMaterializedTeamBinding) return null;
+  deps.onReady?.(summary.project, initialContext);
   deps.applyProject(summary.project);
   return summary.project;
 }
@@ -1335,6 +1341,9 @@ function AppInner() {
           workspaceView: 'team',
           throwOnError: true,
         }),
+      onReady: (_project, context) => {
+        invalidateProjectFilesCache(projectId, context);
+      },
       applyProject: (project) => {
         rememberLocalProject(projectId);
         setProjects((current) => [

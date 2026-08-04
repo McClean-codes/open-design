@@ -140,6 +140,25 @@ describe('hydrateReadyTeamProject', () => {
     expect(result).toEqual(project);
   });
 
+  it('invalidates the exact file authority before publishing readiness', async () => {
+    const order: string[] = [];
+    const onReady = vi.fn((_project: Project, context: WorkspaceCollabContext) => {
+      expect(context).toBe(teamContext);
+      order.push('invalidate');
+    });
+    const applyProject = vi.fn(() => order.push('apply'));
+
+    await expect(hydrateReadyTeamProject(project.id, 'ws-1', {
+      getWorkspaceContext: () => teamContext,
+      listWorkspaceProjects: async () => [summary],
+      onReady,
+      applyProject,
+    })).resolves.toEqual(project);
+
+    expect(onReady).toHaveBeenCalledWith(project, teamContext);
+    expect(order).toEqual(['invalidate', 'apply']);
+  });
+
   it('drops a hydration result when the workspace changes while the scoped list is in flight', async () => {
     let resolveProjects!: (value: WorkspaceProjectSummary[]) => void;
     const pending = new Promise<WorkspaceProjectSummary[]>((resolve) => {

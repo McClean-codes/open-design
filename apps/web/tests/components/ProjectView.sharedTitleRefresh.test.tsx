@@ -37,6 +37,7 @@ import {
 } from '../../src/state/projects';
 import {
   fetchPreviewComments,
+  fetchProjectFiles,
   invalidateProjectFilesCache,
 } from '../../src/providers/registry';
 
@@ -179,11 +180,13 @@ vi.mock('../../src/components/FileWorkspace', () => ({
   DESIGN_SYSTEM_TAB: '__design_system__',
   FileWorkspace: ({
     projectName,
+    files = [],
     filesRefreshKey = 0,
     focusMode = false,
     onFocusModeChange,
   }: {
     projectName: string;
+    files?: Array<{ name: string }>;
     filesRefreshKey?: number;
     focusMode?: boolean;
     onFocusModeChange?: (focused: boolean) => void;
@@ -195,6 +198,7 @@ vi.mock('../../src/components/FileWorkspace', () => ({
         data-project-name={projectName}
         data-testid="file-workspace"
       >
+        {files.map((file) => <span key={file.name}>{file.name}</span>)}
         {focusMode ? (
           <button
             type="button"
@@ -230,6 +234,7 @@ const mockedCreateConversation = vi.mocked(createConversation);
 const mockedListMessages = vi.mocked(listMessages);
 const mockedLoadTabs = vi.mocked(loadTabs);
 const mockedFetchPreviewComments = vi.mocked(fetchPreviewComments);
+const mockedFetchProjectFiles = vi.mocked(fetchProjectFiles);
 const mockedInvalidateProjectFilesCache = vi.mocked(invalidateProjectFilesCache);
 const mockedGetProject = vi.mocked(getProject);
 const mockedPatchProject = vi.mocked(patchProject);
@@ -422,6 +427,7 @@ describe('ProjectView shared-project title refresh on project-metadata-changed',
     mockedListMessages.mockResolvedValue([]);
     mockedLoadTabs.mockResolvedValue({ tabs: [], active: null });
     mockedFetchPreviewComments.mockResolvedValue([]);
+    mockedFetchProjectFiles.mockResolvedValue([]);
   });
 
   afterEach(() => {
@@ -476,6 +482,43 @@ describe('ProjectView shared-project title refresh on project-metadata-changed',
     expect(mockedInvalidateProjectFilesCache.mock.invocationCallOrder[0]).toBeLessThan(
       fileWorkspaceRenderSpy.mock.invocationCallOrder[refreshedRender]!,
     );
+  });
+
+  it('re-reads files when first materialization settles instead of leaving the first open empty', async () => {
+    const workspace = teamWorkspaceContext();
+    const sharedProject = { ...project, workspaceId: workspace.workspaceId };
+    const materializedFile = {
+      name: 'index.html',
+      path: 'index.html',
+      size: 128,
+      mtime: 123,
+      isDirectory: false,
+      kind: 'code' as const,
+      mime: 'text/html',
+    };
+    mockedFetchProjectFiles
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([materializedFile]);
+    mockedUseProjectCollab.mockReturnValue(sharedMemberCollab({ downloadPending: true }));
+
+    const view = renderProjectView(sharedProject, { workspaceContextOverride: workspace });
+    await waitFor(() => expect(mockedFetchProjectFiles).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText('index.html')).toBeNull();
+
+    mockedInvalidateProjectFilesCache.mockClear();
+    mockedUseProjectCollab.mockReturnValue(sharedMemberCollab({ downloadPending: false }));
+    view.rerender(projectViewElement(sharedProject, { workspaceContextOverride: workspace }));
+
+    await waitFor(() => expect(screen.getByText('index.html')).toBeInTheDocument());
+    expect(mockedInvalidateProjectFilesCache).toHaveBeenCalledWith(
+      sharedProject.id,
+      workspace,
+    );
+    expect(mockedFetchProjectFiles.mock.calls.at(-1)?.[1]).toMatchObject({
+      fresh: true,
+      requireAuthoritative: true,
+      workspaceContext: workspace,
+    });
   });
 
   // recvqhwv6RPU1j: a member's first open of a team-shared project registers a

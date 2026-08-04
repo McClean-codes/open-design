@@ -202,6 +202,7 @@ import type { KnownProvider } from '../state/config';
 import { saveOnboardingProfile } from '../state/onboarding-profile';
 import { testAgent, testApiProvider } from '../providers/connection-test';
 import { fetchProviderModels } from '../providers/provider-models';
+import { invalidateProjectFilesCache } from '../providers/registry';
 import {
   cancelVelaLogin,
   fetchVelaLoginStatus,
@@ -929,6 +930,7 @@ export function EntryShell({
       });
       if (!pullRead.isStillCurrent(workspaceContextRef.current)) return false;
       if (!response.ok) return false;
+      invalidateProjectFilesCache(id, pullRead.context);
       await Promise.resolve(onProjectsRefresh?.());
     } catch {
       return false;

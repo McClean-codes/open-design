@@ -2718,34 +2718,6 @@ export function ProjectView({
     routeConversationId,
   ]);
 
-  const previousConversationRecoveryDownloadRef = useRef<{
-    projectId: string;
-    authorityKey: string;
-    pending: boolean;
-  } | null>(null);
-  useEffect(() => {
-    const previous = previousConversationRecoveryDownloadRef.current;
-    const sameAuthority = previous?.projectId === project.id
-      && previous.authorityKey === projectRunAuthorityKey;
-    previousConversationRecoveryDownloadRef.current = {
-      projectId: project.id,
-      authorityKey: projectRunAuthorityKey,
-      pending: projectCollab.downloadPending,
-    };
-    if (
-      sameAuthority
-      && previous.pending
-      && !projectCollab.downloadPending
-    ) {
-      void recoverMaterializedConversations(project.id, projectRunAuthorityKey);
-    }
-  }, [
-    project.id,
-    projectRunAuthorityKey,
-    projectCollab.downloadPending,
-    recoverMaterializedConversations,
-  ]);
-
   const emptyConversationWriterAuthorized =
     projectWorkspaceScopeState.scope?.kind === 'personal'
     || projectWorkspaceScopeState.scope?.kind === 'unbound'
@@ -3356,6 +3328,51 @@ export function ProjectView({
     );
     return { acceptedGeneration };
   }, [refreshWorkspaceItems]);
+
+  const previousMaterializationDownloadRef = useRef<{
+    projectId: string;
+    authorityKey: string;
+    pending: boolean;
+  } | null>(null);
+  useEffect(() => {
+    const previous = previousMaterializationDownloadRef.current;
+    const sameAuthority = previous?.projectId === project.id
+      && previous.authorityKey === projectRunAuthorityKey;
+    previousMaterializationDownloadRef.current = {
+      projectId: project.id,
+      authorityKey: projectRunAuthorityKey,
+      pending: projectCollab.downloadPending,
+    };
+    if (
+      !sameAuthority
+      || !previous.pending
+      || projectCollab.downloadPending
+    ) {
+      return;
+    }
+
+    // The first file read for a newly opened Team mirror can legitimately
+    // observe the empty placeholder directory. Materialization replaces that
+    // directory without producing a chokidar event for a stream that was not
+    // connected yet, so settling the download is itself an authoritative file
+    // invalidation. Fence the placeholder snapshot and fetch the exact scoped
+    // directory now; otherwise the first view stays empty until it is reopened.
+    invalidateProjectFilesCache(
+      project.id,
+      projectRunWorkspaceContextRef.current,
+    );
+    void refreshWorkspaceItems({ freshProjectFiles: true }).catch(() => {
+      // Preserve the last accepted snapshot on a transient transport failure.
+      // The project event stream and ordinary refresh paths remain retries.
+    });
+    void recoverMaterializedConversations(project.id, projectRunAuthorityKey);
+  }, [
+    project.id,
+    projectRunAuthorityKey,
+    projectCollab.downloadPending,
+    recoverMaterializedConversations,
+    refreshWorkspaceItems,
+  ]);
 
   useEffect(() => {
     if (!currentBrandExtractionId) {
