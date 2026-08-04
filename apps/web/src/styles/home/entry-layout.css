@@ -1062,7 +1062,7 @@
   gap: 7px;
   min-height: 32px;
   padding: 7px 11px 7px 13px;
-  border: 1px solid color-mix(in srgb, #68f22e 54%, var(--line));
+  border: 1px solid color-mix(in srgb, currentColor 58%, transparent);
   border-radius: 999px;
   color: #205b16;
   background: transparent;
