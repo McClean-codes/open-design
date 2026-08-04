@@ -59,6 +59,16 @@ export interface LocalTeamProjectBinding {
 export interface RemoteTeamProjectRef {
   projectId: string;
   ownerMemberId: string;
+  displayName?: string | null;
+  /** Catalog row observation/revision time. Never write this into projects. */
+  catalogRevisionAt?: number | null;
+  /** Project timestamp authored by the owner and carried inside metadata. */
+  originProjectUpdatedAt?: number | null;
+}
+
+export interface WorkspaceProjectMetadataPatch {
+  name: string;
+  updatedAt: number;
 }
 
 /** The two remote reads a daemon can consult for catalog MEMBERSHIP. */
@@ -298,6 +308,13 @@ export interface WorkspaceProjectsReconcilerDeps {
    *  unbound (`getWorkspaceProjectByProjectId`). Only consulted for a remote
    *  project not already covered by `listLocalTeamRows`. */
   getLocalBinding: (projectId: string) => LocalTeamProjectBinding | null;
+  getLocalProjectMetadata?: (
+    projectId: string,
+  ) => { name: string; updatedAt: number } | null;
+  applyMetadataRefresh?: (
+    projectId: string,
+    patch: WorkspaceProjectMetadataPatch,
+  ) => void;
   /**
    * Write a 'bind' action. MUST handle both cases `db.ts`'s two primitives
    * split across: a project with an existing (wrong) row (`rebindWorkspaceProject`,
@@ -328,6 +345,55 @@ const NO_OP_RESULT: WorkspaceProjectsReconcileResult = {
   demoted: 0,
   revoked: 0,
 };
+
+function metadataRefreshPatch(input: {
+  identity: WorkspaceProjectsReconcileIdentity;
+  remote: RemoteTeamProjectRef;
+  localBinding: LocalTeamProjectBinding | null;
+  localProject: { name: string; updatedAt: number } | null;
+}): WorkspaceProjectMetadataPatch | null {
+  const { identity, remote, localBinding, localProject } = input;
+  const displayName = remote.displayName?.trim() ?? '';
+  const originUpdatedAt = remote.originProjectUpdatedAt;
+  if (
+    !displayName ||
+    typeof originUpdatedAt !== 'number' ||
+    !Number.isFinite(originUpdatedAt) ||
+    !localProject ||
+    originUpdatedAt <= localProject.updatedAt
+  ) return null;
+
+  // Only a foreign, active, read-only mirror may accept catalog metadata.
+  // The owner's project can contain a rename that has not reached the hub yet.
+  if (
+    remote.ownerMemberId === identity.workspaceMemberId ||
+    !localBinding ||
+    localBinding.workspaceId !== identity.workspaceId ||
+    localBinding.visibility !== 'team' ||
+    localBinding.resourceState !== 'active' ||
+    localBinding.createdByWorkspaceMemberId !== null
+  ) return null;
+
+  return { name: displayName, updatedAt: originUpdatedAt };
+}
+
+function applyRemoteMetadataRefresh(
+  deps: WorkspaceProjectsReconcilerDeps,
+  identity: WorkspaceProjectsReconcileIdentity,
+  remote: RemoteTeamProjectRef,
+  localBinding: LocalTeamProjectBinding | null,
+): boolean {
+  if (!deps.getLocalProjectMetadata || !deps.applyMetadataRefresh) return false;
+  const patch = metadataRefreshPatch({
+    identity,
+    remote,
+    localBinding,
+    localProject: deps.getLocalProjectMetadata(remote.projectId),
+  });
+  if (!patch) return false;
+  deps.applyMetadataRefresh(remote.projectId, patch);
+  return true;
+}
 
 /**
  * Run one reconciliation pass: read the remote team-project list, diff it
@@ -397,11 +463,63 @@ export async function reconcileWorkspaceProjectsWithRemote(
     }
   }
 
+  // This pass is also the poller's fallback for metadata-only catalog
+  // changes. Evaluate it independently from the planner's already-correct
+  // binding short-circuit: a correct binding can still carry a stale name.
+  for (const remote of knownRemoteProjects) {
+    try {
+      applyRemoteMetadataRefresh(
+        deps,
+        identity,
+        remote,
+        localBindings.get(remote.projectId) ?? null,
+      );
+    } catch (error) {
+      deps.onError?.(error);
+    }
+  }
+
   return {
     bound: actions.filter((action) => action.kind === 'bind').length,
     demoted: actions.filter((action) => action.kind === 'demote').length,
     revoked: actions.filter((action) => action.kind === 'revoke').length,
   };
+}
+
+/** Reconcile only the project named by a metadata hub event. The catalog read
+ * remains authoritative, while local mutation is intentionally targeted. */
+export async function reconcileWorkspaceProjectMetadataWithRemote(
+  deps: WorkspaceProjectsReconcilerDeps,
+  projectId: string,
+): Promise<boolean> {
+  const targetProjectId = projectId.trim();
+  if (!targetProjectId) return false;
+  const identity = await deps.getWorkspaceIdentity().catch((error) => {
+    deps.onError?.(error);
+    return null;
+  });
+  if (!identity) return false;
+
+  let remoteProjects: readonly RemoteTeamProjectRef[];
+  try {
+    remoteProjects = await deps.listRemoteTeamProjects(identity);
+  } catch (error) {
+    deps.onError?.(error);
+    return false;
+  }
+  const remote = remoteProjects.find((candidate) => candidate.projectId === targetProjectId);
+  if (!remote) return false;
+  try {
+    return applyRemoteMetadataRefresh(
+      deps,
+      identity,
+      remote,
+      deps.getLocalBinding(targetProjectId),
+    );
+  } catch (error) {
+    deps.onError?.(error);
+    return false;
+  }
 }
 
 /**
@@ -424,6 +542,21 @@ export function handleHubTeamProjectsChanged(
 ): void {
   emitTeamProjectsChangedDeduped();
   void reconcileWorkspaceProjects().catch(() => undefined);
+}
+
+/** Emit immediately for catalog-backed UI, then emit once more only after a
+ * targeted local metadata write so SQLite-backed recent/project views refetch
+ * after the durable state has changed. */
+export function handleHubProjectMetadataChanged(
+  emitProjectMetadataChanged: () => void,
+  reconcileProjectMetadata: () => Promise<boolean>,
+): void {
+  emitProjectMetadataChanged();
+  void reconcileProjectMetadata()
+    .then((changed) => {
+      if (changed) emitProjectMetadataChanged();
+    })
+    .catch(() => undefined);
 }
 
 /**

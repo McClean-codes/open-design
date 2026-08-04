@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  handleHubProjectMetadataChanged,
   handleHubTeamProjectsChanged,
   handlePolledWorkspaceInvalidation,
 } from '../../src/collab/workspace-projects-reconciler.js';
@@ -98,6 +99,30 @@ describe('handleHubTeamProjectsChanged', () => {
   });
 });
 
+describe('handleHubProjectMetadataChanged', () => {
+  it('re-emits after the targeted metadata write becomes durable', async () => {
+    const emit = vi.fn();
+    const reconcile = vi.fn(async () => true);
+    handleHubProjectMetadataChanged(emit, reconcile);
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(emit).toHaveBeenCalledTimes(2));
+  });
+
+  it('does not emit a persistence follow-up for a no-op or failed reconcile', async () => {
+    const noOpEmit = vi.fn();
+    handleHubProjectMetadataChanged(noOpEmit, async () => false);
+    await Promise.resolve();
+    expect(noOpEmit).toHaveBeenCalledTimes(1);
+
+    const failedEmit = vi.fn();
+    handleHubProjectMetadataChanged(failedEmit, async () => { throw new Error('offline'); });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(failedEmit).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('handlePolledWorkspaceInvalidation', () => {
   it('forwards every payload to emit unchanged', () => {
     const emit = vi.fn();
@@ -175,6 +200,17 @@ describe('server.ts wiring (source boundary)', () => {
     const casesCallingReconcile = cases.filter((chunk) => /handleHubTeamProjectsChanged\(/.test(chunk));
     const caseNames = casesCallingReconcile.map((chunk) => chunk.match(/^case '([a-z-]+)':/)?.[1]);
     expect(caseNames).toEqual(['team-projects-changed']);
+  });
+
+  it('runs targeted metadata reconciliation only from project-metadata-changed', () => {
+    const switchBody = extractOnEventSwitchBody();
+    const cases = switchBody.split(/(?=case '[a-z-]+':)/g).filter((chunk) => chunk.startsWith("case '"));
+    const casesCallingTargetedMetadata = cases.filter((chunk) =>
+      /reconcileWorkspaceProjectMetadataFromRemote\(/.test(chunk),
+    );
+    expect(casesCallingTargetedMetadata.map((chunk) =>
+      chunk.match(/^case '([a-z-]+)':/)?.[1],
+    )).toEqual(['project-metadata-changed']);
   });
 
   it('only starts hub missing-project recovery for a targeted project id', () => {

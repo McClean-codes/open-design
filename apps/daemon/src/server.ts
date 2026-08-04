@@ -840,11 +840,14 @@ import {
 } from './collab/comment-relay-outbox.js';
 import { createWorkspaceInvalidationPoller } from './collab/workspace-invalidation-poller.js';
 import {
+  handleHubProjectMetadataChanged,
   handleHubTeamProjectsChanged,
   handlePolledWorkspaceInvalidation,
+  reconcileWorkspaceProjectMetadataWithRemote,
   reconcileWorkspaceProjectsWithRemote,
   reconcilerRemoteTeamProjects,
   type LocalTeamProjectBinding,
+  type WorkspaceProjectsReconcilerDeps,
 } from './collab/workspace-projects-reconciler.js';
 import {
   createWorkspaceTeamResourceEventCoordinator,
@@ -3705,15 +3708,15 @@ export async function startServer({
   // relationship to `reconcileUnboundProjectBeforeMove` /
   // `reconcileLocalRowWithRemoteTeamAccess` (routes/project/index.ts), which
   // this does NOT replace.
-  const reconcileWorkspaceProjectsFromRemote = (
+  const workspaceProjectsReconcilerDeps = (
     requestedWorkspaceId: string,
-  ) => {
+  ): WorkspaceProjectsReconcilerDeps => {
     // Capture the trigger's Workspace before the first await. Hub events pass
     // their subscribed/event Workspace and pollers pass their persisted exact
     // subscription scope. The directory then verifies that identity once, and
     // the result is carried through every catalog/list/tombstone step below.
     const capturedWorkspaceId = requestedWorkspaceId.trim();
-    return reconcileWorkspaceProjectsWithRemote({
+    return {
       getWorkspaceIdentity: async () => {
         if (!capturedWorkspaceId) return null;
         const directory = await fetchWorkspaceDirectory().catch(() => ({
@@ -3766,6 +3769,11 @@ export async function startServer({
             )).map((record) => ({
               projectId: record.projectId,
               ownerMemberId: record.ownerMemberId,
+              displayName: record.displayName,
+              catalogRevisionAt: Number.isFinite(Date.parse(record.updatedAt))
+                ? Date.parse(record.updatedAt)
+                : null,
+              originProjectUpdatedAt: record.originProjectUpdatedAt,
             })),
           listDisplayTeamProjects: async () => {
             throw new Error('display team project catalog is not authoritative');
@@ -3799,6 +3807,17 @@ export async function startServer({
           resourceHubResourceId: row.resourceHubResourceId ?? null,
         };
       },
+      getLocalProjectMetadata: (projectId) => {
+        const project = getProject(db, projectId);
+        return project
+          ? { name: project.name, updatedAt: project.updatedAt }
+          : null;
+      },
+      applyMetadataRefresh: (projectId, patch) => {
+        // `patch.updatedAt` is the owner's origin project time carried in the
+        // catalog metadata, never the catalog row's retry/observation time.
+        updateProject(db, projectId, patch);
+      },
       applyBind: (projectId, patch) => {
         // `rebindWorkspaceProject` only corrects an EXISTING row (it never
         // inserts — see its own doc comment in db.ts); a project this daemon
@@ -3829,8 +3848,20 @@ export async function startServer({
         })();
       },
       onError: (error) => console.warn('[od] workspace-projects reconciliation error:', error),
-    });
+    };
   };
+  const reconcileWorkspaceProjectsFromRemote = (
+    requestedWorkspaceId: string,
+  ) => reconcileWorkspaceProjectsWithRemote(
+    workspaceProjectsReconcilerDeps(requestedWorkspaceId),
+  );
+  const reconcileWorkspaceProjectMetadataFromRemote = (
+    requestedWorkspaceId: string,
+    projectId: string,
+  ) => reconcileWorkspaceProjectMetadataWithRemote(
+    workspaceProjectsReconcilerDeps(requestedWorkspaceId),
+    projectId,
+  );
   const resolveSharedProject = async (
     projectId: string,
     scope?: TeamMirrorPullScope | null,
@@ -4821,24 +4852,32 @@ export async function startServer({
           break;
         }
         case 'project-metadata-changed': {
-          // A rename only — refresh the display cache/signal the web (same
-          // as team-projects-changed) and additionally ping the open project
-          // view so its title can follow the rename. No reconciliation pass:
-          // a rename never changes WHICH projects are team-shared.
-          emitTeamProjectsChanged(
-            eventWorkspaceId,
-            {
-              ...(event.projectId ? { projectId: event.projectId } : {}),
-              kind: 'metadata',
-            },
+          const targetProjectId = event.projectId?.trim() ?? '';
+          const emitMetadataChanged = () => {
+            emitTeamProjectsChanged(
+              eventWorkspaceId,
+              {
+                ...(event.projectId ? { projectId: event.projectId } : {}),
+                kind: 'metadata',
+              },
+            );
+            if (event.projectId) {
+              emitProjectEvent(event.projectId, {
+                type: 'project-metadata-changed',
+                projectId: event.projectId,
+                at: Date.now(),
+              });
+            }
+          };
+          handleHubProjectMetadataChanged(
+            emitMetadataChanged,
+            targetProjectId
+              ? () => reconcileWorkspaceProjectMetadataFromRemote(
+                  eventWorkspaceId,
+                  targetProjectId,
+                )
+              : async () => false,
           );
-          if (event.projectId) {
-            emitProjectEvent(event.projectId, {
-              type: 'project-metadata-changed',
-              projectId: event.projectId,
-              at: Date.now(),
-            });
-          }
           break;
         }
         case 'comment-changed': {

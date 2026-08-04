@@ -426,6 +426,8 @@ function toVelaTeamProjectRecord(input: unknown): VelaTeamProjectRecord | null {
   const access = record.access && typeof record.access === 'object' && !Array.isArray(record.access)
     ? record.access as Partial<VelaTeamProjectRecord['access']>
     : {};
+  const metadata = recordObject(record.metadata);
+  const originProjectUpdatedAt = metadata?.updatedAt;
   return {
     id: record.id,
     workspaceId: record.workspaceId,
@@ -436,6 +438,10 @@ function toVelaTeamProjectRecord(input: unknown): VelaTeamProjectRecord | null {
     syncState: toVelaSyncState(record.syncState),
     lastSyncedVersionId: typeof record.lastSyncedVersionId === 'string' ? record.lastSyncedVersionId : null,
     createdAt: record.createdAt,
+    originProjectUpdatedAt:
+      typeof originProjectUpdatedAt === 'number' && Number.isFinite(originProjectUpdatedAt)
+        ? originProjectUpdatedAt
+        : null,
     updatedAt: record.updatedAt,
     access: {
       canView: access.canView ?? true,
@@ -603,6 +609,10 @@ function toFallbackVelaTeamProjectRecord(
     syncState: 'synced',
     lastSyncedVersionId: null,
     createdAt,
+    originProjectUpdatedAt:
+      typeof metadata.updatedAt === 'number' && Number.isFinite(metadata.updatedAt)
+        ? metadata.updatedAt
+        : null,
     updatedAt,
     access: {
       canView: true,

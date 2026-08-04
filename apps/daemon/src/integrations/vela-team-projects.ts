@@ -17,6 +17,10 @@ export interface VelaTeamProjectRecord {
   syncState: VelaTeamProjectSyncState;
   lastSyncedVersionId: string | null;
   createdAt: string;
+  /** Owner-origin project timestamp from the catalog row's metadata. This is
+   * distinct from `updatedAt`, which is the catalog row revision time and may
+   * be restamped by a delayed retry. */
+  originProjectUpdatedAt: number | null;
   updatedAt: string;
   access: {
     canView: boolean;

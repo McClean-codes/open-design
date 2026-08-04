@@ -175,6 +175,41 @@ describe('Vela CLI team-project catalog adapter', () => {
     expect(calls).toEqual([{ args: ['list'], workspaceId: 'team-a' }]);
   });
 
+  it('keeps the catalog revision separate from the owner project metadata timestamp', async () => {
+    const client = createVelaCliTeamProjectCatalogClient({
+      supportsTeamProjects: () => true,
+      run: async () => JSON.stringify({
+        projects: [{
+          id: 'catalog-row-1',
+          workspaceId: 'team-a',
+          projectId: 'project-a',
+          resourceId: 'resource-a',
+          ownerMemberId: 'owner-a',
+          displayName: 'Renamed by owner',
+          syncState: 'synced',
+          createdAt: '2026-08-01T00:00:00.000Z',
+          // Catalog retries can restamp this row long after the human edit.
+          updatedAt: '2026-08-04T09:30:00.000Z',
+          metadata: { updatedAt: 1785776400000 },
+        }],
+      }),
+    });
+
+    await expect(client.list({
+      memberId: 'reader-a',
+      teamId: 'team-a',
+      role: 'member',
+      lifecycleState: 'active',
+    })).resolves.toEqual([
+      expect.objectContaining({
+        projectId: 'project-a',
+        displayName: 'Renamed by owner',
+        updatedAt: '2026-08-04T09:30:00.000Z',
+        originProjectUpdatedAt: 1785776400000,
+      }),
+    ]);
+  });
+
   it('partitions cached client reads by the complete captured principal', async () => {
     const calls: string[] = [];
     const cached = createScopedVelaTeamProjectCatalogClientCache({
@@ -226,6 +261,7 @@ describe('Vela CLI team-project catalog adapter', () => {
           syncState: 'synced' as const,
           lastSyncedVersionId: null,
           createdAt: '2026-07-01T00:00:00.000Z',
+          originProjectUpdatedAt: null,
           updatedAt: '2026-07-01T00:00:00.000Z',
           access: {
             canView: true,

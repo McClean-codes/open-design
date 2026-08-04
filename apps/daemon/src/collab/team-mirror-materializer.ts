@@ -248,7 +248,10 @@ export function materializePulledTeamMirror(
         updatedAt: input.updatedAt,
       });
       localRecordChanged = true;
-    } else if (existing.name === '共享项目') {
+    } else if (
+      existing.name === '共享项目'
+      || (expectedCreator === null && input.updatedAt > existing.updatedAt)
+    ) {
       updateProject(db, input.id, {
         name: input.name,
         skillId: input.skillId,

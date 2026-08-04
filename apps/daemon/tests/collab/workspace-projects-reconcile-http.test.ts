@@ -467,6 +467,13 @@ describe('reconcileWorkspaceProjectsWithRemote, verified through the real worksp
           resourceHubResourceId: row.resourceHubResourceId ?? null,
         };
       },
+      getLocalProjectMetadata: (projectId) => {
+        const project = getProject(db, projectId);
+        return project ? { name: project.name, updatedAt: project.updatedAt } : null;
+      },
+      applyMetadataRefresh: (projectId, patch) => {
+        updateProject(db, projectId, patch);
+      },
       applyBind: (projectId, patch) => {
         // Mirrors server.ts's real wiring: `rebindWorkspaceProject` only
         // corrects an existing row (see db.ts), so a project this daemon has
@@ -488,6 +495,68 @@ describe('reconcileWorkspaceProjectsWithRemote, verified through the real worksp
       ...(options.onError ? { onError: options.onError } : {}),
     });
   }
+
+  it('persists an owner rename for both team and recent-project HTTP projections', async () => {
+    const projectId = 'renamed-foreign-mirror';
+    insertProject(db, {
+      id: projectId,
+      name: 'Old local name',
+      skillId: null,
+      designSystemId: null,
+      pendingPrompt: null,
+      metadata: null,
+      customInstructions: null,
+      createdAt: 50,
+      updatedAt: 100,
+    });
+    ensureWorkspaceProject(db, {
+      projectId,
+      workspaceId: TEAM_WORKSPACE_ID,
+      visibility: 'team',
+      resourceState: 'active',
+      createdByWorkspaceMemberId: null,
+      updatedByWorkspaceMemberId: READER_MEMBER_ID,
+      resourceHubResourceId: `project-${projectId}`,
+      syncState: 'synced',
+      updatedAt: 100,
+    });
+
+    await reconcileAsReader([{
+      projectId,
+      ownerMemberId: OWNER_MEMBER_ID,
+      displayName: 'Renamed by owner',
+      catalogRevisionAt: 999_999,
+      originProjectUpdatedAt: 200,
+    }]);
+
+    expect(getProject(db, projectId)).toMatchObject({
+      name: 'Renamed by owner',
+      updatedAt: 200,
+    });
+
+    const app = express();
+    app.use(express.json());
+    registerProjectRoutes(app, buildProjectRoutesDeps({ list: async () => [] }));
+    const routeServer = await listen(app);
+    try {
+      for (const suffix of ['?view=team', '']) {
+        const response = await fetch(
+          `${routeServer.url}/api/workspaces/${TEAM_WORKSPACE_ID}/projects${suffix}`,
+          { headers: readerTeamHeaders() },
+        );
+        expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          projects: Array<{ id: string; name: string; updatedAt: number }>;
+        };
+        expect(body.projects.find((project) => project.id === projectId)).toMatchObject({
+          name: 'Renamed by owner',
+          updatedAt: 200,
+        });
+      }
+    } finally {
+      await close(routeServer.server);
+    }
+  });
 
   it('quarantines a member mirror once the owner unshares it and denies stale direct reads', async () => {
     const projectId = 'shared-then-unshared';

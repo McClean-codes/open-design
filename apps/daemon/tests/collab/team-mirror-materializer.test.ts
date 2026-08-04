@@ -10,6 +10,7 @@ import {
   listMessages,
   listWorkspaceProjects,
   openDatabase,
+  updateProject,
 } from '../../src/db.js';
 import {
   getTeamProjectMaterialization,
@@ -166,6 +167,43 @@ describe('authorized team mirror SQLite materialization', () => {
     expect(getProject(db, input.id)?.name).toBe('Pulled project');
     expect(getTeamProjectMaterialization(db, scope.workspaceId, input.id))
       .toEqual(receipt());
+  });
+
+  it('refreshes an existing foreign mirror name when the owner metadata is newer', async () => {
+    const db = await database();
+    materializePulledTeamMirror(db, input, scope, receipt());
+
+    materializePulledTeamMirror(db, {
+      ...input,
+      name: 'Renamed by owner',
+      updatedAt: input.updatedAt + 10,
+    }, scope, { ...receipt(), version: 8, versionId: 'version-8' });
+
+    expect(getProject(db, input.id)).toMatchObject({
+      name: 'Renamed by owner',
+      updatedAt: input.updatedAt + 10,
+    });
+  });
+
+  it('never overwrites an owner local rename from catalog materialization', async () => {
+    const db = await database();
+    const ownerScope = {
+      ...scope,
+      ownerMemberId: scope.viewerMemberId,
+    };
+    materializePulledTeamMirror(db, input, ownerScope);
+    updateProject(db, input.id, { name: 'Pending owner rename', updatedAt: 20 });
+
+    materializePulledTeamMirror(db, {
+      ...input,
+      name: 'Catalog retry name',
+      updatedAt: 30,
+    }, ownerScope);
+
+    expect(getProject(db, input.id)).toMatchObject({
+      name: 'Pending owner rename',
+      updatedAt: 20,
+    });
   });
 
   it('creates one stable local-only comment anchor without copying owner chat', async () => {
