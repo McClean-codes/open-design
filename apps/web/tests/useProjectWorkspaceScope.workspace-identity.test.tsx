@@ -58,6 +58,14 @@ function jsonResponse(body: unknown): Response {
   });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 let scopeReads: Headers[];
 
 beforeEach(() => {
@@ -154,5 +162,100 @@ describe('useProjectWorkspaceScope ignores shell Workspace selection', () => {
         [...headers.keys()].filter((name) => name.startsWith('x-od-workspace-')),
       ).toEqual([]);
     }
+  });
+
+  it('keeps a settled unbound scope while the ambient Team caller changes', async () => {
+    const callerA = workspaceContext('workspace-a', 'member-a');
+    const callerB = workspaceContext('workspace-b', 'member-b');
+    const fetchMock = vi.fn(async () => jsonResponse({
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const hook = renderHook(
+      ({ caller }) => useProjectWorkspaceScope(PROJECT_ID, caller, null),
+      { initialProps: { caller: callerA as WorkspaceCollabContext | null } },
+    );
+    await waitFor(() => expect(hook.result.current).toEqual({
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    }));
+
+    hook.rerender({ caller: callerB });
+    expect(hook.result.current).toEqual({
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    });
+
+    hook.rerender({ caller: null });
+    expect(hook.result.current).toEqual({
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    });
+    await act(async () => {
+      for (let turn = 0; turn < 4; turn += 1) await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts the in-flight unbound answer when the ambient Team caller changes', async () => {
+    const callerA = workspaceContext('workspace-a', 'member-a');
+    const callerB = workspaceContext('workspace-b', 'member-b');
+    const firstScope = deferred<Response>();
+    const never = new Promise<Response>(() => {});
+    const fetchMock = vi.fn()
+      .mockImplementationOnce(() => firstScope.promise)
+      .mockImplementation(() => never);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const hook = renderHook(
+      ({ caller }) => useProjectWorkspaceScope(PROJECT_ID, caller, null),
+      { initialProps: { caller: callerA } },
+    );
+    expect(hook.result.current).toEqual({ loading: true, scope: null });
+
+    hook.rerender({ caller: callerB });
+    await act(async () => {
+      firstScope.resolve(jsonResponse({
+        scope: {
+          kind: 'unbound',
+          projectId: PROJECT_ID,
+          workspaceId: null,
+          context: null,
+        },
+      }));
+      await firstScope.promise;
+    });
+
+    await waitFor(() => expect(hook.result.current).toEqual({
+      loading: false,
+      scope: {
+        kind: 'unbound',
+        projectId: PROJECT_ID,
+        workspaceId: null,
+        context: null,
+      },
+    }));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });
