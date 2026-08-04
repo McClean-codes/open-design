@@ -292,17 +292,11 @@ export class CollabClient {
     // No identity yet (status polling can be running well before `member`
     // resolves — see setMember) — presence has nothing to announce.
     if (!this.member) return;
-    // A Personal identity can never register Team presence, even if an
-    // inconsistent status response claims the project is shared. Legacy
-    // unscoped clients retain their old post-status behavior, but may not use
-    // the optimistic cold-start path below.
-    if (
-      this.workspaceContext
-      && this.workspaceContext.workspaceType !== 'team'
-    ) {
-      if (this.snapshot.present.length > 0) this.update({ present: [] });
-      return;
-    }
+    // Only an exact Team identity may optimistically announce before the
+    // first status response. Personal Workspaces can be upgraded and gain
+    // collaborators, so they must retain the established post-status path:
+    // once the project is authoritatively confirmed shared below, Presence is
+    // valid and the heartbeat must run.
     const explicitTeamStatusPending =
       this.snapshot.syncState === null
       && this.workspaceContext?.workspaceType === 'team'
