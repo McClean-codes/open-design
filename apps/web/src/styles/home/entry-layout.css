@@ -1912,10 +1912,16 @@
   font-size: 10px;
   font-weight: 800;
   line-height: 1.4;
+  cursor: help;
+  outline: none;
 }
-.inline-switcher__campaign-badge--upgrade {
-  color: var(--text-muted);
-  background: var(--bg-muted);
+.inline-switcher__campaign-badge.is-restricted {
+  color: #5f645d;
+  background: #e4e7e2;
+}
+.inline-switcher__campaign-badge.is-unpaid {
+  color: #5f645d;
+  background: #eceeeb;
 }
 .inline-switcher__chip[data-campaign-highlight='true'] {
   border-color: var(--accent);

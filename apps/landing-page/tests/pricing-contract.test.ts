@@ -75,6 +75,42 @@ function assertPlanContract(value: unknown): asserts value is PricingContract {
 }
 
 describe("pricing contract", () => {
+  it("renders the final DeepSeek campaign promise on personal and team pricing", async () => {
+    const page = await readFile(PRICING_PAGE_PATH, "utf8");
+
+    assert.match(page, /DeepSeek V4 Flash 无限使用/);
+    assert.match(page, /badge: '无限使用'/);
+    assert.match(page, /windowLabel: '活动倒计时'/);
+    assert.match(page, /windowValue: '7天 00:00:00'/);
+    assert.match(page, /data-pricing-campaign-countdown/);
+    assert.match(page, /mockCampaignCountdownDurationMs = 7 \* 24 \* 60 \* 60 \* 1000/);
+    assert.doesNotMatch(page, /距开始/);
+    assert.match(page, /FREE all week/);
+    assert.match(page, /paidBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用'/);
+    assert.match(page, /teamBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用'/);
+    assert.match(page, /2026-08-08T00:00:00\+08:00/);
+    assert.match(page, /2026-08-15T00:00:00\+08:00/);
+    assert.doesNotMatch(page, /权益生效后连续 7 天/);
+    assert.doesNotMatch(page, /2026-08-22T00:00:00\+08:00/);
+    assert.doesNotMatch(page, /限时抢购/);
+  });
+
+  it("aligns the highlighted campaign checkmark with the benefit list below", async () => {
+    const page = await readFile(PRICING_PAGE_PATH, "utf8");
+
+    assert.match(page, /\.pr-campaign-model-benefit::before\s*\{\s*left:\s*8px;\s*\}/);
+    assert.match(
+      page,
+      /\.pr-feat\.pr-campaign-model-benefit::before\s*\{[\s\S]*left:\s*8px;[\s\S]*top:\s*18px;[\s\S]*transform:\s*translateY\(-50%\);/,
+      "the personal campaign checkmark must share the benefit x-axis and align with the title line",
+    );
+    assert.match(
+      page,
+      /\.pr-team-feature-list li\.pr-campaign-model-benefit::before\s*\{[\s\S]*left:\s*8px;[\s\S]*top:\s*18px;[\s\S]*transform:\s*translateY\(-50%\);/,
+      "the team campaign checkmark must override the later base list rule",
+    );
+  });
+
   it("points the public pricing URL at the landing-page JSON contract", () => {
     assert.equal(PLANS_JSON_URL, "/pricing/plans.json");
   });

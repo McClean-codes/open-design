@@ -1,32 +1,64 @@
 export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
   id: 'deepseek-v4-flash-unlimited-2026',
   modelId: 'deepseek-v4-flash',
-  headline: '这次，别省着用。DeepSeek V4 Flash 放开跑。',
-  description: '需求、文案、脚本、代码，想改就改，跑到满意为止。',
+  window: {
+    startAt: '2026-08-08T00:00:00+08:00',
+    endAtExclusive: '2026-08-15T00:00:00+08:00',
+    label: '8 月 8 日—8 月 14 日',
+  },
+  headline: '这次，别省着用。DeepSeek V4 Flash 无限用。',
+  description: '落地页、网站、幻灯片、图片，无限做，做到满意',
   badge: '无限使用',
   benefit: 'DeepSeek V4 Flash 无限使用',
-  timing: '权益生效后连续 7 天',
+  timing: '8 月 8 日至 8 月 14 日，活动期间免费使用',
+  ruleSummary: '8 月 8 日至 8 月 14 日，付费用户可在产品内免费使用；大规模盗刷等违规行为将暂停活动权益。',
   paid: {
-    eyebrow: '你的套餐已包含',
-    status: '已解锁 · 连续 7 天无限使用',
-    cta: '现在就开跑',
-    secondaryCta: '稍后再说',
+    eyebrow: '7 天免费开放',
+    status: '已解锁 · 8 月 8 日—8 月 14 日',
+    cta: '立即使用',
     modelBadge: '无限使用',
   },
   unpaid: {
-    eyebrow: '订阅专享权益',
-    status: '订阅后解锁 · 连续 7 天无限使用',
-    cta: '升级套餐，立即开跑',
-    secondaryCta: '先看看',
-    modelBadge: '升级解锁',
+    eyebrow: '付费用户免费开放',
+    status: '升级后可用 · 截止 8 月 14 日',
+    cta: '升级套餐，立即使用',
+    modelBadge: '升级可用',
+    tooltip: '活动窗口内订阅付费套餐后可用，统一于 8 月 15 日 00:00 结束。',
   },
-  boundary: '仅限产品内使用；并发、排队及合理使用规则仍然适用，不包含 API、MCP 和 CLI 调用。',
+  restricted: {
+    modelBadge: '已暂停',
+    tooltip: '检测到异常的大规模使用，本活动权益已暂停；如有疑问请联系支持。',
+  },
+  boundary: '活动期间不设个人免费额度；仅对大规模盗刷等违规行为采取限制措施。',
 } as const;
 
 export const DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM = 'deepseek-v4-flash';
 export const DEEPSEEK_V4_FLASH_CAMPAIGN_AUDIENCE_PARAM = 'campaignAudience';
 
 export type DeepSeekV4FlashCampaignAudience = 'paid' | 'unpaid' | 'unknown';
+
+export function isDeepSeekV4FlashCampaignWindowOpen(now: number): boolean {
+  const startAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
+  const endAtExclusive = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
+  return now >= startAt && now < endAtExclusive;
+}
+
+function formatCampaignRemaining(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(remainingMs / 1000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+  return `${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+}
+
+export function formatDeepSeekV4FlashCampaignCountdown(now: number): string {
+  const startAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
+  const endAtExclusive = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
+  if (now < startAt) return `距开始 ${formatCampaignRemaining(startAt - now)}`;
+  if (now < endAtExclusive) return `活动剩余 ${formatCampaignRemaining(endAtExclusive - now)}`;
+  return '活动已结束';
+}
 
 export function deepSeekV4FlashCampaignAudienceOverride(
   search: string | null | undefined,

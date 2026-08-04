@@ -1433,7 +1433,6 @@ export function EntryShell({
       onApiProtocolChange={onApiProtocolChange}
       onApiModelChange={onApiModelChange}
       onOpenSettings={onOpenSettings}
-      deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
     />
   );
 

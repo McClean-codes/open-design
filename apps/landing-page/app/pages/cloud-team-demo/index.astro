@@ -1,0 +1,197 @@
+---
+const benefits = [
+  '项目、设计系统与插件，团队统一共享与管理',
+  '成员均可查看和评论项目，仅项目创建者可以编辑',
+  '按角色管理权限：Owner / Admin / Member',
+  '团队用量面板与计费管理',
+  '自定义网站部署域名',
+];
+
+const plans = [
+  { name: 'Team Basic', original: '$5', price: '$3.50', saving: '年付省 30%', note: '基础团队协作，不含模型额度' },
+  { name: 'Team Plus', original: '$25', price: '$17.50', saving: '年付省 30%', note: '小团队协作入门' },
+  { name: 'Team Pro', original: '$105', price: '$63', saving: '年付省 40%', note: '常规项目协作', featured: true },
+  { name: 'Team Max', original: '$205', price: '$100.63', saving: '年付省 51%', note: '高频生成与评审' },
+];
+---
+
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Open Design Cloud 团队升级 Demo</title>
+  </head>
+  <body>
+    <main class="cloud-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">OD</span><strong>Open Design</strong></div>
+        <nav>
+          <a href="#"><span>⌂</span>概览</a>
+          <a href="#"><span>◫</span>用量</a>
+          <a href="#"><span>▤</span>账单</a>
+          <a class="active" href="#"><span>♙</span>成员</a>
+          <a href="#"><span>⚙</span>设置</a>
+        </nav>
+        <div class="sidebar-bottom">
+          <a href="#"><span>◇</span>模型与价格</a>
+          <a href="#"><span>?</span>帮助与文档</a>
+        </div>
+      </aside>
+
+      <section class="workspace">
+        <header>
+          <button class="language">简</button>
+          <button class="workspace-switcher">工作空间&nbsp;&nbsp; Huihua Zhang's workspace⌄</button>
+        </header>
+        <div class="workspace-content">
+          <h1>成员</h1>
+          <section class="seat-card">
+            <div><strong>席位</strong><span>1/1 已用 · 免费版</span></div>
+            <p>免费版仅含 1 个席位，升级团队版可邀请协作。团队版最少 3 个席位，按席位按月计费。</p>
+            <div class="progress"><i></i></div>
+          </section>
+          <section class="members-card">
+            <div class="table-head"><span>成员</span><span>加入时间</span><span>角色</span></div>
+            <div class="member-row"><span class="avatar">H</span><span class="person"><b>Huihua Zhang</b><small>z***@refly.ai</small></span><span>2026年8月3日</span><span>所有者</span></div>
+          </section>
+        </div>
+      </section>
+
+      <div class="backdrop" aria-hidden="true"></div>
+      <section class="upgrade-modal" role="dialog" aria-modal="true" aria-labelledby="upgrade-title">
+        <header class="modal-header">
+          <div>
+            <h2 id="upgrade-title">升级更高版本，获得更多模型额度</h2>
+            <p>团队版按席位按月计费，最少 3 席。</p>
+          </div>
+          <button class="close" aria-label="关闭">×</button>
+        </header>
+
+        <div class="modal-body">
+          <div class="billing-tabs" aria-label="计费周期">
+            <button>月付</button>
+            <button class="selected">年付</button>
+          </div>
+
+          <div class="plan-area">
+            <div class="seat-selector">
+              <div>
+                <strong>席位数</strong>
+                <span>按年计费 · $2268/年 · 每年省 $1512</span>
+                <em>首年实付 $2268，次年续费 $3780（优惠仅首期）</em>
+              </div>
+              <div class="stepper"><button>−</button><b>3 席位</b><button>＋</button></div>
+            </div>
+
+            <div class="plan-grid">
+              {plans.map((plan) => (
+                <article class:list={['plan-card', { featured: plan.featured }]}> 
+                  <div class="plan-title"><strong>{plan.name}</strong>{plan.featured && <span>推荐</span>}</div>
+                  <div class="price-line"><del>{plan.original}</del><b>{plan.price}</b><small>/ 席 / 月</small></div>
+                  <em>{plan.saving}</em>
+                  <p>{plan.note}</p>
+                </article>
+              ))}
+            </div>
+
+            <div class="benefits">
+              <p class="campaign-benefit">
+                <span>✓</span>
+                <strong>DeepSeek V4 Flash 无限使用</strong>
+                <small>8 月 8 日—8 月 14 日 · 付费团队成员免费使用</small>
+              </p>
+              {benefits.map((benefit) => <p><span>✓</span>{benefit}</p>)}
+            </div>
+          </div>
+        </div>
+
+        <footer class="modal-footer">
+          <button class="secondary">暂不升级</button>
+          <button class="primary"><span>✦</span>升级 Team Pro</button>
+        </footer>
+      </section>
+    </main>
+  </body>
+</html>
+
+<style>
+  :global(*) { box-sizing: border-box; }
+  :global(html), :global(body) { margin: 0; min-height: 100%; font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif; color: #171916; }
+  :global(body) { background: #f4f5f3; }
+  button, a { font: inherit; }
+  .cloud-shell { min-height: 100vh; display: flex; position: relative; overflow: hidden; }
+  .sidebar { width: 218px; min-height: 100vh; padding: 26px 18px 20px; background: #f7f8f6; border-right: 1px solid #e6e8e4; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: center; gap: 10px; padding: 0 10px 28px; font-size: 16px; }
+  .brand-mark { width: 29px; height: 29px; border-radius: 9px; background: #111; color: #fff; display: grid; place-items: center; font-size: 10px; font-weight: 800; }
+  nav, .sidebar-bottom { display: grid; gap: 8px; }
+  nav a, .sidebar-bottom a { text-decoration: none; color: #555951; display: flex; align-items: center; gap: 12px; padding: 11px 14px; border-radius: 9px; font-size: 14px; }
+  nav a span, .sidebar-bottom a span { width: 17px; text-align: center; color: #6c7168; }
+  nav a.active { background: #e7f8df; color: #1d6519; font-weight: 600; }
+  .sidebar-bottom { margin-top: auto; border-top: 1px solid #e3e5e1; padding-top: 14px; }
+  .workspace { flex: 1; min-width: 0; background: #fff; }
+  .workspace > header { height: 68px; border-bottom: 1px solid #eceeeb; display: flex; justify-content: flex-end; align-items: center; gap: 12px; padding: 0 32px; }
+  .language, .workspace-switcher { border: 1px solid #e0e3de; background: #fff; border-radius: 8px; padding: 9px 13px; color: #4c504a; }
+  .workspace-content { padding: 38px 46px; }
+  h1 { font-size: 24px; margin: 0 0 25px; }
+  .seat-card, .members-card { border: 1px solid #e3e6e1; border-radius: 12px; padding: 22px; margin-bottom: 20px; }
+  .seat-card > div:first-child { display: flex; align-items: center; gap: 16px; }
+  .seat-card p { color: #777b75; font-size: 13px; }
+  .progress { height: 7px; background: #eef0ed; border-radius: 5px; }
+  .progress i { display: block; width: 70%; height: 100%; border-radius: inherit; background: #67d752; }
+  .table-head { display: grid; grid-template-columns: 2fr 1fr 1fr; color: #8a8e87; font-size: 13px; padding-bottom: 16px; }
+  .member-row { border-top: 1px solid #edf0eb; padding-top: 18px; display: grid; grid-template-columns: 42px 1.7fr 1fr 1fr; align-items: center; font-size: 14px; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #111; color: #fff; }
+  .person { display: grid; gap: 4px; }
+  .person small { color: #8c9089; }
+  .backdrop { position: fixed; inset: 0; background: rgba(20, 24, 18, .34); backdrop-filter: blur(3.2px); z-index: 5; }
+  .upgrade-modal { position: fixed; z-index: 6; width: min(820px, calc(100vw - 32px)); left: 50%; top: 50%; transform: translate(-50%, -50%); background: #fff; border-radius: 14px; box-shadow: 0 28px 80px rgba(18, 24, 16, .26); overflow: hidden; }
+  .modal-header { display: flex; align-items: flex-start; justify-content: space-between; padding: 22px 24px 18px; border-bottom: 1px solid #e5e7e3; }
+  .modal-header h2 { font-size: 18px; margin: 0 0 5px; letter-spacing: -.2px; }
+  .modal-header p { margin: 0; color: #73776f; font-size: 13px; }
+  .close { border: 0; background: transparent; color: #626760; font-size: 22px; cursor: pointer; }
+  .modal-body { display: grid; grid-template-columns: 108px 1fr; padding: 18px 24px 0; max-height: calc(100vh - 190px); overflow: auto; }
+  .billing-tabs { display: grid; align-content: start; gap: 7px; padding-right: 16px; }
+  .billing-tabs button { border: 0; border-radius: 7px; text-align: left; padding: 10px 12px; background: transparent; color: #555a53; }
+  .billing-tabs button.selected { background: #edf0eb; font-weight: 600; }
+  .seat-selector { border: 1px solid #dfe3dc; border-radius: 11px; padding: 14px 16px; display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+  .seat-selector > div:first-child { display: grid; gap: 5px; }
+  .seat-selector strong { font-size: 14px; }
+  .seat-selector span { color: #6d726a; font-size: 12px; }
+  .seat-selector em { color: #239f36; font-size: 12px; font-style: normal; font-weight: 600; }
+  .stepper { display: flex; align-items: center; gap: 12px; white-space: nowrap; }
+  .stepper button { width: 30px; height: 30px; border-radius: 50%; background: #fff; border: 1px solid #dfe3dc; color: #6e746b; }
+  .stepper b { font-size: 13px; }
+  .plan-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 13px; }
+  .plan-card { min-height: 136px; border: 1px solid #dfe3dc; border-radius: 11px; padding: 13px; display: flex; flex-direction: column; }
+  .plan-card.featured { border: 1.5px solid #41c54b; background: #efffec; box-shadow: inset 0 0 0 1px rgba(65, 197, 75, .1); }
+  .plan-title { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+  .plan-title span { border-radius: 12px; padding: 2px 6px; color: #fff; background: #20b936; font-size: 10px; }
+  .price-line { display: flex; align-items: baseline; gap: 5px; margin-top: 10px; }
+  .price-line del { font-size: 11px; color: #7f847d; }
+  .price-line b { font-size: 18px; }
+  .price-line small { color: #7c8179; font-size: 10px; }
+  .plan-card > em { color: #209c33; font-style: normal; font-size: 11px; margin-top: 7px; font-weight: 600; }
+  .plan-card > p { color: #72776f; font-size: 11px; margin: auto 0 0; }
+  .plan-card:nth-child(4) { grid-column: auto; }
+  .benefits { padding: 15px 0 18px; }
+  .benefits > p { display: flex; align-items: center; gap: 8px; margin: 7px 0; font-size: 12px; color: #555a53; }
+  .benefits > p span { color: #31362f; font-weight: 700; }
+  .benefits > p.campaign-benefit { font-size: 13px; color: #30342f; }
+  .campaign-benefit strong { font-weight: 650; }
+  .campaign-benefit small { color: #747970; font-size: 11px; font-weight: 400; }
+  .modal-footer { border-top: 1px solid #e4e7e2; padding: 14px 24px; display: flex; justify-content: flex-end; gap: 10px; }
+  .modal-footer button { border-radius: 20px; padding: 9px 18px; font-weight: 650; cursor: pointer; }
+  .secondary { border: 1px solid #d8dcd5; color: #5e635b; background: #fff; }
+  .primary { border: 0; color: #5aff43; background: #151715; }
+  .primary span { margin-right: 7px; }
+  @media (max-width: 760px) {
+    .sidebar { display: none; }
+    .modal-body { grid-template-columns: 1fr; }
+    .billing-tabs { grid-template-columns: 1fr 1fr; padding: 0 0 12px; }
+    .billing-tabs button { text-align: center; }
+    .plan-grid { grid-template-columns: 1fr 1fr; }
+    .plan-card:nth-child(4) { grid-column: auto; }
+  }
+</style>

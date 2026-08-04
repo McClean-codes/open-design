@@ -119,23 +119,23 @@ const renderCatalogLabel = (label: string) => fillTemplate(label, catalogLabelVa
 const deepSeekCampaign = locale.startsWith('zh')
   ? {
       badge: '无限使用',
-      headline: '这次，别省着用。DeepSeek V4 Flash 放开跑。',
-      body: '需求、文案、脚本、代码，想改就改，跑到满意为止。',
-      timing: '订阅后连续 7 天，产品内使用不计入小时及每日次数。',
+      headline: '这次，别省着用。DeepSeek V4 Flash 无限用。',
+      body: '8 月 8 日—8 月 14 日，一周免费用',
+      windowLabel: '活动倒计时',
+      windowValue: '7天 00:00:00',
       modelBenefit: 'DeepSeek V4 Flash 无限使用',
-      paidBenefitNote: '订阅后连续 7 天',
-      freeBenefitNote: '升级付费方案后解锁',
-      teamBenefitNote: '订阅团队版后连续 7 天 · 团队成员可用',
+      paidBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用',
+      teamBenefitNote: '8 月 8 日—8 月 14 日 · 一周免费用',
     }
   : {
       badge: 'Unlimited',
-      headline: 'Stop rationing. Let DeepSeek V4 Flash run.',
-      body: 'Requirements, copy, scripts, or code—iterate until it is right.',
-      timing: 'For 7 days after subscribing, in-product runs do not count toward hourly or daily limits.',
+      headline: 'Stop rationing. Use DeepSeek V4 Flash without limits.',
+      body: 'FREE all week, Aug 8—Aug 14',
+      windowLabel: 'Campaign countdown',
+      windowValue: '7d 00:00:00',
       modelBenefit: 'Unlimited DeepSeek V4 Flash',
-      paidBenefitNote: '7 consecutive days after subscribing',
-      freeBenefitNote: 'Unlock with a paid plan',
-      teamBenefitNote: '7 days after subscribing to Teams · available to team members',
+      paidBenefitNote: 'Aug 8—Aug 14 · FREE all week',
+      teamBenefitNote: 'Aug 8—Aug 14 · FREE all week',
     };
 
 // Vela's grant already includes the advertised Pro/Max uplift. The percentage
@@ -242,13 +242,16 @@ const jsonLd = [
   </nav>
 
   <article class="info-page pr-page" data-pricing-root data-audience="creator" data-interval="yearly">
-    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign">
+    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign" data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at="2026-08-08T00:00:00+08:00" data-campaign-end-at="2026-08-15T00:00:00+08:00">
       <span class="pr-campaign-badge">{deepSeekCampaign.badge}</span>
-      <div>
+      <div class="pr-campaign-copy">
         <strong>{deepSeekCampaign.headline}</strong>
         <p>{deepSeekCampaign.body}</p>
       </div>
-      <small>{deepSeekCampaign.timing}</small>
+      <div class="pr-campaign-window" aria-label={deepSeekCampaign.windowLabel}>
+        <span>{deepSeekCampaign.windowLabel}</span>
+        <strong data-pricing-campaign-countdown>{deepSeekCampaign.windowValue}</strong>
+      </div>
     </aside>
     <header class="pr-hero">
       <h1 class="pr-hero-heading">{L.heroTitle}</h1>
@@ -324,10 +327,6 @@ const jsonLd = [
         </a>
 
         <ul class="pr-feats">
-          <li class="pr-feat pr-campaign-model-benefit pr-campaign-model-benefit--locked">
-            <strong>{deepSeekCampaign.modelBenefit}</strong>
-            <small>{deepSeekCampaign.freeBenefitNote}</small>
-          </li>
           {/* The trial-credit row and both model lists only exist through the
               signup credit grant; they vanish while that promotion is offline
               (TRIAL_CREDIT_PROMO_ENABLED, mirrors the vela modal). */}
@@ -667,6 +666,35 @@ const jsonLd = [
     (() => {
       const root = document.querySelector('[data-pricing-root]');
       if (!root) return;
+
+      const campaign = root.querySelector('.pr-campaign');
+      const campaignCountdown = root.querySelector('[data-pricing-campaign-countdown]');
+      const campaignIsZh = campaign?.getAttribute('data-campaign-locale') === 'zh';
+      const mockCampaignCountdownDurationMs = 7 * 24 * 60 * 60 * 1000;
+      const mockCampaignCountdownEndAt = Date.now() + mockCampaignCountdownDurationMs;
+      const formatCampaignRemaining = (remainingMs) => {
+        const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+        const days = Math.floor(totalSeconds / 86400);
+        const hours = Math.floor((totalSeconds % 86400) / 3600);
+        const minutes = Math.floor((totalSeconds % 3600) / 60);
+        const seconds = totalSeconds % 60;
+        return `${days}${campaignIsZh ? '天' : 'd'} ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+      };
+      const updateCampaignCountdown = () => {
+        if (!campaignCountdown) return false;
+        const remainingMs = mockCampaignCountdownEndAt - Date.now();
+        if (remainingMs > 0) {
+          campaignCountdown.textContent = formatCampaignRemaining(remainingMs);
+          return true;
+        }
+        campaignCountdown.textContent = campaignIsZh ? '活动已结束' : 'Campaign ended';
+        return false;
+      };
+      if (updateCampaignCountdown()) {
+        const campaignCountdownTimer = window.setInterval(() => {
+          if (!updateCampaignCountdown()) window.clearInterval(campaignCountdownTimer);
+        }, 1000);
+      }
 
       // Shared analytics helper — same PostHog sink as the rest of the site
       // (window.__odTrack, guarded). Stamps page_name + locale on every event.
@@ -1061,7 +1089,9 @@ const jsonLd = [
     padding: 16px 18px;
     border: 1px solid color-mix(in srgb, #68f22e 45%, var(--border));
     border-radius: 16px;
-    background: color-mix(in srgb, #68f22e 8%, transparent);
+    background:
+      radial-gradient(circle at 88% 20%, rgb(104 242 46 / 16%), transparent 28%),
+      color-mix(in srgb, #68f22e 8%, transparent);
   }
   .pr-campaign-badge {
     flex: 0 0 auto;
@@ -1071,34 +1101,41 @@ const jsonLd = [
     background: #68f22e;
     font-size: .75rem;
     font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
   }
-  .pr-campaign > div { flex: 1; }
+  .pr-campaign-copy { flex: 1; }
   .pr-campaign strong { font-size: 1rem; }
   .pr-campaign p { margin: 4px 0 0; color: var(--muted); font-size: .82rem; }
-  .pr-campaign small { max-width: 260px; color: var(--muted); line-height: 1.45; }
+  .pr-campaign-window { flex: 0 0 auto; display: grid; gap: 4px; text-align: right; }
+  .pr-campaign-window > span { color: var(--muted); font-size: .7rem; }
+  .pr-campaign-window strong {
+    color: var(--ink);
+    font-size: .94rem;
+    white-space: nowrap;
+  }
   .pr-feat.pr-campaign-model-benefit,
   .pr-team-feature-list .pr-campaign-model-benefit {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
-    padding-top: 9px;
-    padding-right: 10px;
-    padding-bottom: 9px;
-    border: 1px solid color-mix(in srgb, #68f22e 34%, var(--border));
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-left: -8px;
+    margin-right: -8px;
+    padding: 8px 10px 8px 30px;
+    border: 1px solid color-mix(in srgb, #68f22e 30%, transparent);
     border-radius: 10px;
-    color: #225f0c;
+    color: inherit;
     background: color-mix(in srgb, #68f22e 7%, transparent);
   }
   .pr-campaign-model-benefit strong { font-weight: 780; }
   .pr-campaign-model-benefit small { color: var(--muted); font-size: .72rem; font-weight: 500; }
-  .pr-campaign-model-benefit::before { background: #68f22e !important; }
-  .pr-feat.pr-campaign-model-benefit--locked {
-    color: var(--muted);
-    background: color-mix(in srgb, var(--border) 20%, transparent);
-  }
+  /* The highlighted row expands 8px beyond the regular list. Offset its
+     checkmark back by the same amount so it shares the column below. */
+  .pr-campaign-model-benefit::before { left: 8px; }
   @media (max-width: 760px) {
     .pr-campaign { align-items: flex-start; flex-wrap: wrap; }
-    .pr-campaign small { width: 100%; max-width: none; }
+    .pr-campaign-window { width: 100%; text-align: left; }
   }
 
   /* ---- Hero ---- */
@@ -1320,6 +1357,15 @@ const jsonLd = [
     top: 0;
     font-weight: 700;
     color: var(--olive, #218c00);
+  }
+  /* The highlighted row extends 8px left of the regular list. Put the check
+     back on the shared x-axis, then center it against the first (DeepSeek)
+     text line instead of the two-line card as a whole. */
+  .pr-feat.pr-campaign-model-benefit::before {
+    left: 8px;
+    top: 18px;
+    line-height: 1;
+    transform: translateY(-50%);
   }
   /* Lead rows (credit + concurrency) read bold on paid tiers, mirroring the
      vela modal's core-benefit emphasis. */
@@ -1581,6 +1627,15 @@ const jsonLd = [
     top: 0;
     font-weight: 700;
     color: var(--olive, #218c00);
+  }
+  /* The campaign row extends 8px outside the list. Match that offset with a
+     more specific rule so its checkmark stays on the exact same x-axis as
+     every standard team benefit below it. */
+  .pr-team-feature-list li.pr-campaign-model-benefit::before {
+    left: 8px;
+    top: 18px;
+    line-height: 1;
+    transform: translateY(-50%);
   }
   .pr-team-checkout {
     width: 100%;

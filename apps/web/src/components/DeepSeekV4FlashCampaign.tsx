@@ -4,6 +4,7 @@ import { Button, Dialog } from '@open-design/components';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN as campaign,
   DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM,
+  formatDeepSeekV4FlashCampaignCountdown,
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
@@ -56,6 +57,7 @@ function focusModelSwitcher(): void {
 export function DeepSeekV4FlashCampaign({ audience }: Props) {
   const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
+  const [countdownNow, setCountdownNow] = useState(() => Date.now());
   const dialogId = useId();
   const titleId = useId();
   const descriptionId = useId();
@@ -79,7 +81,14 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
       document.body.style.overflow = previousBodyOverflow;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
-  }, [dialogId, modalOpen]);
+  }, [audience, dialogId, modalOpen]);
+
+  useEffect(() => {
+    if (!modalOpen) return;
+    setCountdownNow(Date.now());
+    const countdownTimer = window.setInterval(() => setCountdownNow(Date.now()), 1_000);
+    return () => window.clearInterval(countdownTimer);
+  }, [modalOpen]);
 
   const closeModal = () => {
     markCampaignSeen();
@@ -125,11 +134,6 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
         <Icon name="close" size={17} strokeWidth={1.8} />
       </Button>
 
-      <div className={styles.offerBar}>
-        <span className={styles.offerBadge}>{campaign.badge}</span>
-        <span>{campaign.timing}</span>
-      </div>
-
       <p className={styles.eyebrow}>{presentation.eyebrow}</p>
       <h2 id={titleId} className={styles.title}>{campaign.headline}</h2>
       <p id={descriptionId} className={styles.lead}>{campaign.description}</p>
@@ -145,14 +149,24 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
         </span>
       </div>
 
+      <div className={styles.countdown} aria-label="活动倒计时">
+        <span className={styles.countdownLabel}>活动倒计时</span>
+        <strong data-testid="deepseek-v4-flash-campaign-countdown">
+          {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
+        </strong>
+        <small>{campaign.window.label} · 一周免费用</small>
+      </div>
+
       <p className={styles.boundary}>{campaign.boundary}</p>
       <div className={styles.actions}>
         <Button className={styles.primaryAction} onClick={takeAction}>
           {presentation.cta}
         </Button>
-        <Button variant="ghost" onClick={closeModal}>
-          {presentation.secondaryCta}
-        </Button>
+        {paid ? (
+          <Button variant="ghost" className={styles.laterAction} onClick={closeModal}>
+            稍后再说
+          </Button>
+        ) : null}
       </div>
     </Dialog>,
     document.body,

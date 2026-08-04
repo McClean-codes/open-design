@@ -93,9 +93,15 @@ import {
 } from './providerModelsCache';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
+  deepSeekV4FlashCampaignAudienceOverride,
   isDeepSeekV4FlashCampaignModel,
-  type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
+
+function deepSeekCampaignUsageRestricted(): boolean {
+  if (typeof window === 'undefined') return false;
+  const value = new URLSearchParams(window.location.search).get('campaignUsage');
+  return value === 'restricted' || value === 'exhausted';
+}
 
 interface Props {
   config: AppConfig;
@@ -126,7 +132,6 @@ interface Props {
       | 'pet'
       | 'about',
   ) => void;
-  deepSeekV4FlashCampaignAudience?: DeepSeekV4FlashCampaignAudience;
 }
 
 const API_PROTOCOL_TABS: Array<{ id: ApiProtocol; title: string }> = [
@@ -185,10 +190,29 @@ export function InlineModelSwitcher({
   onApiModelChange,
   onProviderModelsCacheChange,
   onOpenSettings,
-  deepSeekV4FlashCampaignAudience = 'unknown',
 }: Props) {
   const t = useT();
   const analytics = useAnalytics();
+  const campaignUsageRestricted = deepSeekCampaignUsageRestricted();
+  const campaignAudienceOverride = typeof window === 'undefined'
+    ? null
+    : deepSeekV4FlashCampaignAudienceOverride(window.location.search);
+  const campaignNeedsUpgrade = campaignAudienceOverride === 'unpaid';
+  const campaignModelBadge = campaignUsageRestricted
+    ? DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.modelBadge
+    : campaignNeedsUpgrade
+      ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge
+      : DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge;
+  const campaignModelTooltip = campaignUsageRestricted
+    ? DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.tooltip
+    : campaignNeedsUpgrade
+      ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip
+      : DEEPSEEK_V4_FLASH_CAMPAIGN.ruleSummary;
+  const campaignBadgeStateClass = campaignUsageRestricted
+    ? ' is-restricted'
+    : campaignNeedsUpgrade
+      ? ' is-unpaid'
+      : '';
   // recvqfYKutwWlQ: gate the AMR upgrade entry on billing permission below,
   // not just plan tier — a team member without `canManageBilling` (owner-only)
   // can't act on an upgrade even when the tier itself is upgradeable.
@@ -763,14 +787,9 @@ export function InlineModelSwitcher({
     () =>
       inlineAgentModelOptions.map((model) => ({
         model,
-        selectable:
-          agentModelIsSelectable(currentAgent, model.id)
-          && !(
-            deepSeekV4FlashCampaignAudience === 'unpaid'
-            && isDeepSeekV4FlashCampaignModel(model.id)
-          ),
+        selectable: agentModelIsSelectable(currentAgent, model.id),
       })),
-    [currentAgent, deepSeekV4FlashCampaignAudience, inlineAgentModelOptions],
+    [currentAgent, inlineAgentModelOptions],
   );
 
   /** Where a refused model pick sends the user instead — the same plans
@@ -1098,14 +1117,13 @@ export function InlineModelSwitcher({
             />
             <span className="inline-switcher__chip-model-name">{chipModel}</span>
             {isDeepSeekV4FlashCampaignModel(currentModelId) ? (
-              <span className={`inline-switcher__campaign-badge${
-                deepSeekV4FlashCampaignAudience === 'unpaid'
-                  ? ' inline-switcher__campaign-badge--upgrade'
-                  : ''
-              }`}>
-                {deepSeekV4FlashCampaignAudience === 'unpaid'
-                  ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge
-                  : DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge}
+              <span
+                className={`inline-switcher__campaign-badge od-tooltip${campaignBadgeStateClass}`}
+                data-tooltip={campaignModelTooltip}
+                data-tooltip-placement="top"
+                aria-label={campaignModelTooltip}
+              >
+                {campaignModelBadge}
               </span>
             ) : null}
           </>
@@ -1228,9 +1246,7 @@ export function InlineModelSwitcher({
                     const campaignModel = isDeepSeekV4FlashCampaignModel(m.id);
                     const lockedHint = selectable
                       ? null
-                      : campaignModel && deepSeekV4FlashCampaignAudience === 'unpaid'
-                        ? '订阅后可享连续 7 天无限使用'
-                        : t('settings.amrModelUpgradeHint');
+                      : t('settings.amrModelUpgradeHint');
                     return (
                       <div key={m.id} className="inline-switcher__agent-row">
                         <button
@@ -1246,10 +1262,6 @@ export function InlineModelSwitcher({
                           }
                           data-testid={`inline-model-switcher-compact-model-${m.id}`}
                           onClick={() => {
-                            if (campaignModel && deepSeekV4FlashCampaignAudience === 'unpaid') {
-                              openAmrModelUpgrade();
-                              return;
-                            }
                             // The sink is the authority, not the row's styling:
                             // a refused pick routes to the plans page (same as
                             // the settings picker's lock) instead of writing a
@@ -1290,14 +1302,13 @@ export function InlineModelSwitcher({
                             {m.label}
                           </span>
                           {campaignModel ? (
-                            <span className={`inline-switcher__campaign-badge${
-                              deepSeekV4FlashCampaignAudience === 'unpaid'
-                                ? ' inline-switcher__campaign-badge--upgrade'
-                                : ''
-                            }`}>
-                              {deepSeekV4FlashCampaignAudience === 'unpaid'
-                                ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge
-                                : DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge}
+                            <span
+                              className={`inline-switcher__campaign-badge od-tooltip${campaignBadgeStateClass}`}
+                              data-tooltip={campaignModelTooltip}
+                              data-tooltip-placement="top"
+                              aria-label={campaignModelTooltip}
+                            >
+                              {campaignModelBadge}
                             </span>
                           ) : null}
                           {lockedHint ? (
