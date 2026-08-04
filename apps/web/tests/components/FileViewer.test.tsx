@@ -5875,6 +5875,14 @@ describe('FileViewer SVG artifacts', () => {
     const versionDialog = await screen.findByRole('dialog', { name: 'Versions' });
     const currentOption = within(versionDialog).getByRole('option', { name: /Current prompt/ }) as HTMLButtonElement;
     currentOption.focus();
+    // The iframe node exists before the selected version content has committed
+    // and before the deck keyboard effect has installed its window listener.
+    // Wait on the user's observable readiness contract instead: the Open
+    // preview action becomes enabled from the same
+    // selectedContentMatchesVersion/loadingContent state that enables deck
+    // keyboard routing.
+    const openPreview = within(versionDialog).getByRole('button', { name: 'Open preview' }) as HTMLButtonElement;
+    await waitFor(() => expect(openPreview.disabled).toBe(false));
     const previewFrame = await waitFor(() => {
       const frame = versionDialog.querySelector('iframe[title="index.html v4"]') as HTMLIFrameElement | null;
       expect(frame?.contentWindow).toBeTruthy();
