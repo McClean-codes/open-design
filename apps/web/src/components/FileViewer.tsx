@@ -232,7 +232,10 @@ import {
   type AnchorWriteBack,
   type PreviewCommentSnapshot,
 } from '../comments';
-import { useProjectCollabContext } from '../collab/collab-context';
+import {
+  useProjectCollabContext,
+  type ProjectResourceAuthority,
+} from '../collab/collab-context';
 import { currentUserDirectoryEntry, useTeamMembers } from '../collab/useTeamMembers';
 import { applyPodMemberRemoval } from '../lib/pod-members';
 import { AnnotationHoverPopover, BoardComposerPopover } from './BoardComposerPopover';
@@ -265,6 +268,7 @@ import {
   getHtmlSourceSnapshot,
   htmlSourceSnapshotRefreshKey,
   invalidateHtmlSourceSnapshotFile,
+  invalidateHtmlSourceSnapshotProject,
   setHtmlSourceSnapshot,
 } from './html-source-snapshot-cache';
 
@@ -1714,6 +1718,41 @@ interface Props {
   manualEditEntryAllowed?: boolean;
 }
 
+function FileViewerLoadingSkeleton() {
+  const t = useT();
+  return (
+    <div
+      className="viewer-loading"
+      role="status"
+      aria-busy="true"
+      aria-label={t('fileViewer.loading')}
+    >
+      <div className="viewer-loading-stage" aria-hidden="true">
+        <span className="viewer-loading-card viewer-loading-card-back viewer-loading-card-back-two" />
+        <span className="viewer-loading-card viewer-loading-card-back viewer-loading-card-back-one" />
+        <span className="viewer-loading-card viewer-loading-card-main">
+          <span className="viewer-loading-kicker" />
+          <span className="viewer-loading-title" />
+          <span className="viewer-loading-title viewer-loading-title-short" />
+          <span className="viewer-loading-rule" />
+          <span className="viewer-loading-content">
+            <span className="viewer-loading-copy">
+              <span className="viewer-loading-line" />
+              <span className="viewer-loading-line viewer-loading-line-medium" />
+              <span className="viewer-loading-line viewer-loading-line-short" />
+            </span>
+            <span className="viewer-loading-chart">
+              <span className="viewer-loading-bar viewer-loading-bar-one" />
+              <span className="viewer-loading-bar viewer-loading-bar-two" />
+              <span className="viewer-loading-bar viewer-loading-bar-three" />
+            </span>
+          </span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // Memoized so FileWorkspace-local state churn (tab drag hover, closing a
 // NEIGHBORING tab, launcher toggles) skips this whole subtree — the live
 // preview iframes below are the most expensive thing on screen. Relies on
@@ -1755,6 +1794,19 @@ export const FileViewer = memo(function FileViewer({
   onManualEditExitHandlerChange,
   manualEditEntryAllowed = true,
 }: Props) {
+  const t = useT();
+  const projectCollabContext = useProjectCollabContext();
+  const projectResourceAuthority = projectCollabContext.projectResourceAuthority
+    ?? (projectCollabContext.workspaceContextLoading
+      ? 'pending'
+      : projectCollabContext.workspaceContext
+        ? 'workspace'
+        : 'local');
+  const projectResourceReadAllowed = projectResourceAuthority === 'local'
+    || (
+      projectResourceAuthority === 'workspace'
+      && projectCollabContext.workspaceContext !== null
+    );
   const rendererMatch = artifactRendererRegistry.resolve({
     file,
     isDeckHint: Boolean(isDeck),
@@ -1775,6 +1827,23 @@ export const FileViewer = memo(function FileViewer({
       page_name: 'artifact',
     });
   }, [projectId, projectKind, file.name, file.kind, rendererMatch?.renderer.id, analytics.track, workspaceActive]);
+  useEffect(() => {
+    if (projectResourceReadAllowed) return;
+    invalidateHtmlSourceSnapshotProject(projectId);
+  }, [projectId, projectResourceReadAllowed]);
+
+  if (!projectResourceReadAllowed) {
+    if (projectResourceAuthority === 'denied') {
+      return (
+        <div className="viewer">
+          <div className="viewer-body">
+            <div className="viewer-empty">{t('fileViewer.previewUnavailable')}</div>
+          </div>
+        </div>
+      );
+    }
+    return <FileViewerLoadingSkeleton />;
+  }
 
   if (rendererMatch?.renderer.id === 'html' || rendererMatch?.renderer.id === 'deck-html') {
     return (
@@ -6988,11 +7057,15 @@ function DocumentPreviewViewer({
 export function fileViewerSourceAuthorizationScopeKey(
   workspaceContextLoading: boolean,
   workspaceContext: WorkspaceCollabContext | null,
+  projectResourceAuthority?: ProjectResourceAuthority,
 ): string | null {
-  if (workspaceContextLoading) return null;
-  return workspaceContext
-    ? `workspace:${workspaceIdentityCacheKey(workspaceContext)}`
-    : 'local';
+  const authority = projectResourceAuthority
+    ?? (workspaceContextLoading ? 'pending' : workspaceContext ? 'workspace' : 'local');
+  if (authority === 'local') return 'local';
+  if (authority === 'workspace' && workspaceContext) {
+    return `workspace:${workspaceIdentityCacheKey(workspaceContext)}`;
+  }
+  return null;
 }
 
 function HtmlViewer({
@@ -7085,10 +7158,12 @@ function HtmlViewer({
   const {
     workspaceContext: observedWorkspaceContext,
     workspaceContextLoading,
+    projectResourceAuthority,
   } = useProjectCollabContext();
   const observedSourceAuthorizationScopeKey = fileViewerSourceAuthorizationScopeKey(
     workspaceContextLoading,
     observedWorkspaceContext,
+    projectResourceAuthority,
   );
   // Project context providers may re-materialize an equivalent object while
   // ambient focus/presence settles. Requests are scoped by the fields encoded
@@ -7100,25 +7175,25 @@ function HtmlViewer({
     value: WorkspaceCollabContext | null;
   }>({
     key: observedSourceAuthorizationScopeKey,
-    value: workspaceContextLoading ? null : observedWorkspaceContext,
+    value: observedSourceAuthorizationScopeKey?.startsWith('workspace:')
+      ? observedWorkspaceContext
+      : null,
   });
-  // A transient provider loading pulse is not an authority change when this
-  // mounted project already has an exact resolved witness. Keep that witness
-  // until a new resolved identity arrives; a first-ever loading render still
-  // has no witness and therefore remains fail closed.
-  if (
-    !workspaceContextLoading &&
-    stableWorkspaceContextRef.current.key !== observedSourceAuthorizationScopeKey
-  ) {
+  // ProjectView turns transient scope loading into `workspace` only when an
+  // exact persisted-project/caller witness remains valid. Pending and denied
+  // states deliberately replace a prior key with null, clearing old content.
+  if (stableWorkspaceContextRef.current.key !== observedSourceAuthorizationScopeKey) {
     stableWorkspaceContextRef.current = {
       key: observedSourceAuthorizationScopeKey,
-      value: observedWorkspaceContext,
+      value: observedSourceAuthorizationScopeKey?.startsWith('workspace:')
+        ? observedWorkspaceContext
+        : null,
     };
   }
   const workspaceContext = stableWorkspaceContextRef.current.value;
   const sourceAuthorizationScopeKey = stableWorkspaceContextRef.current.key;
-  const workspaceContextIdentityChangePending =
-    workspaceContextLoading && stableWorkspaceContextRef.current.key === null;
+  const projectResourceReadBlocked =
+    sourceAuthorizationScopeKey === null;
   // A retained viewer must not consume global file-watch pulses while hidden.
   // Remember only the latest token and apply it synchronously on activation so
   // a long-hidden tab performs one refresh, never one request per missed pulse.
@@ -8817,6 +8892,11 @@ function HtmlViewer({
 
   useEffect(() => {
     if (!workspaceActive) return;
+    // Never turn a pending or denied bound-project authority into a legal
+    // local/headerless read. The authorization key changes when an exact
+    // Workspace witness resolves, which reruns this effect with scoped URL and
+    // headers. Only an explicit daemon `unbound` result receives the local key.
+    if (projectResourceReadBlocked) return;
     const sourceFileKey =
       `${sourceAuthorizationScopeKey ?? 'pending'}\0${projectId}\0${file.name}\0${liveHtml === undefined ? 'raw' : 'live'}`;
     if (liveHtml !== undefined) {
@@ -9002,6 +9082,7 @@ function HtmlViewer({
     sourceAuthorizationScopeKey,
     shouldDeferPassivePreviewSource,
     workspaceActive,
+    projectResourceReadBlocked,
   ]);
 
   useEffect(() => {
@@ -9972,8 +10053,11 @@ function HtmlViewer({
     drawOverlayOpen &&
     !manualEditRequiresSrcDoc &&
     shouldUrlLoadHtmlPreview({ ...urlLoadDecision, drawMode: false });
-  const urlTransportSrc =
-    useUrlLoadPreview || srcDocForcedOnlyByDraw ? activePreviewSrcUrl : 'about:blank';
+  const urlTransportSrc = projectResourceReadBlocked
+    ? 'about:blank'
+    : useUrlLoadPreview || srcDocForcedOnlyByDraw
+      ? activePreviewSrcUrl
+      : 'about:blank';
   const activePoweredPreviewSrcOverride = poweredPreviewSrcOverride
     && poweredPreviewSrcOverride.projectId === projectId
     && poweredPreviewSrcOverride.fileName === file.name
@@ -13833,9 +13917,9 @@ function HtmlViewer({
   // where a comment lost its avatar and name.
   const commentAuthorSelf = useMemo(
     () => currentUserDirectoryEntry(
-      workspaceContextIdentityChangePending ? null : workspaceContext,
+      projectResourceReadBlocked ? null : workspaceContext,
     ),
-    [workspaceContext, workspaceContextIdentityChangePending],
+    [workspaceContext, projectResourceReadBlocked],
   );
   const commentComposerPortalMetrics = (() => {
     if (!commentComposerHost || !commentPreviewCanvasNode) return null;
@@ -15098,35 +15182,7 @@ function HtmlViewer({
       <div className="viewer-body" ref={previewBodyRef}>
         {initialPreviewLoading || sourceModeLoading ? (
           initialPreviewLoading ? (
-          <div
-            className="viewer-loading"
-            role="status"
-            aria-busy="true"
-            aria-label={t('fileViewer.loading')}
-          >
-            <div className="viewer-loading-stage" aria-hidden="true">
-              <span className="viewer-loading-card viewer-loading-card-back viewer-loading-card-back-two" />
-              <span className="viewer-loading-card viewer-loading-card-back viewer-loading-card-back-one" />
-              <span className="viewer-loading-card viewer-loading-card-main">
-                <span className="viewer-loading-kicker" />
-                <span className="viewer-loading-title" />
-                <span className="viewer-loading-title viewer-loading-title-short" />
-                <span className="viewer-loading-rule" />
-                <span className="viewer-loading-content">
-                  <span className="viewer-loading-copy">
-                    <span className="viewer-loading-line" />
-                    <span className="viewer-loading-line viewer-loading-line-medium" />
-                    <span className="viewer-loading-line viewer-loading-line-short" />
-                  </span>
-                  <span className="viewer-loading-chart">
-                    <span className="viewer-loading-bar viewer-loading-bar-one" />
-                    <span className="viewer-loading-bar viewer-loading-bar-two" />
-                    <span className="viewer-loading-bar viewer-loading-bar-three" />
-                  </span>
-                </span>
-              </span>
-            </div>
-          </div>
+            <FileViewerLoadingSkeleton />
           ) : (
             <div className="viewer-empty">{t('fileViewer.loading')}</div>
           )

@@ -885,6 +885,7 @@ export function EntryShell({
     // list and leaving the project header stale until a later metadata event.
     const projectName = allProjectsList.find((project) => project.id === id)?.name.trim();
     const teamProject = teamProjects.projects.find((project) => project.projectId === id);
+    const localProject = projects.find((project) => project.id === id);
     const projectTitleHint = projectName
       ? {
           name: projectName,
@@ -900,7 +901,7 @@ export function EntryShell({
         }
       : undefined;
     const open = () => Promise.resolve(onOpenProject(id, undefined, projectTitleHint));
-    if (localProjectIds.has(id) || contentReadyProjectIdsRef.current.has(id)) {
+    if (contentReadyProjectIdsRef.current.has(id)) {
       await open();
       return true;
     }
@@ -915,6 +916,31 @@ export function EntryShell({
         return true;
       }
       if (contentReadyScopeKeyRef.current !== scopeKey) return false;
+    }
+    // The daemon explicitly stamps the local row created by a first Team
+    // status read as a placeholder. Hydrate only that stamped row before
+    // navigation; a normal local Team row is already materialized and must
+    // keep its direct-open path (including unpublished owner changes).
+    if (
+      localProject?.metadata?.sharedProjectPlaceholderAt != null
+      && teamProject
+      && workspaceContext?.workspaceType === 'team'
+      && workspaceContext.workspaceId
+      && workspaceContext.workspaceMemberId
+      && onTeamProjectContentReady
+    ) {
+      const hydrated = await acceptContentReadyProject(
+        id,
+        workspaceContext.workspaceId,
+        workspaceContext.workspaceMemberId,
+      );
+      if (hydrated) {
+        await open();
+        return true;
+      }
+    } else if (localProjectIds.has(id)) {
+      await open();
+      return true;
     }
     // The pull materializes the whole project before it can open; surface it
     // on the card (spinner overlay) and swallow re-clicks meanwhile —

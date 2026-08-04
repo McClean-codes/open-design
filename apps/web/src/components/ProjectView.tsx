@@ -254,7 +254,11 @@ import {
   runWorkspacePersonalAdoptionWitness,
   useProjectWorkspaceScope,
 } from '../collab/useProjectWorkspaceScope';
-import { CollabProvider, type CollabContextValue } from '../collab/collab-context';
+import {
+  CollabProvider,
+  type CollabContextValue,
+  type ProjectResourceAuthority,
+} from '../collab/collab-context';
 import { persistCommentAnchors } from '../collab/comment-anchor-client';
 import type { AnchorWriteBack } from '../comments';
 import { PluginDetailsModal } from './PluginDetailsModal';
@@ -1793,6 +1797,15 @@ export function ProjectView({
   }
   const projectRunWorkspaceContext =
     canonicalProjectRunWorkspaceContextRef.current.context;
+  const projectResourceAuthority: ProjectResourceAuthority =
+    projectWorkspaceScopeState.failure === 'forbidden'
+    || projectWorkspaceScopeState.failure === 'unsupported'
+      ? 'denied'
+      : projectWorkspaceScopeState.scope?.kind === 'unbound'
+        ? 'local'
+        : projectRunWorkspaceContext
+          ? 'workspace'
+          : 'pending';
   const projectRunWorkspaceContextRef = useRef(projectRunWorkspaceContext);
   projectRunWorkspaceContextRef.current = projectRunWorkspaceContext;
   // The AMR pre-run balance gate uses the project's resolved scope, or the one
@@ -2062,12 +2075,14 @@ export function ProjectView({
       ...projectCollab,
       workspaceContext: projectRunWorkspaceContext,
       workspaceContextLoading: projectWorkspaceScopeState.loading,
+      projectResourceAuthority,
       onLostAnchors: handleLostAnchors,
     }),
     [
       projectCollab,
       projectRunWorkspaceContext,
       projectWorkspaceScopeState.loading,
+      projectResourceAuthority,
       handleLostAnchors,
     ],
   );

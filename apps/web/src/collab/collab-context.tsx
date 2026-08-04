@@ -7,10 +7,15 @@ import type { ProjectCollab } from './useProjectCollab';
 // to deep descendants (FileViewer's comment overlay) without prop-threading
 // through the big intermediate components, and without a second collab client.
 
+export type ProjectResourceAuthority = 'pending' | 'denied' | 'local' | 'workspace';
+
 export interface CollabContextValue extends ProjectCollab {
   /** Exact persisted scope of the project being rendered. Never shell navigation state. */
   workspaceContext: WorkspaceCollabContext | null;
   workspaceContextLoading: boolean;
+  /** Whether project-owned resources may use local or exact Workspace reads.
+   * Optional only for standalone consumers; ProjectView always supplies it. */
+  projectResourceAuthority?: ProjectResourceAuthority;
   /** Persist a drifted-to-`lost` comment's last-good position (needs the active
    * conversation id, which only ProjectView has). Absent when unavailable. */
   onLostAnchors?: (writeBacks: AnchorWriteBack[]) => void;
@@ -19,6 +24,7 @@ export interface CollabContextValue extends ProjectCollab {
 const DISABLED: CollabContextValue = {
   workspaceContext: null,
   workspaceContextLoading: false,
+  projectResourceAuthority: 'local',
   enabled: false,
   member: null,
   present: [],
