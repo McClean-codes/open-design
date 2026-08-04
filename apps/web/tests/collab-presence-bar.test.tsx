@@ -128,4 +128,41 @@ describe('PresenceBar', () => {
     expect(screen.getByText('RT')).toBeTruthy();
     expect(screen.queryByText('OP')).toBeNull();
   });
+
+  it('rejects an opaque self fallback until a real self name arrives', () => {
+    const resolveMember = (memberId: string) =>
+      memberId === 'opaque-self-member-id'
+        ? {
+            memberId,
+            displayName: memberId,
+            role: 'member' as const,
+          }
+        : {
+            memberId,
+            displayName: 'Visible Peer',
+            role: 'admin' as const,
+          };
+    const { rerender } = render(
+      <PresenceBar
+        selfMember={{ memberId: 'opaque-self-member-id' }}
+        selfMemberId="opaque-self-member-id"
+        members={[{ memberId: 'peer-member-id' }]}
+        resolveMember={resolveMember}
+      />,
+    );
+
+    expect(screen.getByText('VP')).toBeTruthy();
+    expect(screen.queryByTitle('opaque-self-member-id')).toBeNull();
+
+    rerender(
+      <PresenceBar
+        selfMember={{ memberId: 'opaque-self-member-id', name: 'Real Viewer' }}
+        selfMemberId="opaque-self-member-id"
+        members={[{ memberId: 'peer-member-id' }]}
+        resolveMember={resolveMember}
+      />,
+    );
+    expect(screen.getByText('RV')).toBeTruthy();
+    expect(screen.queryByTitle('opaque-self-member-id')).toBeNull();
+  });
 });

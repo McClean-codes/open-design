@@ -102,7 +102,13 @@ export function useTeamMembers(
   // During an unseeded account transition the context still describes the
   // account being left. Do not create or warm the next account's store until
   // useWorkspaceContext resolves its verified context.
-  const activeWorkspaceContext = identityChangePending ? null : workspaceContext;
+  const activeWorkspaceContext =
+    !identityChangePending
+    && workspaceContext?.workspaceType === 'team'
+    && Boolean(workspaceContext.workspaceId.trim())
+    && Boolean(workspaceContext.workspaceMemberId.trim())
+      ? workspaceContext
+      : null;
   const store = teamMembersStoreFor(
     activeWorkspaceContext,
     accountGeneration,

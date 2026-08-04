@@ -402,4 +402,24 @@ describe('useTeamMembers shared scheduler', () => {
 
     hook.unmount();
   });
+
+  it('does not load the Team directory for an explicit Personal scope', async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify({ members: [] }), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const personalContext: WorkspaceCollabContext = {
+      ...TEAM_CONTEXT,
+      workspaceType: 'personal',
+      teamId: undefined,
+    };
+
+    const hook = renderHook(() => useTeamMembers(undefined, personalContext));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(hook.result.current.members).toEqual([]);
+    hook.unmount();
+  });
 });

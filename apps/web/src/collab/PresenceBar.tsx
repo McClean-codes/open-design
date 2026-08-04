@@ -83,12 +83,18 @@ export function PresenceBar({
   const popoverId = useId();
   const enrich = (member: CollabPresenceMember): CollabPresenceMember => {
     const directoryEntry = resolveMember?.(member.memberId);
-    if (!directoryEntry) return member;
-    return {
-      ...member,
-      name: directoryEntry.displayName.trim() || member.name,
-      role: directoryEntry.role,
-    };
+    const memberName = member.name?.trim();
+    const directoryName = directoryEntry?.displayName.trim();
+    const resolvedName = memberName && memberName !== member.memberId
+      ? memberName
+      : directoryName && directoryName !== member.memberId
+        ? directoryName
+        : undefined;
+    const next = { ...member };
+    if (resolvedName) next.name = resolvedName;
+    else delete next.name;
+    if (directoryEntry) next.role = directoryEntry.role;
+    return next;
   };
   const resolvedSelf =
     (selfMember ? enrich(selfMember) : null) ??
