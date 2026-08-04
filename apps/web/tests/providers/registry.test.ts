@@ -11,6 +11,8 @@ import {
   CLOUDFLARE_PAGES_PROVIDER_ID,
   connectConnector,
   DEFAULT_DEPLOY_PROVIDER_ID,
+  deleteDesignSystemDraft,
+  DesignSystemDeleteError,
   deletePreviewComment,
   deployProjectFile,
   createDesignSystemDraft,
@@ -107,6 +109,29 @@ describe('design-system Workspace scope', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/design-systems', {
+      headers: expect.objectContaining({
+        'x-od-workspace-id': context.workspaceId,
+        'x-od-workspace-member-id': context.workspaceMemberId,
+      }),
+    });
+  });
+
+  it('preserves the permission code from a denied design-system delete', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      error: 'WORKSPACE_RESOURCE_MANAGE_DENIED',
+    }), { status: 403, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const context = teamWorkspaceContext();
+
+    await expect(deleteDesignSystemDraft('user:team-brand', context)).rejects.toEqual(
+      expect.objectContaining<Partial<DesignSystemDeleteError>>({
+        name: 'DesignSystemDeleteError',
+        status: 403,
+        code: 'WORKSPACE_RESOURCE_MANAGE_DENIED',
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith('/api/design-systems/user%3Ateam-brand', {
+      method: 'DELETE',
       headers: expect.objectContaining({
         'x-od-workspace-id': context.workspaceId,
         'x-od-workspace-member-id': context.workspaceMemberId,

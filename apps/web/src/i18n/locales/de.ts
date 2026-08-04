@@ -4315,6 +4315,7 @@ export const de: Dict = {
   'dsManager.statusDraft': 'Entwurf',
   'dsManager.openSystemAria': '{title} öffnen',
   'dsManager.deleteSystemAria': '{title} löschen',
+  'dsManager.deletePermissionDenied': 'Du hast keine Berechtigung, dieses Designsystem zu löschen.',
   'dsManager.presetsAria': 'Offizielle Voreinstellungen für Designsysteme',
   'dsManager.eyebrowLibrary': 'Bibliothek',
   'dsManager.eyebrowTemplates': 'Vorlagen',

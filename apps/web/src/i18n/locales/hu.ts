@@ -4315,6 +4315,7 @@ export const hu: Dict = {
   'dsManager.statusDraft': 'Vázlat',
   'dsManager.openSystemAria': '{title} megnyitása',
   'dsManager.deleteSystemAria': '{title} törlése',
+  'dsManager.deletePermissionDenied': 'Nincs jogosultságod ennek a designrendszernek a törléséhez.',
   'dsManager.presetsAria': 'Hivatalos design rendszer előbeállítások',
   'dsManager.eyebrowLibrary': 'Könyvtár',
   'dsManager.eyebrowTemplates': 'Sablonok',

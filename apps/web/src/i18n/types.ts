@@ -2186,6 +2186,7 @@ export interface Dict {
   'dsManager.downloadAria': string;
   'dsManager.downloadFailed': string;
   'dsManager.deleteConfirm': string;
+  'dsManager.deletePermissionDenied': string;
   'dsManager.makeDefault': string;
   'dsManager.statusPublished': string;
   'dsManager.statusDraft': string;

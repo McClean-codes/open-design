@@ -4315,6 +4315,7 @@ export const uk: Dict = {
   'dsManager.statusDraft': 'Чернетка',
   'dsManager.openSystemAria': 'Відкрити {title}',
   'dsManager.deleteSystemAria': 'Видалити {title}',
+  'dsManager.deletePermissionDenied': 'У вас немає дозволу видалити цю дизайн-систему.',
   'dsManager.presetsAria': 'Офіційні пресети дизайн-систем',
   'dsManager.eyebrowLibrary': 'Бібліотека',
   'dsManager.eyebrowTemplates': 'Шаблони',

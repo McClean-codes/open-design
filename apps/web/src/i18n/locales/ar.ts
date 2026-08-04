@@ -4315,6 +4315,7 @@ export const ar: Dict = {
   'dsManager.statusDraft': 'مسودة',
   'dsManager.openSystemAria': 'فتح {title}',
   'dsManager.deleteSystemAria': 'حذف {title}',
+  'dsManager.deletePermissionDenied': 'ليس لديك إذن بحذف نظام التصميم هذا.',
   'dsManager.presetsAria': 'الإعدادات المسبقة الرسمية لأنظمة التصميم',
   'dsManager.eyebrowLibrary': 'المكتبة',
   'dsManager.eyebrowTemplates': 'القوالب',

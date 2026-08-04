@@ -4705,6 +4705,7 @@ export const zhTW: Dict = {
   "dsManager.statusDraft": "草稿",
   "dsManager.openSystemAria": "編輯 {title}",
   "dsManager.deleteSystemAria": "刪除 {title}",
+  "dsManager.deletePermissionDenied": "你沒有權限刪除此設計體系。",
   "dsManager.presetsAria": "官方設計體系預設",
   "dsManager.eyebrowLibrary": "資料庫",
   "dsManager.eyebrowTemplates": "範本",

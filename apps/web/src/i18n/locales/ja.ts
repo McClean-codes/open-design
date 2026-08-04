@@ -4315,6 +4315,7 @@ export const ja: Dict = {
   'dsManager.statusDraft': '下書き',
   'dsManager.openSystemAria': '{title} を開く',
   'dsManager.deleteSystemAria': '{title} を削除',
+  'dsManager.deletePermissionDenied': 'このデザインシステムを削除する権限がありません。',
   'dsManager.presetsAria': '公式デザインシステムのプリセット',
   'dsManager.eyebrowLibrary': 'ライブラリ',
   'dsManager.eyebrowTemplates': 'テンプレート',

@@ -4315,6 +4315,7 @@ export const pl: Dict = {
   'dsManager.statusDraft': 'Wersja robocza',
   'dsManager.openSystemAria': 'Otwórz {title}',
   'dsManager.deleteSystemAria': 'Usuń {title}',
+  'dsManager.deletePermissionDenied': 'Nie masz uprawnień do usunięcia tego systemu projektowego.',
   'dsManager.presetsAria': 'Oficjalne ustawienia wstępne systemów projektowych',
   'dsManager.eyebrowLibrary': 'Biblioteka',
   'dsManager.eyebrowTemplates': 'Szablony',

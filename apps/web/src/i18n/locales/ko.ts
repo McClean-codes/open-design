@@ -4315,6 +4315,7 @@ export const ko: Dict = {
   'dsManager.statusDraft': '초안',
   'dsManager.openSystemAria': '{title} 열기',
   'dsManager.deleteSystemAria': '{title} 삭제',
+  'dsManager.deletePermissionDenied': '이 디자인 시스템을 삭제할 권한이 없습니다.',
   'dsManager.presetsAria': '공식 디자인 시스템 프리셋',
   'dsManager.eyebrowLibrary': '라이브러리',
   'dsManager.eyebrowTemplates': '템플릿',

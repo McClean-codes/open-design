@@ -4315,6 +4315,7 @@ export const fr: Dict = {
   'dsManager.statusDraft': 'Brouillon',
   'dsManager.openSystemAria': 'Ouvrir {title}',
   'dsManager.deleteSystemAria': 'Supprimer {title}',
+  'dsManager.deletePermissionDenied': 'Vous n’avez pas l’autorisation de supprimer ce système de design.',
   'dsManager.presetsAria': 'Préréglages officiels de systèmes de design',
   'dsManager.eyebrowLibrary': 'Bibliothèque',
   'dsManager.eyebrowTemplates': 'Modèles',

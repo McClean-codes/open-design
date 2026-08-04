@@ -935,6 +935,17 @@ export async function syncDesignSystemAssetsFromWorkspace(
   }
 }
 
+export class DesignSystemDeleteError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+    this.name = 'DesignSystemDeleteError';
+  }
+}
+
 export async function deleteDesignSystemDraft(
   id: string,
   workspaceContext?: WorkspaceCollabContext | null,
@@ -949,8 +960,15 @@ export async function deleteDesignSystemDraft(
           : {}),
       },
     );
+    if (!resp.ok && resp.status === 403) {
+      const errorBody = await readApiErrorBody(resp);
+      const code = errorBody.code
+        ?? (/^[A-Z][A-Z0-9_]+$/.test(errorBody.message) ? errorBody.message : undefined);
+      throw new DesignSystemDeleteError(errorBody.message, resp.status, code);
+    }
     return resp.ok;
-  } catch {
+  } catch (error) {
+    if (error instanceof DesignSystemDeleteError) throw error;
     return false;
   }
 }

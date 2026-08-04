@@ -4315,6 +4315,7 @@ export const id: Dict = {
   'dsManager.statusDraft': 'Draf',
   'dsManager.openSystemAria': 'Buka {title}',
   'dsManager.deleteSystemAria': 'Hapus {title}',
+  'dsManager.deletePermissionDenied': 'Anda tidak memiliki izin untuk menghapus sistem desain ini.',
   'dsManager.presetsAria': 'Preset design system resmi',
   'dsManager.eyebrowLibrary': 'Pustaka',
   'dsManager.eyebrowTemplates': 'Templat',

@@ -4315,6 +4315,7 @@ export const ptBR: Dict = {
   'dsManager.statusDraft': 'Rascunho',
   'dsManager.openSystemAria': 'Abrir {title}',
   'dsManager.deleteSystemAria': 'Excluir {title}',
+  'dsManager.deletePermissionDenied': 'Você não tem permissão para excluir este design system.',
   'dsManager.presetsAria': 'Presets oficiais de design system',
   'dsManager.eyebrowLibrary': 'Biblioteca',
   'dsManager.eyebrowTemplates': 'Modelos',

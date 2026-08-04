@@ -4310,6 +4310,7 @@ export const fa: Dict = {
   'dsManager.statusDraft': 'پیش‌نویس',
   'dsManager.openSystemAria': 'باز کردن {title}',
   'dsManager.deleteSystemAria': 'حذف {title}',
+  'dsManager.deletePermissionDenied': 'شما اجازه حذف این سیستم طراحی را ندارید.',
   'dsManager.presetsAria': 'پیش‌تنظیم‌های رسمی سیستم طراحی',
   'dsManager.eyebrowLibrary': 'کتابخانه',
   'dsManager.eyebrowTemplates': 'قالب‌ها',

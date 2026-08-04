@@ -4315,6 +4315,7 @@ export const th: Dict = {
   'dsManager.statusDraft': 'ฉบับร่าง',
   'dsManager.openSystemAria': 'เปิด {title}',
   'dsManager.deleteSystemAria': 'ลบ {title}',
+  'dsManager.deletePermissionDenied': 'คุณไม่มีสิทธิ์ลบระบบดีไซน์นี้',
   'dsManager.presetsAria': 'พรีเซ็ต design system อย่างเป็นทางการ',
   'dsManager.eyebrowLibrary': 'ไลบรารี',
   'dsManager.eyebrowTemplates': 'เทมเพลต',

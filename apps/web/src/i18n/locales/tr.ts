@@ -4315,6 +4315,7 @@ export const tr: Dict = {
   'dsManager.statusDraft': 'Taslak',
   'dsManager.openSystemAria': '{title} öğesini aç',
   'dsManager.deleteSystemAria': '{title} öğesini sil',
+  'dsManager.deletePermissionDenied': 'Bu tasarım sistemini silme izniniz yok.',
   'dsManager.presetsAria': 'Resmi tasarım sistemi hazır ayarları',
   'dsManager.eyebrowLibrary': 'Kitaplık',
   'dsManager.eyebrowTemplates': 'Şablonlar',

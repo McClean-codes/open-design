@@ -4699,6 +4699,7 @@ export const zhCN: Dict = {
   "dsManager.statusDraft": "草稿",
   "dsManager.openSystemAria": "编辑 {title}",
   "dsManager.deleteSystemAria": "删除 {title}",
+  "dsManager.deletePermissionDenied": "你没有权限删除这个设计体系。",
   "dsManager.presetsAria": "官方设计体系预设",
   "dsManager.eyebrowLibrary": "库",
   "dsManager.eyebrowTemplates": "模板",
