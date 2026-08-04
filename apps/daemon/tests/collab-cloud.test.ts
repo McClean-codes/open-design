@@ -688,6 +688,30 @@ describe('createCollabCloudService', () => {
     service.dispose();
   });
 
+  it('propagates a transient team directory failure instead of fabricating an empty roster', async () => {
+    const { client } = fakeClient();
+    const outage = new Error('member directory unavailable');
+    const errors: unknown[] = [];
+    const scopedClient = {
+      ...client,
+      listMembers: vi.fn(async () => {
+        throw outage;
+      }),
+    } as unknown as CollabCloudClient;
+    const service = createCollabCloudService({
+      client: scopedClient,
+      workspaceContext: fixedContextProvider(teamContext()),
+      listProjectIds: () => [],
+      resolveLocalConversationId: () => null,
+      mergeComment: () => false,
+      onError: (error) => errors.push(error),
+    });
+
+    await expect(service.listMembers(teamContext())).rejects.toBe(outage);
+    expect(errors).toEqual([outage]);
+    service.dispose();
+  });
+
   it('keeps project comment operations on their explicit scope after ambient moves to B', async () => {
     const { client } = fakeClient();
     const calls: Array<{

@@ -184,7 +184,7 @@ export interface CollabCloudService {
   ): boolean;
   /** Drain due durable deliveries; exposed for deterministic tests/catch-up. */
   flushPendingComments(): Promise<void>;
-  /** The explicitly scoped team's member directory (empty off-team / on error). */
+  /** The explicitly scoped team's member directory (empty only off-team). */
   listMembers(
     context: WorkspaceCollabContext,
   ): Promise<CollabCloudMemberDirectoryEntry[]>;
@@ -583,7 +583,10 @@ export function createCollabCloudService(deps: CollabCloudServiceDeps): CollabCl
       return await deps.client.listMembers(teamId);
     } catch (error) {
       deps.onError?.(error);
-      return [];
+      // A transport failure is not evidence that the team has no members.
+      // Propagate it so the persistent + SWR layers retain their last-good
+      // roster and the invalidation poller retains its previous signature.
+      throw error;
     }
   }
 

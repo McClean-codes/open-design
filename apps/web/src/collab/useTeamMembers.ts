@@ -73,9 +73,10 @@ export function currentUserDirectoryEntry(
 /**
  * Collab-cloud member directory read (`GET /api/workspace/members`). Returns the
  * team roster the client uses to render "琼羽 · Owner" on a comment card and the
- * owner name on the shared-project banner. Off-team / 404 degrades to an empty
- * map (never throws), so this is safe to mount unconditionally. Lightly polled so
- * a member who joins mid-session resolves without a refresh.
+ * owner name on the shared-project banner. A transient failure preserves the
+ * last successful roster for this exact workspace identity; only a successful
+ * `members: []` response clears it. Lightly polled so a member who joins
+ * mid-session resolves without a refresh.
  *
  * `currentUser` is the viewer's own entry (see {@link currentUserDirectoryEntry}),
  * which `resolve` falls back to so the signed-in user is resolvable with or
@@ -150,8 +151,10 @@ export function useTeamMembers(
       });
       settle(members);
     } catch {
-      // Personal / offline / daemon without the collab cloud: no directory.
-      settle([]);
+      // A failed refresh is not an authoritative empty directory. Leave the
+      // last-good roster in place; identity masking below still guarantees a
+      // failed first read in a newly selected workspace cannot expose the
+      // previous workspace's members.
     }
   }, [membersCacheKey]);
 

@@ -1319,4 +1319,39 @@ describe('GET /api/workspace/members', () => {
       role: 'member',
     });
   });
+
+  it('reports a transient directory failure instead of returning an authoritative empty roster', async () => {
+    const api = await startContextServer({
+      fetchWorkspaceDirectory: async () => ({
+        ok: true,
+        items: [{
+          workspaceId: 'team-a',
+          workspaceName: 'Team A',
+          workspaceType: 'team',
+          workspaceMemberId: 'member-a',
+          role: 'member',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }],
+      }),
+      listMembers: async () => {
+        throw new Error('member directory unavailable');
+      },
+    });
+
+    const response = await api.req('/api/workspace/members', {
+      headers: {
+        'x-od-workspace-id': 'team-a',
+        'x-od-workspace-member-id': 'member-a',
+      },
+    });
+
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({
+      error: {
+        code: 'UPSTREAM_UNAVAILABLE',
+        retryable: true,
+      },
+    });
+  });
 });

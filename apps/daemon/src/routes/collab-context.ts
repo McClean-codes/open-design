@@ -574,8 +574,9 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
 
   // Member directory: the web client resolves comment authors (authorMemberId →
   // "琼羽 · Owner") and the shared-project owner name from this. Read from the
-  // collab-cloud directory; empty off-team / hub-unconfigured, and a directory
-  // outage degrades to [] rather than a 500. STUB: stands in for B's roster.
+  // collab-cloud directory. A directory outage is retryable and must not be
+  // represented as an authoritative empty roster: clients retain last-good
+  // display metadata until a successful response says members really left.
   app.get('/api/workspace/members', async (req, res) => {
     const verified = await verifyWorkspaceRequestContext({
       req,
@@ -583,14 +584,19 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
       requireTeam: true,
     });
     if (!verified.ok) return sendWorkspaceVerificationFailure(res, verified);
-    let members: CollabCloudMemberDirectoryEntry[] = [];
     try {
-      members = await listMembers(verified.context);
+      const members = await listMembers(verified.context);
+      const body: CollabCloudMembersResponse = { members };
+      return res.json(body);
     } catch {
-      members = [];
+      return sendApiError(
+        res,
+        503,
+        'UPSTREAM_UNAVAILABLE',
+        'team member directory is temporarily unavailable',
+        { retryable: true },
+      );
     }
-    const body: CollabCloudMembersResponse = { members };
-    res.json(body);
   });
 
   // Billing reads are explicit at the HTTP boundary:

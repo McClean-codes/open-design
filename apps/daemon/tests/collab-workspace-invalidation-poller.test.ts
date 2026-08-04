@@ -225,6 +225,27 @@ describe('workspace invalidation poller', () => {
     expect(h.types()).toEqual([]);
   });
 
+  it('does not turn a transient member-directory failure into members-changed, but accepts a real empty roster', async () => {
+    const h = harness({ members: [member('m1')] });
+    await h.poller.pollOnce(); // baseline
+
+    h.members = null;
+    await h.poller.pollOnce();
+    expect(h.types()).toEqual([]);
+
+    // Recovery with the same roster proves the failed cycle did not replace
+    // the baseline with a synthetic empty signature.
+    h.members = [member('m1')];
+    await h.poller.pollOnce();
+    expect(h.types()).toEqual([]);
+
+    // A successful empty response is authoritative (the final member left),
+    // so it must still converge and notify clients.
+    h.members = [];
+    await h.poller.pollOnce();
+    expect(h.types()).toEqual(['members-changed']);
+  });
+
   it('runs the missing-project recovery floor immediately, then every 30s despite a stable catalog', async () => {
     let now = 0;
     const h = harness({

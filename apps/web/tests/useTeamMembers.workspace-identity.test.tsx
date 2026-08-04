@@ -18,8 +18,15 @@ import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CollabCloudMemberDirectoryEntry } from '@open-design/contracts';
 
+const workspaceInvalidationHarness = vi.hoisted(() => ({
+  handlers: null as Record<string, () => void> | null,
+}));
+
 vi.mock('../src/collab/workspace-events', () => ({
-  useWorkspaceInvalidation: vi.fn(() => ({ connected: false })),
+  useWorkspaceInvalidation: vi.fn((handlers: Record<string, () => void>) => {
+    workspaceInvalidationHarness.handlers = handlers;
+    return { connected: false };
+  }),
 }));
 
 import {
@@ -34,6 +41,8 @@ import {
   workspaceContextFixture,
   workspaceDirectoryFixture,
 } from './helpers/workspace-context';
+import { evictCoalescedGet } from '../src/lib/coalesced-get';
+import { workspaceIdentityCacheKey } from '../src/collab/workspace-identity';
 
 const CONTEXTS = {
   a: workspaceContextFixture({ workspaceId: 'ws-a', workspaceMemberId: 'mem-a' }),
@@ -65,11 +74,14 @@ let activeWorkspace: 'a' | 'b';
 let membersReads: PendingMembersRead[];
 /** Workspaces whose members read is held open instead of answering at once. */
 let slowMembersWorkspaces: Set<'a' | 'b'>;
+let failedMembersWorkspaces: Set<'a' | 'b'>;
 
 beforeEach(() => {
   activeWorkspace = 'a';
   membersReads = [];
   slowMembersWorkspaces = new Set();
+  failedMembersWorkspaces = new Set();
+  workspaceInvalidationHarness.handlers = null;
   vi.stubGlobal(
     'fetch',
     vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -87,6 +99,15 @@ beforeEach(() => {
         const workspaceId = headers.get('x-od-workspace-id');
         const workspaceMemberId = headers.get('x-od-workspace-member-id');
         const workspace = activeWorkspace;
+        if (failedMembersWorkspaces.has(workspace)) {
+          membersReads.push({ workspace, workspaceId, workspaceMemberId, resolve: () => {} });
+          return Promise.resolve(
+            new Response(JSON.stringify({ error: 'UPSTREAM_UNAVAILABLE' }), {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            }),
+          );
+        }
         const answer = jsonResponse({ members: ROSTERS[workspace] });
         if (!slowMembersWorkspaces.has(workspace)) {
           membersReads.push({ workspace, workspaceId, workspaceMemberId, resolve: () => {} });
@@ -219,5 +240,28 @@ describe('useTeamMembers caches the roster per workspace identity', () => {
       expect(hook.result.current.members).toEqual(ROSTERS.b);
     });
     expect(hook.result.current.resolve('mem-b-peer')?.role).toBe('owner');
+  });
+
+  it('retains the current workspace last-good roster when a refresh fails', async () => {
+    const hook = renderHook(() => useTeamMembers());
+    await waitFor(() => {
+      expect(hook.result.current.members).toEqual(ROSTERS.a);
+    });
+
+    failedMembersWorkspaces.add('a');
+    evictCoalescedGet(
+      `workspace-members:${workspaceIdentityCacheKey(CONTEXTS.a)}`,
+    );
+    await act(async () => {
+      workspaceInvalidationHarness.handlers?.['members-changed']?.();
+    });
+    await waitFor(() => {
+      expect(membersReads).toHaveLength(2);
+    });
+
+    expect(hook.result.current.members).toEqual(ROSTERS.a);
+    expect(hook.result.current.resolve('mem-a-peer')?.displayName).toBe(
+      'Workspace A teammate',
+    );
   });
 });
