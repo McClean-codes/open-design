@@ -199,6 +199,8 @@ export function resolveWorkspaceSettingsUrl(
   // explicit user action that may change B's Active Workspace (the client
   // itself never PUTs it). A bare /settings link would depend on whatever
   // workspace another device left active, so every console link pins the id.
+  // The low-cardinality source marker lets Vela attribute the resulting
+  // Workspace management outcomes without carrying user-entered values.
   if (typeof explicit === 'string' && explicit.trim()) {
     return withWorkspaceDeepLink(explicit.trim(), workspaceId);
   }
@@ -212,6 +214,9 @@ function withWorkspaceDeepLink(url: string, workspaceId: string): string {
     const parsed = new URL(url);
     if (!parsed.searchParams.get('workspaceId') && workspaceId.trim()) {
       parsed.searchParams.set('workspaceId', workspaceId.trim());
+    }
+    if (!parsed.searchParams.get('source')) {
+      parsed.searchParams.set('source', 'open_design');
     }
     return parsed.toString();
   } catch {

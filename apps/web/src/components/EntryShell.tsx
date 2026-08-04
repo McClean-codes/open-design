@@ -497,10 +497,10 @@ interface Props {
   artifactUpgradeSlot?: ReactNode;
 }
 
-// Map an EntryNavRail view id to the analytics `element` enum on
-// `home/nav` ui_click. Returns `null` for views without a dedicated nav
-// button (the rail's "Home" target is the brand logo, which gets its own
-// element value via the logo click handler — not the changeView path).
+// Map an EntryNavRail view id to the existing analytics `element` enum on
+// `home/nav` ui_click. Keep this compatibility signal alongside the new
+// Workspace navigation dimensions so established PostHog dashboards do not
+// lose their historical series.
 function navElementForView(
   next: EntryViewKind,
 ):
@@ -523,8 +523,6 @@ function navElementForView(
     case 'design-systems':
       return 'design_systems';
     case 'brands':
-      // No dedicated brands analytics element yet; reuse the design_systems
-      // slot since Brands replaces that nav destination.
       return 'design_systems';
     case 'integrations':
       return 'integrations';
@@ -1062,6 +1060,14 @@ export function EntryShell({
     }
     navigate({ kind: 'home', view: next });
   }
+
+  // Project collection surfaces have no legacy page-level tracker. Community
+  // is conditionally mounted and tracks its own visit; always-mounted library
+  // surfaces receive an explicit isActive prop below.
+  useEffect(() => {
+    if (view === 'drafts') trackPageView(analytics.track, { page_name: 'drafts' });
+    else if (view === 'all-projects') trackPageView(analytics.track, { page_name: 'all_projects' });
+  }, [analytics.track, view]);
 
   function startPluginAuthoring(goal?: string) {
     setHomePromptHandoff(

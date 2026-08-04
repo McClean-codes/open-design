@@ -67,6 +67,20 @@ import {
 import { canUpgradeFromPlanTier, hasTeamPlan, resolvePlanLabelTier } from '../collab/team-plan';
 import { AMR_CONSOLE_UPGRADE_INTENT, amrPlansUrlForProfile } from '../runtime/amr-guidance';
 import type { EntryHomeView } from '../router';
+import type { AccountMenuClickProps } from '@open-design/contracts/analytics';
+import { useAnalytics } from '../analytics/provider';
+import {
+  trackAccountMenuClick,
+  trackEntryNavigationClick,
+  trackWorkspaceSurfaceView,
+  trackWorkspaceSwitcherClick,
+  trackWorkspaceSwitchResult,
+} from '../analytics/events';
+import {
+  entryViewToTracking,
+  stableAnalyticsErrorCode,
+  workspaceAnalyticsDimensions,
+} from '../analytics/workspace';
 
 const REPO_URL = 'https://github.com/nexu-io/open-design';
 const GITHUB_HELP_URL = `${REPO_URL}/issues/new`;
@@ -554,6 +568,9 @@ export function EntryNavRail({
   footerNotice,
 }: Props) {
   const { t } = useI18n();
+  const analytics = useAnalytics();
+  const analyticsPage = entryViewToTracking(view);
+  const workspaceDimensions = workspaceAnalyticsDimensions(context);
   const brandLabel = t('app.brand');
   const communityLabel = t('pluginsHome.title');
   // #5517 renamed the rail's first item from 最近 (Recents) to 首页 (Home) —
@@ -624,6 +641,14 @@ export function EntryNavRail({
   });
 
   const [accountOpen, setAccountOpen] = useState(false);
+  useEffect(() => {
+    if (!accountOpen) return;
+    trackWorkspaceSurfaceView(analytics.track, {
+      page_name: analyticsPage,
+      area: 'account_menu',
+      ...workspaceDimensions,
+    });
+  }, [accountOpen, analytics.track, analyticsPage, workspaceDimensions.workspace_key]);
   // Message-center panel (opened from the account menu's 消息中心 row) and its
   // unread count, which drives the red dot on the account avatar.
   const [messageCenterOpen, setMessageCenterOpen] = useState(false);
@@ -705,6 +730,14 @@ export function EntryNavRail({
     setAccountOpen(false);
   });
   const [teamOpen, setTeamOpen] = useState(false);
+  useEffect(() => {
+    if (!teamOpen) return;
+    trackWorkspaceSurfaceView(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_switcher',
+      ...workspaceDimensions,
+    });
+  }, [teamOpen, analytics.track, analyticsPage, workspaceDimensions.workspace_key]);
   // The LATEST context, for async work to compare against. `loadWorkspaceDirectory`
   // closes over the render's `context` prop, which is the identity its read was
   // issued for — so only a ref can answer "has the identity moved since?".
@@ -828,6 +861,16 @@ export function EntryNavRail({
     if (workspaceId === context?.workspaceId || workspaceSwitchingId) return;
     const selected = visibleWorkspaceItems.find((item) => item.workspaceId === workspaceId);
     if (!selected) return;
+    const startedAt = performance.now();
+    const requestId = analytics.newRequestId();
+    trackWorkspaceSwitcherClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_switcher',
+      element: 'workspace_option',
+      target_workspace_type: selected.workspaceType,
+      is_current_workspace: false,
+      ...workspaceDimensions,
+    });
     setWorkspaceSwitchingId(workspaceId);
     try {
       const response = await fetch('/api/workspace/active', {
@@ -838,8 +881,27 @@ export function EntryNavRail({
           workspaceMemberId: selected.workspaceMemberId,
         }),
       });
-      if (!response.ok) return;
+      if (!response.ok) {
+        trackWorkspaceSwitchResult(analytics.track, {
+          page_name: analyticsPage,
+          area: 'workspace_switcher',
+          result: 'failed',
+          target_workspace_type: selected.workspaceType,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error_code: stableAnalyticsErrorCode(response.status),
+          ...workspaceDimensions,
+        }, { requestId });
+        return;
+      }
       const body = (await response.json()) as WorkspaceActiveResponse;
+      trackWorkspaceSwitchResult(analytics.track, {
+        page_name: analyticsPage,
+        area: 'workspace_switcher',
+        result: 'success',
+        target_workspace_type: selected.workspaceType,
+        duration_ms: Math.round(performance.now() - startedAt),
+        ...workspaceAnalyticsDimensions(body.context),
+      }, { requestId });
       setTeamOpen(false);
       // Seed this tab from the authoritatively verified switch response. The
       // selected identity is kept in sessionStorage by the context provider, so
@@ -851,6 +913,15 @@ export function EntryNavRail({
       notifyTeamProjectsChanged();
       selectView('home');
     } catch {
+      trackWorkspaceSwitchResult(analytics.track, {
+        page_name: analyticsPage,
+        area: 'workspace_switcher',
+        result: 'failed',
+        target_workspace_type: selected.workspaceType,
+        duration_ms: Math.round(performance.now() - startedAt),
+        error_code: 'network_error',
+        ...workspaceDimensions,
+      }, { requestId });
       // Keep the menu open; the next open/focus refresh can retry the directory.
     } finally {
       setWorkspaceSwitchingId(null);
@@ -866,7 +937,31 @@ export function EntryNavRail({
     }, 3000);
   }
 
+  function trackAccountAction(element: AccountMenuClickProps['element']) {
+    trackAccountMenuClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'account_menu',
+      element,
+      ...(element === 'upgrade'
+        ? {
+            is_free_active:
+              workspaceDimensions.plan_bucket === 'free'
+              && context?.lifecycleState === 'active',
+          }
+        : {}),
+      ...workspaceDimensions,
+    });
+  }
+
   const selectView = (next: EntryView) => {
+    trackEntryNavigationClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'entry_nav',
+      element: 'nav_item',
+      target: entryViewToTracking(next),
+      entry_from: 'sidebar',
+      ...workspaceDimensions,
+    });
     onViewChange(next);
   };
 
@@ -942,7 +1037,17 @@ export function EntryNavRail({
               ref={accountTriggerRef}
               type="button"
               className="entry-nav-rail__account-trigger"
-              onClick={() => setAccountOpen((v) => !v)}
+              onClick={() => {
+                trackEntryNavigationClick(analytics.track, {
+                  page_name: analyticsPage,
+                  area: 'entry_nav',
+                  element: 'account_menu_trigger',
+                  target: 'account_menu',
+                  entry_from: 'sidebar',
+                  ...workspaceDimensions,
+                });
+                setAccountOpen((v) => !v);
+              }}
               onMouseEnter={openAccountMenu}
               aria-expanded={accountOpen}
               data-testid="entry-nav-account"
@@ -988,6 +1093,7 @@ export function EntryNavRail({
                             type="button"
                             className="entry-nav-rail__menu-credits-upgrade"
                             onClick={() => {
+                              trackAccountAction('upgrade');
                               setAccountOpen(false);
                               openBillingUpgrade();
                             }}
@@ -1004,6 +1110,7 @@ export function EntryNavRail({
                         className="entry-nav-rail__menu-credits-row"
                         data-testid="entry-nav-credits-row"
                         onClick={() => {
+                          trackAccountAction('credits');
                           setAccountOpen(false);
                           if (billingConsoleUrl) {
                             window.open(billingConsoleUrl, '_blank', 'noopener,noreferrer');
@@ -1025,6 +1132,7 @@ export function EntryNavRail({
                     className="entry-nav-rail__menu-item"
                     role="menuitem"
                     onClick={() => {
+                      trackAccountAction('settings');
                       setAccountOpen(false);
                       onOpenSettings?.();
                     }}
@@ -1039,6 +1147,7 @@ export function EntryNavRail({
                     aria-expanded={messageCenterOpen}
                     data-testid="account-menu-message-center"
                     onClick={() => {
+                      trackAccountAction('message_center');
                       setAccountOpen(false);
                       setMessageCenterOpen(true);
                     }}
@@ -1058,7 +1167,10 @@ export function EntryNavRail({
                     role="menuitem"
                     href={GITHUB_HELP_URL}
                     {...externalLinkProps}
-                    onClick={() => setAccountOpen(false)}
+                    onClick={() => {
+                      trackAccountAction('github_help');
+                      setAccountOpen(false);
+                    }}
                   >
                     <Icon name="comment" size={15} /> {t('entry.accountGithubHelp')}
                   </a>
@@ -1067,7 +1179,10 @@ export function EntryNavRail({
                     role="menuitem"
                     href={GITHUB_FEATURE_URL}
                     {...externalLinkProps}
-                    onClick={() => setAccountOpen(false)}
+                    onClick={() => {
+                      trackAccountAction('feature_request');
+                      setAccountOpen(false);
+                    }}
                   >
                     <Icon name="sparkles" size={15} /> {t('entry.accountFeatureRequest')}
                   </a>
@@ -1081,7 +1196,10 @@ export function EntryNavRail({
                       {...externalLinkProps}
                       aria-label={`GitHub · ${githubStars == null ? GITHUB_STARS_FALLBACK_LABEL : formatStars(githubStars)} stars`}
                       title={`GitHub · ${githubStars == null ? GITHUB_STARS_FALLBACK_LABEL : formatStars(githubStars)} stars`}
-                      onClick={() => setAccountOpen(false)}
+                      onClick={() => {
+                        trackAccountAction('github');
+                        setAccountOpen(false);
+                      }}
                     >
                       <Icon name="github-filled" size={15} />
                       <span className="entry-nav-rail__menu-social-count">
@@ -1095,7 +1213,10 @@ export function EntryNavRail({
                       {...externalLinkProps}
                       aria-label={t('entry.discordAria')}
                       title={t('entry.discordAria')}
-                      onClick={() => setAccountOpen(false)}
+                      onClick={() => {
+                        trackAccountAction('discord');
+                        setAccountOpen(false);
+                      }}
                     >
                       <Icon name="discord" size={15} />
                     </a>
@@ -1106,7 +1227,10 @@ export function EntryNavRail({
                       {...externalLinkProps}
                       aria-label="@OpenDesignHQ"
                       title="@OpenDesignHQ"
-                      onClick={() => setAccountOpen(false)}
+                      onClick={() => {
+                        trackAccountAction('twitter');
+                        setAccountOpen(false);
+                      }}
                     >
                       <span className="entry-nav-rail__menu-x" aria-hidden>X</span>
                     </a>
@@ -1116,7 +1240,10 @@ export function EntryNavRail({
                       href={CONTACT_EMAIL_URL}
                       aria-label={t('entry.mailAria')}
                       title={t('entry.mailAria')}
-                      onClick={() => setAccountOpen(false)}
+                      onClick={() => {
+                        trackAccountAction('email');
+                        setAccountOpen(false);
+                      }}
                     >
                       <Icon name="mail" size={15} />
                     </a>
@@ -1127,6 +1254,7 @@ export function EntryNavRail({
                     className="entry-nav-rail__menu-item"
                     role="menuitem"
                     onClick={() => {
+                      trackAccountAction('logout');
                       setAccountOpen(false);
                       // recvqgMWpJZqhL: never sign out on this click alone —
                       // arm the confirmation dialog and let it run the logout.
@@ -1167,7 +1295,17 @@ export function EntryNavRail({
         <button
           type="button"
           className="entry-nav-rail__search"
-          onClick={() => onOpenSearch?.()}
+          onClick={() => {
+            trackEntryNavigationClick(analytics.track, {
+              page_name: analyticsPage,
+              area: 'entry_nav',
+              element: 'search',
+              target: 'search',
+              entry_from: 'sidebar',
+              ...workspaceDimensions,
+            });
+            onOpenSearch?.();
+          }}
           aria-label={t('common.search')}
           data-testid="entry-nav-search"
         >
@@ -1201,7 +1339,17 @@ export function EntryNavRail({
               <button
                 type="button"
                 className="entry-nav-rail__team"
-                onClick={() => setTeamOpen((v) => !v)}
+                onClick={() => {
+                  trackEntryNavigationClick(analytics.track, {
+                    page_name: analyticsPage,
+                    area: 'entry_nav',
+                    element: 'workspace_switcher_trigger',
+                    target: 'workspace_switcher',
+                    entry_from: 'sidebar',
+                    ...workspaceDimensions,
+                  });
+                  setTeamOpen((v) => !v);
+                }}
                 aria-expanded={teamOpen}
                 data-testid="workspace-switcher"
               >
@@ -1270,6 +1418,12 @@ export function EntryNavRail({
                           className="entry-nav-rail__menu-item"
                           role="menuitem"
                           onClick={() => {
+                            trackWorkspaceSwitcherClick(analytics.track, {
+                              page_name: analyticsPage,
+                              area: 'workspace_switcher',
+                              element: 'invite_teammates',
+                              ...workspaceDimensions,
+                            });
                             setTeamOpen(false);
                             if (inviteTarget.kind === 'vela') {
                               window.open(inviteTarget.url, '_blank', 'noopener,noreferrer');
@@ -1293,7 +1447,15 @@ export function EntryNavRail({
                           href={teamConsoleUrl(workspaceSettingsUrl, 'create-team')}
                           {...externalLinkProps}
                           data-testid="entry-nav-create-team"
-                          onClick={() => setTeamOpen(false)}
+                          onClick={() => {
+                            trackWorkspaceSwitcherClick(analytics.track, {
+                              page_name: analyticsPage,
+                              area: 'workspace_switcher',
+                              element: 'create_team',
+                              ...workspaceDimensions,
+                            });
+                            setTeamOpen(false);
+                          }}
                         >
                           <Icon name="plus" size={15} /> {t('workspaceSwitcher.createTeam')}
                         </a>
@@ -1360,6 +1522,16 @@ export function EntryNavRail({
                 {...externalLinkProps}
                 aria-label={t('entry.navWorkspaceSettings')}
                 data-testid="entry-nav-workspace-settings"
+                onClick={() => {
+                  trackEntryNavigationClick(analytics.track, {
+                    page_name: analyticsPage,
+                    area: 'entry_nav',
+                    element: 'workspace_settings',
+                    target: 'workspace_settings',
+                    entry_from: 'sidebar',
+                    ...workspaceDimensions,
+                  });
+                }}
               >
                 <span className="entry-nav-rail__btn-icon" aria-hidden>
                   <Icon name="settings" size={16} />
@@ -1399,7 +1571,14 @@ export function EntryNavRail({
             <NavButton
               ariaLabel={t('entry.accountSettings')}
               label={t('entry.accountSettings')}
-              onClick={() => onOpenSettings?.()}
+              onClick={() => {
+                trackAccountMenuClick(analytics.track, {
+                  page_name: analyticsPage,
+                  area: 'account_menu',
+                  element: 'settings',
+                });
+                onOpenSettings?.();
+              }}
               testId="entry-settings-button"
             >
               <Icon name="settings" size={16} />
@@ -1456,6 +1635,7 @@ export function EntryNavRail({
         workspaceContext={context}
         canAssignRoles={canInviteMembers}
         availableSeats={context?.seatSummary?.availableSeats}
+        entryFrom="workspace_switcher"
         onUpgrade={
           upgradeUrl
             ? () => {
