@@ -34,7 +34,7 @@ afterEach(() => {
 });
 
 describe('AmrBalanceDialog', () => {
-  it('shows the deterministic media quote when the caller provides one', () => {
+  it('keeps generation pricing out of the hard balance gate', () => {
     render(
       <AmrBalanceDialog
         reason="insufficient"
@@ -43,14 +43,13 @@ describe('AmrBalanceDialog', () => {
         entrySource="home_balance_gate_upgrade"
         metricsConsent={false}
         installationId={null}
-        generationPriceUsd={1.08}
         onClose={vi.fn()}
         onResolved={vi.fn()}
       />,
     );
 
-    expect(screen.getByTestId('amr-balance-dialog-generation-price'))
-      .toHaveTextContent('This generation$1.08');
+    expect(screen.queryByText('This generation')).toBeNull();
+    expect(screen.queryByText('$1.08')).toBeNull();
   });
 
   it('dismisses from the corner close button', () => {
