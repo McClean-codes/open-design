@@ -3296,14 +3296,9 @@ export function ProjectView({
       const cached = htmlContentCacheRef.current.get(name);
       if (cached && cached.mtime === mtime) return cached.text;
       try {
-        const response = await fetch(
-          projectRawUrl(
-            project.id,
-            name,
-            projectRunWorkspaceContextRef.current,
-          ),
-        );
-        const text = response.ok ? await response.text() : null;
+        const text = await fetchProjectFileText(project.id, name, {
+          workspaceContext: projectRunWorkspaceContextRef.current,
+        });
         htmlContentCacheRef.current.set(name, { mtime, text });
         return text;
       } catch {

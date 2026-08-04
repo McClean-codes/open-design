@@ -8,6 +8,7 @@ import {
   checkDeploymentLink,
   deleteDesignSystemDraft,
   deleteLiveArtifact,
+  deleteProjectFile,
   deployProjectFile,
   designSystemStaticUrl,
   ensureDesignSystemWorkspace,
@@ -178,6 +179,25 @@ describe('persisted project Workspace transport scope', () => {
       '/api/projects/project-1/files/index.html/versions/version-1',
       expect.objectContaining({
         cache: 'no-store',
+        headers: expect.objectContaining({
+          'x-od-workspace-id': 'workspace-a',
+          'x-od-workspace-member-id': 'member-a',
+        }),
+      }),
+    );
+  });
+
+  it('sends query and headers together when deleting a scoped raw file', async () => {
+    const workspaceA = teamContext('workspace-a', 'member-a');
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(deleteProjectFile('project-1', 'index.html', workspaceA)).resolves.toBe(true);
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/projects/project-1/raw/index.html?workspaceId=workspace-a&workspaceMemberId=member-a',
+      expect.objectContaining({
+        method: 'DELETE',
         headers: expect.objectContaining({
           'x-od-workspace-id': 'workspace-a',
           'x-od-workspace-member-id': 'member-a',

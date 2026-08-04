@@ -30,7 +30,11 @@ import { Button, Textarea } from '@open-design/components';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 import type { DesignSystemEditClickProps } from '@open-design/contracts/analytics';
 import { useT } from '../i18n';
-import { openExternalUrl, projectRawUrl } from '../providers/registry';
+import {
+  fetchProjectFileText,
+  openExternalUrl,
+  projectRawUrl,
+} from '../providers/registry';
 import { buildSrcdoc } from '../runtime/srcdoc';
 import {
   fontStack,
@@ -174,15 +178,13 @@ export function useBrandFonts(
     let styleEl: HTMLStyleElement | null = null;
     void (async () => {
       try {
-        const resp = await fetch(projectRawUrl(
+        const manifest = await fetchProjectFileText(
           projectId,
           'fonts/manifest.json',
-          workspaceContext,
-        ), {
-          cache: 'no-store',
-        });
-        if (!resp.ok) return;
-        const data = (await resp.json()) as { files?: BrandFontManifestFile[] };
+          { cache: 'no-store', workspaceContext },
+        );
+        if (!manifest) return;
+        const data = JSON.parse(manifest) as { files?: BrandFontManifestFile[] };
         const files = Array.isArray(data?.files) ? data.files : [];
         if (cancelled || files.length === 0) return;
         const css = files

@@ -1803,6 +1803,39 @@ describe('FileViewer SVG artifacts', () => {
     expect(markup).toContain('sandbox="allow-scripts allow-downloads"');
   });
 
+  it('keeps browser-owned URL preview navigation authorized by query scope', () => {
+    const file = baseFile({
+      name: 'team-page.html',
+      path: 'team-page.html',
+      mime: 'text/html',
+      kind: 'html',
+      artifactManifest: {
+        version: 1,
+        kind: 'html',
+        title: 'Team page',
+        entry: 'team-page.html',
+        renderer: 'html',
+        exports: ['html'],
+      },
+    });
+
+    const markup = renderToStaticMarkup(
+      <CollabProvider value={projectWorkspaceCollabValue(teamWorkspaceContext())}>
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={file}
+          liveHtml="<html><body>team</body></html>"
+        />
+      </CollabProvider>,
+    );
+
+    expect(markup).toContain('data-od-render-mode="url-load" data-od-active="true"');
+    expect(markup).toContain(
+      'src="/api/projects/project-1/raw/team-page.html?workspaceId=ws-1&amp;workspaceMemberId=wm-1&amp;v=1710000000',
+    );
+  });
+
   it('routes brand extraction stop requests from the preview iframe', async () => {
     const file = baseFile({
       name: 'brand.html',

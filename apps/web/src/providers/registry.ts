@@ -2898,7 +2898,7 @@ export async function deleteProjectFile(
 ): Promise<boolean> {
   try {
     const resp = await fetch(
-      projectRawUrl(projectId, name),
+      projectRawUrl(projectId, name, workspaceContext),
       {
         method: 'DELETE',
         ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
