@@ -69,8 +69,8 @@
   background: var(--bg-panel);
   color: var(--text-strong);
   font: inherit;
-  font-size: 11px;
-  font-weight: 570;
+  font-size: 12px;
+  font-weight: 620;
   letter-spacing: 0;
   text-transform: none;
   outline: none;
@@ -103,13 +103,8 @@
   min-height: 32px;
   padding: 6px 7px;
   border-radius: 7px;
-  font-size: 11px;
-  font-weight: 570;
-}
-
-.aspectSelectTrigger:global(.od-select-trigger) {
-  font-size: 12px;
-  font-weight: 620;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .aspectSelectMenu:global(.od-select-menu.inline) {
@@ -127,8 +122,6 @@
   align-items: stretch;
   gap: 0;
   padding: 8px 9px;
-  font-size: 13px;
-  font-weight: 600;
   transition:
     height 200ms cubic-bezier(0.23, 1, 0.32, 1),
     background-color 140ms cubic-bezier(0.23, 1, 0.32, 1);
