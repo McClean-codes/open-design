@@ -13,6 +13,10 @@ import {
 // register the scheme and route the deeplink to the daemon, which consumes the
 // one-time continuation on B with the signed-in vela session; the client then
 // focuses and the web re-reads the context to switch into the team workspace.
+//
+// The same scheme also carries `opendesign://workspace/open` — the cloud
+// device-activation page's post-sign-in hand-off. That one is payload-free and
+// only refocuses the client (see `isWorkspaceOpenDeeplink`).
 
 export {
   continueInviteFromUrl,

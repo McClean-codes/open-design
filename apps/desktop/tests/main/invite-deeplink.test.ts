@@ -45,6 +45,32 @@ describe("continueInviteFromUrl", () => {
     expect(onCompleted).toHaveBeenCalledWith({ ok: true });
   });
 
+  it("focuses without any daemon call for the workspace/open hand-off deeplink", async () => {
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    const focus = vi.fn();
+    const onCompleted = vi.fn();
+    const out = await continueInviteFromUrl("opendesign://workspace/open", {
+      resolveDaemonBaseUrl: async () => "http://x",
+      fetch: fetchImpl,
+      focus,
+      onCompleted,
+    });
+    expect(out).toEqual({ ok: true });
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(onCompleted).toHaveBeenCalledWith({ ok: true });
+    expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
+  });
+
+  it("accepts workspace/open with query params and trailing slash", async () => {
+    const focus = vi.fn();
+    const out = await continueInviteFromUrl(
+      "opendesign://workspace/open/?source=cli_activate",
+      { resolveDaemonBaseUrl: async () => "http://x", focus },
+    );
+    expect(out).toEqual({ ok: true });
+    expect(focus).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores a url that is not an invite deeplink (no daemon call)", async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const out = await continueInviteFromUrl("opendesign://something/else", {

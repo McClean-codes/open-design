@@ -4,6 +4,7 @@
 export const INVITE_DEEPLINK_SCHEME = "opendesign";
 const INVITE_DEEPLINK_HOST = "workspace";
 const INVITE_DEEPLINK_PATH = "/invite/continue";
+const WORKSPACE_OPEN_DEEPLINK_PATH = "/open";
 
 interface ParsedInviteDeeplink {
   workspaceId: string;
@@ -37,6 +38,27 @@ function parseInviteDeeplink(url: string): ParsedInviteDeeplink | null {
   const nonce = q.get("nonce")?.trim() ?? "";
   if (!workspaceId || !memberId || !inviteId || !nonce) return null;
   return { workspaceId, memberId, inviteId, nonce };
+}
+
+/**
+ * True for `opendesign://workspace/open[?...]` — the cloud device-activation
+ * page fires this after a client-originated sign-in completes in the browser,
+ * to hand the user back to the desktop app. It carries no payload on purpose:
+ * the login itself lands through the daemon's `vela login` polling, so handling
+ * this deeplink only brings the client back to the foreground.
+ */
+export function isWorkspaceOpenDeeplink(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  return (
+    parsed.protocol === `${INVITE_DEEPLINK_SCHEME}:` &&
+    parsed.host === INVITE_DEEPLINK_HOST &&
+    parsed.pathname.replace(/\/+$/, "") === WORKSPACE_OPEN_DEEPLINK_PATH
+  );
 }
 
 export interface InviteDeeplinkDeps {
@@ -110,6 +132,10 @@ export async function continueInviteFromUrl(
   url: string,
   deps: InviteDeeplinkDeps,
 ): Promise<{ ok: boolean; reason?: string; status?: number }> {
+  if (isWorkspaceOpenDeeplink(url)) {
+    deps.focus?.();
+    return completeInvite(deps, { ok: true });
+  }
   const parsed = parseInviteDeeplink(url);
   if (!parsed) return completeInvite(deps, { ok: false, reason: "not_an_invite_deeplink" });
   let baseUrl: string;
