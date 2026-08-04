@@ -176,14 +176,14 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
 
       <p className={styles.boundary}>{campaign.boundary}</p>
       <div className={styles.actions}>
-        <Button className={styles.primaryAction} onClick={takeAction}>
-          {presentation.cta}
-        </Button>
         {paid ? (
           <Button variant="ghost" className={styles.laterAction} onClick={closeModal}>
             稍后再说
           </Button>
         ) : null}
+        <Button className={styles.primaryAction} onClick={takeAction}>
+          {presentation.cta}
+        </Button>
       </div>
     </Dialog>,
     document.body,

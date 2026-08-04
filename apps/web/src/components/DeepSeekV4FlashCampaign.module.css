@@ -165,7 +165,12 @@
   line-height: 1.55;
 }
 
-.actions { display: flex; align-items: center; gap: 14px; }
+.actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 14px;
+}
 
 .panel .primaryAction {
   min-width: 180px;
@@ -204,7 +209,6 @@
   .available, .locked { grid-column: 2; justify-self: start; }
   .countdown { grid-template-columns: auto 1fr; }
   .countdown small { grid-column: 1 / -1; }
-  .actions { align-items: stretch; flex-direction: column; gap: 8px; }
-  .panel .primaryAction { width: 100%; }
-  .panel .laterAction { width: 100%; }
+  .actions { align-items: center; flex-direction: row; gap: 10px; }
+  .panel .primaryAction { min-width: 160px; }
 }

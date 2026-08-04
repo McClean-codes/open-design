@@ -17,6 +17,10 @@ const campaignDialogSource = readFileSync(
   new URL('../../src/components/DeepSeekV4FlashCampaign.tsx', import.meta.url),
   'utf8',
 );
+const campaignDialogStyles = readFileSync(
+  new URL('../../src/components/DeepSeekV4FlashCampaign.module.css', import.meta.url),
+  'utf8',
+);
 
 describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the promotion attached only to the Flash model', () => {
@@ -91,6 +95,15 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(campaignDialogSource).toContain('<Icon name="close"');
     expect(campaignDialogSource).not.toContain('deepseek-v4-flash-free-week-poster-v5.png');
     expect(campaignDialogSource).toMatch(/onClick=\{closeModal\}/);
+    expect(campaignDialogSource.indexOf('稍后再说')).toBeLessThan(
+      campaignDialogSource.indexOf('{presentation.cta}'),
+    );
+    expect(campaignDialogStyles).toMatch(
+      /\.actions\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?\}/,
+    );
+    expect(campaignDialogStyles).not.toMatch(
+      /\.actions\s*\{[^}]*flex-direction:\s*column;/,
+    );
   });
 
   it('shows a shared live countdown in both paid and unpaid campaign modals', () => {
