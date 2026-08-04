@@ -117,12 +117,14 @@ export class CollabClient {
   private contentTransferStateGeneration = 0;
   private contentTransferStatusRequestGeneration = 0;
   /**
-   * Orders every response that can replace the presence roster. Heartbeats and
-   * read-only invalidation refreshes share this fence because either response
-   * may race the other. stop() and identity changes also advance it so an
-   * obsolete session can never publish a late roster into the next render.
+   * Orders responses that can replace the presence roster. Issuing a newer
+   * request must not suppress an older valid response while the newer one is
+   * still pending (slow 10s+ networks would otherwise starve every heartbeat).
+   * Only a successfully applied newer response supersedes older work. stop()
+   * and identity changes advance both fences so obsolete sessions stay inert.
    */
   private presenceRequestGeneration = 0;
+  private presenceAppliedRequestGeneration = 0;
   private running = false;
   private onVisibilityChange: (() => void) | null = null;
 
@@ -159,6 +161,7 @@ export class CollabClient {
     this.member = member;
     if (nextMemberId !== previousMemberId) {
       this.presenceRequestGeneration += 1;
+      this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
     }
     if (
       this.running
@@ -178,24 +181,26 @@ export class CollabClient {
     // first tick — a 10s blank presence bar on every project open. This also
     // announces us to teammates right away.
     void this.heartbeat();
-    // Hidden-tab gating: a backgrounded tab keeps its timers but skips the
-    // network ticks (status head + presence heartbeat both fan out to the
-    // hub), and one immediate catch-up pair fires on return to visible.
-    // Presence naturally expires on the hub's TTL while hidden, which is the
-    // honest signal — a tab nobody is looking at is not "viewing".
+    // Hidden-tab gating applies only to the heavier status poll. Chrome can
+    // report a still-mounted window as hidden merely because another window is
+    // focused; presence must keep its lightweight lease alive in that state.
     const visible = () =>
       typeof document === 'undefined' || document.visibilityState !== 'hidden';
     this.timers.push(setInterval(() => {
       if (visible()) void this.pollStatus();
     }, this.statusPollMs));
     this.timers.push(setInterval(() => {
-      if (visible()) void this.heartbeat();
+      void this.heartbeat();
     }, this.heartbeatMs));
     if (typeof document !== 'undefined') {
       this.onVisibilityChange = () => {
         if (!visible()) return;
+        // Presence itself never pauses while hidden: heartbeat responses keep
+        // the roster converged. This fresh read is only an extra catch-up for
+        // events/timers the browser may have throttled in the background, and
+        // it preserves the current roster until the response lands.
+        void this.refreshPresence();
         void this.pollStatus();
-        void this.heartbeat();
       };
       document.addEventListener('visibilitychange', this.onVisibilityChange);
     }
@@ -205,6 +210,7 @@ export class CollabClient {
     if (!this.running) return;
     this.running = false;
     this.presenceRequestGeneration += 1;
+    this.presenceAppliedRequestGeneration = this.presenceRequestGeneration;
     for (const timer of this.timers) clearInterval(timer);
     this.timers.length = 0;
     if (this.onVisibilityChange && typeof document !== 'undefined') {
@@ -252,11 +258,11 @@ export class CollabClient {
         ...this.member,
         clientId: this.clientId,
       });
-      if (
-        requestGeneration === this.presenceRequestGeneration
-        && Array.isArray(body?.present)
-      ) {
-        this.update({ present: body.present as CollabPresenceMember[] });
+      if (Array.isArray(body?.present)) {
+        this.applyPresenceResponse(
+          requestGeneration,
+          body.present as CollabPresenceMember[],
+        );
       }
     } catch (error) {
       this.onError?.(error);
@@ -273,14 +279,17 @@ export class CollabClient {
   async refreshPresence(): Promise<void> {
     const requestGeneration = ++this.presenceRequestGeneration;
     try {
-      const body = await this.get('/presence');
-      if (
-        requestGeneration === this.presenceRequestGeneration
-        && Array.isArray(body?.present)
-      ) {
-        this.update({
-          present: body.present as CollabPresenceMember[],
-        });
+      // A hub presence event marks the daemon's short-lived roster cache stale.
+      // Ordinary reads intentionally use stale-while-revalidate, but the event
+      // consumer gets no second push after that background refresh settles.
+      // Ask this one read to wait for the shared in-flight refresh so a stale
+      // self-only roster cannot supersede an authoritative heartbeat forever.
+      const body = await this.get('/presence?fresh=1');
+      if (Array.isArray(body?.present)) {
+        this.applyPresenceResponse(
+          requestGeneration,
+          body.present as CollabPresenceMember[],
+        );
       }
     } catch (error) {
       this.onError?.(error);
@@ -425,8 +434,26 @@ export class CollabClient {
   }
 
   private update(patch: Partial<CollabSnapshot>): void {
-    this.snapshot = { ...this.snapshot, ...patch };
+    const nextPatch = patch.present
+      ? {
+          ...patch,
+          present: retainPresenceDisplayMetadata(
+            this.snapshot.present,
+            patch.present,
+          ),
+        }
+      : patch;
+    this.snapshot = { ...this.snapshot, ...nextPatch };
     this.onUpdate?.(this.snapshot);
+  }
+
+  private applyPresenceResponse(
+    requestGeneration: number,
+    present: CollabPresenceMember[],
+  ): void {
+    if (requestGeneration <= this.presenceAppliedRequestGeneration) return;
+    this.presenceAppliedRequestGeneration = requestGeneration;
+    this.update({ present });
   }
 
   private isSharedProject(): boolean {
@@ -515,6 +542,37 @@ export function evictProjectCollabStatusRead(
 
 function isCollabMemberRole(value: unknown): value is CollabMemberRole {
   return value === 'owner' || value === 'admin' || value === 'member';
+}
+
+/**
+ * Presence heartbeats and list reads may return a compact roster containing
+ * only member ids. Keep stable display metadata for ids that remain online,
+ * while taking membership exclusively from the new roster so departures are
+ * never retained locally.
+ */
+function retainPresenceDisplayMetadata(
+  previous: CollabPresenceMember[],
+  incoming: CollabPresenceMember[],
+): CollabPresenceMember[] {
+  const previousById = new Map(
+    previous.map((member) => [member.memberId, member]),
+  );
+  return incoming.map((member) => {
+    const known = previousById.get(member.memberId);
+    if (!known) return member;
+    return {
+      ...member,
+      ...(member.name === undefined && known.name !== undefined
+        ? { name: known.name }
+        : {}),
+      ...(member.avatarUrl === undefined && known.avatarUrl !== undefined
+        ? { avatarUrl: known.avatarUrl }
+        : {}),
+      ...(member.role === undefined && known.role !== undefined
+        ? { role: known.role }
+        : {}),
+    };
+  });
 }
 
 function parseProjectContentTransferState(

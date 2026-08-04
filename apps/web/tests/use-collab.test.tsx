@@ -177,7 +177,7 @@ describe('useCollab', () => {
     expect(calls).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          url: '/api/projects/p1/presence',
+          url: '/api/projects/p1/presence?fresh=1',
           method: 'GET',
         }),
       ]),

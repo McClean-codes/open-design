@@ -143,11 +143,15 @@ function createPresenceListCache(options: {
       },
       () => {
         if (entries.get(key) !== entry) return;
-        // A failed cold read is not authority or presence evidence. A failed
-        // background refresh also drops its old value after the one caller
-        // that already received it, so an outage cannot display somebody as
-        // online indefinitely.
-        entries.delete(key);
+        // A failed read is not presence evidence. Preserve a previously
+        // authorized roster so a transient relay/CLI outage cannot make every
+        // open project flash empty; keep it stale so the next read retries.
+        // Cold failures still remove the empty shell and retry normally.
+        if (entry.value !== null) {
+          entry.inflight = null;
+        } else {
+          entries.delete(key);
+        }
       },
     );
     return request;
@@ -158,6 +162,7 @@ function createPresenceListCache(options: {
       projectId: string,
       context: WorkspaceCollabContext | null,
       fetcher: () => Promise<CollabPresenceMember[]>,
+      readOptions?: { waitForFresh?: boolean },
     ): Promise<CollabPresenceMember[]> {
       const key = presenceListCacheKey(projectId, context);
       let entry = entries.get(key);
@@ -177,15 +182,18 @@ function createPresenceListCache(options: {
       store(key, entry);
       if (entry.value !== null) {
         const value = entry.value;
+        let refreshRequest = entry.inflight;
         if (
-          !entry.inflight
+          !refreshRequest
           && options.now() - entry.settledAt >= options.freshMs
         ) {
           // Polls never wait on a fresh Vela process once this exact viewer has
           // a value. Refresh in the background and keep concurrent callers on
           // the same process.
-          void refresh(key, entry, fetcher).catch(() => undefined);
+          refreshRequest = refresh(key, entry, fetcher);
+          void refreshRequest.catch(() => undefined);
         }
+        if (readOptions?.waitForFresh && refreshRequest) return refreshRequest;
         return Promise.resolve(value);
       }
       return entry.inflight ?? refresh(key, entry, fetcher);
@@ -473,6 +481,7 @@ export function registerCollabPresenceRoutes(
               }
               return cloud.listPresence(req.params.id, context);
             },
+            { waitForFresh: req.query.fresh === '1' },
           ),
         });
       } catch (error) {

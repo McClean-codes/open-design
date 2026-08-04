@@ -311,6 +311,136 @@ describe('CollabClient', () => {
     client.stop();
   });
 
+  it('keeps heartbeats and roster convergence alive while hidden, then refreshes fresh on visibility', async () => {
+    const visibilityListeners = new Set<() => void>();
+    const fakeDocument = {
+      visibilityState: 'hidden',
+      addEventListener: vi.fn((type: string, listener: () => void) => {
+        if (type === 'visibilitychange') visibilityListeners.add(listener);
+      }),
+      removeEventListener: vi.fn((type: string, listener: () => void) => {
+        if (type === 'visibilitychange') visibilityListeners.delete(listener);
+      }),
+    };
+    vi.stubGlobal('document', fakeDocument);
+    const { fetchImpl, calls, state } = makeFetch({
+      present: [{ memberId: 'm1' }],
+    });
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: { memberId: 'm1' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+      statusPollMs: 5_000,
+    });
+
+    try {
+      client.start();
+      await vi.advanceTimersByTimeAsync(0);
+
+      state.present = [{ memberId: 'm1' }, { memberId: 'joined' }];
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(client.getSnapshot().present).toEqual([
+        { memberId: 'm1' },
+        { memberId: 'joined' },
+      ]);
+
+      state.present = [{ memberId: 'm1' }];
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(client.getSnapshot().present).toEqual([{ memberId: 'm1' }]);
+
+      expect(calls.filter((call) =>
+        call.url.endsWith('/presence/heartbeat'))).toHaveLength(4);
+      expect(calls.filter((call) =>
+        call.url.endsWith('/collab/status'))).toHaveLength(1);
+
+      fakeDocument.visibilityState = 'visible';
+      for (const listener of visibilityListeners) listener();
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Presence has the same semantics in foreground and background. The
+      // visibility transition adds a fresh read only as a convergence
+      // accelerator; it does not clear the last roster first.
+      expect(calls.filter((call) =>
+        call.url.endsWith('/presence/heartbeat'))).toHaveLength(4);
+      expect(calls.filter((call) =>
+        call.url.endsWith('/presence?fresh=1'))).toHaveLength(1);
+      expect(calls.filter((call) =>
+        call.url.endsWith('/collab/status'))).toHaveLength(2);
+      expect(client.getSnapshot().present).toEqual([{ memberId: 'm1' }]);
+
+      client.stop();
+      const afterStop = calls.length;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(calls).toHaveLength(afterStop);
+      expect(visibilityListeners.size).toBe(0);
+    } finally {
+      client.stop();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('applies a correct slow heartbeat while a newer request is still pending', async () => {
+    const pendingHeartbeats: Array<(response: Response) => void> = [];
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const pathname = new URL(String(input), 'http://daemon.local').pathname;
+        if (pathname.endsWith('/collab/status')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (pathname.endsWith('/presence/heartbeat')) {
+          return new Promise<Response>((resolve) => {
+            pendingHeartbeats.push(resolve);
+          });
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: { memberId: 'viewer' },
+      fetch: fetchImpl,
+      heartbeatMs: 10_000,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pendingHeartbeats).toHaveLength(2);
+
+    pendingHeartbeats[0]!(
+      new Response(
+        JSON.stringify({
+          present: [{ memberId: 'viewer' }, { memberId: 'teammate' }],
+        }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Merely issuing heartbeat #2 must not suppress heartbeat #1's valid
+    // response on a 10s+ network. The newer response can still supersede it
+    // once that newer request actually settles.
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'viewer' },
+      { memberId: 'teammate' },
+    ]);
+
+    pendingHeartbeats[1]!(
+      new Response(
+        JSON.stringify({ present: [{ memberId: 'viewer' }] }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(client.getSnapshot().present).toEqual([{ memberId: 'viewer' }]);
+    client.stop();
+  });
+
   it('refreshes presence with a read instead of emitting another heartbeat', async () => {
     const { fetchImpl, calls, state } = makeFetch({
       present: [{ memberId: 'm2', name: 'Teammate' }],
@@ -326,7 +456,7 @@ describe('CollabClient', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
-      url: '/api/projects/p1/presence',
+      url: '/api/projects/p1/presence?fresh=1',
       method: 'GET',
     });
     expect(calls[0]!.headers.get('x-od-workspace-id')).toBe(
@@ -334,6 +464,116 @@ describe('CollabClient', () => {
     );
     expect(client.getSnapshot().present).toEqual(state.present);
     expect(calls.some((call) => call.url.endsWith('/presence/heartbeat'))).toBe(false);
+  });
+
+  it('converges when an event refresh races a correct heartbeat with a stale SWR roster', async () => {
+    let resolveHeartbeat!: (response: Response) => void;
+    const fetchImpl = vi.fn(
+      (input: RequestInfo | URL): Promise<Response> => {
+        const url = new URL(String(input), 'http://daemon.local');
+        if (url.pathname.endsWith('/collab/status')) {
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ publishedVersion: 1, syncState: 'synced' }),
+              { status: 200 },
+            ),
+          );
+        }
+        if (url.pathname.endsWith('/presence/heartbeat')) {
+          return new Promise<Response>((resolve) => {
+            resolveHeartbeat = resolve;
+          });
+        }
+        expect(url.pathname).toBe('/api/projects/p1/presence');
+        const present = url.searchParams.get('fresh') === '1'
+          ? [{ memberId: 'viewer' }, { memberId: 'teammate' }]
+          : [{ memberId: 'viewer' }];
+        return Promise.resolve(
+          new Response(JSON.stringify({ present }), { status: 200 }),
+        );
+      },
+    ) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: { memberId: 'viewer' },
+      fetch: fetchImpl,
+    });
+
+    client.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(resolveHeartbeat).toBeTypeOf('function');
+
+    // The hub event arrives while the authoritative heartbeat is in flight.
+    // An ordinary daemon GET would return its stale-while-revalidate cache and
+    // the shared generation fence would then discard the heartbeat response.
+    await client.refreshPresence();
+    resolveHeartbeat(
+      new Response(
+        JSON.stringify({
+          present: [{ memberId: 'viewer' }, { memberId: 'teammate' }],
+        }),
+        { status: 200 },
+      ),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(client.getSnapshot().present).toEqual([
+      { memberId: 'viewer' },
+      { memberId: 'teammate' },
+    ]);
+    client.stop();
+  });
+
+  it('keeps known display metadata only for members retained by a sparse roster', async () => {
+    const rosters = [
+      [
+        {
+          memberId: 'viewer',
+          name: 'Viewer',
+          role: 'admin',
+          avatarUrl: 'https://example.test/viewer.png',
+        },
+        {
+          memberId: 'teammate',
+          name: 'Teammate',
+          role: 'member',
+          avatarUrl: 'https://example.test/teammate.png',
+        },
+        {
+          memberId: 'departed',
+          name: 'Departed',
+          role: 'member',
+        },
+      ],
+      [{ memberId: 'viewer' }, { memberId: 'teammate' }],
+    ];
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ present: rosters.shift() }), {
+        status: 200,
+      })) as unknown as typeof fetch;
+    const client = new CollabClient({
+      projectId: 'p1',
+      member: null,
+      fetch: fetchImpl,
+    });
+
+    await client.refreshPresence();
+    await client.refreshPresence();
+
+    expect(client.getSnapshot().present).toEqual([
+      {
+        memberId: 'viewer',
+        name: 'Viewer',
+        role: 'admin',
+        avatarUrl: 'https://example.test/viewer.png',
+      },
+      {
+        memberId: 'teammate',
+        name: 'Teammate',
+        role: 'member',
+        avatarUrl: 'https://example.test/teammate.png',
+      },
+    ]);
   });
 
   it('does not let an older presence read overwrite a newer roster', async () => {

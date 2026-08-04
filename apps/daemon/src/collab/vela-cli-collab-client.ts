@@ -191,13 +191,17 @@ function toDirectoryEntry(input: MemberWire | undefined): CollabCloudMemberDirec
 }
 
 function toPresenceMember(input: PresenceWire): CollabPresenceMember {
+  const memberId = typeof input.memberId === 'string' ? input.memberId : '';
   const member: CollabPresenceMember = {
-    memberId: typeof input.memberId === 'string' ? input.memberId : '',
-    role: isRole(input.role) ? input.role : 'member',
+    memberId,
   };
-  if (typeof input.displayName === 'string' && input.displayName.trim()) {
-    member.name = input.displayName.trim();
+  const displayName = typeof input.displayName === 'string'
+    ? input.displayName.trim()
+    : '';
+  if (displayName && displayName !== memberId) {
+    member.name = displayName;
   }
+  if (isRole(input.role)) member.role = input.role;
   if (typeof input.avatarUrl === 'string' || input.avatarUrl === null) {
     member.avatarUrl = input.avatarUrl;
   }

@@ -1134,4 +1134,19 @@ describe('VelaCliCollabClient', () => {
     ]);
     expect(workspaces).toEqual(['team-1', 'team-1', 'team-1', 'team-1']);
   });
+
+  it('does not turn sparse presence fallback fields into display metadata', async () => {
+    const client = createVelaCliCollabClient({
+      run: async () => JSON.stringify({
+        viewers: [{
+          memberId: 'member-id-1',
+          displayName: 'member-id-1',
+        }],
+      }),
+    });
+
+    await expect(client.listPresence('p1', 'team-1')).resolves.toEqual([
+      { memberId: 'member-id-1' },
+    ]);
+  });
 });
