@@ -15,8 +15,9 @@
 
 .cover {
   display: block;
-  width: 100%;
-  aspect-ratio: 1.82 / 1;
+  width: min(190px, 56vw);
+  aspect-ratio: 9 / 16;
+  margin: 0 auto;
   border-radius: var(--radius-md, 8px);
   object-fit: cover;
 }
