@@ -1,10 +1,8 @@
 .root {
   position: fixed;
-  top: 14px;
   right: 18px;
-  /* The launcher intentionally sits inside the 44px workspace chrome. Keep it
-     above that chrome (z-index: 120), otherwise the button remains visible
-     through the translucent header but the header captures every pointer. */
+  bottom: 64px;
+  /* Keep the review launcher above app chrome and floating controls. */
   z-index: 130;
   -webkit-app-region: no-drag;
 }
@@ -47,8 +45,8 @@
 
 .menu {
   position: absolute;
-  top: calc(100% + 8px);
   right: 0;
+  bottom: calc(100% + 8px);
   width: min(292px, calc(100vw - 28px));
   padding: 7px;
   overflow: hidden;
@@ -162,7 +160,7 @@
 @keyframes demo-menu-enter {
   from {
     opacity: 0;
-    transform: translateY(-5px) scale(0.98);
+    transform: translateY(5px) scale(0.98);
   }
 }
 
