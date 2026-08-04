@@ -595,7 +595,7 @@ import {
   getConversation,
   getDeployment,
   getDeploymentById,
-  getLatestConversationIdForProject,
+  getProjectCommentAnchorConversationId,
   getMessageTelemetryFinalizationState,
   getPreviewComment,
   getProjectPreviewComment,
@@ -3459,7 +3459,7 @@ export async function startServer({
         listProjectIds: () => [...activeProjectEventSinks.keys()],
         resolveProjectWorkspaceContext: resolveBoundProjectWorkspaceContext,
         resolveLocalConversationId: (projectId) =>
-          getLatestConversationIdForProject(db, projectId),
+          getProjectCommentAnchorConversationId(db, projectId),
         mergeComment: ({ projectId, conversationId, comment }) =>
           mergeSyncedPreviewComment(db, projectId, conversationId, comment),
         onError: (error) => console.warn('[od] collab cloud sync error:', error),
