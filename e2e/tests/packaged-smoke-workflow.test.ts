@@ -17,6 +17,13 @@ const execFileAsync = promisify(execFile);
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(e2eRoot);
 const ciWorkflowPath = join(workspaceRoot, ".github", "workflows", "ci.yml");
+const configureCiParallelismActionPath = join(
+  workspaceRoot,
+  ".github",
+  "actions",
+  "configure-ci-parallelism",
+  "action.yml",
+);
 const uiExtendedMainWorkflowPath = join(workspaceRoot, ".github", "workflows", "ui-extended-main.yml");
 const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
@@ -1176,6 +1183,16 @@ process.stdin.on("end", () => {
     expect(workflow).not.toContain("needs.runners.outputs.contabo_control");
     expect(workflow).not.toContain("needs.runners.outputs.hosted_or_blacksmith");
     expect(workflow).not.toContain("needs.runners.outputs.blacksmith_default");
+  });
+
+  it("[P2] caps Playwright concurrency independently from build concurrency", async () => {
+    const action = await readFile(configureCiParallelismActionPath, "utf8");
+
+    expect(action).toContain('playwright_workers="$workers"');
+    expect(action).toContain('if [ "$playwright_workers" -gt 4 ]; then');
+    expect(action).toContain("playwright_workers=4");
+    expect(action).toContain('echo "OD_PLAYWRIGHT_WORKERS=$playwright_workers"');
+    expect(action).toContain('echo "OPEN_DESIGN_WORKSPACE_CONCURRENCY=$workers"');
   });
 
   it("[P1] routes external fork PRs through GitHub-hosted runner profiles", async () => {
