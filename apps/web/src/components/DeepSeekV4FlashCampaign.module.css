@@ -6,6 +6,10 @@
   overflow: auto;
 }
 
+.panel:focus {
+  outline: none;
+}
+
 .backdrop.backdrop {
   padding: 16px;
   background: var(--glass-regular);
