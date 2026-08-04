@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   TeamProject,
   WorkspaceBillingResponse,
@@ -50,6 +50,8 @@ import {
 // `packages/contracts/src/api/collab.ts` for the shape.
 export interface WorkspaceContextState {
   context: WorkspaceCollabContext | null;
+  /** Monotonic browser boundary for sign-in/sign-out account changes. */
+  accountGeneration?: number;
   /**
    * Exact directory-backed identity that read-only Workspace catalogs may use
    * while the richer `/api/workspace/context` projection is still loading.
@@ -812,7 +814,11 @@ export function useWorkspaceContext(): WorkspaceContextState {
     };
   }, [loadContext]);
 
-  return state;
+  const accountGeneration = currentWorkspaceAccountGeneration();
+  return useMemo(
+    () => ({ ...state, accountGeneration }),
+    [accountGeneration, state],
+  );
 }
 
 const WORKSPACE_CONTEXT_POLL_MS = 30_000;

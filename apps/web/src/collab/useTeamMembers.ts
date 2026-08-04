@@ -5,184 +5,16 @@ import {
   useRef,
   useSyncExternalStore,
 } from 'react';
-import { coalescedGet } from '../lib/coalesced-get';
 import type {
   CollabCloudMemberDirectoryEntry,
-  CollabCloudMembersResponse,
   WorkspaceCollabContext,
 } from '@open-design/contracts';
 import { useWorkspaceContext } from './useWorkspaceContext';
 import { useWorkspaceInvalidation } from './workspace-events';
-import {
-  workspaceIdentityCacheKey,
-  workspaceProjectHeaders,
-} from './workspace-identity';
+import { teamMembersStoreFor } from './team-members-store';
 
-// Poll cadence for the collab-cloud member directory. ~15s is light enough to
-// keep a comment author's name / role fresh (a member registers on join) without
-// a heavy loop; it mirrors `useTeamProjects`'s cadence. The read is daemon-local
-// (the daemon caches the directory) so the poll just refetches the whole list.
-const TEAM_MEMBERS_POLL_MS = 15_000;
-// Poll-as-floor cadence while the workspace SSE is connected.
-const TEAM_MEMBERS_SSE_FLOOR_MS = 60_000;
-
-type StoreListener = () => void;
-
-/**
- * One directory snapshot and one poll scheduler for one exact Workspace
- * identity. `useEventStream` already shares the EventSource itself; this store
- * closes the remaining fan-out where every hook subscriber independently
- * reloaded the same roster on mount, push, focus, and its own interval.
- */
-class TeamMembersIdentityStore {
-  private readonly identity: string;
-  private readonly context: WorkspaceCollabContext;
-  private readonly listeners = new Set<StoreListener>();
-  private readonly consumers = new Set<symbol>();
-  private readonly connectedConsumers = new Map<symbol, boolean>();
-  private members: CollabCloudMemberDirectoryEntry[] = [];
-  private inFlight: Promise<void> | null = null;
-  private pollTimer: ReturnType<typeof setInterval> | null = null;
-  private pollIntervalMs: number | null = null;
-  private requestEpoch = 0;
-  private retentionGeneration = 0;
-  private hasSuccessfulLoad = false;
-  private disposed = false;
-
-  constructor(identity: string, context: WorkspaceCollabContext) {
-    this.identity = identity;
-    this.context = context;
-  }
-
-  readonly getSnapshot = (): CollabCloudMemberDirectoryEntry[] => this.members;
-
-  readonly subscribe = (listener: StoreListener): (() => void) => {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
-  };
-
-  retain(consumer: symbol): () => void {
-    // Cancel a pending zero-consumer disposal. React StrictMode deliberately
-    // runs setup → cleanup → setup without another render; that replay must
-    // retain this exact store and its pending first read.
-    this.retentionGeneration += 1;
-    this.disposed = false;
-    this.consumers.add(consumer);
-    if (this.consumers.size === 1) {
-      void this.load();
-      this.rearmPoll();
-    } else if (!this.hasSuccessfulLoad) {
-      void this.load();
-    }
-    return () => {
-      if (!this.consumers.delete(consumer)) return;
-      this.connectedConsumers.delete(consumer);
-      if (this.consumers.size === 0) {
-        const disposalGeneration = ++this.retentionGeneration;
-        queueMicrotask(() => {
-          if (
-            this.consumers.size > 0
-            || this.retentionGeneration !== disposalGeneration
-          ) {
-            return;
-          }
-          this.dispose();
-          if (teamMembersStores.get(this.identity) === this) {
-            teamMembersStores.delete(this.identity);
-          }
-        });
-      } else {
-        this.rearmPoll();
-      }
-    };
-  }
-
-  setConnected(consumer: symbol, connected: boolean): void {
-    if (!this.consumers.has(consumer)) return;
-    if (this.connectedConsumers.get(consumer) === connected) return;
-    this.connectedConsumers.set(consumer, connected);
-    this.rearmPoll();
-  }
-
-  readonly load = async (): Promise<void> => {
-    if (this.disposed || this.consumers.size === 0) return;
-    if (this.inFlight) return this.inFlight;
-    const requestEpoch = ++this.requestEpoch;
-    const operation = this.performLoad(requestEpoch);
-    this.inFlight = operation;
-    try {
-      await operation;
-    } finally {
-      if (this.inFlight === operation) this.inFlight = null;
-    }
-  };
-
-  private async performLoad(requestEpoch: number): Promise<void> {
-    try {
-      const members = await coalescedGet(
-        `workspace-members:${this.identity}`,
-        async () => {
-          const res = await fetch('/api/workspace/members', {
-            headers: workspaceProjectHeaders(this.context),
-          });
-          if (!res.ok) throw new Error(`members ${res.status}`);
-          const body = (await res.json()) as CollabCloudMembersResponse;
-          return body.members ?? [];
-        },
-      );
-      if (this.disposed || requestEpoch !== this.requestEpoch) return;
-      this.hasSuccessfulLoad = true;
-      this.members = members;
-      for (const listener of Array.from(this.listeners)) listener();
-    } catch {
-      // A failed refresh is not an authoritative empty directory. Preserve the
-      // last-good snapshot; a successful `members: []` above still converges.
-    }
-  }
-
-  private rearmPoll(): void {
-    const nextIntervalMs = Array.from(this.connectedConsumers.values()).some(Boolean)
-      ? TEAM_MEMBERS_SSE_FLOOR_MS
-      : TEAM_MEMBERS_POLL_MS;
-    if (this.pollTimer && this.pollIntervalMs === nextIntervalMs) return;
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollIntervalMs = nextIntervalMs;
-    this.pollTimer = setInterval(() => {
-      if (
-        typeof document === 'undefined'
-        || document.visibilityState === 'visible'
-      ) {
-        void this.load();
-      }
-    }, nextIntervalMs);
-  }
-
-  private dispose(): void {
-    this.disposed = true;
-    this.requestEpoch += 1;
-    if (this.pollTimer) clearInterval(this.pollTimer);
-    this.pollTimer = null;
-    this.pollIntervalMs = null;
-    this.connectedConsumers.clear();
-  }
-}
-
-const teamMembersStores = new Map<string, TeamMembersIdentityStore>();
 const EMPTY_MEMBERS: CollabCloudMemberDirectoryEntry[] = [];
 const EMPTY_SUBSCRIBE = (): (() => void) => () => {};
-
-function teamMembersStoreFor(
-  context: WorkspaceCollabContext | null | undefined,
-): TeamMembersIdentityStore | null {
-  if (!context) return null;
-  const identity = workspaceIdentityCacheKey(context);
-  let store = teamMembersStores.get(identity);
-  if (!store) {
-    store = new TeamMembersIdentityStore(identity, context);
-    teamMembersStores.set(identity, store);
-  }
-  return store;
-}
 
 export interface TeamMembersState {
   members: CollabCloudMemberDirectoryEntry[];
@@ -260,8 +92,16 @@ export function useTeamMembers(
   const {
     context: workspaceContext,
     identityChangePending,
+    accountGeneration = 0,
   } = useWorkspaceContext();
-  const store = teamMembersStoreFor(workspaceContext);
+  // During an unseeded account transition the context still describes the
+  // account being left. Do not create or warm the next account's store until
+  // useWorkspaceContext resolves its verified context.
+  const activeWorkspaceContext = identityChangePending ? null : workspaceContext;
+  const store = teamMembersStoreFor(
+    activeWorkspaceContext,
+    accountGeneration,
+  );
   const consumerRef = useRef(Symbol('team-members-consumer'));
   const membersSnapshot = useSyncExternalStore(
     store?.subscribe ?? EMPTY_SUBSCRIBE,
@@ -275,7 +115,11 @@ export function useTeamMembers(
   }, [store]);
 
   const load = useCallback(() => {
-    void store?.load();
+    void store?.revalidate();
+  }, [store]);
+
+  const markDirty = useCallback((payload?: object) => {
+    store?.markDirty(payload);
   }, [store]);
 
   // Collab realtime hop-2: subscribe to the workspace SSE and re-fetch on a
@@ -283,9 +127,9 @@ export function useTeamMembers(
   // workspace-invalidation poller diffs the roster and pushes only on an actual
   // change. `connected` drives poll-as-floor below.
   const { connected: sseConnected } = useWorkspaceInvalidation(
-    { 'members-changed': load },
+    { 'members-changed': markDirty },
     {
-      workspaceContext,
+      workspaceContext: activeWorkspaceContext,
       onActive: () => void load(),
     },
   );

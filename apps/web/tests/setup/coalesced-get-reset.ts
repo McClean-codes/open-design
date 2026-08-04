@@ -7,6 +7,7 @@ import { beforeEach } from 'vitest';
 
 import { resetCoalescedGet } from '../../src/lib/coalesced-get';
 import { resetWorkspaceContextCache } from '../../src/collab/useWorkspaceContext';
+import { resetTeamMembersStores } from '../../src/collab/team-members-store';
 import { resetHtmlSourceSnapshotCache } from '../../src/components/html-source-snapshot-cache';
 import { resetHtmlThumbnailSourceCache } from '../../src/components/html-thumbnail-source-cache';
 import { resetProjectCoverSnapshots } from '../../src/lib/project-cover-cache';
@@ -19,6 +20,7 @@ beforeEach(() => {
   // home-view remount does not flash the signed-out state; clear it too, or a
   // signed-in context from one test would seed the next test's initial render.
   resetWorkspaceContextCache();
+  resetTeamMembersStores();
   resetHtmlSourceSnapshotCache();
   resetHtmlThumbnailSourceCache();
   // The project-cover LRU snapshot and the thumbnail load gate are
