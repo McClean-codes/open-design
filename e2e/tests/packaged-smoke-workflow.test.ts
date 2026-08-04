@@ -1189,8 +1189,8 @@ process.stdin.on("end", () => {
     const action = await readFile(configureCiParallelismActionPath, "utf8");
 
     expect(action).toContain('playwright_workers="$workers"');
-    expect(action).toContain('if [ "$playwright_workers" -gt 4 ]; then');
-    expect(action).toContain("playwright_workers=4");
+    expect(action).toContain('if [ "$playwright_workers" -gt 2 ]; then');
+    expect(action).toContain("playwright_workers=2");
     expect(action).toContain('echo "OD_PLAYWRIGHT_WORKERS=$playwright_workers"');
     expect(action).toContain('echo "OPEN_DESIGN_WORKSPACE_CONCURRENCY=$workers"');
   });

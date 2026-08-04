@@ -15,8 +15,8 @@ runs:
           workers=1
         fi
         playwright_workers="$workers"
-        if [ "$playwright_workers" -gt 4 ]; then
-          playwright_workers=4
+        if [ "$playwright_workers" -gt 2 ]; then
+          playwright_workers=2
         fi
 
         {
