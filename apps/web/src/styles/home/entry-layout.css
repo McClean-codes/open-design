@@ -1065,8 +1065,8 @@
   border: 1px solid color-mix(in srgb, #68f22e 54%, var(--line));
   border-radius: 999px;
   color: #205b16;
-  background: color-mix(in srgb, #68f22e 13%, var(--bg-panel));
-  box-shadow: 0 8px 24px rgb(43 176 53 / 12%);
+  background: transparent;
+  box-shadow: none;
   font-size: 12px;
   font-weight: 760;
   line-height: 1;
@@ -1076,7 +1076,7 @@
 
 .entry-deepseek-campaign-badge:hover {
   border-color: color-mix(in srgb, #68f22e 76%, var(--line));
-  background: color-mix(in srgb, #68f22e 20%, var(--bg-panel));
+  background: var(--bg-subtle);
   transform: translateY(-1px);
 }
 

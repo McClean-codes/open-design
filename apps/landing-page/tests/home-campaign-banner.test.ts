@@ -35,9 +35,9 @@ test('home campaign banner can be dismissed without nesting a button in its link
 test('home campaign banner uses the fixed seven-day activity window', () => {
   assert.match(source, /2026-08-06T20:00:00\+08:00/);
   assert.match(source, /2026-08-13T20:00:00\+08:00/);
-  assert.match(source, /8 月 6 日 20:00—8 月 13 日 20:00，一周免费用/);
+  assert.match(source, /8 月 6 日—8 月 13 日，一周免费用/);
   assert.match(source, /FREE all week/);
-  assert.match(source, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
-  assert.match(source, /无法在 MCP \/ CLI\/ API及其他场景使用/);
+  assert.doesNotMatch(source, /home-campaign-banner__disclaimer/);
+  assert.doesNotMatch(source, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
   assert.doesNotMatch(source, /2026-08-22T00:00:00\+08:00/);
 });

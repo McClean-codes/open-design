@@ -843,7 +843,9 @@ export function InlineModelSwitcher({
   const openAmrModelUpgrade = useCallback(() => {
     const attribution = recordAmrEntry(
       analytics.track,
-      'inline_amr_upgrade',
+      campaignNeedsUpgrade
+        ? 'deepseek_model_switcher_upgrade'
+        : 'inline_amr_upgrade',
       new Date(),
       { metricsConsent: config.telemetry?.metrics === true },
     );
@@ -866,6 +868,7 @@ export function InlineModelSwitcher({
   }, [
     amrStatus?.profile,
     analytics.track,
+    campaignNeedsUpgrade,
     config.agentCliEnv?.amr?.OPEN_DESIGN_AMR_PROFILE,
     config.installationId,
     config.telemetry?.metrics,

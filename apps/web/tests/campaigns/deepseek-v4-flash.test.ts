@@ -35,7 +35,7 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the fixed window out of the primary headline and badge', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.headline).not.toContain('限时');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.badge).toBe('无限使用');
-    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).toContain('8 月 6 日 20:00 至 8 月 13 日 20:00');
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).toContain('8 月 6 日至 8 月 13 日');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).not.toContain('权益生效后');
   });
 
@@ -54,7 +54,7 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.cta).toContain('升级套餐');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge).toBe('无限使用');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge).toBe('升级可用');
-    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip).toContain('8 月 13 日 20:00');
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip).toContain('8 月 13 日');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.modelBadge).toBe('已暂停');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.tooltip).toContain('异常的大规模使用');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.boundary).toContain('不设个人免费额度');
@@ -85,9 +85,11 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the paid modal actions on the final approved interaction', () => {
     expect(campaignDialogSource).toContain('{presentation.cta}');
     expect(campaignDialogSource).toContain('稍后再说');
-    expect(campaignDialogSource).toContain('/campaigns/deepseek-v4-flash-free-week-poster-v5.png');
-    expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-cover');
-    expect(campaignDialogSource).toMatch(/className=\{styles\.dismissAction\}/);
+    expect(campaignDialogSource).toContain('styles.modelCard');
+    expect(campaignDialogSource).toContain('styles.boundary');
+    expect(campaignDialogSource).toContain('styles.laterAction');
+    expect(campaignDialogSource).toContain('<Icon name="close"');
+    expect(campaignDialogSource).not.toContain('deepseek-v4-flash-free-week-poster-v5.png');
     expect(campaignDialogSource).toMatch(/onClick=\{closeModal\}/);
   });
 
@@ -107,16 +109,17 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(campaignDialogSource).toContain('REVIEW_COUNTDOWN_DURATION_MS');
     expect(campaignDialogSource).not.toContain('formatDeepSeekV4FlashCampaignCountdown(countdownNow)');
     expect(campaignDialogSource.indexOf('styles.countdown')).toBeLessThan(
-      campaignDialogSource.indexOf('styles.footer'),
+      campaignDialogSource.indexOf('styles.actions'),
     );
-    expect(campaignDialogSource).not.toContain('styles.modelCard');
-    expect(campaignDialogSource).not.toContain('styles.boundary');
+    expect(campaignDialogSource).toContain('styles.modelCard');
+    expect(campaignDialogSource).toContain('styles.boundary');
   });
 
   it('keeps the unpaid action on the upgrade flow without showing the paid secondary action', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.cta).toBe('升级套餐，立即使用');
-    expect(campaignDialogSource).toContain("window.open(plansUrl, '_blank', 'noopener,noreferrer')");
-    expect(campaignDialogSource).toContain("{paid ? '稍后再说' : '关闭'}");
+    expect(campaignDialogSource).toContain("'deepseek_unpaid_modal'");
+    expect(campaignDialogSource).toContain('attributedAmrUrl(plansUrl, attribution)');
+    expect(campaignDialogSource).toMatch(/\{paid \? \([\s\S]*稍后再说[\s\S]*\) : null\}/);
   });
 
   it('opens for every paid user only inside the shared half-open window', () => {

@@ -12,6 +12,9 @@ import {
   amrPlansUrlForProfile,
   amrPlansUrlForWorkspace,
 } from '../runtime/amr-guidance';
+import { useAnalytics } from '../analytics/provider';
+import { attributedAmrUrl, recordAmrEntry } from '../analytics/amr-attribution';
+import { Icon } from './Icon';
 import styles from './DeepSeekV4FlashCampaign.module.css';
 
 const SEEN_KEY = `open-design:campaign-seen:${campaign.id}`;
@@ -55,6 +58,7 @@ function focusModelSwitcher(): void {
 }
 
 export function DeepSeekV4FlashCampaign({ audience }: Props) {
+  const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
@@ -109,7 +113,15 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
     const plansUrl =
       amrPlansUrlForWorkspace(undefined, workspaceContext?.workspaceId)
       ?? amrPlansUrlForProfile(undefined);
-    window.open(plansUrl, '_blank', 'noopener,noreferrer');
+    const attribution = recordAmrEntry(
+      analytics.track,
+      'deepseek_unpaid_modal',
+    );
+    window.open(
+      attributedAmrUrl(plansUrl, attribution),
+      '_blank',
+      'noopener,noreferrer',
+    );
   };
 
   if (!modalOpen || audience === 'unknown' || typeof document === 'undefined') {
@@ -127,36 +139,51 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
       backdropClassName={styles.backdrop}
       data-testid="deepseek-v4-flash-campaign-dialog"
     >
-      <img
-        alt=""
-        className={styles.cover}
-        data-testid="deepseek-v4-flash-campaign-cover"
-        src="/campaigns/deepseek-v4-flash-free-week-poster-v5.png"
-      />
+      <Button
+        variant="ghost"
+        size="icon"
+        className={styles.close}
+        aria-label="关闭"
+        onClick={closeModal}
+      >
+        <Icon name="close" size={17} strokeWidth={1.8} />
+      </Button>
 
-      <div className={styles.content}>
-        <h2 id={titleId} className={styles.srOnly}>{campaign.headline}</h2>
-        <p id={descriptionId} className={styles.srOnly}>{campaign.description}</p>
+      <p className={styles.eyebrow}>{presentation.eyebrow}</p>
+      <h2 id={titleId} className={styles.title}>{campaign.headline}</h2>
+      <p id={descriptionId} className={styles.lead}>{campaign.description}</p>
 
-        <div className={styles.countdown} aria-label="活动倒计时">
-          <span className={styles.countdownLabel}>活动倒计时</span>
-          <strong data-testid="deepseek-v4-flash-campaign-countdown">
-            {formatDeepSeekV4FlashCampaignMockRemaining(
-              countdownEndsAtRef.current - countdownNow,
-            )}
-          </strong>
-          <small>{campaign.window.label} · 一周免费用</small>
-        </div>
-
+      <div className={styles.modelCard}>
+        <span className={styles.modelMark} aria-hidden="true">DS</span>
+        <span className={styles.modelCopy}>
+          <strong>{campaign.benefit}</strong>
+          <small>{presentation.status}</small>
+        </span>
+        <span className={paid ? styles.available : styles.locked}>
+          {paid ? '已解锁' : '待解锁'}
+        </span>
       </div>
 
-      <div className={styles.footer}>
-        <Button className={styles.dismissAction} onClick={closeModal}>
-          {paid ? '稍后再说' : '关闭'}
-        </Button>
-        <Button variant="primary" className={styles.primaryAction} onClick={takeAction}>
+      <div className={styles.countdown} aria-label="活动倒计时">
+        <span className={styles.countdownLabel}>活动倒计时</span>
+        <strong data-testid="deepseek-v4-flash-campaign-countdown">
+          {formatDeepSeekV4FlashCampaignMockRemaining(
+            countdownEndsAtRef.current - countdownNow,
+          )}
+        </strong>
+        <small>{campaign.window.label} · 一周免费用</small>
+      </div>
+
+      <p className={styles.boundary}>{campaign.boundary}</p>
+      <div className={styles.actions}>
+        <Button className={styles.primaryAction} onClick={takeAction}>
           {presentation.cta}
         </Button>
+        {paid ? (
+          <Button variant="ghost" className={styles.laterAction} onClick={closeModal}>
+            稍后再说
+          </Button>
+        ) : null}
       </div>
     </Dialog>,
     document.body,

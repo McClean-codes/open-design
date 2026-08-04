@@ -83,6 +83,8 @@ export type TrackingAmrEntrySource =
   | 'generation_preview_switch_retry_card'
   | 'settings_amr_upgrade'
   | 'inline_amr_upgrade'
+  | 'deepseek_unpaid_modal'
+  | 'deepseek_model_switcher_upgrade'
   | 'avatar_amr_upgrade'
   | 'avatar_amr_agent_card'
   | 'artifact_success_upgrade'

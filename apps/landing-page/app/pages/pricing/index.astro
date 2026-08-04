@@ -124,8 +124,8 @@ const deepSeekCampaign = locale.startsWith('zh')
       windowLabel: '活动倒计时',
       windowValue: '7天 00:00:00',
       modelBenefit: 'DeepSeek V4 Flash 无限使用',
-      paidBenefitNote: '8 月 6 日 20:00—8 月 13 日 20:00 · 一周免费用',
-      teamBenefitNote: '8 月 6 日 20:00—8 月 13 日 20:00 · 一周免费用',
+      paidBenefitNote: '8 月 6 日—8 月 13 日 · 一周免费用',
+      teamBenefitNote: '8 月 6 日—8 月 13 日 · 一周免费用',
       disclaimer: '套餐内的无限制模型额度与免费生成次数，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。',
     }
   : {
@@ -135,8 +135,8 @@ const deepSeekCampaign = locale.startsWith('zh')
       windowLabel: 'Campaign countdown',
       windowValue: '7d 00:00:00',
       modelBenefit: 'Unlimited DeepSeek V4 Flash',
-      paidBenefitNote: 'Aug 6, 20:00—Aug 13, 20:00 (UTC+8) · FREE all week',
-      teamBenefitNote: 'Aug 6, 20:00—Aug 13, 20:00 (UTC+8) · FREE all week',
+      paidBenefitNote: 'Aug 6—Aug 13 · FREE all week',
+      teamBenefitNote: 'Aug 6—Aug 13 · FREE all week',
       disclaimer: 'Unlimited model quota and free generations included in a plan are available only in open design, not through MCP, CLI, API, or other scenarios.',
     };
 
@@ -254,12 +254,8 @@ const jsonLd = [
         <span>{deepSeekCampaign.windowLabel}</span>
         <strong data-pricing-campaign-countdown>{deepSeekCampaign.windowValue}</strong>
       </div>
-      <p class="pr-campaign-disclaimer">
-        {locale.startsWith('zh') ? (
-          <>套餐内的<strong>无限制模型额度</strong>与<strong>免费生成次数</strong>，仅可通过 open design使用；无法在 MCP / CLI/ API及其他场景使用。</>
-        ) : deepSeekCampaign.disclaimer}
-      </p>
     </aside>
+    <p class="pr-campaign-disclaimer">{deepSeekCampaign.disclaimer}</p>
     <header class="pr-hero">
       <h1 class="pr-hero-heading">{L.heroTitle}</h1>
       <div class="pr-audience-toggle" role="tablist" aria-label={teamContent.audienceTabsLabel}>
@@ -1092,7 +1088,7 @@ const jsonLd = [
     display: flex;
     align-items: center;
     gap: 16px;
-    margin: 0 auto 36px;
+    margin: 0 auto 8px;
     padding: 16px 18px;
     border: 1px solid color-mix(in srgb, #68f22e 45%, var(--border));
     border-radius: 16px;
@@ -1114,16 +1110,14 @@ const jsonLd = [
   .pr-campaign-copy { flex: 1; }
   .pr-campaign strong { font-size: 1rem; }
   .pr-campaign p { margin: 4px 0 0; color: var(--muted); font-size: .82rem; }
-  .pr-campaign .pr-campaign-disclaimer {
-    flex: 0 0 100%;
-    margin: 0;
-    padding-top: 10px;
-    border-top: 1px solid color-mix(in srgb, #68f22e 24%, var(--border));
-    color: var(--muted);
-    font-size: .72rem;
-    line-height: 1.5;
+  .pr-campaign-disclaimer {
+    margin: 0 auto 36px;
+    padding: 0 18px;
+    color: var(--ink-soft, #666);
+    font-size: .82rem;
+    line-height: 1.6;
+    opacity: .76;
   }
-  .pr-campaign .pr-campaign-disclaimer strong { font-size: inherit; font-weight: 760; }
   .pr-campaign-window { flex: 0 0 auto; display: grid; gap: 4px; text-align: right; }
   .pr-campaign-window > span { color: var(--muted); font-size: .7rem; }
   .pr-campaign-window strong {
