@@ -142,20 +142,6 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
           <small>{campaign.window.label} · 一周免费用</small>
         </div>
 
-        <div className={styles.modelCard}>
-          <span className={styles.modelMark} aria-hidden="true">
-            <img alt="" src="/agent-icons/deepseek.svg" />
-          </span>
-          <span className={styles.modelCopy}>
-            <strong>{campaign.benefit}</strong>
-            <small>{presentation.status}</small>
-          </span>
-          <span className={paid ? styles.available : styles.locked}>
-            {paid ? '已解锁' : '待解锁'}
-          </span>
-        </div>
-
-        <p className={styles.boundary}>{campaign.boundary}</p>
       </div>
 
       <div className={styles.footer}>

@@ -41,68 +41,6 @@
   border: 0;
 }
 
-.modelCard {
-  display: grid;
-  grid-template-columns: 34px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--spacing-10, 10px);
-  padding: var(--spacing-10, 10px);
-  border: 1px solid var(--border-subtle, var(--border));
-  border-radius: var(--radius-md, 8px);
-  background: var(--surface-subtle, rgba(0, 0, 0, 0.025));
-}
-
-.modelMark {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-sm, 6px);
-  background: var(--surface, #fff);
-}
-
-.modelMark img {
-  width: 20px;
-  height: 20px;
-}
-
-.modelCopy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.modelCopy strong {
-  color: var(--text-strong);
-  font-size: var(--font-size-13, 13px);
-  font-weight: 600;
-}
-
-.modelCopy small {
-  color: var(--text-muted);
-  font-size: var(--font-size-11, 11px);
-}
-
-.available,
-.locked {
-  padding: 3px 7px;
-  border-radius: var(--radius-pill, 999px);
-  font-size: 10px;
-  font-weight: 700;
-  white-space: nowrap;
-}
-
-.available {
-  color: #163405;
-  background: color-mix(in srgb, var(--brand) 70%, white);
-}
-
-.locked {
-  color: var(--text-muted);
-  background: var(--surface-hover, #f5f5f5);
-}
-
 .countdown {
   display: grid;
   grid-template-columns: auto 1fr;
@@ -134,13 +72,6 @@
   grid-column: 1 / -1;
   color: var(--text-muted);
   font-size: 10px;
-}
-
-.boundary {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: var(--font-size-11, 11px);
-  line-height: 1.45;
 }
 
 .footer {

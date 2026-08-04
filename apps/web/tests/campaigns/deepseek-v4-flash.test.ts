@@ -100,8 +100,10 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-countdown');
     expect(campaignDialogSource).toContain('一周免费用');
     expect(campaignDialogSource.indexOf('styles.countdown')).toBeLessThan(
-      campaignDialogSource.indexOf('styles.modelCard'),
+      campaignDialogSource.indexOf('styles.footer'),
     );
+    expect(campaignDialogSource).not.toContain('styles.modelCard');
+    expect(campaignDialogSource).not.toContain('styles.boundary');
   });
 
   it('keeps the unpaid action on the upgrade flow without showing the paid secondary action', () => {
