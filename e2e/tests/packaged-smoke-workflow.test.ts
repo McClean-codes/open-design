@@ -9,6 +9,8 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 
+import { T } from "@/timeouts";
+
 import { uiP0CiMatrix, uiP0Groups } from "../lib/playwright/suites.ts";
 
 const execFileAsync = promisify(execFile);
@@ -1058,7 +1060,7 @@ process.stdin.on("end", () => {
       run_playwright_critical: false,
       run_ui_p0: true,
     });
-  });
+  }, T.medium);
 
   it("[P2] keeps packaging (nix/docker) off the core Validate workspace gate", async () => {
     const workflow = await readFile(ciWorkflowPath, "utf8");
