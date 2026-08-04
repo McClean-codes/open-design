@@ -612,6 +612,8 @@ export interface DesignKitSource {
   /** Bump to force a brand.json re-read after an upload writes a module. */
   reloadKey?: number;
   workspaceContext?: WorkspaceCollabContext | null;
+  /** Re-run Workspace resource reads when a newer directory witness lands. */
+  workspaceReadGeneration?: string;
 }
 
 function tryParseBrand(raw: string | null): Brand | null {
@@ -708,6 +710,7 @@ export function useDesignKit(source: DesignKitSource): { kit: DesignKit | null; 
     host,
     reloadKey,
     workspaceContext,
+    workspaceReadGeneration,
   } = source;
   const [kit, setKit] = useState<DesignKit | null>(null);
   const [loading, setLoading] = useState(false);
@@ -802,6 +805,7 @@ export function useDesignKit(source: DesignKitSource): { kit: DesignKit | null; 
     host,
     reloadKey,
     workspaceContext,
+    workspaceReadGeneration,
   ]);
 
   return { kit, loading };

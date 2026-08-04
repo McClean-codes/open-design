@@ -16,14 +16,15 @@ import type {
   TrackingDesignSystemStatusValue,
 } from '@open-design/contracts/analytics';
 import { useI18n } from '../i18n';
+import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import {
-  useWorkspaceContext,
-  workspaceResourceReadContext,
-} from '../collab/useWorkspaceContext';
-import {
+  beginWorkspaceResourceScopedRead,
   beginWorkspaceScopedRead,
+  resolveWorkspaceResourceReadIdentity,
   workspaceIdentityCacheKey,
   workspaceProjectHeaders,
+  workspaceResourceReadIdentityKey,
+  type WorkspaceResourceReadIdentity,
 } from '../collab/workspace-identity';
 import {
   useWorkspaceInvalidation,
@@ -212,7 +213,9 @@ export function DesignSystemsTab({
   // The 团队 collection is a team-workspace surface (B's resource plane is
   // team-only): signed-out / personal-workspace users get no team tab, and a
   // sign-out while on it falls back to 你的体系 (#5517 signed-out form).
-  const { context: workspaceContext } = useWorkspaceContext();
+  const workspaceState = useWorkspaceContext();
+  const { context: workspaceContext } = workspaceState;
+  const resourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
   const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
@@ -1166,6 +1169,7 @@ export function DesignSystemsTab({
       <SystemRow
         key={system.id}
         system={system}
+        resourceReadIdentity={resourceReadIdentity}
         active={system.id === previewId}
         isDefault={system.id === selectedId}
         subtitle={
@@ -1200,6 +1204,8 @@ export function DesignSystemsTab({
         <DesignSystemDetail
           key={selectedSystem.id}
           system={selectedSystem}
+          workspaceContext={workspaceContext}
+          resourceReadIdentity={resourceReadIdentity}
           isDefault={selectedSystem.id === selectedId}
           busy={busyId === selectedSystem.id}
           actionBusy={busyAction?.systemId === selectedSystem.id ? busyAction.action : null}
@@ -1249,6 +1255,7 @@ function SkeletonBlock({
 
 interface SystemRowProps {
   system: DesignSystemSummary;
+  resourceReadIdentity: WorkspaceResourceReadIdentity | null;
   active: boolean;
   isDefault: boolean;
   subtitle: string;
@@ -1289,8 +1296,11 @@ function SystemRowPaletteLogo({ system }: { system: DesignSystemSummary }) {
 // the project has no logo, or the raw URL string.
 function useProjectLogoSrc(
   projectId: string | undefined,
-  workspaceContext: WorkspaceCollabContext | null,
+  resourceReadIdentity: WorkspaceResourceReadIdentity | null,
 ): string | null | undefined {
+  const resourceReadIdentityKey = workspaceResourceReadIdentityKey(resourceReadIdentity);
+  const resourceReadIdentityRef = useRef(resourceReadIdentity);
+  resourceReadIdentityRef.current = resourceReadIdentity;
   const [src, setSrc] = useState<string | null | undefined>(projectId ? undefined : null);
   useEffect(() => {
     if (!projectId) {
@@ -1298,12 +1308,13 @@ function useProjectLogoSrc(
       return;
     }
     let cancelled = false;
+    const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
     setSrc(undefined);
     void fetchProjectFileText(projectId, 'brand.json', {
       cache: 'no-store',
-      workspaceContext,
+      workspaceContext: read.context,
     }).then((raw) => {
-      if (cancelled) return;
+      if (cancelled || !read.isStillCurrent(resourceReadIdentityRef.current)) return;
       let primary: string | null = null;
       if (raw) {
         try {
@@ -1314,12 +1325,12 @@ function useProjectLogoSrc(
           // Not a valid brand.json (e.g. a non-brand "Create"d system) — no logo.
         }
       }
-      setSrc(primary ? projectRawUrl(projectId, primary, workspaceContext) : null);
+      setSrc(primary ? projectRawUrl(projectId, primary, read.context) : null);
     });
     return () => {
       cancelled = true;
     };
-  }, [projectId, workspaceContext]);
+  }, [projectId, resourceReadIdentityKey]);
   return src;
 }
 
@@ -1328,12 +1339,17 @@ function useProjectLogoSrc(
 // brand, or curated official-preset domain), falling back to the palette stripe
 // when neither resolves. The palette also holds the slot while a user system's
 // logo is still loading, so the thumbnail never flashes a broken image first.
-function SystemRowLogo({ system }: { system: DesignSystemSummary }) {
+function SystemRowLogo({
+  system,
+  resourceReadIdentity,
+}: {
+  system: DesignSystemSummary;
+  resourceReadIdentity: WorkspaceResourceReadIdentity | null;
+}) {
   const host = designSystemLogoHost(system);
-  const workspaceContext = workspaceResourceReadContext(useWorkspaceContext());
   const projectLogo = useProjectLogoSrc(
     isUserSystem(system) ? system.projectId : undefined,
-    workspaceContext,
+    resourceReadIdentity,
   );
 
   // Candidate srcs in priority order, skipping empties; `onError` advances to
@@ -1364,7 +1380,15 @@ function SystemRowLogo({ system }: { system: DesignSystemSummary }) {
   );
 }
 
-function SystemRow({ system, active, isDefault, subtitle, statusLabel, onSelect }: SystemRowProps) {
+function SystemRow({
+  system,
+  resourceReadIdentity,
+  active,
+  isDefault,
+  subtitle,
+  statusLabel,
+  onSelect,
+}: SystemRowProps) {
   const { t } = useI18n();
   const status = system.status ?? 'draft';
   const isUser = isUserSystem(system);
@@ -1382,7 +1406,7 @@ function SystemRow({ system, active, isDefault, subtitle, statusLabel, onSelect 
       onClick={onSelect}
     >
       <span className={styles.itemThumb}>
-        <SystemRowLogo system={system} />
+        <SystemRowLogo system={system} resourceReadIdentity={resourceReadIdentity} />
       </span>
       <span className={styles.itemMeta}>
         <span className={styles.itemNameRow}>
@@ -1405,6 +1429,10 @@ function SystemRow({ system, active, isDefault, subtitle, statusLabel, onSelect 
 
 interface DetailProps {
   system: DesignSystemSummary;
+  /** Fully verified authority retained for every mutation in this pane. */
+  workspaceContext: WorkspaceCollabContext | null;
+  /** May be provisional, and is only used by read-only detail/project loads. */
+  resourceReadIdentity: WorkspaceResourceReadIdentity | null;
   isDefault: boolean;
   busy: boolean;
   actionBusy: DesignSystemActionKind | null;
@@ -1434,6 +1462,8 @@ interface DetailProps {
 
 function DesignSystemDetail({
   system,
+  workspaceContext,
+  resourceReadIdentity,
   isDefault,
   busy,
   actionBusy,
@@ -1452,7 +1482,10 @@ function DesignSystemDetail({
   unsharing,
 }: DetailProps) {
   const analytics = useAnalytics();
-  const workspaceContext = workspaceResourceReadContext(useWorkspaceContext());
+  const resourceReadIdentityKey = workspaceResourceReadIdentityKey(resourceReadIdentity);
+  const resourceReadIdentityRef = useRef(resourceReadIdentity);
+  resourceReadIdentityRef.current = resourceReadIdentity;
+  const resourceReadContext = resourceReadIdentity?.context ?? null;
   const detailWorkspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const isUser = isUserSystem(system);
   const detailResourceScope: TrackingWorkspaceScope =
@@ -1498,6 +1531,7 @@ function DesignSystemDetail({
   // palette) re-read too.
   useEffect(() => {
     let cancelled = false;
+    const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
     const isNewSelection = lastSystemIdRef.current !== system.id;
     lastSystemIdRef.current = system.id;
     if (isNewSelection) {
@@ -1507,17 +1541,19 @@ function DesignSystemDetail({
     } else {
       setReloadKey((k) => k + 1);
     }
-    void fetchDesignSystem(system.id, workspaceContext).then((d) => {
-      if (cancelled) return;
+    void fetchDesignSystem(system.id, read.context).then((d) => {
+      if (cancelled || !read.isStillCurrent(resourceReadIdentityRef.current)) return;
       if (d) setDetail(d);
       setDetailResolved(true);
     }).catch(() => {
-      if (!cancelled) setDetailResolved(true);
+      if (!cancelled && read.isStillCurrent(resourceReadIdentityRef.current)) {
+        setDetailResolved(true);
+      }
     });
     return () => {
       cancelled = true;
     };
-  }, [system, workspaceContext]);
+  }, [system, resourceReadIdentityKey]);
 
   const host = designSystemLogoHost(system) || undefined;
   const projectId = detail?.projectId ?? system.projectId;
@@ -1554,7 +1590,8 @@ function DesignSystemDetail({
     editable: isUser,
     host,
     reloadKey,
-    workspaceContext,
+    workspaceContext: resourceReadContext,
+    workspaceReadGeneration: resourceReadIdentityKey,
   });
 
   async function handleDownload() {
@@ -1728,7 +1765,8 @@ function DesignSystemDetail({
       {kit ? (
         <DesignKitView
           kit={kit}
-          workspaceContext={workspaceContext}
+          workspaceContext={resourceReadContext}
+          workspaceReadGeneration={resourceReadIdentityKey}
           badgeSlot={badgeSlot}
           actionsSlot={actionsSlot}
           showCover={false}

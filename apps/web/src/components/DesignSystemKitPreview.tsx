@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { BrandSummary, WorkspaceCollabContext } from '@open-design/contracts';
 import { useT } from '../i18n';
 import { fetchDesignSystem } from '../providers/registry';
@@ -12,10 +12,14 @@ import {
   designSystemLogoHost,
   isUserSystem,
 } from './design-system-metadata';
+import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import {
-  useWorkspaceContext,
-  workspaceResourceReadContext,
-} from '../collab/useWorkspaceContext';
+  beginWorkspaceResourceScopedRead,
+  resolveWorkspaceResourceReadIdentity,
+  workspaceResourceReadIdentityFromContext,
+  workspaceResourceReadIdentityKey,
+  type WorkspaceResourceReadIdentity,
+} from '../collab/workspace-identity';
 
 interface DesignSystemKitPreviewProps {
   system: DesignSystemSummary;
@@ -25,6 +29,7 @@ interface DesignSystemKitPreviewProps {
   className?: string;
   dataTestId?: string;
   workspaceContext?: WorkspaceCollabContext | null;
+  resourceReadIdentity?: WorkspaceResourceReadIdentity | null;
 }
 
 export function DesignSystemKitPreview({
@@ -35,7 +40,18 @@ export function DesignSystemKitPreview({
   className,
   dataTestId = 'design-system-kit-preview',
   workspaceContext,
+  resourceReadIdentity,
 }: DesignSystemKitPreviewProps) {
+  const workspaceState = useWorkspaceContext();
+  const ambientResourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
+  // ProjectView/Picker already own an exact route context. It must win over
+  // ambient provisional identity; only callers without an explicit context
+  // consume the ambient `{ context, generation }` read witness.
+  const effectiveResourceReadIdentity = workspaceContext !== undefined
+    ? workspaceResourceReadIdentityFromContext(workspaceContext)
+    : resourceReadIdentity === undefined
+      ? ambientResourceReadIdentity
+      : resourceReadIdentity;
   if (brandSummary) {
     return (
       <BrandDesignSystemKitPreview
@@ -44,7 +60,7 @@ export function DesignSystemKitPreview({
         showCover={showCover}
         className={className}
         dataTestId={dataTestId}
-        workspaceContext={workspaceContext}
+        resourceReadIdentity={effectiveResourceReadIdentity}
       />
     );
   }
@@ -56,7 +72,7 @@ export function DesignSystemKitPreview({
       showCover={showCover}
       className={className}
       dataTestId={dataTestId}
-      workspaceContext={workspaceContext}
+      resourceReadIdentity={effectiveResourceReadIdentity}
     />
   );
 }
@@ -67,28 +83,27 @@ function BrandDesignSystemKitPreview({
   showCover,
   className,
   dataTestId,
-  workspaceContext: explicitWorkspaceContext,
+  resourceReadIdentity,
 }: {
   summary: BrandSummary;
   variant: 'panel' | 'compact';
   showCover: boolean;
   className?: string;
   dataTestId: string;
-  workspaceContext?: WorkspaceCollabContext | null;
+  resourceReadIdentity: WorkspaceResourceReadIdentity | null;
 }) {
-  const ambientWorkspaceContext = workspaceResourceReadContext(useWorkspaceContext());
-  const workspaceContext = explicitWorkspaceContext === undefined
-    ? ambientWorkspaceContext
-    : explicitWorkspaceContext;
+  const workspaceContext = resourceReadIdentity?.context ?? null;
   const kit = brandSummaryToKit(summary, workspaceContext);
+  const resourceReadIdentityKey = workspaceResourceReadIdentityKey(resourceReadIdentity);
   return (
     <div className={className} data-testid={dataTestId}>
       <DesignKitView
         kit={kit}
+        workspaceContext={resourceReadIdentity?.context ?? null}
+        workspaceReadGeneration={resourceReadIdentityKey}
         variant={variant}
         showCover={showCover}
         dataTestId={`${dataTestId}-view`}
-        workspaceContext={workspaceContext}
       />
     </div>
   );
@@ -100,40 +115,44 @@ function RegistryDesignSystemKitPreview({
   showCover,
   className,
   dataTestId,
-  workspaceContext: explicitWorkspaceContext,
+  resourceReadIdentity,
 }: {
   system: DesignSystemSummary;
   variant: 'panel' | 'compact';
   showCover: boolean;
   className?: string;
   dataTestId: string;
-  workspaceContext?: WorkspaceCollabContext | null;
+  resourceReadIdentity: WorkspaceResourceReadIdentity | null;
 }) {
   const t = useT();
-  const ambientWorkspaceContext = workspaceResourceReadContext(useWorkspaceContext());
-  const workspaceContext = explicitWorkspaceContext === undefined
-    ? ambientWorkspaceContext
-    : explicitWorkspaceContext;
+  const effectiveResourceReadIdentity = resourceReadIdentity;
+  const resourceReadIdentityKey = workspaceResourceReadIdentityKey(effectiveResourceReadIdentity);
+  const resourceReadIdentityRef = useRef(effectiveResourceReadIdentity);
+  resourceReadIdentityRef.current = effectiveResourceReadIdentity;
+  const workspaceContext = effectiveResourceReadIdentity?.context ?? null;
   const [detail, setDetail] = useState<DesignSystemDetail | null>(null);
   const [detailResolved, setDetailResolved] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
+    const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
     setDetail(null);
     setDetailResolved(false);
-    void fetchDesignSystem(system.id, workspaceContext)
+    void fetchDesignSystem(system.id, read.context)
       .then((next) => {
-        if (cancelled) return;
+        if (cancelled || !read.isStillCurrent(resourceReadIdentityRef.current)) return;
         setDetail(next);
         setDetailResolved(true);
       })
       .catch(() => {
-        if (!cancelled) setDetailResolved(true);
+        if (!cancelled && read.isStillCurrent(resourceReadIdentityRef.current)) {
+          setDetailResolved(true);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [system.id, workspaceContext]);
+  }, [system.id, resourceReadIdentityKey]);
 
   const projectId = detail?.projectId ?? system.projectId;
   const host = designSystemLogoHost(system) || undefined;
@@ -148,6 +167,7 @@ function RegistryDesignSystemKitPreview({
     editable: isUserSystem(system),
     host,
     workspaceContext,
+    workspaceReadGeneration: resourceReadIdentityKey,
   });
 
   const pending = !detailResolved || loading || !kit;
@@ -167,6 +187,7 @@ function RegistryDesignSystemKitPreview({
         <DesignKitView
           kit={kit}
           workspaceContext={workspaceContext}
+          workspaceReadGeneration={resourceReadIdentityKey}
           variant={variant}
           showCover={showCover}
           dataTestId={`${dataTestId}-view`}

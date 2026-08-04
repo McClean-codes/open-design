@@ -17,10 +17,14 @@ import type { DesignSystemDetail, DesignSystemSummary } from '../types';
 import { DesignSpecView } from './DesignSpecView';
 import { DesignSystemKitPreview } from './DesignSystemKitPreview';
 import { PreviewModal } from './PreviewModal';
+import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 import {
-  useWorkspaceContext,
-  workspaceResourceReadContext,
-} from '../collab/useWorkspaceContext';
+  beginWorkspaceResourceScopedRead,
+  resolveWorkspaceResourceReadIdentity,
+  workspaceResourceReadIdentityFromContext,
+  workspaceResourceReadIdentityKey,
+  type WorkspaceResourceReadIdentity,
+} from '../collab/workspace-identity';
 
 interface Props {
   system: DesignSystemSummary;
@@ -28,6 +32,8 @@ interface Props {
   initialViewId?: 'showcase' | 'kit' | 'tokens';
   /** Exact project scope wins over the shell context while it is resolving. */
   workspaceContext?: WorkspaceCollabContext | null;
+  /** Exact read-only authority; omitted callers use the ambient Workspace state. */
+  resourceReadIdentity?: WorkspaceResourceReadIdentity | null;
 }
 
 function isDesignSystemDetail(system: DesignSystemSummary): system is DesignSystemDetail {
@@ -42,13 +48,20 @@ export function DesignSystemPreviewModal({
   onClose,
   initialViewId = 'kit',
   workspaceContext: explicitWorkspaceContext,
+  resourceReadIdentity: resourceReadIdentityProp,
 }: Props) {
   const t = useT();
   const analytics = useAnalytics();
-  const ambientWorkspaceContext = workspaceResourceReadContext(useWorkspaceContext());
-  const workspaceContext = explicitWorkspaceContext === undefined
-    ? ambientWorkspaceContext
-    : explicitWorkspaceContext;
+  const workspaceState = useWorkspaceContext();
+  const ambientResourceReadIdentity = resolveWorkspaceResourceReadIdentity(workspaceState);
+  const resourceReadIdentity = explicitWorkspaceContext !== undefined
+    ? workspaceResourceReadIdentityFromContext(explicitWorkspaceContext)
+    : resourceReadIdentityProp === undefined
+      ? ambientResourceReadIdentity
+      : resourceReadIdentityProp;
+  const resourceReadIdentityKey = workspaceResourceReadIdentityKey(resourceReadIdentity);
+  const resourceReadIdentityRef = useRef(resourceReadIdentity);
+  resourceReadIdentityRef.current = resourceReadIdentity;
   const surfaceViewFiredRef = useRef<string | null>(null);
   useEffect(() => {
     if (surfaceViewFiredRef.current === system.id) return;
@@ -71,15 +84,16 @@ export function DesignSystemPreviewModal({
 
   useEffect(() => {
     let cancelled = false;
+    const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
     setDetail(isDesignSystemDetail(system) ? system : undefined);
-    void fetchDesignSystem(system.id, workspaceContext).then((next) => {
-      if (cancelled) return;
+    void fetchDesignSystem(system.id, read.context).then((next) => {
+      if (cancelled || !read.isStillCurrent(resourceReadIdentityRef.current)) return;
       if (next) setDetail(next);
     });
     return () => {
       cancelled = true;
     };
-  }, [system, workspaceContext]);
+  }, [system, resourceReadIdentityKey]);
 
   const initialViewIdRef = useRef<string | null>(null);
   const handleView = useCallback(
@@ -99,15 +113,21 @@ export function DesignSystemPreviewModal({
         }
       }
       if (viewId === 'showcase' && showcaseHtml === undefined) {
+        const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
         setShowcaseHtml(null);
-        void fetchDesignSystemShowcase(system.id, workspaceContext).then((html) => setShowcaseHtml(html));
+        void fetchDesignSystemShowcase(system.id, read.context).then((html) => {
+          if (read.isStillCurrent(resourceReadIdentityRef.current)) setShowcaseHtml(html);
+        });
       }
       if (viewId === 'tokens' && tokensHtml === undefined) {
+        const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
         setTokensHtml(null);
-        void fetchDesignSystemPreview(system.id, workspaceContext).then((html) => setTokensHtml(html));
+        void fetchDesignSystemPreview(system.id, read.context).then((html) => {
+          if (read.isStillCurrent(resourceReadIdentityRef.current)) setTokensHtml(html);
+        });
       }
     },
-    [analytics.track, system.id, system.source, showcaseHtml, tokensHtml, workspaceContext],
+    [analytics.track, system.id, system.source, showcaseHtml, tokensHtml, resourceReadIdentityKey],
   );
 
   const handleSidebarToggle = useCallback(
@@ -117,19 +137,22 @@ export function DesignSystemPreviewModal({
         setSpecBody(detailBody);
         return;
       }
+      const read = beginWorkspaceResourceScopedRead(resourceReadIdentityRef.current);
       setSpecBody(null);
-      void fetchDesignSystem(system.id, workspaceContext).then((detail) =>
-        setSpecBody(detail?.body ?? null),
-      );
+      void fetchDesignSystem(system.id, read.context).then((nextDetail) => {
+        if (read.isStillCurrent(resourceReadIdentityRef.current)) {
+          setSpecBody(nextDetail?.body ?? null);
+        }
+      });
     },
-    [detailBody, system.id, specBody, workspaceContext],
+    [detailBody, system.id, specBody, resourceReadIdentityKey],
   );
 
   useEffect(() => {
     setShowcaseHtml(undefined);
     setTokensHtml(undefined);
     setSpecBody(undefined);
-  }, [system.id]);
+  }, [system.id, resourceReadIdentityKey]);
 
   const modal = (
     <PreviewModal
@@ -142,7 +165,7 @@ export function DesignSystemPreviewModal({
           custom: (
             <DesignSystemKitPreview
               system={system}
-              workspaceContext={workspaceContext}
+              resourceReadIdentity={resourceReadIdentity}
               variant="panel"
               showCover={false}
               className="ds-modal-kit-preview"
@@ -197,7 +220,7 @@ export function DesignSystemPreviewModal({
         label: t('ds.specToggle'),
         defaultOpen: true,
         onToggle: handleSidebarToggle,
-        contentKey: system.id,
+        contentKey: `${system.id}:${resourceReadIdentityKey}`,
         content: (
           <DesignSpecView
             source={specBody}

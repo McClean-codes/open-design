@@ -32,6 +32,7 @@ import { useWorkspaceInvalidation } from './workspace-events';
 import {
   beginWorkspaceScopedRead,
   workspaceIdentityCacheKey,
+  type WorkspaceResourceReadIdentity,
 } from './workspace-identity';
 import {
   createWorkspaceBillingInterestOwnerId,
@@ -61,10 +62,7 @@ export interface WorkspaceContextState {
    * The provisional value is only published when this tab's session selection
    * has an exact active row in the current account directory.
    */
-  resourceReadIdentity?: {
-    context: WorkspaceCollabContext;
-    generation: string;
-  } | null;
+  resourceReadIdentity?: WorkspaceResourceReadIdentity | null;
   loading: boolean;
   /**
    * A deliberate identity change was announced, but its replacement context has

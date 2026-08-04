@@ -89,6 +89,7 @@ interface KitLogoProps {
   className?: string;
   fallbackClassName?: string;
   workspaceContext?: WorkspaceCollabContext | null;
+  readGeneration?: string;
 }
 
 export function BrandLogo({
@@ -101,6 +102,7 @@ export function BrandLogo({
   className,
   fallbackClassName,
   workspaceContext,
+  readGeneration,
 }: KitLogoProps) {
   const bid = brandId ?? id;
   const first: LogoStage = bid ? 'brand' : logoSrc ? 'custom' : host ? 'favicon' : 'letter';
@@ -108,7 +110,7 @@ export function BrandLogo({
   const [stage, setStage] = useState<LogoStage>(first);
   useEffect(() => {
     setStage(first);
-  }, [first, bid, logoSrc, host, workspaceIdentity]);
+  }, [first, bid, logoSrc, host, workspaceIdentity, readGeneration]);
 
   const src =
     stage === 'brand' && bid
@@ -158,6 +160,7 @@ export function useBrandFonts(
   projectId: string | undefined,
   fonts: { googleFontsUrl?: string }[],
   workspaceContext: WorkspaceCollabContext | null = null,
+  workspaceReadGeneration?: string,
 ): void {
   const googleUrls = useMemo(() => {
     const urls = fonts
@@ -220,7 +223,7 @@ export function useBrandFonts(
       cancelled = true;
       if (styleEl) styleEl.remove();
     };
-  }, [projectId, workspaceContext]);
+  }, [projectId, workspaceContext, workspaceReadGeneration]);
 }
 
 interface BrandTokenSubset {
@@ -257,6 +260,7 @@ export type DesignKitActionFeedbackTone = 'success' | 'error' | 'loading';
 export interface DesignKitViewProps {
   kit: DesignKit;
   workspaceContext?: WorkspaceCollabContext | null;
+  workspaceReadGeneration?: string;
   variant?: 'panel' | 'compact';
   /** Rendered next to the title (status badges). */
   badgeSlot?: ReactNode;
@@ -309,6 +313,7 @@ export interface DesignKitViewProps {
 function DesignKitViewInner({
   kit,
   workspaceContext = null,
+  workspaceReadGeneration,
   variant = 'panel',
   badgeSlot,
   actionsSlot,
@@ -375,7 +380,7 @@ function DesignKitViewInner({
   const stickyHeaderRef = useRef<HTMLElement | null>(null);
   const logoSectionRef = useRef<HTMLElement | null>(null);
 
-  useBrandFonts(kit.projectId, kit.fonts, workspaceContext);
+  useBrandFonts(kit.projectId, kit.fonts, workspaceContext, workspaceReadGeneration);
 
   const logoCandidates = useMemo(
     () =>
@@ -388,6 +393,7 @@ function DesignKitViewInner({
 
   useEffect(() => {
     setActiveLogo(0);
+    setBrokenSrc(new Set());
     setImagesExpanded(false);
     setLightboxIndex(null);
     setLogoLightbox(null);
@@ -395,7 +401,7 @@ function DesignKitViewInner({
     setCoverPreviewOpen(false);
     setColorEditor(null);
     setColorError(null);
-  }, [kit.designSystemId, kit.brandId]);
+  }, [kit.designSystemId, kit.brandId, workspaceReadGeneration]);
 
   useEffect(() => {
     setColorOverrides({});
@@ -1110,6 +1116,7 @@ function DesignKitViewInner({
               className={styles.coverLogo}
               fallbackClassName={styles.coverLogoFallback}
               workspaceContext={workspaceContext}
+              readGeneration={workspaceReadGeneration}
             />
           </button>
         ) : (
@@ -1122,6 +1129,7 @@ function DesignKitViewInner({
             className={styles.coverLogo}
             fallbackClassName={styles.coverLogoFallback}
             workspaceContext={workspaceContext}
+            readGeneration={workspaceReadGeneration}
           />
         )}
       </div>
@@ -1147,6 +1155,7 @@ function DesignKitViewInner({
                 className={styles.previewHeadLogoImage}
                 fallbackClassName={styles.previewHeadLogoFallback}
                 workspaceContext={workspaceContext}
+                readGeneration={workspaceReadGeneration}
               />
             </span>
           ) : null}

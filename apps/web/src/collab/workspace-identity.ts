@@ -61,6 +61,74 @@ export function workspaceIdentityCacheKey(
   ].join(':');
 }
 
+/**
+ * Exact authority for a read-only Workspace resource request. The generation
+ * is intentionally part of the identity even when every context field stays
+ * unchanged: a newer directory witness must supersede work issued under the
+ * older witness.
+ */
+export interface WorkspaceResourceReadIdentity {
+  readonly context: WorkspaceCollabContext;
+  readonly generation: string;
+}
+
+/**
+ * Production Workspace state always publishes `resourceReadIdentity`.
+ * Keeping the `undefined` compatibility lane lets older focused test doubles
+ * continue to describe a settled verified-context read without making an
+ * explicit production `null` fall back to a retained/stale context.
+ */
+export function resolveWorkspaceResourceReadIdentity(state: {
+  context: WorkspaceCollabContext | null;
+  resourceReadIdentity?: WorkspaceResourceReadIdentity | null;
+}): WorkspaceResourceReadIdentity | null {
+  if (state.resourceReadIdentity !== undefined) return state.resourceReadIdentity;
+  return state.context
+    ? { context: state.context, generation: 'verified-context' }
+    : null;
+}
+
+/**
+ * Preserve callers that already own an explicit project Workspace context.
+ * There is no ambient directory generation in this lane, so its stable key is
+ * derived only from the explicit context fields.
+ */
+export function workspaceResourceReadIdentityFromContext(
+  context: WorkspaceCollabContext | null | undefined,
+): WorkspaceResourceReadIdentity | null {
+  return context
+    ? {
+        context,
+        generation: `explicit-context:${workspaceIdentityCacheKey(context)}`,
+      }
+    : null;
+}
+
+export function workspaceResourceReadIdentityKey(
+  identity: WorkspaceResourceReadIdentity | null | undefined,
+): string {
+  return identity
+    ? JSON.stringify([identity.generation, workspaceIdentityCacheKey(identity.context)])
+    : 'none';
+}
+
+export interface WorkspaceResourceScopedRead {
+  readonly context: WorkspaceCollabContext | null;
+  isStillCurrent(current: WorkspaceResourceReadIdentity | null | undefined): boolean;
+}
+
+/** Capture both context and witness generation before starting async work. */
+export function beginWorkspaceResourceScopedRead(
+  identity: WorkspaceResourceReadIdentity | null | undefined,
+): WorkspaceResourceScopedRead {
+  const context = identity?.context ?? null;
+  const key = workspaceResourceReadIdentityKey(identity);
+  return {
+    context,
+    isStillCurrent: (current) => workspaceResourceReadIdentityKey(current) === key,
+  };
+}
+
 export interface WorkspaceScopedRead {
   readonly context: WorkspaceCollabContext | null;
   isStillCurrent(current: WorkspaceCollabContext | null | undefined): boolean;
