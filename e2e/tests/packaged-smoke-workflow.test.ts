@@ -1182,6 +1182,8 @@ process.stdin.on("end", () => {
 
     expect(runners).toContain("github.event_name == 'pull_request'");
     expect(runners).toContain("github.event.pull_request.head.repo.full_name != github.repository");
+    expect(runners).toContain("|| vars.OD_CI_RUNNER_MODE == 'economic'");
+    expect(runners).toContain("&& 'ubuntu-24.04'");
     expect(runners).toContain("&& 'economic'");
     expect(runners).toContain("|| vars.OD_CI_RUNNER_MODE");
   });
