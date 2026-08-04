@@ -607,7 +607,7 @@ import {
   listWorkspaceProjectBindings,
   getTemplate,
   ensureWorkspaceProject,
-  ensureProjectCommentAnchorConversation,
+  ensureTeamProjectCommentConversations,
   ensureWorkspaceResource,
   getWorkspaceResource,
   getWorkspaceResourceByResourceId,
@@ -3240,7 +3240,7 @@ export async function startServer({
       // NEW workspaceId would find nothing and silently never migrate it.
       rebindWorkspaceProject(db, input.projectId, { ...patch, workspaceId });
       if (input.visibility === 'team') {
-        ensureProjectCommentAnchorConversation(db, input.projectId);
+        ensureTeamProjectCommentConversations(db, input.projectId);
       }
     });
     persist();

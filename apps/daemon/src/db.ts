@@ -1987,8 +1987,9 @@ export function listConversations(db: SqliteDb, projectId: string) {
       `WITH project_conversations AS (
           SELECT id, project_id AS projectId, title, session_mode AS sessionMode,
                  created_at AS createdAt, updated_at AS updatedAt
-            FROM conversations
+           FROM conversations
            WHERE project_id = ?
+             AND id NOT LIKE 'comment-anchor-%'
         ),
         latest_runs AS (
           SELECT conversation_id AS conversationId,
@@ -3074,19 +3075,33 @@ export function deletePreviewComment(db: SqliteDb, projectId: string, conversati
 export function getLatestConversationIdForProject(
   db: SqliteDb,
   projectId: string,
+  excludeConversationId: string | null = null,
 ): string | null {
   const row = db
     .prepare(
       `SELECT id FROM conversations
         WHERE project_id = ?
+          AND id NOT LIKE ?
+          AND (? IS NULL OR id != ?)
         ORDER BY updated_at DESC, rowid DESC
         LIMIT 1`,
     )
-    .get(projectId) as DbRow | undefined;
+    .get(
+      projectId,
+      `${PROJECT_COMMENT_ANCHOR_PREFIX}%`,
+      excludeConversationId,
+      excludeConversationId,
+    ) as DbRow | undefined;
   return row && typeof row.id === 'string' ? row.id : null;
 }
 
 const PROJECT_COMMENT_ANCHOR_PREFIX = 'comment-anchor-';
+
+export function isProjectCommentAnchorConversationId(
+  conversationId: string,
+): boolean {
+  return conversationId.startsWith(PROJECT_COMMENT_ANCHOR_PREFIX);
+}
 
 /**
  * Return the daemon-local conversation reserved for Team preview comments.
@@ -3156,6 +3171,62 @@ export function ensureProjectCommentAnchorConversation(
 }
 
 /**
+ * Ensure a normal daemon-local conversation exists for UI/comment HTTP
+ * routing. The internal comment anchor is deliberately excluded: it must never
+ * become the user's active chat, but a read-only Team mirror with no private
+ * chat still needs one routable conversation to create and read comments.
+ */
+export function ensureProjectCommentRoutingConversation(
+  db: SqliteDb,
+  projectId: string,
+  now = Date.now(),
+  excludeConversationId: string | null = null,
+): { conversationId: string; created: boolean } | null {
+  const existing = getLatestConversationIdForProject(
+    db,
+    projectId,
+    excludeConversationId,
+  );
+  if (existing) return { conversationId: existing, created: false };
+  if (!getProject(db, projectId)) return null;
+
+  const conversationId = `conversation-${randomUUID()}`;
+  insertConversation(db, {
+    id: conversationId,
+    projectId,
+    title: null,
+    sessionMode: 'design',
+    createdAt: now,
+    updatedAt: now,
+  });
+  return { conversationId, created: true };
+}
+
+export function ensureTeamProjectCommentConversations(
+  db: SqliteDb,
+  projectId: string,
+  now = Date.now(),
+  excludeConversationId: string | null = null,
+): { anchorCreated: boolean; routingCreated: boolean } {
+  return {
+    anchorCreated:
+      ensureProjectCommentAnchorConversation(
+        db,
+        projectId,
+        now,
+        excludeConversationId,
+      )?.created === true,
+    routingCreated:
+      ensureProjectCommentRoutingConversation(
+        db,
+        projectId,
+        now,
+        excludeConversationId,
+      )?.created === true,
+  };
+}
+
+/**
  * Repair the comment-anchor invariant for historical active Team projects.
  *
  * Older databases can contain Team bindings created before pulled mirrors and
@@ -3180,7 +3251,7 @@ export function repairTeamProjectCommentAnchorConversations(
   let created = 0;
   const repair = db.transaction(() => {
     for (const row of rows) {
-      if (ensureProjectCommentAnchorConversation(db, row.projectId, now)?.created) {
+      if (ensureTeamProjectCommentConversations(db, row.projectId, now).anchorCreated) {
         created += 1;
       }
     }
@@ -3206,19 +3277,24 @@ export function deleteConversationAndRepairTeamCommentAnchor(
   const remove = db.transaction(() => {
     const binding = getWorkspaceProjectByProjectId(db, projectId);
     if (binding?.visibility === 'team' && binding.resourceState !== 'deleted') {
-      const anchor = ensureProjectCommentAnchorConversation(
+      const repaired = ensureTeamProjectCommentConversations(
         db,
         projectId,
         now,
         conversationId,
       );
-      anchorCreated = anchor?.created === true;
-      if (anchor) {
+      anchorCreated = repaired.anchorCreated;
+      const anchorConversationId = getProjectCommentAnchorConversationId(
+        db,
+        projectId,
+        conversationId,
+      );
+      if (anchorConversationId) {
         db.prepare(
           `UPDATE preview_comments
               SET conversation_id = ?
             WHERE project_id = ? AND conversation_id = ?`,
-        ).run(anchor.conversationId, projectId, conversationId);
+        ).run(anchorConversationId, projectId, conversationId);
       }
     }
     deleteConversation(db, conversationId);

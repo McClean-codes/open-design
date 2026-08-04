@@ -211,7 +211,7 @@ async function startServer(
 }
 
 describe('project comments — workspace mutation gate', () => {
-  it('lets a Member comment through the repaired anchor of a historical zero-conversation mirror', async () => {
+  it('keeps the repaired anchor internal while a Member comments through a public routing conversation', async () => {
     const baseUrl = await startServer({
       resolveWorkspaceContext: async () => ({
         ok: true,
@@ -222,15 +222,19 @@ describe('project comments — workspace mutation gate', () => {
     expect(getConversation(database!, 'conv-team-mirror')).toBeNull();
 
     expect(repairTeamProjectCommentAnchorConversations(database!, 10)).toMatchObject({
-      created: 1,
+      created: 2,
     });
-    const anchor = database!
-      .prepare('SELECT id FROM conversations WHERE project_id = ?')
-      .get(TEAM_MIRROR_PROJECT) as { id: string };
-    expect(anchor.id).toMatch(/^comment-anchor-/);
+    const rows = database!
+      .prepare('SELECT id FROM conversations WHERE project_id = ? ORDER BY id')
+      .all(TEAM_MIRROR_PROJECT) as Array<{ id: string }>;
+    const anchor = rows.find((row) => row.id.startsWith('comment-anchor-'));
+    const routingConversation = rows.find((row) => !row.id.startsWith('comment-anchor-'));
+    expect(anchor).toBeDefined();
+    expect(anchor!.id).toMatch(/^comment-anchor-/);
+    expect(routingConversation).toBeDefined();
 
-    const response = await fetch(
-      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/${anchor.id}/comments`,
+    const internalRouteResponse = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/${anchor!.id}/comments`,
       {
         method: 'POST',
         headers: {
@@ -239,7 +243,23 @@ describe('project comments — workspace mutation gate', () => {
         },
         body: JSON.stringify({
           target: COMMENT_TARGET,
-          note: 'Member comment through repaired anchor',
+          note: 'Must not write through internal anchor route',
+        }),
+      },
+    );
+    expect(internalRouteResponse.status).toBe(404);
+
+    const response = await fetch(
+      `${baseUrl}/api/projects/${TEAM_MIRROR_PROJECT}/conversations/${routingConversation!.id}/comments`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...workspaceHeaders(OTHER_MEMBER_ID, 'member'),
+        },
+        body: JSON.stringify({
+          target: COMMENT_TARGET,
+          note: 'Member comment through public routing conversation',
         }),
       },
     );
@@ -247,9 +267,9 @@ describe('project comments — workspace mutation gate', () => {
     expect(response.status).toBe(200);
     expect(listProjectPreviewComments(database!, TEAM_MIRROR_PROJECT)).toEqual([
       expect.objectContaining({
-        conversationId: anchor.id,
+        conversationId: routingConversation!.id,
         authorMemberId: OTHER_MEMBER_ID,
-        note: 'Member comment through repaired anchor',
+        note: 'Member comment through public routing conversation',
       }),
     ]);
   });

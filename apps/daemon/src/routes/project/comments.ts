@@ -5,6 +5,7 @@ import type {
 } from '@open-design/contracts';
 import type { RouteDeps } from '../../server-context.js';
 import type { BoundWorkspaceResourceMutationGate } from '../../collab/workspace-resource-mutation.js';
+import { isProjectCommentAnchorConversationId } from '../../db.js';
 
 export type ProjectCommentWorkspaceContextResolution =
   | { ok: true; context: WorkspaceCollabContext | null }
@@ -145,6 +146,11 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
     deletePreviewComment,
     reorderPreviewComment,
   } = ctx.conversations;
+  const getRoutableConversation = (projectId: string, conversationId: string) => {
+    if (isProjectCommentAnchorConversationId(conversationId)) return null;
+    const conversation = getConversation(db, conversationId);
+    return conversation?.projectId === projectId ? conversation : null;
+  };
 
   function commentsAreProjectScoped(
     projectId: string,
@@ -358,8 +364,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
   // ---- Preview comments ----------------------------------------------------
 
   app.get('/api/projects/:id/conversations/:cid/comments', async (req, res) => {
-    const conv = getConversation(db, req.params.cid);
-    if (!conv || conv.projectId !== req.params.id) {
+    const conv = getRoutableConversation(req.params.id, req.params.cid);
+    if (!conv) {
       return res.status(404).json({ error: 'conversation not found' });
     }
     const workspaceResolution = await resolveReadRequestWorkspaceContext(
@@ -385,8 +391,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
   });
 
   app.post('/api/projects/:id/conversations/:cid/comments', async (req, res) => {
-    const conv = getConversation(db, req.params.cid);
-    if (!conv || conv.projectId !== req.params.id) {
+    const conv = getRoutableConversation(req.params.id, req.params.cid);
+    if (!conv) {
       return res.status(404).json({ error: 'conversation not found' });
     }
     if (!await enforceCommentWorkspaceMutation(req, res, req.params.id)) return;
@@ -512,8 +518,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
   app.patch(
     '/api/projects/:id/conversations/:cid/comments/:commentId',
     async (req, res) => {
-      const conv = getConversation(db, req.params.cid);
-      if (!conv || conv.projectId !== req.params.id) {
+      const conv = getRoutableConversation(req.params.id, req.params.cid);
+      if (!conv) {
         return res.status(404).json({ error: 'conversation not found' });
       }
       if (!await enforceCommentWorkspaceMutation(req, res, req.params.id)) return;
@@ -578,8 +584,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
   app.patch(
     '/api/projects/:id/conversations/:cid/comments/:commentId/anchor',
     async (req, res) => {
-      const conv = getConversation(db, req.params.cid);
-      if (!conv || conv.projectId !== req.params.id) {
+      const conv = getRoutableConversation(req.params.id, req.params.cid);
+      if (!conv) {
         return res.status(404).json({ error: 'conversation not found' });
       }
       const workspaceResolution = await resolveRequestWorkspaceContext(
@@ -621,8 +627,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
   app.patch(
     '/api/projects/:id/conversations/:cid/comments/:commentId/reorder',
     async (req, res) => {
-      const conv = getConversation(db, req.params.cid);
-      if (!conv || conv.projectId !== req.params.id) {
+      const conv = getRoutableConversation(req.params.id, req.params.cid);
+      if (!conv) {
         return res.status(404).json({ error: 'conversation not found' });
       }
       const workspaceResolution = await resolveRequestWorkspaceContext(
@@ -668,8 +674,8 @@ export function registerProjectCommentRoutes(app: Express, ctx: RegisterProjectC
   app.delete(
     '/api/projects/:id/conversations/:cid/comments/:commentId',
     async (req, res) => {
-      const conv = getConversation(db, req.params.cid);
-      if (!conv || conv.projectId !== req.params.id) {
+      const conv = getRoutableConversation(req.params.id, req.params.cid);
+      if (!conv) {
         return res.status(404).json({ error: 'conversation not found' });
       }
       if (!await enforceCommentWorkspaceMutation(req, res, req.params.id)) return;

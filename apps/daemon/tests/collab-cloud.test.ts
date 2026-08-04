@@ -347,16 +347,20 @@ describe('createCollabCloudService', () => {
       checked: 2,
       created: 2,
     });
+    const teamEmptyAnchor = getProjectCommentAnchorConversationId(db, 'team-empty');
+    expect(teamEmptyAnchor).toMatch(/^comment-anchor-/);
     const repairedId = getLatestConversationIdForProject(db, 'team-empty');
-    expect(repairedId).toMatch(/^comment-anchor-/);
+    expect(repairedId).not.toBeNull();
+    expect(repairedId).not.toMatch(/^comment-anchor-/);
+    expect(listConversations(db, 'team-empty').map((conversation) => conversation.id))
+      .toEqual([repairedId]);
     const existingProjectConversations = listConversations(db, 'team-existing');
-    expect(existingProjectConversations.map((conversation) => conversation.id)).toContain(
-      'existing-conversation',
-    );
-    const existingProjectAnchor = existingProjectConversations.find((conversation) =>
-      conversation.id.startsWith('comment-anchor-'),
-    );
-    expect(existingProjectAnchor).toBeDefined();
+    expect(existingProjectConversations.map((conversation) => conversation.id))
+      .toEqual(['existing-conversation']);
+    expect(getLatestConversationIdForProject(db, 'team-existing'))
+      .toBe('existing-conversation');
+    const existingProjectAnchor = getProjectCommentAnchorConversationId(db, 'team-existing');
+    expect(existingProjectAnchor).toMatch(/^comment-anchor-/);
     expect(getLatestConversationIdForProject(db, 'personal-empty')).toBeNull();
     expect(getLatestConversationIdForProject(db, 'team-deleted')).toBeNull();
 
@@ -366,10 +370,8 @@ describe('createCollabCloudService', () => {
     });
     expect(getLatestConversationIdForProject(db, 'team-empty')).toBe(repairedId);
     expect(
-      listConversations(db, 'team-existing').filter((conversation) =>
-        conversation.id.startsWith('comment-anchor-'),
-      ).map((conversation) => conversation.id),
-    ).toEqual([existingProjectAnchor!.id]);
+      getProjectCommentAnchorConversationId(db, 'team-existing'),
+    ).toBe(existingProjectAnchor);
   });
 
   it('re-homes Team comments before deleting an ordinary conversation but preserves Personal cascade deletion', () => {
@@ -416,8 +418,11 @@ describe('createCollabCloudService', () => {
     });
     const teamAnchorId = getProjectCommentAnchorConversationId(db, 'team-project');
     expect(teamAnchorId).toMatch(/^comment-anchor-/);
+    const replacementConversationId = getLatestConversationIdForProject(db, 'team-project');
+    expect(replacementConversationId).not.toBeNull();
+    expect(replacementConversationId).not.toBe(teamAnchorId);
     expect(listConversations(db, 'team-project').map((conversation) => conversation.id)).toEqual([
-      teamAnchorId,
+      replacementConversationId,
     ]);
     expect(listPreviewComments(db, 'team-project', teamAnchorId!)).toEqual([
       expect.objectContaining({
@@ -483,10 +488,9 @@ describe('createCollabCloudService', () => {
     ).resolves.toBe(true);
 
     const conversations = listConversations(db, 'p1');
-    expect(conversations.map((conversation) => conversation.id).sort()).toEqual([
-      firstAnchor?.conversationId,
+    expect(conversations.map((conversation) => conversation.id)).toEqual([
       'newer-ordinary-conversation',
-    ].sort());
+    ]);
     expect(listMessages(db, firstAnchor!.conversationId)).toEqual([]);
     expect(
       listPreviewComments(db, 'p1', firstAnchor!.conversationId),

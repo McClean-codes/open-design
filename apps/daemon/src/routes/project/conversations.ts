@@ -7,7 +7,10 @@ import type { BoundWorkspaceResourceMutationGate } from '../../collab/workspace-
 import type { AuthorizeProjectRequest } from '../../collab/project-request-authority.js';
 import { registerProjectCommentRoutes } from './comments.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
-import { deleteConversationAndRepairTeamCommentAnchor } from '../../db.js';
+import {
+  deleteConversationAndRepairTeamCommentAnchor,
+  isProjectCommentAnchorConversationId,
+} from '../../db.js';
 
 export interface RegisterProjectConversationRoutesDeps extends RouteDeps<'db' | 'design' | 'http' | 'paths' | 'projectStore' | 'conversations' | 'ids' | 'telemetry' | 'appConfig' | 'agents'> {
   /**
@@ -59,6 +62,11 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
   // no Workspace binding and do not construct the full server authority graph.
   const authorizeProjectRequest: AuthorizeProjectRequest =
     ctx.authorizeProjectRequest ?? (async () => true);
+  const getRoutableConversation = (projectId: string, conversationId: string) => {
+    if (isProjectCommentAnchorConversationId(conversationId)) return null;
+    const conversation = getConversation(db, conversationId);
+    return conversation?.projectId === projectId ? conversation : null;
+  };
 
   // ---- Conversations --------------------------------------------------------
 
@@ -94,7 +102,7 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
         : null;
     const sourceConversation =
       typeof seedFromConversationId === 'string' && seedFromConversationId
-        ? getConversation(db, seedFromConversationId)
+        ? getRoutableConversation(req.params.id, seedFromConversationId)
         : null;
     // Client-supplied fork snapshot. The chat "Fork" action sends the exact
     // messages the user is looking at (up to the fork point). We prefer it over
@@ -173,8 +181,8 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       req.params.id,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    const conv = getConversation(db, req.params.cid);
-    if (!conv || conv.projectId !== req.params.id) {
+    const conv = getRoutableConversation(req.params.id, req.params.cid);
+    if (!conv) {
       return res.status(404).json({ error: 'not found' });
     }
     if (
@@ -195,8 +203,8 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       req.params.id,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    const conv = getConversation(db, req.params.cid);
-    if (!conv || conv.projectId !== req.params.id) {
+    const conv = getRoutableConversation(req.params.id, req.params.cid);
+    if (!conv) {
       return res.status(404).json({ error: 'not found' });
     }
     // Stop any live agent run for this conversation before the row is gone,
@@ -210,8 +218,8 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
 
   app.get('/api/projects/:id/conversations/:cid/messages', async (req, res) => {
     if (!await authorizeProjectRequest(req, res, req.params.id, { mode: 'read' })) return;
-    const conv = getConversation(db, req.params.cid);
-    if (!conv || conv.projectId !== req.params.id) {
+    const conv = getRoutableConversation(req.params.id, req.params.cid);
+    if (!conv) {
       return res.status(404).json({ error: 'conversation not found' });
     }
     const project = getProject(db, req.params.id);
@@ -245,8 +253,8 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       req.params.id,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    const conv = getConversation(db, req.params.cid);
-    if (!conv || conv.projectId !== req.params.id) {
+    const conv = getRoutableConversation(req.params.id, req.params.cid);
+    if (!conv) {
       return res.status(404).json({ error: 'conversation not found' });
     }
     const m = req.body || {};

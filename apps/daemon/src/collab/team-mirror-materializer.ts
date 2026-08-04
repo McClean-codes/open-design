@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 
 import {
-  ensureProjectCommentAnchorConversation,
+  ensureTeamProjectCommentConversations,
   ensureWorkspaceProject,
   getProject,
   getWorkspaceProject,
@@ -274,11 +274,13 @@ export function materializePulledTeamMirror(
       });
       localRecordChanged = true;
     }
-    const commentAnchor = ensureProjectCommentAnchorConversation(
+    const commentConversations = ensureTeamProjectCommentConversations(
       db,
       input.id,
     );
-    if (commentAnchor?.created) localRecordChanged = true;
+    if (commentConversations.anchorCreated || commentConversations.routingCreated) {
+      localRecordChanged = true;
+    }
 
     const patch = {
       workspaceId: scope.workspaceId,

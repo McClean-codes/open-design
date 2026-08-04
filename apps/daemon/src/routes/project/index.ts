@@ -54,7 +54,7 @@ import type { RouteDeps } from '../../server-context.js';
 import { listSkills } from '../../skills.js';
 import { isSafeId } from '../../projects.js';
 import {
-  ensureProjectCommentAnchorConversation,
+  ensureTeamProjectCommentConversations,
   SYNC_KEEPS_UPDATED_AT,
 } from '../../db.js';
 import {
@@ -3149,7 +3149,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       if (visibility === 'team') {
         const ensureCommentAnchor = db.transaction(() => {
-          ensureProjectCommentAnchorConversation(db, project.id);
+          ensureTeamProjectCommentConversations(db, project.id);
         });
         ensureCommentAnchor();
       }
@@ -3215,7 +3215,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       if (visibility === 'team') {
         const ensureCommentAnchors = db.transaction((ids: string[]) => {
-          for (const id of ids) ensureProjectCommentAnchorConversation(db, id);
+          for (const id of ids) ensureTeamProjectCommentConversations(db, id);
         });
         ensureCommentAnchors(projectIds);
       }
