@@ -2,7 +2,11 @@
   position: fixed;
   top: 14px;
   right: 18px;
-  z-index: 58;
+  /* The launcher intentionally sits inside the 44px workspace chrome. Keep it
+     above that chrome (z-index: 120), otherwise the button remains visible
+     through the translucent header but the header captures every pointer. */
+  z-index: 130;
+  -webkit-app-region: no-drag;
 }
 
 .trigger:global(.od-button) {
