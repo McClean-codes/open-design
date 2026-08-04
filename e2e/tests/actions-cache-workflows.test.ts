@@ -43,6 +43,33 @@ describe("GitHub Actions cache workflows", () => {
       action.indexOf("uses: actions/cache/save@v5"),
     );
 
+    // Non-persistent branch: pin a stable home store before `pnpm store path`
+    // so actions/cache version hashes match across hosted and Nexu ARC fleets.
+    const detectStep = sectionBetween(
+      action,
+      "- name: Detect persistent pnpm store",
+      "- name: Setup pnpm",
+    );
+    // Isolate the else arm by its home-store pin (not "else"/"fi", which match
+    // substrings like npm_config).
+    const homeStoreIndex = detectStep.indexOf('store_dir="$HOME/.pnpm-store"');
+    expect(homeStoreIndex).toBeGreaterThanOrEqual(0);
+    const nonPersistentBranch = detectStep.slice(homeStoreIndex);
+    expect(nonPersistentBranch).toContain('echo "NPM_CONFIG_STORE_DIR=$store_dir"');
+    expect(nonPersistentBranch).toContain('echo "npm_config_store_dir=$store_dir"');
+    expect(nonPersistentBranch).toContain('echo "enabled=false"');
+    expect(action.indexOf('store_dir="$HOME/.pnpm-store"')).toBeLessThan(
+      action.indexOf('run: echo "path=$(pnpm store path --silent)"'),
+    );
+
+    const restoreStep = sectionBetween(
+      action,
+      "- name: Restore pnpm store",
+      "- name: Install dependencies",
+    );
+    expect(restoreStep).toContain("restore-keys: |");
+    expect(restoreStep).toContain("pnpm-store-${{ runner.os }}-");
+
     const saveStep = action.slice(action.indexOf("- name: Save pnpm store"));
     expect(saveStep).toContain("inputs.save-pnpm-cache == 'true'");
     expect(saveStep).toContain("steps.persistent-pnpm-store.outputs.enabled != 'true'");
