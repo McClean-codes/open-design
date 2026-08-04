@@ -92,7 +92,7 @@ describe("pricing contract", () => {
     assert.match(page, /2026-08-06T20:00:00\+08:00/);
     assert.match(page, /2026-08-13T20:00:00\+08:00/);
     assert.match(page, /class="pr-campaign-disclaimer"/);
-    assert.match(page, /套餐内的无限制模型额度与免费生成次数，仅可通过 Open Design使用；无法在 MCP \/ CLI\/ API及其他场景使用。解释权归官方所有。/);
+    assert.match(page, /套餐内的无限制模型额度与免费生成次数，仅可通过Open Design使用；无法在MCP\/CLI\/API及其他场景使用。解释权归官方所有。/);
     assert.match(page, /<\/aside>\s*<p class="pr-campaign-disclaimer">\{deepSeekCampaign\.disclaimer\}<\/p>/);
     assert.doesNotMatch(page, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
     assert.match(page, /\.pr-campaign-disclaimer\s*\{[\s\S]*font-size:\s*\.82rem;/);
