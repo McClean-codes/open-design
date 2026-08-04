@@ -21,6 +21,17 @@ import { Button } from '@open-design/components';
 import { Icon } from './Icon';
 import { useI18n } from '../i18n';
 import { workspaceProjectHeaders } from '../collab/workspace-identity';
+import { useAnalytics } from '../analytics/provider';
+import {
+  trackWorkspaceInviteClick,
+  trackWorkspaceInviteResult,
+  trackWorkspaceSurfaceView,
+} from '../analytics/events';
+import {
+  countBucket,
+  stableAnalyticsErrorCode,
+  workspaceAnalyticsDimensions,
+} from '../analytics/workspace';
 
 const ROLE_OPTIONS = ['admin', 'member'] as const;
 
@@ -62,6 +73,8 @@ interface Props {
   onSubmit?: (rows: InviteRow[]) => void;
   /** Owner / Admin can choose roles; Member invites with the default role. */
   canAssignRoles?: boolean;
+  /** The entry point that opened the dialog, used for the invite funnel. */
+  entryFrom?: 'workspace_switcher' | 'all_projects';
 }
 
 // Default invited role, aligned to the PRD matrix (admin/member are assignable;
@@ -83,8 +96,12 @@ export function InviteDialog({
   onUpgrade,
   onSubmit,
   canAssignRoles = true,
+  entryFrom = 'workspace_switcher',
 }: Props) {
   const { t } = useI18n();
+  const analytics = useAnalytics();
+  const analyticsPage = entryFrom === 'all_projects' ? 'all_projects' : 'home';
+  const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   const [rows, setRows] = useState<InviteRow[]>([{ email: '', role: DEFAULT_ROLE }]);
   const [visibilityOpen, setVisibilityOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -153,7 +170,13 @@ export function InviteDialog({
     setSubmitting(false);
     setSuccess(false);
     setError(null);
-  }, [open]);
+    trackWorkspaceSurfaceView(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_invite_dialog',
+      entry_from: entryFrom,
+      ...workspaceDimensions,
+    });
+  }, [open, analytics.track, analyticsPage, entryFrom, workspaceDimensions.workspace_key]);
 
   if (!open) return null;
 
@@ -161,10 +184,35 @@ export function InviteDialog({
     setRows((prev) => prev.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   }
   function addRow() {
+    trackWorkspaceInviteClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_invite_dialog',
+      element: 'add_recipient_row',
+      entry_from: entryFrom,
+      ...workspaceDimensions,
+    });
     setRows((prev) => [...prev, { email: '', role: DEFAULT_ROLE }]);
   }
   function removeRow(index: number) {
+    trackWorkspaceInviteClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_invite_dialog',
+      element: 'remove_recipient_row',
+      entry_from: entryFrom,
+      ...workspaceDimensions,
+    });
     setRows((prev) => (prev.length > 1 ? prev.filter((_, i) => i !== index) : prev));
+  }
+
+  function closeDialog() {
+    trackWorkspaceInviteClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_invite_dialog',
+      element: 'close',
+      entry_from: entryFrom,
+      ...workspaceDimensions,
+    });
+    onClose();
   }
 
   // Demo-grade email shape check (something@something.tld) — keeps obvious
@@ -211,6 +259,16 @@ export function InviteDialog({
       return;
     }
     const requestContext = workspaceContext;
+    const startedAt = performance.now();
+    const requestId = analytics.newRequestId();
+    trackWorkspaceInviteClick(analytics.track, {
+      page_name: analyticsPage,
+      area: 'workspace_invite_dialog',
+      element: 'submit',
+      entry_from: entryFrom,
+      invite_count_bucket: countBucket(valid.length),
+      ...workspaceDimensions,
+    }, { requestId });
     setSubmitting(true);
     setError(null);
     try {
@@ -224,7 +282,21 @@ export function InviteDialog({
           invites: valid.map((r) => ({ email: r.email.trim(), role: toCanonicalRole(r.role) })),
         }),
       });
-      if (!res.ok) throw new Error('request_failed');
+      if (!res.ok) {
+        trackWorkspaceInviteResult(analytics.track, {
+          page_name: analyticsPage,
+          area: 'workspace_invite_dialog',
+          entry_from: entryFrom,
+          result: 'failed',
+          requested_count: valid.length,
+          succeeded_count: 0,
+          failed_count: valid.length,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error_code: stableAnalyticsErrorCode(res.status),
+          ...workspaceDimensions,
+        }, { requestId });
+        throw new Error('request_failed');
+      }
       const body = (await res.json().catch(() => null)) as
         | { results?: Array<{ ok?: boolean; error?: string }> }
         | null;
@@ -234,10 +306,35 @@ export function InviteDialog({
       // success state or a blanket "retry later".
       const failed = results.find((r) => r.ok === false);
       if (failed) {
+        const failedCount = results.filter((r) => r.ok === false).length;
+        const succeededCount = Math.max(valid.length - failedCount, 0);
+        trackWorkspaceInviteResult(analytics.track, {
+          page_name: analyticsPage,
+          area: 'workspace_invite_dialog',
+          entry_from: entryFrom,
+          result: succeededCount > 0 ? 'partial_success' : 'failed',
+          requested_count: valid.length,
+          succeeded_count: succeededCount,
+          failed_count: failedCount,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error_code: normalizeWorkspaceInviteCreateErrorCode(failed.error) ?? 'invite_rejected',
+          ...workspaceDimensions,
+        }, { requestId });
         setError(inviteErrorMessage(failed.error));
         setSubmitting(false);
         return;
       }
+      trackWorkspaceInviteResult(analytics.track, {
+        page_name: analyticsPage,
+        area: 'workspace_invite_dialog',
+        entry_from: entryFrom,
+        result: 'success',
+        requested_count: valid.length,
+        succeeded_count: valid.length,
+        failed_count: 0,
+        duration_ms: Math.round(performance.now() - startedAt),
+        ...workspaceDimensions,
+      }, { requestId });
       setSuccess(true);
       onSubmit?.(valid);
       window.setTimeout(() => {
@@ -246,7 +343,21 @@ export function InviteDialog({
         setSuccess(false);
         setSubmitting(false);
       }, 1000);
-    } catch {
+    } catch (caught) {
+      if (caught instanceof TypeError) {
+        trackWorkspaceInviteResult(analytics.track, {
+          page_name: analyticsPage,
+          area: 'workspace_invite_dialog',
+          entry_from: entryFrom,
+          result: 'failed',
+          requested_count: valid.length,
+          succeeded_count: 0,
+          failed_count: valid.length,
+          duration_ms: Math.round(performance.now() - startedAt),
+          error_code: 'network_error',
+          ...workspaceDimensions,
+        }, { requestId });
+      }
       setError(t('workspaceInvite.submitFailed'));
       setSubmitting(false);
     }
@@ -254,12 +365,12 @@ export function InviteDialog({
 
   return (
     <div className="entry-invite" role="dialog" aria-modal="true" aria-label={t('workspaceInvite.dialogAria')}>
-      <div className="entry-invite__backdrop" onClick={onClose} />
+      <div className="entry-invite__backdrop" onClick={closeDialog} />
       <div className="entry-invite__panel entry-invite__panel--split">
         <button
           type="button"
           className="entry-invite__close"
-          onClick={onClose}
+          onClick={closeDialog}
           aria-label={t('common.close')}
         >
           <Icon name="close" size={16} />
@@ -275,7 +386,16 @@ export function InviteDialog({
                 : t('workspaceInvite.teamPlanBody')}
           </p>
           {seatsExhausted && onUpgrade ? (
-            <Button variant="primary-ghost" onClick={onUpgrade}>
+            <Button variant="primary-ghost" onClick={() => {
+              trackWorkspaceInviteClick(analytics.track, {
+                page_name: analyticsPage,
+                area: 'workspace_invite_dialog',
+                element: 'upgrade',
+                entry_from: entryFrom,
+                ...workspaceDimensions,
+              });
+              onUpgrade();
+            }}>
               {t('workspaceInvite.seatsExhaustedAction')}
             </Button>
           ) : null}
@@ -305,6 +425,13 @@ export function InviteDialog({
                     className="entry-invite__role"
                     onClick={() => {
                       if (!canAssignRoles) return;
+                      trackWorkspaceInviteClick(analytics.track, {
+                        page_name: analyticsPage,
+                        area: 'workspace_invite_dialog',
+                        element: 'role_select',
+                        entry_from: entryFrom,
+                        ...workspaceDimensions,
+                      });
                       setOpenRoleIndex((current) => (current === i ? null : i));
                     }}
                     disabled={!canAssignRoles}

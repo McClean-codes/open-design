@@ -468,7 +468,7 @@ import {
 import { reportRunCompletedFromDaemon } from './langfuse-bridge.js';
 import { reconcileDurableRunTerminals } from './runtimes/run-terminal-reconciliation.js';
 import { buildPromptStackTelemetry } from './prompt-telemetry.js';
-import { readAnalyticsContext } from './analytics.js';
+import { newInsertId, readAnalyticsContext, type AnalyticsService } from './analytics.js';
 import {
   agentIdToTracking,
   modelIdForTracking,
@@ -4607,6 +4607,7 @@ export async function startServer({
       freshAuthority: true,
     }).catch(() => undefined);
   };
+  let workspaceAnalyticsService: AnalyticsService | null = null;
   registerCollabContextRoutes(app, {
     workspaceContext: collab.workspaceContext,
     activeWorkspace,
@@ -4634,6 +4635,17 @@ export async function startServer({
     // registers/deregisters its sink here; the poller below feeds them.
     createSseResponse,
     workspaceEventSinks,
+    observeWorkspace: async (req, context, properties) => {
+      const service = workspaceAnalyticsService;
+      const analyticsContext = readAnalyticsContext(req);
+      if (!service || !analyticsContext) return;
+      await service.identifyGroup({
+        context: analyticsContext,
+        groupType: 'workspace',
+        groupKey: context.workspaceId,
+        properties: properties ?? {},
+      });
+    },
   });
   // Reconnect/source-gap recovery belongs to the Workspace whose upstream
   // subscription observed the gap. Keep one signature state per Workspace so
@@ -6144,6 +6156,7 @@ export async function startServer({
     writeAppConfig,
   });
   const { analyticsService } = telemetry;
+  workspaceAnalyticsService = analyticsService;
   const design = {
     runs: createChatRunService({
       createSseResponse,
@@ -6792,7 +6805,30 @@ export async function startServer({
     },
     events: projectEventDeps,
     ids: idDeps,
-    telemetry: { reportFinalizedMessage },
+    telemetry: {
+      reportFinalizedMessage,
+      captureProductEvent: async (req, eventName, properties) => {
+        const analyticsContext = readAnalyticsContext(req);
+        if (!analyticsContext) return;
+        await analyticsService.capture({
+          eventName,
+          context: analyticsContext,
+          appVersion: telemetry.getCachedAppVersion()?.version ?? '0.0.0',
+          properties,
+          insertId: newInsertId(),
+        });
+      },
+      identifyWorkspaceGroup: async (req, workspaceId, properties) => {
+        const analyticsContext = readAnalyticsContext(req);
+        if (!analyticsContext) return;
+        await analyticsService.identifyGroup({
+          context: analyticsContext,
+          groupType: 'workspace',
+          groupKey: workspaceId,
+          properties,
+        });
+      },
+    },
     appConfig: appConfigDeps,
     agents: agentDeps,
     validation: validationDeps,

@@ -14,16 +14,22 @@ describe('resolveWorkspaceSettingsUrl', () => {
       resolveWorkspaceSettingsUrl('ws-1', undefined, {
         OD_VELA_WEB_URL: 'https://web.example',
       } as NodeJS.ProcessEnv),
-    ).toBe('https://web.example/settings?workspaceId=ws-1');
+    ).toBe('https://web.example/settings?workspaceId=ws-1&source=open_design');
   });
 
   it('appends the id to an explicit URL that lacks it and preserves one that has it', () => {
     expect(resolveWorkspaceSettingsUrl('ws-1', 'https://web.example/settings')).toBe(
-      'https://web.example/settings?workspaceId=ws-1',
+      'https://web.example/settings?workspaceId=ws-1&source=open_design',
     );
     expect(
       resolveWorkspaceSettingsUrl('ws-1', 'https://web.example/settings?workspaceId=ws-other'),
-    ).toBe('https://web.example/settings?workspaceId=ws-other');
+    ).toBe('https://web.example/settings?workspaceId=ws-other&source=open_design');
+    expect(
+      resolveWorkspaceSettingsUrl(
+        'ws-1',
+        'https://web.example/settings?source=vela',
+      ),
+    ).toBe('https://web.example/settings?source=vela&workspaceId=ws-1');
   });
 
   it('returns undefined without a base and leaves unparseable explicit values alone', () => {
@@ -47,7 +53,7 @@ describe('parseWorkspaceCollabContext', () => {
     });
 
     expect(context?.workspaceSettingsUrl).toBe(
-      'https://web.example/settings?workspaceId=ws-personal',
+      'https://web.example/settings?workspaceId=ws-personal&source=open_design',
     );
   });
 });

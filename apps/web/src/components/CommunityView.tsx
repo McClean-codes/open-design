@@ -18,6 +18,9 @@ import { PluginDetailsModal } from './PluginDetailsModal';
 import type { PluginUseAction } from './plugins-home/useActions';
 import { useInView } from './plugins-home/useInView';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
+import { useAnalytics } from '../analytics/provider';
+import { trackCommunityTemplateClick, trackPageView } from '../analytics/events';
+import { workspaceAnalyticsDimensions } from '../analytics/workspace';
 
 /** Each tab carries the same icon the home composer's creation-type radial
  *  uses for that artifact kind (see home-hero/chips.ts), so the two surfaces
@@ -49,7 +52,12 @@ interface CommunityViewProps {
 
 export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: CommunityViewProps) {
   const { locale, t } = useI18n();
+  const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
+  const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
+  useEffect(() => {
+    trackPageView(analytics.track, { page_name: 'community' });
+  }, [analytics.track]);
   const [plugins, setPlugins] = useState<InstalledPluginRecord[]>([]);
   // The gallery card opens the FULL plugin details modal (Use split action +
   // Share + close) — the same surface the plugin library uses — while the
@@ -117,8 +125,21 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     const subtypeMatches = activeSubtype === 'All' || template.subtype === activeSubtype;
     return typeMatches && subtypeMatches;
   });
+  const templateScope = (templateId: string) => {
+    const sourceKind = plugins.find((row) => row.id === templateId)?.sourceKind;
+    return sourceKind === 'bundled' || sourceKind === 'marketplace' ? 'official' as const : 'personal' as const;
+  };
   const handleTemplateAction = (template: TemplateDemo) => {
     if (isPromptArtifact(template)) {
+      trackCommunityTemplateClick(analytics.track, {
+        page_name: 'community',
+        area: 'community_templates',
+        element: 'copy_prompt',
+        template_key: template.id,
+        template_type: template.type,
+        resource_scope: templateScope(template.id),
+        ...workspaceDimensions,
+      });
       void copyTemplatePrompt(template);
       return;
     }
@@ -126,6 +147,15 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
     // whether a request goes out. See the remixingIdRef comment above for
     // why the state flag alone cannot gate this.
     if (remixingIdRef.current) return;
+    trackCommunityTemplateClick(analytics.track, {
+      page_name: 'community',
+      area: 'community_templates',
+      element: 'remix',
+      template_key: template.id,
+      template_type: template.type,
+      resource_scope: templateScope(template.id),
+      ...workspaceDimensions,
+    });
     remixingIdRef.current = template.id;
     setRemixingId(template.id);
     onRemixTemplate?.({ templateId: template.id, prompt: template.prompt });
@@ -137,6 +167,15 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
   /** Card body → FULL details modal. Templates are a projection of the plugin
    *  catalogue, so the record behind a card is always present in `plugins`. */
   const openTemplateDetails = (template: TemplateDemo) => {
+    trackCommunityTemplateClick(analytics.track, {
+      page_name: 'community',
+      area: 'community_templates',
+      element: 'template_detail',
+      template_key: template.id,
+      template_type: template.type,
+      resource_scope: templateScope(template.id),
+      ...workspaceDimensions,
+    });
     const record = plugins.find((row) => row.id === template.id) ?? null;
     setDetailsRecord(record);
   };
@@ -184,6 +223,14 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                 type="button"
                 className={activeType === type ? 'is-active' : ''}
                 onClick={() => {
+                  trackCommunityTemplateClick(analytics.track, {
+                    page_name: 'community',
+                    area: 'community_templates',
+                    element: 'filter',
+                    filter_type: 'category',
+                    filter_value: type,
+                    ...workspaceDimensions,
+                  });
                   setActiveType(type);
                   setActiveSubtype('All');
                 }}
@@ -199,7 +246,17 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
             <button
               type="button"
               className={activeSubtype === 'All' ? 'is-active' : ''}
-              onClick={() => setActiveSubtype('All')}
+              onClick={() => {
+                trackCommunityTemplateClick(analytics.track, {
+                  page_name: 'community',
+                  area: 'community_templates',
+                  element: 'filter',
+                  filter_type: 'subtype',
+                  filter_value: 'all',
+                  ...workspaceDimensions,
+                });
+                setActiveSubtype('All');
+              }}
             >
               {t('common.all')}
             </button>
@@ -208,7 +265,17 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                 key={subtype}
                 type="button"
                 className={activeSubtype === subtype ? 'is-active' : ''}
-                onClick={() => setActiveSubtype(subtype)}
+                onClick={() => {
+                  trackCommunityTemplateClick(analytics.track, {
+                    page_name: 'community',
+                    area: 'community_templates',
+                    element: 'filter',
+                    filter_type: 'subtype',
+                    filter_value: subtype,
+                    ...workspaceDimensions,
+                  });
+                  setActiveSubtype(subtype);
+                }}
               >
                 {subtype}
               </button>
@@ -250,6 +317,15 @@ export function CommunityView({ onRemixTemplate, onUsePrompt, onUsePlugin }: Com
                   className="community-template-card__prompt-btn"
                   onClick={(event) => {
                     event.stopPropagation();
+                    trackCommunityTemplateClick(analytics.track, {
+                      page_name: 'community',
+                      area: 'community_templates',
+                      element: 'use_prompt',
+                      template_key: template.id,
+                      template_type: template.type,
+                      resource_scope: templateScope(template.id),
+                      ...workspaceDimensions,
+                    });
                     onUsePrompt?.(template.prompt);
                   }}
                 >

@@ -68,6 +68,7 @@ import {
 import { auditDesignSystemPackage } from '../../tools-connectors-cli.js';
 import { parseOrchestratorWorkspace } from '../../workspace-contract.js';
 import { registerProjectConversationRoutes } from './conversations.js';
+import { workspaceProjectGroupCountProperties } from './analytics.js';
 import type { ProjectCommentWorkspaceContextResolution } from './comments.js';
 import {
   projectResourceIdFor,
@@ -1637,6 +1638,7 @@ function buildDesignSystemCopyPendingPrompt(input: {
 
 export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDeps) {
   const { db, design } = ctx;
+  const projectTelemetry = ctx.telemetry;
   const { sendApiError, createSseResponse } = ctx.http;
   const { DESIGN_SYSTEMS_DIR, PROJECTS_DIR, SKILLS_DIR, BRANDS_DIR, USER_DESIGN_SYSTEMS_DIR } = ctx.paths;
   const { readAppConfig, writeAppConfig } = ctx.appConfig;
@@ -2941,6 +2943,19 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           if (owner === 'others' && createdByCurrentMember) return false;
           return true;
         });
+      const groupCountProperties = workspaceProjectGroupCountProperties({
+        view,
+        owner,
+        visibility,
+        projectCount: projects.length,
+      });
+      if (groupCountProperties) {
+        void projectTelemetry.identifyWorkspaceGroup?.(
+          req,
+          ctx.workspaceId,
+          groupCountProperties,
+        );
+      }
       /** @type {import('@open-design/contracts').WorkspaceProjectsResponse} */
       const body = { projects };
       res.json(body);

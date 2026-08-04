@@ -1,4 +1,4 @@
-import type { Express, Response } from 'express';
+import type { Express, Request, Response } from 'express';
 import type {
   CollabCloudMemberDirectoryEntry,
   CollabCloudMembersResponse,
@@ -175,9 +175,31 @@ export interface RegisterCollabContextRoutesDeps {
     send: (event: string, data: unknown, id?: string | number | null) => boolean;
   };
   workspaceEventSinks?: WorkspaceEventSinksByWorkspace;
+  /** Best-effort PostHog group update; never affects the route response. */
+  observeWorkspace?: (
+    req: Request,
+    context: WorkspaceCollabContext,
+    properties?: Record<string, unknown>,
+  ) => Promise<void> | void;
 }
 
 const ASSIGNABLE_ROLES = new Set<WorkspaceInviteRole>(['admin', 'member']);
+
+function workspaceGroupProperties(
+  context: WorkspaceCollabContext,
+): Record<string, unknown> {
+  const planId = context.planId?.trim().toLowerCase();
+  return {
+    workspace_type: context.workspaceType,
+    workspace_lifecycle: context.lifecycleState,
+    billing_state: context.billingState,
+    plan_bucket: !planId || planId === 'free' ? 'free' : 'paid',
+    provider_mode: context.providerMode,
+    seat_limit: context.seatSummary.seatLimit,
+    member_count: context.seatSummary.usedSeats,
+    seat_state: context.seatSummary.isSeatFull ? 'full' : 'available',
+  };
+}
 
 /**
  * Normalize an invite-create request body into validated { email, role } items.
@@ -285,6 +307,13 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
     // its first exact-scope read. A refresh outage must not turn a successfully
     // consumed, non-repeatable continuation into an HTTP failure.
     await deps.refreshWorkspaceDirectoryAfterMutation?.().catch(() => undefined);
+    if (outcome.context) {
+      void deps.observeWorkspace?.(
+        req,
+        outcome.context,
+        workspaceGroupProperties(outcome.context),
+      );
+    }
     return res.json({ context: outcome.context, workspaceMemberId: outcome.workspaceMemberId });
   });
 
@@ -347,6 +376,7 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
         ? enriched
         : verified.context;
     const body: WorkspaceContextResponse = { context };
+    void deps.observeWorkspace?.(req, context, workspaceGroupProperties(context));
     res.json(body);
   });
 
@@ -502,6 +532,7 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
     // await them — a slow upstream must not delay the tab-local selection.
     deps.onWorkspaceSwitched?.(workspaceId);
     const body: WorkspaceActiveResponse = { activeWorkspaceId: workspaceId, context: resolved };
+    void deps.observeWorkspace?.(req, resolved, workspaceGroupProperties(resolved));
     res.json(body);
   });
 

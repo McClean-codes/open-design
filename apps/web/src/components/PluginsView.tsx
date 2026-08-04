@@ -40,7 +40,11 @@ import {
   trackPluginsSourcesTabClick,
   trackPluginsTemplatesDropdownClick,
   trackPluginsTopClick,
+  trackExtensionMarketplaceClick,
+  trackWorkspaceResourceActionResult,
 } from '../analytics/events';
+import { workspaceAnalyticsDimensions } from '../analytics/workspace';
+import type { TrackingWorkspaceScope } from '@open-design/contracts/analytics';
 import {
   addPluginMarketplace,
   applyPlugin,
@@ -1004,6 +1008,7 @@ export function ExtensionsMarketplace({
     loading: workspaceContextLoading,
     failure: workspaceContextFailure,
   } = useWorkspaceContext();
+  const workspaceDimensions = workspaceAnalyticsDimensions(workspaceContext);
   // The LATEST context, for `refresh()`'s commit guard. `refresh` is recreated
   // every render, but the mount effect below captures one closure — so the guard
   // must compare against a ref, not the captured prop, or it compares the
@@ -1037,6 +1042,44 @@ export function ExtensionsMarketplace({
   // #5517 lands on the official catalog first — a new workspace's personal
   // scope is empty, and the official list is the marketplace's front door.
   const [scope, setScope] = useState<MarketScope>('official');
+  function trackExtension(
+    element: 'details' | 'use' | 'add' | 'create' | 'filter',
+    input: {
+      id?: string;
+      kind?: 'expert_plugin' | 'skill';
+      scope?: TrackingWorkspaceScope;
+    } = {},
+  ) {
+    trackExtensionMarketplaceClick(analytics.track, {
+      page_name: 'plugins',
+      area: 'extension_marketplace',
+      element,
+      extension_kind: input.kind ?? (mode === 'plugins' ? 'expert_plugin' : 'skill'),
+      resource_scope: input.scope ?? scope,
+      ...(input.id ? { extension_key: input.id } : {}),
+      ...workspaceDimensions,
+    });
+  }
+  function trackResourceResult(input: {
+    kind: 'expert_plugin' | 'skill';
+    scope: TrackingWorkspaceScope;
+    action: 'share_to_team' | 'sync_to_team' | 'remove_from_team' | 'add';
+    result: 'success' | 'failed';
+    startedAt: number;
+    errorCode?: string;
+  }) {
+    trackWorkspaceResourceActionResult(analytics.track, {
+      page_name: 'plugins',
+      area: 'workspace_resource',
+      resource_kind: input.kind,
+      resource_scope: input.scope,
+      action: input.action,
+      result: input.result,
+      duration_ms: Math.round(performance.now() - input.startedAt),
+      ...(input.errorCode ? { error_code: input.errorCode } : {}),
+      ...workspaceDimensions,
+    });
+  }
   useEffect(() => {
     if (scope === 'team' && !hasTeamWorkspace) setScope('official');
   }, [scope, hasTeamWorkspace]);
@@ -1086,6 +1129,15 @@ export function ExtensionsMarketplace({
 
   function openCardDetail(detail: MarketCardDetail | null) {
     if (!detail) return;
+    trackExtension('details', {
+      id:
+        detail.kind === 'plugin'
+          ? detail.record.id
+          : detail.kind === 'skill'
+            ? detail.skill.id
+            : detail.plugin.key,
+      kind: detail.kind === 'skill' ? 'skill' : 'expert_plugin',
+    });
     setMenuId(null);
     setConfirmUninstallId(null);
     if (detail.kind === 'plugin') {
@@ -1110,6 +1162,10 @@ export function ExtensionsMarketplace({
   const createFolderInputRef = useRef<HTMLInputElement>(null);
 
   function openCreateDialog() {
+    trackExtension('add', {
+      kind: mode === 'skills' ? 'skill' : 'expert_plugin',
+      scope: 'personal',
+    });
     setCreateKind(mode === 'skills' ? 'skill' : 'plugin');
     setCreateUrl('');
     setCreateFolderFiles([]);
@@ -1147,11 +1203,18 @@ export function ExtensionsMarketplace({
   async function handleCreateImportUrl() {
     const url = createUrl.trim();
     if (!url || createBusy || workspaceContextLoading) return;
+    const startedAt = performance.now();
+    const trackingKind = createKind === 'skill' ? 'skill' : 'expert_plugin';
+    trackExtension('add', { kind: trackingKind, scope: 'personal' });
     if (createKind === 'skill') {
       setCreateBusy('import');
       try {
         const result = await installSkill({ source: url }, workspaceContext);
         if ('error' in result) {
+          trackResourceResult({
+            kind: 'skill', scope: 'personal', action: 'add', result: 'failed',
+            startedAt, errorCode: 'import_failed',
+          });
           setToast({ message: result.error || t('pluginsView.importFailed'), tone: 'error' });
           return;
         }
@@ -1163,6 +1226,9 @@ export function ExtensionsMarketplace({
             name: localizeSkillName(locale, result.skill),
           }),
           tone: 'success',
+        });
+        trackResourceResult({
+          kind: 'skill', scope: 'personal', action: 'add', result: 'success', startedAt,
         });
       } finally {
         setCreateBusy(null);
@@ -1177,8 +1243,15 @@ export function ExtensionsMarketplace({
         setCreateOpen(false);
         revealImported('plugin');
         setToast({ message: t('pluginsView.importPluginSuccess'), tone: 'success' });
+        trackResourceResult({
+          kind: 'expert_plugin', scope: 'personal', action: 'add', result: 'success', startedAt,
+        });
       } else {
         setToast({ message: outcome.message || t('pluginsView.importFailed'), tone: 'error' });
+        trackResourceResult({
+          kind: 'expert_plugin', scope: 'personal', action: 'add', result: 'failed',
+          startedAt, errorCode: 'import_failed',
+        });
       }
     } finally {
       setCreateBusy(null);
@@ -1187,6 +1260,9 @@ export function ExtensionsMarketplace({
 
   async function handleCreateUploadFolder() {
     if (createFolderFiles.length === 0 || createBusy || workspaceContextLoading) return;
+    const startedAt = performance.now();
+    const trackingKind = createKind === 'skill' ? 'skill' : 'expert_plugin';
+    trackExtension('add', { kind: trackingKind, scope: 'personal' });
     setCreateBusy('upload');
     try {
       if (createKind === 'plugin') {
@@ -1196,8 +1272,15 @@ export function ExtensionsMarketplace({
           setCreateOpen(false);
           revealImported('plugin');
           setToast({ message: t('pluginsView.uploadPluginSuccess'), tone: 'success' });
+          trackResourceResult({
+            kind: 'expert_plugin', scope: 'personal', action: 'add', result: 'success', startedAt,
+          });
         } else {
           setToast({ message: outcome.message || t('pluginsView.uploadFailed'), tone: 'error' });
+          trackResourceResult({
+            kind: 'expert_plugin', scope: 'personal', action: 'add', result: 'failed',
+            startedAt, errorCode: 'upload_failed',
+          });
         }
         return;
       }
@@ -1206,6 +1289,10 @@ export function ExtensionsMarketplace({
       // (个人的) registry; promoting to the team is the existing 转为团队共享 action.
       const input = await readSkillImportInputFromFolder(createFolderFiles, t);
       if ('error' in input) {
+        trackResourceResult({
+          kind: 'skill', scope: 'personal', action: 'add', result: 'failed',
+          startedAt, errorCode: 'invalid_skill_folder',
+        });
         setToast({ message: input.error.message, tone: 'error' });
         return;
       }
@@ -1214,6 +1301,10 @@ export function ExtensionsMarketplace({
       // in `refresh()` below for the read-side counterpart.
       const result = await importSkill(input, workspaceContext);
       if ('error' in result) {
+        trackResourceResult({
+          kind: 'skill', scope: 'personal', action: 'add', result: 'failed',
+          startedAt, errorCode: 'import_failed',
+        });
         setToast({ message: result.error.message, tone: 'error' });
         return;
       }
@@ -1223,6 +1314,9 @@ export function ExtensionsMarketplace({
       setToast({
         message: t('pluginsView.importSkillSuccess', { name: localizeSkillName(locale, result.skill) }),
         tone: 'success',
+      });
+      trackResourceResult({
+        kind: 'skill', scope: 'personal', action: 'add', result: 'success', startedAt,
       });
     } finally {
       setCreateBusy(null);
@@ -1505,6 +1599,7 @@ export function ExtensionsMarketplace({
     // the two so an owner who just edited and re-shared sees "synced", not a
     // confusing "shared" repeated on every subsequent push.
     const wasAlreadyShared = (kind === 'plugins' ? sharedPluginIds : sharedSkillIds).has(id);
+    const startedAt = performance.now();
     setSharingId(id);
     setMenuId(null);
     const basePath = kind === 'plugins' ? 'plugins' : 'skills';
@@ -1520,16 +1615,39 @@ export function ExtensionsMarketplace({
           message: t(wasAlreadyShared ? 'pluginsView.syncSuccess' : 'pluginsView.shareSuccess', { title }),
           tone: 'success',
         });
+        trackResourceResult({
+          kind: kind === 'plugins' ? 'expert_plugin' : 'skill',
+          scope: 'personal',
+          action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
+          result: 'success',
+          startedAt,
+        });
       } else {
         setToast({
           message: t(wasAlreadyShared ? 'pluginsView.syncUnavailable' : 'pluginsView.shareUnavailable', { title }),
           tone: 'error',
+        });
+        trackResourceResult({
+          kind: kind === 'plugins' ? 'expert_plugin' : 'skill',
+          scope: 'personal',
+          action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
+          result: 'failed',
+          startedAt,
+          errorCode: res.ok ? 'resource_not_shared' : `http_${res.status}`,
         });
       }
     } catch {
       setToast({
         message: t(wasAlreadyShared ? 'pluginsView.syncFailed' : 'pluginsView.shareFailed', { title }),
         tone: 'error',
+      });
+      trackResourceResult({
+        kind: kind === 'plugins' ? 'expert_plugin' : 'skill',
+        scope: 'personal',
+        action: wasAlreadyShared ? 'sync_to_team' : 'share_to_team',
+        result: 'failed',
+        startedAt,
+        errorCode: 'network_error',
       });
     } finally {
       setSharingId(null);
@@ -1544,6 +1662,7 @@ export function ExtensionsMarketplace({
       return;
     }
     setUnsharingId(id);
+    const startedAt = performance.now();
     setMenuId(null);
     const basePath = kind === 'plugins' ? 'plugins' : 'skills';
     try {
@@ -1555,11 +1674,34 @@ export function ExtensionsMarketplace({
       if (res.ok && body.unshared) {
         await refreshSharedResources();
         setToast({ message: t('pluginsView.unshareSuccess', { title }), tone: 'success' });
+        trackResourceResult({
+          kind: kind === 'plugins' ? 'expert_plugin' : 'skill',
+          scope: 'team',
+          action: 'remove_from_team',
+          result: 'success',
+          startedAt,
+        });
       } else {
         setToast({ message: t('pluginsView.unshareUnavailable', { title }), tone: 'error' });
+        trackResourceResult({
+          kind: kind === 'plugins' ? 'expert_plugin' : 'skill',
+          scope: 'team',
+          action: 'remove_from_team',
+          result: 'failed',
+          startedAt,
+          errorCode: res.ok ? 'resource_not_removed' : `http_${res.status}`,
+        });
       }
     } catch {
       setToast({ message: t('pluginsView.unshareFailed', { title }), tone: 'error' });
+      trackResourceResult({
+        kind: kind === 'plugins' ? 'expert_plugin' : 'skill',
+        scope: 'team',
+        action: 'remove_from_team',
+        result: 'failed',
+        startedAt,
+        errorCode: 'network_error',
+      });
     } finally {
       setUnsharingId(null);
     }
@@ -1595,6 +1737,7 @@ export function ExtensionsMarketplace({
   async function installAvailable(plugin: AvailableMarketplacePlugin, title: string) {
     if (installingKeys.has(plugin.key) || workspaceContextLoading) return;
     setInstallingKeys((prev) => new Set(prev).add(plugin.key));
+    const startedAt = performance.now();
     try {
       const outcome = await installPluginSource(
         plugin.installSource ?? plugin.entry.name,
@@ -1608,9 +1751,33 @@ export function ExtensionsMarketplace({
           current?.kind === 'available' && current.plugin.key === plugin.key ? null : current,
         );
         setToast({ message: t('pluginsView.installSuccess', { title }), tone: 'success' });
+        trackResourceResult({
+          kind: 'expert_plugin',
+          scope: 'official',
+          action: 'add',
+          result: 'success',
+          startedAt,
+        });
       } else {
         setToast({ message: outcome.message || t('pluginsView.installFailed', { title }), tone: 'error' });
+        trackResourceResult({
+          kind: 'expert_plugin',
+          scope: 'official',
+          action: 'add',
+          result: 'failed',
+          startedAt,
+          errorCode: 'install_failed',
+        });
       }
+    } catch {
+      trackResourceResult({
+        kind: 'expert_plugin',
+        scope: 'official',
+        action: 'add',
+        result: 'failed',
+        startedAt,
+        errorCode: 'network_error',
+      });
     } finally {
       setInstallingKeys((prev) => {
         const next = new Set(prev);
@@ -1860,6 +2027,10 @@ export function ExtensionsMarketplace({
         {...(onUseSkill
           ? {
             onUse: () => {
+              trackExtension('use', {
+                id: selectedSkill.id,
+                kind: 'skill',
+              });
               setCardDetail(null);
               onUseSkill(selectedSkill);
             },
@@ -1898,6 +2069,7 @@ export function ExtensionsMarketplace({
             type="button"
             className={mode === 'plugins' ? 'is-active' : ''}
             onClick={() => {
+              trackExtension('filter', { kind: 'expert_plugin' });
               setMode('plugins');
               setMenuId(null);
               setConfirmUninstallId(null);
@@ -1909,6 +2081,7 @@ export function ExtensionsMarketplace({
             type="button"
             className={mode === 'skills' ? 'is-active' : ''}
             onClick={() => {
+              trackExtension('filter', { kind: 'skill' });
               setMode('skills');
               setMenuId(null);
             }}
@@ -1929,6 +2102,7 @@ export function ExtensionsMarketplace({
               className={scope === item.id ? 'is-active' : ''}
               {...(item.id === 'personal' ? { 'data-testid': 'plugins-tab-installed' } : {})}
               onClick={() => {
+                trackExtension('filter', { scope: item.id });
                 setScope(item.id);
                 setMenuId(null);
               }}
@@ -2062,6 +2236,10 @@ export function ExtensionsMarketplace({
                         onClick={(event) => {
                           event.stopPropagation();
                           const action = card.action as { kind: 'try'; record: InstalledPluginRecord };
+                          trackExtension('use', {
+                            id: action.record.id,
+                            kind: 'expert_plugin',
+                          });
                           onUsePlugin(action.record, 'use');
                         }}
                       >
@@ -2075,6 +2253,10 @@ export function ExtensionsMarketplace({
                         onClick={(event) => {
                           event.stopPropagation();
                           const action = card.action as { kind: 'use-skill'; skill: SkillSummary };
+                          trackExtension('use', {
+                            id: action.skill.id,
+                            kind: 'skill',
+                          });
                           onUseSkill(action.skill);
                         }}
                       >
@@ -2089,6 +2271,11 @@ export function ExtensionsMarketplace({
                         onClick={(event) => {
                           event.stopPropagation();
                           const action = card.action as { kind: 'install'; plugin: AvailableMarketplacePlugin };
+                          trackExtension('add', {
+                            id: action.plugin.key,
+                            kind: 'expert_plugin',
+                            scope: 'official',
+                          });
                           void installAvailable(action.plugin, card.title);
                         }}
                       >
@@ -2308,6 +2495,10 @@ export function ExtensionsMarketplace({
                       disabled={createBusy !== null}
                       data-testid="plugin-create-with-agent"
                       onClick={() => {
+                        trackExtension('create', {
+                          kind: 'expert_plugin',
+                          scope: 'personal',
+                        });
                         closeCreateDialog();
                         onCreatePlugin();
                       }}

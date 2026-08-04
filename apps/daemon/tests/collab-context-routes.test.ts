@@ -143,6 +143,45 @@ describe('collab context routes', () => {
     })).body).toEqual({ context: TEAM_CONTEXT_PARSED });
   });
 
+  it('observes authoritative workspace size without sending names or member identity', async () => {
+    const observeWorkspace = vi.fn();
+    const api = await startContextServer({
+      observeWorkspace,
+      fetchWorkspaceDirectory: async () => ({
+        ok: true,
+        items: [TEAM_DIRECTORY_ITEM],
+      }),
+    });
+
+    const put = await api.req('/api/workspace/context', {
+      method: 'PUT',
+      body: TEAM_CONTEXT,
+    });
+    expect(put.status).toBe(200);
+    observeWorkspace.mockClear();
+    const response = await api.req('/api/workspace/context', {
+      headers: TEAM_HEADERS,
+    });
+
+    expect(response.status).toBe(200);
+    expect(observeWorkspace).toHaveBeenCalledWith(
+      expect.anything(),
+      TEAM_CONTEXT_PARSED,
+      {
+        workspace_type: 'team',
+        workspace_lifecycle: 'active',
+        billing_state: 'active',
+        plan_bucket: 'free',
+        provider_mode: 'platform_credits',
+        seat_limit: 5,
+        member_count: 1,
+        seat_state: 'available',
+      },
+    );
+    expect(observeWorkspace.mock.calls[0]?.[2]).not.toHaveProperty('displayName');
+    expect(observeWorkspace.mock.calls[0]?.[2]).not.toHaveProperty('workspaceMemberId');
+  });
+
   it('clears dev enrichment but retains directory-authorized exact context', async () => {
     const api = await startContextServer({
       fetchWorkspaceDirectory: async () => ({

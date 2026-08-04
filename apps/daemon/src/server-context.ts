@@ -135,6 +135,18 @@ export interface TelemetryDeps {
   resolveRunProjectKindForAnalytics: (...args: any[]) => any;
   runArtifactBaselines: any;
   runRetryEventsForAnalytics: (...args: any[]) => any;
+  /** Product-result capture for request-scoped, consented analytics. */
+  captureProductEvent?: (
+    req: any,
+    eventName: string,
+    properties: Record<string, unknown>,
+  ) => Promise<void> | void;
+  /** Update one PostHog Workspace group from an authoritative read. */
+  identifyWorkspaceGroup?: (
+    req: any,
+    workspaceId: string,
+    properties: Record<string, unknown>,
+  ) => Promise<void> | void;
 }
 
 export interface ServerContext {
