@@ -1276,6 +1276,12 @@ process.stdin.on("end", () => {
     expect(economicRunsOn.js_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.ui_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.visual_hot).toEqual(["ubuntu-24.04"]);
+
+    for (const invalidMode of ["Economic", " economic "]) {
+      const fallbackProfiles = await runRunners(invalidMode);
+      expect(runnerDecision(fallbackProfiles)).toEqual({ schema_version: 1, mode: "default" });
+      expect(runnerRunsOn(fallbackProfiles).control).toEqual(["nexu-runners-small"]);
+    }
   });
 
   it("[P2] routes CI follow-ons through generic handoff workflows", async () => {

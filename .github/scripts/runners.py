@@ -17,7 +17,7 @@ def compact_json(value):
 
 
 def normalize_mode(raw_mode):
-    mode = (raw_mode or "default").strip().lower()
+    mode = raw_mode or "default"
     if mode in {"default", "performance", "economic"}:
         return mode
     return "default"
