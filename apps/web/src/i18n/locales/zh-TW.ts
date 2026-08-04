@@ -5664,7 +5664,4 @@ export const zhTW: Dict = {
   'skillDetail.loadFailed': '無法載入此技能的 SKILL.md。',
   'skillDetail.previewAria': '{title} SKILL.md 預覽',
   'common.dismiss': '關閉',
-  'chat.amrLowBalance.currentAllowance': '目前額度',
-  'chat.amrLowBalance.generationPrice': '本次生成',
-  'chat.amrLowBalance.mediaMessage': '本次生成費用為 {price}，目前額度為 {balance}。生成失敗、取消或自動重試產生的費用由 Open Design 承擔。',
 };

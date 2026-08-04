@@ -25,25 +25,6 @@ afterEach(() => {
 });
 
 describe('AmrLowBalanceDialog', () => {
-  it('shows the wallet and deterministic media quote when the caller provides one', () => {
-    render(
-      <AmrLowBalanceDialog
-        balanceUsd="0.80"
-        profile={null}
-        entrySource="home_low_balance_warn_recharge"
-        metricsConsent={false}
-        installationId={null}
-        generationPriceUsd={1.08}
-        onDecision={vi.fn()}
-      />,
-    );
-
-    const summary = screen.getByTestId('amr-low-balance-dialog-generation-price');
-    expect(summary).toHaveTextContent('Current allowance$0.80');
-    expect(summary).toHaveTextContent('This generation$1.08');
-    expect(screen.getByText(/automatic.*retried generations are not charged/i)).toBeTruthy();
-  });
-
   it('opens the top-up flow for eligible paid accounts', () => {
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
     renderDialog();

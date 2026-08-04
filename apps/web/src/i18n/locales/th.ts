@@ -5210,7 +5210,4 @@ export const th: Dict = {
   'skillDetail.loadFailed': 'Couldn’t load this skill’s SKILL.md.',
   'skillDetail.previewAria': '{title} SKILL.md preview',
   'common.dismiss': 'Dismiss',
-  'chat.amrLowBalance.currentAllowance': 'Current allowance',
-  'chat.amrLowBalance.generationPrice': 'This generation',
-  'chat.amrLowBalance.mediaMessage': 'This generation costs {price}. Your current allowance is {balance}. Failed, cancelled, or automatically retried generations are not charged to you.',
 };

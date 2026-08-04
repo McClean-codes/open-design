@@ -34,24 +34,6 @@ afterEach(() => {
 });
 
 describe('AmrBalanceDialog', () => {
-  it('keeps generation pricing out of the hard balance gate', () => {
-    render(
-      <AmrBalanceDialog
-        reason="insufficient"
-        balanceUsd="0.18"
-        profile={null}
-        entrySource="home_balance_gate_upgrade"
-        metricsConsent={false}
-        installationId={null}
-        onClose={vi.fn()}
-        onResolved={vi.fn()}
-      />,
-    );
-
-    expect(screen.queryByText('This generation')).toBeNull();
-    expect(screen.queryByText('$1.08')).toBeNull();
-  });
-
   it('dismisses from the corner close button', () => {
     const onClose = vi.fn();
 

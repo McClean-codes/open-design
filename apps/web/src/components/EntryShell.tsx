@@ -1569,7 +1569,6 @@ export function EntryShell({
               entrySource="home_low_balance_warn_recharge"
               metricsConsent={false}
               installationId={null}
-              generationPriceUsd={1.08}
               onDecision={() => setReviewModalPreview(null)}
             />
           ) : null}

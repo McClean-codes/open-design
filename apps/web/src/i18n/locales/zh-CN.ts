@@ -5657,7 +5657,4 @@ export const zhCN: Dict = {
   'skillDetail.loadFailed': '无法加载此技能的 SKILL.md。',
   'skillDetail.previewAria': '{title} SKILL.md 预览',
   'common.dismiss': '关闭',
-  'chat.amrLowBalance.currentAllowance': '当前额度',
-  'chat.amrLowBalance.generationPrice': '本次生成',
-  'chat.amrLowBalance.mediaMessage': '本次生成费用为 {price}，当前额度为 {balance}。生成失败、取消或自动重试产生的费用由 Open Design 承担。',
 };
