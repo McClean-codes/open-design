@@ -62,6 +62,19 @@ describe("continueInviteFromUrl", () => {
     expect((fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0);
   });
 
+  it("settles with a structured failure when the focus dep throws (no-throw contract)", async () => {
+    const onCompleted = vi.fn();
+    const out = await continueInviteFromUrl("opendesign://workspace/open", {
+      resolveDaemonBaseUrl: async () => "http://x",
+      focus: () => {
+        throw new Error("window torn down");
+      },
+      onCompleted,
+    });
+    expect(out).toEqual({ ok: false, reason: "focus_failed" });
+    expect(onCompleted).toHaveBeenCalledWith({ ok: false, reason: "focus_failed" });
+  });
+
   it("accepts workspace/open with query params and trailing slash", async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const focus = vi.fn();

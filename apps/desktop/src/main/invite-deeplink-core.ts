@@ -135,7 +135,14 @@ export async function continueInviteFromUrl(
   deps: InviteDeeplinkDeps,
 ): Promise<{ ok: boolean; reason?: string; status?: number }> {
   if (isWorkspaceOpenDeeplink(url)) {
-    deps.focus?.();
+    // The focus dep touches runtime/window state that may be mid-teardown; a
+    // throw here must not escape into the OS url handler (this function's
+    // documented no-throw contract) and must still report completion.
+    try {
+      deps.focus?.();
+    } catch {
+      return completeInvite(deps, { ok: false, reason: "focus_failed" });
+    }
     // Carries its own reason so the completion log (and any future consumer)
     // can tell a payload-free focus hand-off apart from a real invite
     // continuation, which is the only other `ok: true` outcome here.
