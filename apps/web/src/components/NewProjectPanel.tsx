@@ -1152,17 +1152,8 @@ export function NewProjectPanel({
               disabled={folderImport.importing}
               onClick={() => void folderImport.openFolder()}
             >
-<<<<<<< HEAD
               <Icon name="folder" size={13} />
               <span>{folderImport.importing ? 'Opening...' : 'Open folder'}</span>
-=======
-              <Icon name="folder" size={14} />
-              <span>
-                {folderImport.importing
-                  ? t('newproj.openingFolder')
-                  : t('newproj.openFolder')}
-              </span>
->>>>>>> 356c8c364 (feat(workspace-team): team workspaces, shared resources, workspace-scoped billing, and the #5517 redesign (#6142))
             </button>
           </div>
         ) : null}
