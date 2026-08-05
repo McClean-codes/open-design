@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, join, resolve, win32 } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import {
@@ -42,6 +42,7 @@ export const CODEX_ELECTRON_AGENT_RUN_ID_ENV =
 export const CODEX_ELECTRON_USER_DATA_PATH_ENV =
   "CODEX_ELECTRON_USER_DATA_PATH";
 const CODEX_MACOS_DESKTOP_ROOT_SUFFIX = "/Codex.app/Contents/MacOS/ChatGPT";
+const CODEX_MACOS_BUNDLE_IDENTIFIER = "com.openai.codex";
 const CODEX_WINDOWS_PACKAGE_NAME = "OpenAI.Codex";
 const CODEX_WINDOWS_EXECUTABLE_SUFFIX = "\\app\\ChatGPT.exe";
 const WINDOWS_PROCESS_ENVIRONMENT_MAX_BYTES = 1024 * 1024;
@@ -1157,23 +1158,56 @@ export async function resolveCodexDesktopApp(
     ? [
         "/Applications/Codex.app",
         join(homedir(), "Applications", "Codex.app"),
+        "/Applications/ChatGPT.app",
+        join(homedir(), "Applications", "ChatGPT.app"),
       ]
     : [resolve(appPathOverride)];
   for (const appPath of candidates) {
     const executablePath = join(appPath, "Contents", "MacOS", "ChatGPT");
-    if (await pathExists(executablePath)) {
-      return {
-        appPath,
-        applicationId: null,
-        aumid: null,
-        executablePath,
-        packageFamilyName: null,
-        packageFullName: null,
-        version: null,
-      };
+    if (!await pathExists(executablePath)) continue;
+    if (appPathOverride == null) {
+      const bundleIdentifier = basename(appPath) === "ChatGPT.app"
+        ? await readMacosDesktopBundleIdentifier(appPath)
+        : null;
+      if (!isMacosCodexDesktopBundleCandidate(appPath, bundleIdentifier)) {
+        continue;
+      }
     }
+    return {
+      appPath,
+      applicationId: null,
+      aumid: null,
+      executablePath,
+      packageFamilyName: null,
+      packageFullName: null,
+      version: null,
+    };
   }
   return null;
+}
+
+/** Accept the ChatGPT-named bundle only when it is the Codex product. */
+export function isMacosCodexDesktopBundleCandidate(
+  appPath: string,
+  bundleIdentifier: string | null,
+): boolean {
+  const bundleName = basename(appPath);
+  return bundleName === "Codex.app"
+    || (
+      bundleName === "ChatGPT.app"
+      && bundleIdentifier === CODEX_MACOS_BUNDLE_IDENTIFIER
+    );
+}
+
+async function readMacosDesktopBundleIdentifier(
+  appPath: string,
+): Promise<string | null> {
+  const result = await runCommand("defaults", [
+    "read",
+    join(appPath, "Contents", "Info.plist"),
+    "CFBundleIdentifier",
+  ]);
+  return result.code === 0 && result.stdout.length > 0 ? result.stdout : null;
 }
 
 async function readDesktopVersion(
@@ -1682,6 +1716,7 @@ async function listStampedPids(
   const candidates = processes.filter((entry) => {
     const windowsCommand = entry.command.replaceAll("/", "\\");
     return entry.command.includes("/Codex.app/")
+      || entry.command.includes("/ChatGPT.app/")
       || /\\WindowsApps\\OpenAI\.Codex_[^\\]+\\app\\(?:ChatGPT|resources\\codex)\.exe(?:["\s]|$)/i
         .test(windowsCommand)
       || entry.command.includes(paths.codexHome);

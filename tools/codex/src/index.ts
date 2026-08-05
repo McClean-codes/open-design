@@ -143,7 +143,7 @@ function common(command: ReturnType<typeof cli.command>) {
     .option("--namespace <namespace>", "Stable tools-codex environment namespace")
     .option("--state-root <path>", "Override the tools-codex state root")
     .option("--codex-bin <path>", "Override the Codex CLI executable", { default: "codex" })
-    .option("--app-path <path>", "Override the Codex.app bundle path")
+    .option("--app-path <path>", "Override the Codex Desktop app bundle path")
     .option("--json", "Print machine-readable JSON");
 }
 

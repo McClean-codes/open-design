@@ -9,6 +9,7 @@ import {
   codexHomeDigest,
   createWindowsRestrictedDesktopLaunchRequest,
   findCodexDesktopRoots,
+  isMacosCodexDesktopBundleCandidate,
   parseWindowsCodexDesktopApplication,
   parseWindowsRestrictedDesktopLaunchHandshake,
   quoteWindowsCommandLineArgument,
@@ -40,6 +41,21 @@ const MARKER = {
 } satisfies ToolCodexRunMarkerV1;
 
 describe("tools-codex host identity", () => {
+  it("accepts the current ChatGPT-named Codex bundle only by product id", () => {
+    expect(isMacosCodexDesktopBundleCandidate(
+      "/Applications/Codex.app",
+      null,
+    )).toBe(true);
+    expect(isMacosCodexDesktopBundleCandidate(
+      "/Applications/ChatGPT.app",
+      "com.openai.codex",
+    )).toBe(true);
+    expect(isMacosCodexDesktopBundleCandidate(
+      "/Applications/ChatGPT.app",
+      "com.openai.chat",
+    )).toBe(false);
+  });
+
   it("finds only exact Codex Desktop root commands", () => {
     const roots = findCodexDesktopRoots([
       {
