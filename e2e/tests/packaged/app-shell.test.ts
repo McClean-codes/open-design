@@ -1,0 +1,224 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  asPackagedAppShellSnapshot,
+  evaluatePackagedAppShellProbe,
+  packagedAppShellExpression,
+  packagedAppShellFailureReason,
+  packagedAppShellSettled,
+  packagedAppShellState,
+  type PackagedAppShellProbeDocument,
+  type PackagedAppShellProbeElement,
+  type PackagedAppShellSnapshot,
+} from '@/vitest/packaged-app-shell';
+
+/**
+ * A fixture element the probe can `instanceof`-check and measure. `rects` is
+ * the `getClientRects().length` the real renderer reports: zero means the node
+ * is in the tree but paints nothing (display:none, detached subtree), which the
+ * probe must not read as a visible home rail.
+ */
+class FixtureElement implements PackagedAppShellProbeElement {
+  constructor(
+    readonly classes: readonly string[],
+    readonly attributes: Readonly<Record<string, string>>,
+    private readonly rects: number,
+  ) {}
+
+  getClientRects(): ArrayLike<unknown> {
+    return Array.from({ length: this.rects }, () => ({}));
+  }
+}
+
+type FixtureNode = {
+  attributes?: Record<string, string>;
+  classes?: string[];
+  rects?: number;
+};
+
+/**
+ * Enough of `querySelector` for the four selectors the probe uses: class
+ * selectors, `[attr="value"]` selectors, and comma-separated groups. Document
+ * order is the fixture array order, which is what makes the "second
+ * `.onboarding-cloud__secondary` is the BYOK link" reading testable.
+ */
+function matchesSelector(element: FixtureElement, selector: string): boolean {
+  return selector
+    .split(',')
+    .map((part) => part.trim())
+    .filter((part) => part.length > 0)
+    .some((simple) => {
+      if (simple.startsWith('.')) return element.classes.includes(simple.slice(1));
+      const attribute = /^\[([^=\]]+)="([^"]*)"\]$/.exec(simple);
+      if (attribute?.[1] != null && attribute[2] != null) {
+        return element.attributes[attribute[1]] === attribute[2];
+      }
+      throw new Error(`fixture selector engine does not support ${JSON.stringify(simple)}`);
+    });
+}
+
+function renderFixture(
+  nodes: readonly FixtureNode[],
+  options: { bodyText?: string; title?: string } = {},
+): PackagedAppShellProbeDocument {
+  const elements = nodes.map(
+    (node) => new FixtureElement(node.classes ?? [], node.attributes ?? {}, node.rects ?? 1),
+  );
+  return {
+    body: { textContent: options.bodyText ?? '' },
+    querySelector: (selectors) => elements.find((element) => matchesSelector(element, selectors)) ?? null,
+    querySelectorAll: (selectors) => elements.filter((element) => matchesSelector(element, selectors)),
+    title: options.title ?? 'Open Design',
+  };
+}
+
+function probe(document: PackagedAppShellProbeDocument): PackagedAppShellSnapshot {
+  const value = evaluatePackagedAppShellProbe(document, FixtureElement);
+  const snapshot = asPackagedAppShellSnapshot(value);
+  if (snapshot == null) throw new Error(`probe returned an unusable snapshot: ${JSON.stringify(value)}`);
+  return snapshot;
+}
+
+// The surface a signed-in or onboarding-seeded packaged app comes up on.
+const HOME_SHELL: readonly FixtureNode[] = [
+  { classes: ['entry-shell'] },
+  { attributes: { 'data-testid': 'entry-nav-home' }, classes: ['entry-nav__item'] },
+  { attributes: { 'data-testid': 'entry-nav-updater' }, classes: ['entry-nav__item'] },
+];
+
+// The surface a fresh packaged install comes up on since the #4513 cloud
+// sign-in redesign: EntryShell's onboarding shell wrapping OnboardingView's
+// cloud landing (primary CTA + the Local CLI and BYOK secondary links). This is
+// the same DOM the [P0] onboarding smoke asserts against in win.spec.ts.
+const CLOUD_SIGN_IN_LANDING: readonly FixtureNode[] = [
+  { classes: ['entry-shell', 'entry-shell--no-header', 'entry-shell--onboarding'] },
+  { classes: ['entry-onboarding-modal'] },
+  { classes: ['onboarding-view', 'onboarding-view--cloud'] },
+  { classes: ['onboarding-cloud__primary'] },
+  { classes: ['onboarding-cloud__secondary'] },
+  { classes: ['onboarding-cloud__secondary'] },
+];
+
+describe('packaged app-shell probe', () => {
+  it('ships a self-contained expression that reads the globals the renderer has', () => {
+    expect(packagedAppShellExpression).toContain('(document, HTMLElement)');
+    expect(packagedAppShellExpression).toContain('[data-testid="entry-nav-home"]');
+    expect(packagedAppShellExpression).toContain('.onboarding-cloud__primary');
+  });
+
+  it('reports home for the main shell', () => {
+    expect(probe(renderFixture(HOME_SHELL))).toMatchObject({
+      cloudSignInVisible: false,
+      homeVisible: true,
+      onboardingVisible: false,
+    });
+  });
+
+  it('reports the cloud sign-in landing with both runtime links', () => {
+    expect(probe(renderFixture(CLOUD_SIGN_IN_LANDING))).toMatchObject({
+      byokLinkVisible: true,
+      cloudSignInVisible: true,
+      homeVisible: false,
+      localLinkVisible: true,
+      onboardingVisible: true,
+    });
+  });
+
+  it('does not read an unpainted home rail as visible', () => {
+    expect(
+      probe(renderFixture([{ attributes: { 'data-testid': 'entry-nav-home' }, rects: 0 }])).homeVisible,
+    ).toBe(false);
+  });
+
+  it('reports nothing for a blank window', () => {
+    expect(probe(renderFixture([], { title: '' }))).toMatchObject({
+      cloudSignInVisible: false,
+      homeVisible: false,
+      onboardingVisible: false,
+    });
+  });
+});
+
+describe('packaged app-shell terminal state', () => {
+  it('settles on home for every profile', () => {
+    const snapshot = probe(renderFixture(HOME_SHELL));
+
+    expect(packagedAppShellState(snapshot)).toBe('home');
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: false })).toBe(true);
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: true })).toBe(true);
+  });
+
+  // The bug this file exists for. A packaged first run that nobody signs in to
+  // comes to rest on the cloud sign-in landing — `connectStepRuntimeReady` in
+  // EntryShell.tsx will not advance without a signed-in cloud account, an
+  // installed local CLI, or a verified BYOK key, none of which a release runner
+  // has. Treating that as "not settled" made the Windows smoke wait 45s for a
+  // home shell that can never arrive, which is why the 0.18.0 stable cut had to
+  // fall back to `win_x64_smoke_mode: skip`.
+  it('settles on the cloud sign-in landing when the profile only needs a rendered surface', () => {
+    const snapshot = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    expect(packagedAppShellState(snapshot)).toBe('onboarding-landing');
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: true })).toBe(true);
+  });
+
+  it('still requires home when the profile has to drive the entry rail', () => {
+    const snapshot = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: false })).toBe(false);
+    expect(packagedAppShellFailureReason(snapshot, { acceptOnboardingLanding: false })).toContain(
+      'needs home',
+    );
+  });
+
+  it('rejects a blank window under every profile', () => {
+    const snapshot = probe(renderFixture([]));
+
+    expect(packagedAppShellState(snapshot)).toBeNull();
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: true })).toBe(false);
+    expect(packagedAppShellFailureReason(snapshot, { acceptOnboardingLanding: true })).toContain(
+      'neither the home nav rail nor the onboarding cloud sign-in landing rendered',
+    );
+  });
+
+  // A renderer that mounted the onboarding shell and then died mid-render is a
+  // real failure, not a gated first run: accepting bare `onboardingVisible`
+  // would have turned this check into "anything that is not home".
+  it('rejects an onboarding shell that never rendered its landing', () => {
+    const snapshot = probe(
+      renderFixture([
+        { classes: ['entry-shell', 'entry-shell--onboarding'] },
+        { classes: ['entry-onboarding-modal'] },
+      ]),
+    );
+
+    expect(packagedAppShellState(snapshot)).toBeNull();
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: true })).toBe(false);
+    expect(packagedAppShellFailureReason(snapshot, { acceptOnboardingLanding: true })).toContain(
+      'cloud sign-in landing did not render',
+    );
+  });
+
+  it('rejects a landing that lost one of its runtime links', () => {
+    const snapshot = probe(
+      renderFixture([
+        { classes: ['entry-shell', 'entry-shell--onboarding'] },
+        { classes: ['entry-onboarding-modal'] },
+        { classes: ['onboarding-cloud__primary'] },
+        { classes: ['onboarding-cloud__secondary'] },
+      ]),
+    );
+
+    expect(snapshot.byokLinkVisible).toBe(false);
+    expect(packagedAppShellSettled(snapshot, { acceptOnboardingLanding: true })).toBe(false);
+  });
+
+  it('rejects a snapshot the renderer could not produce', () => {
+    expect(packagedAppShellState(null)).toBeNull();
+    expect(packagedAppShellState({ homeVisible: true })).toBeNull();
+    expect(packagedAppShellSettled(undefined, { acceptOnboardingLanding: true })).toBe(false);
+    expect(packagedAppShellFailureReason(null, { acceptOnboardingLanding: true })).toContain(
+      'no app-shell snapshot',
+    );
+  });
+});

@@ -10,6 +10,13 @@ import { promisify } from 'node:util';
 
 import { describe, expect, test } from 'vitest';
 
+import {
+  packagedAppShellExpression,
+  packagedAppShellFailureReason,
+  packagedAppShellSettled,
+  packagedAppShellState,
+  type PackagedAppShellState,
+} from '@/vitest/packaged-app-shell';
 import { createPackagedSmokeReport } from '@/vitest/packaged-report';
 import {
   assertPackagedPtySmokeResult,
@@ -231,23 +238,6 @@ const clickUpdaterRailExpression = `
     if (button.getAttribute('aria-disabled') === 'true') return { clicked: false, hostStatus, reason: 'updater-rail-disabled' };
     button.click();
     return { clicked: true, hostStatus };
-  })()
-`;
-const ensureMainAppShellExpression = `
-  (() => {
-    const onboarding = document.querySelector('.entry-shell--onboarding, .entry-onboarding-modal');
-    const home = document.querySelector('[data-testid="entry-nav-home"]');
-    const homeVisible = home instanceof HTMLElement && home.getClientRects().length > 0;
-    if (homeVisible) {
-      return { homeVisible: true, onboardingVisible: false, skipped: false };
-    }
-    return {
-      homeVisible: false,
-      onboardingVisible: onboarding instanceof HTMLElement,
-      skipped: false,
-      title: document.title,
-      text: document.body?.textContent?.trim().slice(0, 300) ?? '',
-    };
   })()
 `;
 const packagedOnboardingExpression = `
@@ -540,6 +530,7 @@ winDescribe('packaged windows runtime smoke', () => {
     const report = await createPackagedSmokeReport('win');
     let passed = false;
     const timings: SmokeTiming[] = [];
+    let appShell: PackagedAppShellState | 'skipped' = 'skipped';
     let intermediatePayloadUpdate: PayloadUpdateSummary | { skipped: true } = { skipped: true };
     let payloadUpdate: InstallerFallbackSummary | PayloadUpdateSummary | { skipped: true } = { skipped: true };
     let updaterRecovery: UpdaterRecoverySummary | { skipped: true } = { skipped: true };
@@ -708,7 +699,9 @@ winDescribe('packaged windows runtime smoke', () => {
       }
 
       if (!inspect.desktopIpcUnavailable) {
-        await measureSmokeStep(timings, 'ensure main app shell', async () => ensureMainAppShell());
+        appShell = await measureSmokeStep(timings, 'ensure packaged app shell', async () =>
+          ensurePackagedAppShell({ acceptOnboardingLanding: false }),
+        );
 
         if (verifyUpgradePersistence) {
           const seedInspect = await measureSmokeStep(timings, 'seed pre-update persistence project', async () =>
@@ -892,6 +885,7 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(uninstall.residueObservation?.userDesktopShortcutExists).toBe(false);
       await assertWindowsInviteProtocolRemoved();
       await report.saveSummary({
+        appShell,
         health: value,
         install: {
           desktopShortcutExists: install.desktopShortcutExists,
@@ -2038,21 +2032,42 @@ async function fetchPackagedHealth(daemonUrl: string): Promise<HealthEvalValue> 
   }
 }
 
-async function ensureMainAppShell(timeoutMs = 45_000): Promise<void> {
+/**
+ * Waits until the packaged renderer settles on a surface this smoke can act on,
+ * and reports which one it was.
+ *
+ * `acceptOnboardingLanding` is the caller's call, because the answer depends on
+ * what the smoke does next rather than on what the app is allowed to show. The
+ * rule itself lives in `@/vitest/packaged-app-shell` so a non-Windows machine
+ * can hold it — and the DOM probe it reads — to a contract.
+ */
+async function ensurePackagedAppShell(
+  options: { readonly acceptOnboardingLanding: boolean },
+  timeoutMs = 45_000,
+): Promise<PackagedAppShellState> {
   const startedAt = Date.now();
   let lastResult: unknown = null;
+  let lastValue: unknown = null;
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const inspect = await runToolsPackJson<WinInspectResult>('inspect', ['--expr', ensureMainAppShellExpression]);
+      const inspect = await runToolsPackJson<WinInspectResult>('inspect', ['--expr', packagedAppShellExpression]);
       lastResult = inspect;
-      const value = inspect.eval?.value;
-      if (isRecord(value) && value.homeVisible === true) return;
+      lastValue = inspect.eval?.value;
+      if (packagedAppShellSettled(lastValue, options)) {
+        const state = packagedAppShellState(lastValue);
+        if (state != null) return state;
+      }
     } catch (error) {
       lastResult = error;
     }
     await delay(750);
   }
-  throw new Error(`packaged windows runtime did not reach main app shell: ${formatUnknown(lastResult)}`);
+  throw new Error(
+    [
+      `packaged windows runtime did not reach a usable app shell: ${packagedAppShellFailureReason(lastValue, options)}`,
+      formatUnknown(lastResult),
+    ].join('\n'),
+  );
 }
 
 async function waitForHealthyDesktopVersion(
