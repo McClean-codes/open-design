@@ -25,6 +25,7 @@ const configureCiParallelismActionPath = join(
   "action.yml",
 );
 const uiExtendedMainWorkflowPath = join(workspaceRoot, ".github", "workflows", "ui-extended-main.yml");
+const visualBaselineWorkflowPath = join(workspaceRoot, ".github", "workflows", "visual-baseline.yml");
 const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
 const autofixWorkflowPath = join(workspaceRoot, ".github", "workflows", "autofix.atom.yml");
@@ -1148,6 +1149,13 @@ process.stdin.on("end", () => {
     expect(webWorkspaceTests).toContain("fromJSON(needs.runners.outputs.runs_on).js_hot");
     expect(webWorkspaceTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).js_hot)");
     expect(webWorkspaceTests).not.toContain('"od-persistent-ci"');
+    // Pin two-way vitest sharding so a later YAML edit cannot collapse the split or restore the
+    // monolithic `pnpm --filter @open-design/web test` command while this suite still passes.
+    expect(webWorkspaceTests).toContain("fail-fast: false");
+    expect(webWorkspaceTests).toContain("shard: [1, 2]");
+    expect(webWorkspaceTests).toContain(
+      "pnpm --filter @open-design/web exec vitest run -c vitest.config.ts --maxWorkers=2 --shard=${{ matrix.shard }}/2",
+    );
     expect(e2eVitest).toContain("fromJSON(needs.runners.outputs.runs_on).js_hot");
     expect(e2eVitest).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).js_hot)");
     expect(e2eVitest).not.toContain('"od-persistent-ci"');
@@ -1191,6 +1199,25 @@ process.stdin.on("end", () => {
     expect(uiP0).toContain("Preserve project-runtime domain artifact");
     expect(visual).toContain("fromJSON(needs.runners.outputs.runs_on).visual_hot");
     expect(visual).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).visual_hot)");
+    // visual-pr-capture-* is consumed by report.atom.yml; pin retain-on-failure traces so a
+    // later YAML edit cannot drop e2e/ui/reports/visual-test-results while the suite still passes.
+    expect(visual).toContain(
+      "name: visual-pr-capture-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ matrix.name }}",
+    );
+    expect(visual).toContain("name: visual-ci-${{ github.run_id }}-${{ matrix.name }}");
+    expect(visual).toContain("e2e/ui/reports/visual-test-results");
+    // Both PR and manual upload path lists include retain-on-failure diagnostics.
+    expect(visual.match(/e2e\/ui\/reports\/visual-test-results/g)?.length).toBe(2);
+    // visual-baseline.yml shares playwright.visual.config.ts; pin its debug artifact so baseline
+    // failures keep the same retain-on-failure path that ci.yml already uploads.
+    const visualBaseline = await readFile(visualBaselineWorkflowPath, "utf8");
+    const baselineDebugArtifact = sectionBetween(
+      visualBaseline,
+      "      - name: Upload baseline debug artifact",
+      "          retention-days: 7",
+    );
+    expect(baselineDebugArtifact).toContain("if: ${{ always() }}");
+    expect(baselineDebugArtifact).toContain("e2e/ui/reports/visual-test-results");
     expect(workflow).not.toContain("needs.runners.outputs.contabo_control");
     expect(workflow).not.toContain("needs.runners.outputs.hosted_or_blacksmith");
     expect(workflow).not.toContain("needs.runners.outputs.blacksmith_default");
