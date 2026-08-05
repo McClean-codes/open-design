@@ -411,6 +411,9 @@ describe("packaged smoke workflow", () => {
     expect(rerunWorkflow).toContain("workflows: [ci]");
     expect(rerunWorkflow).toContain("types: [completed]");
     expect(rerunWorkflow).toContain("actions: write");
+    // Annotations + commit→pulls need explicit read scopes when permissions: is set.
+    expect(rerunWorkflow).toContain("checks: read");
+    expect(rerunWorkflow).toContain("pull-requests: read");
     expect(rerunWorkflow).toContain("group: rerun-${{ github.event.workflow_run.id }}");
     expect(rerunWorkflow).toContain("cancel-in-progress: false");
     expect(rerunWorkflow).toContain("github.event.repository.default_branch");
@@ -431,6 +434,9 @@ describe("packaged smoke workflow", () => {
     expect(rerunScript).toContain("--failed");
     expect(rerunScript).toContain("DEFAULT_MAX_ATTEMPT = 2");
     expect(rerunScript).toContain("mergeQueue");
+    // Mixed ordinary failure + cancelled leaf must refuse --failed rerun.
+    expect(rerunScript).toContain("classify_non_success_jobs");
+    expect(rerunScript).toContain("ordinary non-infra failures present");
     expect(ciWorkflow).not.toContain("gh run rerun");
     expect(ciWorkflow).toContain("actions: read");
     expect(ciWorkflow).not.toContain("actions: write");

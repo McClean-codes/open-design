@@ -6,8 +6,8 @@ It is intentionally narrow:
 
 - only `pull_request` / `merge_group` ci runs
 - only while `run_attempt < max_attempt` (default 2 → one automatic retry)
-- only when at least one job looks like an infra/spot cancel, not a real
-  assertion failure
+- only when every non-success leaf job looks like an infra/spot cancel (no
+  ordinary assertion failure / timeout mixed in)
 - only when the run's head SHA is still the live PR head or still sitting in
   the main merge queue
 
@@ -135,11 +135,24 @@ def job_looks_like_infra_cancel(job: dict[str, Any], annotations: list[dict[str,
     return False
 
 
-def collect_infra_cancel_jobs(
+def job_display_name(job: dict[str, Any], job_id: int) -> str:
+    name = job.get("name")
+    return name if isinstance(name, str) and name else f"job-{job_id}"
+
+
+def classify_non_success_jobs(
     jobs: list[dict[str, Any]],
     annotations_by_job_id: dict[int, list[dict[str, Any]]],
-) -> list[str]:
-    names: list[str] = []
+) -> tuple[list[str], list[str]]:
+    """Split non-success leaves into infra-cancel vs ordinary failures.
+
+    `gh run rerun --failed` retries every failed/cancelled job. Authorizing a
+    rerun when any ordinary red leaf is present would hide a real assertion
+    failure behind an automatic second attempt. Only pure infra-cancel sets
+    may authorize a rerun.
+    """
+    infra_names: list[str] = []
+    ordinary_names: list[str] = []
     for job in jobs:
         if not isinstance(job, dict):
             continue
@@ -148,11 +161,21 @@ def collect_infra_cancel_jobs(
             continue
         if job.get("conclusion") in {None, "success", "skipped"}:
             continue
+        label = job_display_name(job, job_id)
         annotations = annotations_by_job_id.get(job_id, [])
         if job_looks_like_infra_cancel(job, annotations):
-            name = job.get("name")
-            names.append(name if isinstance(name, str) and name else f"job-{job_id}")
-    return names
+            infra_names.append(label)
+        else:
+            ordinary_names.append(label)
+    return infra_names, ordinary_names
+
+
+def collect_infra_cancel_jobs(
+    jobs: list[dict[str, Any]],
+    annotations_by_job_id: dict[int, list[dict[str, Any]]],
+) -> list[str]:
+    infra_names, _ordinary = classify_non_success_jobs(jobs, annotations_by_job_id)
+    return infra_names
 
 
 def decide(
@@ -165,6 +188,7 @@ def decide(
     infra_job_names: list[str],
     live_pr_head_sha: str | None,
     merge_queue_head_shas: set[str] | None,
+    ordinary_job_names: list[str] | None = None,
 ) -> tuple[bool, str]:
     """Pure eligibility gate. Returns (should_rerun, reason)."""
     if event_name not in ALLOWED_EVENTS:
@@ -173,6 +197,15 @@ def decide(
         return False, f"skip: run_attempt {run_attempt} >= max_attempt {max_attempt}"
     if conclusion not in RETRYABLE_CONCLUSIONS:
         return False, f"skip: conclusion {conclusion!r} is not retryable"
+
+    ordinary = ordinary_job_names or []
+    if ordinary:
+        joined_ordinary = ", ".join(ordinary)
+        return (
+            False,
+            "skip: ordinary non-infra failures present "
+            f"({joined_ordinary}); refusing mixed rerun",
+        )
 
     if not infra_job_names:
         return False, "skip: no infra-cancel fingerprint on failed/cancelled jobs"
@@ -431,7 +464,7 @@ def run_decision_from_github(
             continue
         annotations_by_job_id[job_id] = fetch_annotations(request, repo, job_id)
 
-    infra_names = collect_infra_cancel_jobs(jobs, annotations_by_job_id)
+    infra_names, ordinary_names = classify_non_success_jobs(jobs, annotations_by_job_id)
 
     live_pr_head_sha: str | None = None
     merge_queue_head_shas: set[str] | None = None
@@ -447,6 +480,7 @@ def run_decision_from_github(
         max_attempt=max_attempt,
         head_sha=head_sha,
         infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
         live_pr_head_sha=live_pr_head_sha,
         merge_queue_head_shas=merge_queue_head_shas,
     )
@@ -462,6 +496,7 @@ def self_check() -> None:
         max_attempt=2,
         head_sha="a" * 40,
         infra_job_names=["UI P0 (entry-settings)"],
+        ordinary_job_names=[],
         live_pr_head_sha="a" * 40,
         merge_queue_head_shas=None,
     )
@@ -474,6 +509,7 @@ def self_check() -> None:
         max_attempt=2,
         head_sha="a" * 40,
         infra_job_names=[],
+        ordinary_job_names=[],
         live_pr_head_sha="a" * 40,
         merge_queue_head_shas=None,
     )
@@ -486,6 +522,7 @@ def self_check() -> None:
         max_attempt=2,
         head_sha="a" * 40,
         infra_job_names=["UI P0 (entry-settings)"],
+        ordinary_job_names=[],
         live_pr_head_sha="a" * 40,
         merge_queue_head_shas=None,
     )
@@ -498,6 +535,7 @@ def self_check() -> None:
         max_attempt=2,
         head_sha="a" * 40,
         infra_job_names=["UI P0 (entry-settings)"],
+        ordinary_job_names=[],
         live_pr_head_sha="b" * 40,
         merge_queue_head_shas=None,
     )
@@ -510,6 +548,7 @@ def self_check() -> None:
         max_attempt=2,
         head_sha="a" * 40,
         infra_job_names=["Playwright visual (settings-workspace)"],
+        ordinary_job_names=[],
         live_pr_head_sha=None,
         merge_queue_head_shas={"a" * 40},
     )
@@ -522,6 +561,7 @@ def self_check() -> None:
         max_attempt=2,
         head_sha="a" * 40,
         infra_job_names=["Playwright visual (settings-workspace)"],
+        ordinary_job_names=[],
         live_pr_head_sha=None,
         merge_queue_head_shas={"c" * 40},
     )
@@ -550,6 +590,54 @@ def self_check() -> None:
         {"id": 3, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
         [],
     )
+
+    # Mixed leaf outcomes: one cancelled job + one ordinary assertion failure.
+    # Must refuse --failed (would also retry the genuine red leaf).
+    mixed_jobs = [
+        {"id": 10, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
+        {
+            "id": 11,
+            "name": "UI P0 (entry-settings)",
+            "conclusion": "failure",
+            "steps": [{"name": "Run UI P0 domain", "conclusion": "failure"}],
+        },
+    ]
+    mixed_annotations = {
+        10: [],
+        11: [{"message": "Error: expect(locator).toBeVisible() failed"}],
+    }
+    infra_names, ordinary_names = classify_non_success_jobs(mixed_jobs, mixed_annotations)
+    assert infra_names == ["E2E Vitest"], infra_names
+    assert ordinary_names == ["UI P0 (entry-settings)"], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="failure",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert not ok and "ordinary non-infra" in reason, reason
+
+    # Pure cancelled set still authorizes when no ordinary failures exist.
+    pure_cancel_jobs = [
+        {"id": 20, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
+        {
+            "id": 21,
+            "name": "Playwright visual (settings-workspace)",
+            "conclusion": "cancelled",
+            "steps": [],
+        },
+    ]
+    infra_names, ordinary_names = classify_non_success_jobs(pure_cancel_jobs, {})
+    assert infra_names == [
+        "E2E Vitest",
+        "Playwright visual (settings-workspace)",
+    ], infra_names
+    assert ordinary_names == [], ordinary_names
 
     emit("rerun_infra_cancel self-check OK")
 

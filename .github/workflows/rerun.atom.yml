@@ -12,6 +12,11 @@ on:
 permissions:
   actions: write
   contents: read
+  # Helper reads check-run annotations (infra fingerprint) and commit→pulls
+  # (live PR head). With a workflow-level permissions block, unspecified scopes
+  # default to none — omit these and real runs hit Resource not accessible.
+  checks: read
+  pull-requests: read
 
 concurrency:
   group: rerun-${{ github.event.workflow_run.id }}
