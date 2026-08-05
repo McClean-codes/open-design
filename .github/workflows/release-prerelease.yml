@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: ""
+      amr_profile:
+        description: "Optional AMR profile baked into the build (test or feature-test point the packaged app at that profile's Vela backend and enable the workspace-team transport). Empty leaves the default (prod)."
+        required: false
+        type: string
+        default: ""
       win_x64_smoke_mode:
         description: "Windows x64 smoke coverage."
         required: true
@@ -40,6 +45,11 @@ on:
         default: ""
       release_version:
         description: "Base version (x.y.z). Required when ref is not release/vX.Y.Z."
+        required: false
+        type: string
+        default: ""
+      amr_profile:
+        description: "Optional AMR profile baked into the build (test or feature-test enable the workspace-team transport by pointing at that profile's Vela backend). Empty leaves the default (prod)."
         required: false
         type: string
         default: ""
@@ -110,6 +120,16 @@ env:
   # and the helper still strips .map to keep source out of the installer.
   POSTHOG_CLI_API_KEY: ${{ secrets.POSTHOG_CLI_API_KEY }}
   POSTHOG_CLI_PROJECT_ID: ${{ vars.POSTHOG_CLI_PROJECT_ID }}
+  # Workspace Team gate for packaged prerelease builds. tools-pack reads
+  # OPEN_DESIGN_AMR_PROFILE and bakes OD_VELA_WEB_URL into open-design-config.json;
+  # both are required for the packaged daemon to enable the workspace-team
+  # transport (see apps/packaged/src/workspace-team.ts). Empty amr_profile leaves
+  # the default (prod), which the packaged gate rejects, so the normal push-driven
+  # prerelease pipeline stays unchanged. A test / feature-test dispatch points at
+  # the matching per-profile Vela console origin held in a repository secret.
+  # Secrets read here: VELA_WEB_URL_FEATURE_TEST, VELA_WEB_URL_TEST.
+  OPEN_DESIGN_AMR_PROFILE: ${{ inputs.amr_profile }}
+  OD_VELA_WEB_URL: ${{ inputs.amr_profile == 'feature-test' && secrets.VELA_WEB_URL_FEATURE_TEST || inputs.amr_profile == 'test' && secrets.VELA_WEB_URL_TEST || '' }}
 jobs:
   metadata:
     name: Prepare prerelease metadata
