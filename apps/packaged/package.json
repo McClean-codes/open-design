@@ -1,6 +1,10 @@
 {
   "name": "@open-design/packaged",
+<<<<<<< HEAD
   "version": "0.18.0",
+=======
+  "version": "0.16.2",
+>>>>>>> 356c8c364 (feat(workspace-team): team workspaces, shared resources, workspace-scoped billing, and the #5517 redesign (#6142))
   "private": true,
   "type": "module",
   "main": "./dist/index.mjs",
