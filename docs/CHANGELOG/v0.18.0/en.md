@@ -1,11 +1,11 @@
 ---
 title: Open Design 0.18.0
-description: Workspace Team goes live on production builds — team workspaces, shared projects and toolkits, workspace-scoped billing, and a redesigned home, all through one Open Design Cloud sign-in.
+description: Open Design 0.18.0 introduces Team Workspace—a shared home where design teams can share projects, review updates, comment in context, and reuse the same design systems, plugins, and skills. With the new Open Design plugin for Codex, that collaborative workspace now extends directly into Codex.
 ---
 
-### 🌟 Codename: *The World's First Design Agent for Teams*
+### 🌟 Codename: *Design Team Workspace. Now in Codex.*
 
-🤝 **`115 PRs` · `22 contributors` · `2 days`** — **Meet the world's first design agent built for teams.** Your best work used to leave the app the moment you wanted a teammate's eyes on it — exports, screenshots, "is this the latest version?". 0.18.0 lands just two days after 0.17.0, because its cargo has been boarding for a month behind a build-time gate: team workspaces, shared projects, a shared team toolkit, workspace billing, and a redesigned home. The agent you design with is now a workspace your whole team designs in. 🚀
+🤝 **`115 PRs` · `22 contributors` · `2 days`** — Open Design 0.18.0 introduces Team Workspace—a shared home where design teams can share projects, review updates, comment in context, and reuse the same design systems, plugins, and skills. With the new Open Design plugin for Codex, that collaborative workspace now extends directly into Codex. 🚀
 
 ## 🔥 Highlights
 

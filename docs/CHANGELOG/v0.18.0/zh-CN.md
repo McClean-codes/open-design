@@ -1,11 +1,11 @@
 ---
 title: Open Design 0.18.0
-description: Workspace Team 在正式版构建中上线——团队工作区、共享项目与工具集、按工作区计费、全新首页设计，一个 Open Design Cloud 账号全部搞定。
+description: Open Design 0.18.0 带来 Team Workspace——设计团队共同的家：共享项目、查看更新、在上下文中评论，并复用同一套设计体系、插件与技能；协作工作区现已直接延伸进 Codex。
 ---
 
-### 🌟 Codename: *The World's First Design Agent for Teams*
+### 🌟 Codename: *Design Team Workspace. Now in Codex.*
 
-🤝 **`115 个 PR` · `22 位贡献者` · `2 天`** — **全球首个为团队而生的设计 Agent，来了。** 过去，你的作品只要想让同事看一眼，就得离开应用——导出、截图、追问"这是最新版吗？"。0.18.0 在 0.17.0 之后仅两天就抵达，因为它的货舱已经在构建开关后面装了整整一个月：团队工作区、共享项目、共享团队工具集、按工作区计费、全新首页。与你并肩设计的 Agent，现在是全团队共同创作的工作区。🚀
+🤝 **`115 个 PR` · `22 位贡献者` · `2 天`** — Open Design 0.18.0 带来 Team Workspace——设计团队共同的家：在这里共享项目、查看更新、在上下文中直接评论，并复用同一套设计体系、插件与技能。借助全新的 Open Design plugin for Codex，这个协作工作区现在直接延伸进 Codex。🚀
 
 ## 🔥 亮点
 
