@@ -100,20 +100,37 @@ def require_sha(raw: str | None, label: str) -> str:
     return value
 
 
-def annotation_blob(annotations: list[dict[str, Any]]) -> str:
+def has_infra_marker(text: str) -> bool:
+    return any(marker in text for marker in INFRA_CANCEL_MARKERS)
+
+
+def annotation_text(item: dict[str, Any]) -> str:
+    """Flatten one check-run annotation into a searchable blob."""
     parts: list[str] = []
-    for item in annotations:
-        if not isinstance(item, dict):
-            continue
-        for key in ("message", "title", "raw_details"):
-            value = item.get(key)
-            if isinstance(value, str) and value:
-                parts.append(value)
+    for key in ("message", "title", "raw_details"):
+        value = item.get(key)
+        if isinstance(value, str) and value:
+            parts.append(value)
     return "\n".join(parts)
 
 
-def has_infra_marker(text: str) -> bool:
-    return any(marker in text for marker in INFRA_CANCEL_MARKERS)
+def annotation_indicates_ordinary_failure(item: dict[str, Any]) -> bool:
+    """True when an annotation is a non-infra failure/warning signal.
+
+    Notice-level annotations without markers are setup noise and must not
+    reclassify a pure runner-shutdown job as ordinary. Failure/warning
+    annotations (or untyped fixtures without ``annotation_level``) that lack
+    an infra marker are ordinary signals — including when a later shutdown
+    annotation is also present on the same job.
+    """
+    text = annotation_text(item)
+    if not text or has_infra_marker(text):
+        return False
+    level = item.get("annotation_level")
+    if level == "notice":
+        return False
+    # Missing level (fixtures / sparse payloads) and failure/warning count.
+    return level is None or level in {"failure", "warning"}
 
 
 def job_looks_like_infra_cancel(job: dict[str, Any], annotations: list[dict[str, Any]]) -> bool:
@@ -127,13 +144,26 @@ def job_looks_like_infra_cancel(job: dict[str, Any], annotations: list[dict[str,
     would authorize ``gh run rerun --failed`` on work the user explicitly
     stopped. Only annotation fingerprints in ``INFRA_CANCEL_MARKERS`` prove
     runner/spot loss.
+
+    Mixed annotations on one job (ordinary failure + later shutdown marker) are
+    ordinary, not infra. ``gh run rerun --failed`` retries the whole job, so
+    classifying mixed jobs as infra would auto-retry real assertion failures.
     """
     # job is retained for the classify call-site signature; conclusion alone is
     # not an infra signal — only trusted annotation markers prove runner loss.
     if not isinstance(job, dict):
         return False
-    blob = annotation_blob(annotations)
-    return has_infra_marker(blob)
+    has_marker = False
+    has_ordinary = False
+    for item in annotations:
+        if not isinstance(item, dict):
+            continue
+        text = annotation_text(item)
+        if text and has_infra_marker(text):
+            has_marker = True
+        elif annotation_indicates_ordinary_failure(item):
+            has_ordinary = True
+    return has_marker and not has_ordinary
 
 
 def job_display_name(job: dict[str, Any], job_id: int) -> str:
@@ -631,6 +661,52 @@ def self_check() -> None:
         {"id": 4, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
         [],
     )
+    # Same job: ordinary failure annotation + later shutdown marker is mixed /
+    # ordinary. Marker-any would misclassify this as pure infra and authorize
+    # gh run rerun --failed for the assertion failure.
+    mixed_annotation_job = {
+        "id": 5,
+        "name": "UI P0 (entry-settings)",
+        "conclusion": "failure",
+        "steps": [
+            {"name": "Run UI P0 domain", "conclusion": "failure"},
+            {"name": "Complete job", "conclusion": "cancelled"},
+        ],
+    }
+    mixed_annotations_one_job = [
+        {
+            "annotation_level": "failure",
+            "message": "Error: expect(locator).toBeVisible() failed",
+        },
+        shutdown_annotation,
+    ]
+    assert not job_looks_like_infra_cancel(mixed_annotation_job, mixed_annotations_one_job)
+    # Notice-level setup noise must not reclassify pure shutdown as ordinary.
+    assert job_looks_like_infra_cancel(
+        job_shutdown,
+        [
+            {"annotation_level": "notice", "message": "Using Node.js 24.x"},
+            shutdown_annotation,
+        ],
+    )
+    # classify: mixed-annotation job lands in ordinary_names, not infra_names.
+    mixed_one_jobs = [mixed_annotation_job]
+    mixed_one_ann = {5: mixed_annotations_one_job}
+    infra_names, ordinary_names = classify_non_success_jobs(mixed_one_jobs, mixed_one_ann)
+    assert infra_names == [], infra_names
+    assert ordinary_names == ["UI P0 (entry-settings)"], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="failure",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert not ok and "ordinary non-infra" in reason, reason
 
     # Mixed leaf outcomes: marker-backed cancel + ordinary assertion failure.
     # Must refuse --failed (would also retry the genuine red leaf).
