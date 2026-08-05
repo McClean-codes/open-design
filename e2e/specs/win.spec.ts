@@ -699,8 +699,14 @@ winDescribe('packaged windows runtime smoke', () => {
       }
 
       if (!inspect.desktopIpcUnavailable) {
+        // The core profile only screenshots from here, so a first run resting
+        // on the cloud sign-in landing is a legitimate place to stop. The full
+        // profile goes on to click `entry-nav-updater`, which
+        // `clickUpdaterRailExpression` refuses while onboarding is up — so it
+        // keeps demanding home and fails here, with a named cause, rather than
+        // later with a bare `onboarding-visible`.
         appShell = await measureSmokeStep(timings, 'ensure packaged app shell', async () =>
-          ensurePackagedAppShell({ acceptOnboardingLanding: false }),
+          ensurePackagedAppShell({ acceptOnboardingLanding: verifyCoreOnly }),
         );
 
         if (verifyUpgradePersistence) {

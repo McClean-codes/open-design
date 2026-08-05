@@ -106,11 +106,24 @@ export type PackagedAppShellState = 'home' | 'onboarding-landing';
  * Which settled surface the renderer is showing, or `null` while it is showing
  * neither — a blank window, a crashed renderer, a boot still on the loader, or
  * a half-rendered onboarding shell all fall through to `null`.
+ *
+ * The landing is recognised positively, from the same three affordances the
+ * `[P0]` onboarding smoke asserts: the sign-in CTA plus both runtime links. A
+ * bare `onboardingVisible` would degrade this into "anything that is not home"
+ * and stop failing on a renderer that mounted the shell and then died.
  */
 export function packagedAppShellState(value: unknown): PackagedAppShellState | null {
   const snapshot = asPackagedAppShellSnapshot(value);
   if (snapshot == null) return null;
   if (snapshot.homeVisible) return 'home';
+  if (
+    snapshot.onboardingVisible &&
+    snapshot.cloudSignInVisible &&
+    snapshot.localLinkVisible &&
+    snapshot.byokLinkVisible
+  ) {
+    return 'onboarding-landing';
+  }
   return null;
 }
 
