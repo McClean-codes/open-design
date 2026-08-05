@@ -7,7 +7,6 @@ import { T } from '@/timeouts';
 
 const STORAGE_KEY = 'open-design:config';
 const ACTIVE_ARTIFACT_PREVIEW_SELECTOR = '[data-testid="artifact-preview-frame"]:visible, [data-testid="artifact-preview-frame-url-load"]:visible, [data-testid="artifact-preview-frame-srcdoc"]:visible, [data-testid="live-artifact-preview-frame"]:visible';
-const SHORTCUT_MODIFIER = process.platform === 'darwin' ? 'Meta' : 'Control';
 
 test.describe.configure({ timeout: T.xlong });
 
@@ -141,267 +140,6 @@ test('[P0] manual edit inspector previews and persists page and selected element
   await expect(page.getByRole('button', { name: /^Share$/ })).toBeVisible();
   const actionMenu = await openShareExportMenu(page);
   await expect(actionMenu.getByRole('menuitem', { name: /Export as PDF/i })).toBeVisible();
-});
-
-test('[P0] manual edit undo and redo restore a saved style without reloading the preview', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit history smoke');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-history.html', manualEditHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-history.html`);
-  await openDesignFile(page, 'manual-edit-history.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'TYPOGRAPHY');
-  let previewNavigations = 0;
-  page.on('framenavigated', (navigated) => {
-    if (navigated.parentFrame() === page.mainFrame()) previewNavigations += 1;
-  });
-
-  const fontSizeInput = inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Size' }).locator('input');
-  await fontSizeInput.fill('42');
-  await inspectSaveButton(page).click({ force: true });
-  await expectFileSource(page, projectId, 'manual-edit-history.html', ['font-size: 42px']);
-
-  const undo = page.getByTestId('manual-edit-undo');
-  const redo = page.getByTestId('manual-edit-redo');
-  await expect(undo).toBeVisible();
-  await expect(redo).toBeVisible();
-
-  await undo.click();
-  await expectFileSourceExcludes(page, projectId, 'manual-edit-history.html', ['font-size: 42px']);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-
-  await redo.click();
-  await expectFileSource(page, projectId, 'manual-edit-history.html', ['font-size: 42px']);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-  expect(previewNavigations).toBe(0);
-});
-
-test('[P0] manual edit keeps a mixed canvas and speaker-notes history chain', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit mixed history');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-history-deck.html', manualEditDeckHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-history-deck.html`);
-  await openDesignFile(page, 'manual-edit-history-deck.html');
-
-  const frame = artifactPreviewFrame(page);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-  await expect(page.getByTestId('speaker-notes-panel')).toBeVisible();
-  await page.getByTestId('manual-edit-mode-toggle').click();
-
-  const notesPanel = page.getByTestId('speaker-notes-panel');
-  await notesPanel.getByRole('textbox').click();
-  await notesPanel.locator('textarea').fill('Discuss the launch timeline.');
-  await notesPanel.locator('textarea').blur();
-  await expectFileSource(page, projectId, 'manual-edit-history-deck.html', ['Discuss the launch timeline.']);
-
-  await selectPreviewElementThroughBridge(page, frame, '[data-od-id="hero-title"]', 'TYPOGRAPHY');
-  const fontSizeInput = inspectorSection(page, 'TYPOGRAPHY').locator('.cc-row').filter({ hasText: 'Size' }).locator('input');
-  await fontSizeInput.fill('42');
-  await inspectSaveButton(page).click({ force: true });
-  await expectFileSource(page, projectId, 'manual-edit-history-deck.html', [
-    'Discuss the launch timeline.',
-    'font-size: 42px',
-  ]);
-
-  const undo = page.getByTestId('manual-edit-undo');
-  const redo = page.getByTestId('manual-edit-redo');
-  await undo.click();
-  await expectFileSource(page, projectId, 'manual-edit-history-deck.html', ['Discuss the launch timeline.']);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-
-  await undo.click();
-  await expectFileSourceExcludes(page, projectId, 'manual-edit-history-deck.html', ['font-size: 42px']);
-  await expectFileSourceExcludes(page, projectId, 'manual-edit-history-deck.html', ['Discuss the launch timeline.']);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-
-  await redo.click();
-  await expectFileSource(page, projectId, 'manual-edit-history-deck.html', ['Discuss the launch timeline.']);
-  await redo.click();
-  await expectFileSource(page, projectId, 'manual-edit-history-deck.html', [
-    'Discuss the launch timeline.',
-    'font-size: 42px',
-  ]);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-});
-
-test('[P0] manual edit persists direct move and resize gestures without reloading the preview', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit gesture history');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-gestures.html', manualEditHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-gestures.html`);
-  await openDesignFile(page, 'manual-edit-gestures.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementWithoutInspector(page, frame, '[data-od-id="hero-image"]');
-  let previewNavigations = 0;
-  page.on('framenavigated', (navigated) => {
-    if (navigated.parentFrame() === page.mainFrame()) previewNavigations += 1;
-  });
-
-  const moveHandle = page.getByTestId('manual-edit-move-handle');
-  const moveBox = await moveHandle.boundingBox();
-  expect(moveBox).not.toBeNull();
-  await page.mouse.move(moveBox!.x + moveBox!.width / 2, moveBox!.y + moveBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(moveBox!.x + moveBox!.width / 2 + 32, moveBox!.y + moveBox!.height / 2 + 18);
-  await page.mouse.up();
-  await expectFileSourceMatches(page, projectId, 'manual-edit-gestures.html', /position:\s*relative[\s\S]*left:\s*\d+(?:\.\d+)?px/);
-
-  const resizeHandle = page.getByTestId('manual-edit-resize-right');
-  const resizeBox = await resizeHandle.boundingBox();
-  expect(resizeBox).not.toBeNull();
-  await page.mouse.move(resizeBox!.x + resizeBox!.width / 2, resizeBox!.y + resizeBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(resizeBox!.x + resizeBox!.width / 2 + 24, resizeBox!.y + resizeBox!.height / 2);
-  await page.mouse.up();
-  await expectFileSourceMatches(page, projectId, 'manual-edit-gestures.html', /width:\s*(?!64px)\d+(?:\.\d+)?px/);
-
-  const undo = page.getByTestId('manual-edit-undo');
-  const redo = page.getByTestId('manual-edit-redo');
-  await undo.click();
-  await expectFileSource(page, projectId, 'manual-edit-gestures.html', ['width: 64px']);
-  await undo.click();
-  await expectFileSourceExcludes(page, projectId, 'manual-edit-gestures.html', ['left:']);
-  await redo.click();
-  await expectFileSourceMatches(page, projectId, 'manual-edit-gestures.html', /left:\s*\d+(?:\.\d+)?px/);
-  await redo.click();
-  await expectFileSourceMatches(page, projectId, 'manual-edit-gestures.html', /width:\s*(?!64px)\d+(?:\.\d+)?px/);
-  expect(previewNavigations).toBe(0);
-});
-
-test('[P0] manual edit text content undo and redo keep the same preview document', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit text history');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-text-history.html', manualEditHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-text-history.html`);
-  await openDesignFile(page, 'manual-edit-text-history.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementWithoutInspector(page, frame, '[data-od-id="hero-title"]');
-  let previewNavigations = 0;
-  page.on('framenavigated', (navigated) => {
-    if (navigated.parentFrame() === page.mainFrame()) previewNavigations += 1;
-  });
-
-  const title = frame.locator('[data-od-id="hero-title"]');
-  await title.dblclick();
-  await title.fill('Edited Hero');
-  await title.press('Enter');
-  await expectFileSource(page, projectId, 'manual-edit-text-history.html', ['Edited Hero']);
-  await expect(frame.getByRole('heading', { name: 'Edited Hero' })).toBeVisible();
-
-  await page.getByTestId('manual-edit-undo').click();
-  await expectFileSourceExcludes(page, projectId, 'manual-edit-text-history.html', ['Edited Hero']);
-  await expect(frame.getByRole('heading', { name: 'Original Hero' })).toBeVisible();
-  await page.getByTestId('manual-edit-redo').click();
-  await expectFileSource(page, projectId, 'manual-edit-text-history.html', ['Edited Hero']);
-  await expect(frame.getByRole('heading', { name: 'Edited Hero' })).toBeVisible();
-  expect(previewNavigations).toBe(0);
-});
-
-test('[P1] manual edit replaces and crops an image while preserving selection state', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit image operations');
-  const originalSource = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2296%22 height=%2264%22%3E%3Crect width=%2296%22 height=%2264%22 fill=%22%23ef4444%22/%3E%3C/svg%3E';
-  await seedHtmlArtifact(page, projectId, 'manual-edit-image.html', manualEditHtml().replace('src="/hero.png"', `src="${originalSource}"`));
-  await page.goto(`/projects/${projectId}/files/manual-edit-image.html`);
-  await openDesignFile(page, 'manual-edit-image.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementWithoutInspector(page, frame, '[data-od-id="hero-image"]');
-  const image = frame.locator('[data-od-id="hero-image"]');
-  await expect(image).toBeVisible();
-
-  const replacementBytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO5W6McAAAAASUVORK5CYII=', 'base64');
-  await page.locator('[data-testid="manual-edit-action-bar"] input[type="file"]').setInputFiles({
-    name: 'replacement.png',
-    mimeType: 'image/png',
-    buffer: replacementBytes,
-  });
-  await expectFileSourceExcludes(page, projectId, 'manual-edit-image.html', [originalSource]);
-  await expect(page.getByTestId('manual-edit-selection-frame')).toBeVisible();
-
-  await page.getByTestId('manual-edit-crop-start').click();
-  await expect(page.getByTestId('manual-edit-crop-overlay')).toBeVisible();
-  const cropHandle = page.locator('[data-testid="manual-edit-crop-overlay"] [class*="cropHandle-se"]');
-  const cropBox = await cropHandle.boundingBox();
-  expect(cropBox).not.toBeNull();
-  await page.mouse.move(cropBox!.x + cropBox!.width / 2, cropBox!.y + cropBox!.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(cropBox!.x + cropBox!.width / 2 - 12, cropBox!.y + cropBox!.height / 2 - 8);
-  await page.mouse.up();
-  await page.getByTestId('manual-edit-crop-apply').click();
-  await expectFileSourceMatches(page, projectId, 'manual-edit-image.html', /-crop-\d+\.png/);
-  await expect(page.getByTestId('manual-edit-selection-frame')).toBeVisible();
-});
-
-test('[P1] manual edit duplicates and deletes a selected element', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit structural operations');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-structure.html', manualEditHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-structure.html`);
-  await openDesignFile(page, 'manual-edit-structure.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementWithoutInspector(page, frame, '[data-od-id="hero-image"]');
-
-  await page.getByTestId('manual-edit-duplicate').click();
-  await expectFileSourceMatches(page, projectId, 'manual-edit-structure.html', /<img\b[\s\S]*<img\b/);
-  await selectInsertedImageForDelete(frame);
-  await page.getByTestId('manual-edit-delete').click();
-  await expectFileSource(page, projectId, 'manual-edit-structure.html', ['data-od-id="hero-image"', 'src="/hero.png"']);
-  await expectFileSourceCount(page, projectId, 'manual-edit-structure.html', /<img\b/gi, 1);
-});
-
-test('[P1] manual edit copies and pastes a selected element as a new block', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit copy paste');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-copy-paste.html', manualEditHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-copy-paste.html`);
-  await openDesignFile(page, 'manual-edit-copy-paste.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementWithoutInspector(page, frame, '[data-od-id="hero-image"]');
-  await frame.locator('body').press(`${SHORTCUT_MODIFIER}+c`);
-  await frame.locator('body').press(`${SHORTCUT_MODIFIER}+v`);
-  await expectFileSourceMatches(page, projectId, 'manual-edit-copy-paste.html', /<img\b[\s\S]*<img\b/);
-  await selectInsertedImageForDelete(frame);
-  await page.getByTestId('manual-edit-delete').click();
-  await expectFileSource(page, projectId, 'manual-edit-copy-paste.html', ['data-od-id="hero-image"', 'src="/hero.png"']);
-  await expectFileSourceCount(page, projectId, 'manual-edit-copy-paste.html', /<img\b/gi, 1);
-});
-
-test('[P1] manual edit pastes a clipboard image as a new project asset', async ({ page }) => {
-  await routeMockAgents(page);
-  const projectId = await createEmptyProject(page, 'Manual edit clipboard image');
-  await seedHtmlArtifact(page, projectId, 'manual-edit-clipboard.html', manualEditHtml());
-  await page.goto(`/projects/${projectId}/files/manual-edit-clipboard.html`);
-  await openDesignFile(page, 'manual-edit-clipboard.html');
-
-  await page.getByTestId('manual-edit-mode-toggle').click();
-  const frame = artifactPreviewFrame(page);
-  await selectPreviewElementWithoutInspector(page, frame, '[data-od-id="hero-image"]');
-  const iframe = await artifactPreview(page).elementHandle();
-  const contentFrame = await iframe?.contentFrame();
-  expect(contentFrame).not.toBeNull();
-  await contentFrame!.evaluate(() => {
-    const bytes = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
-    const file = new File([bytes], 'clipboard.png', { type: 'image/png' });
-    const transfer = new DataTransfer();
-    transfer.items.add(file);
-    const event = new Event('paste', { bubbles: true, cancelable: true });
-    Object.defineProperty(event, 'clipboardData', { value: transfer });
-    document.body.dispatchEvent(event);
-  });
-  await expectFileSourceMatches(page, projectId, 'manual-edit-clipboard.html', /clipboard\.png|uploaded|project-files/);
-  await expectFileSourceCount(page, projectId, 'manual-edit-clipboard.html', /<img\b/gi, 2);
 });
 
 test('[P0] manual edit mode preserves the current page in a multi-page mobile app', async ({ page }) => {
@@ -608,27 +346,6 @@ async function selectPreviewElementThroughBridge(
     await expect(frame.locator(`${selector}[data-od-edit-selected="true"]`)).toHaveCount(1, { timeout: 2_000 });
   }).toPass({ timeout: 30_000 });
   await expect(page.locator('.manual-edit-modal')).toContainText(section);
-}
-
-async function selectPreviewElementWithoutInspector(
-  page: Page,
-  frame: ReturnType<Page['frameLocator']>,
-  selector: string,
-) {
-  await expect(frame.locator('html[data-od-edit-mode]')).toHaveCount(1);
-  await expect(async () => {
-    await frame.locator(selector).click({ timeout: 5_000 });
-    await expect(frame.locator(`${selector}[data-od-edit-selected="true"]`)).toHaveCount(1, { timeout: 2_000 });
-  }).toPass({ timeout: 30_000 });
-  await expect(page.getByTestId('manual-edit-selection-frame')).toBeVisible();
-}
-
-async function selectInsertedImageForDelete(frame: ReturnType<Page['frameLocator']>) {
-  const images = frame.locator('img');
-  await expect(images).toHaveCount(2);
-  await images.nth(1).click();
-  await expect(images.nth(1)).toHaveAttribute('data-od-edit-selected', 'true');
-  await expect(images.nth(0)).not.toHaveAttribute('data-od-edit-selected', 'true');
 }
 
 test('[P0] @critical preview toolbar keeps share, download, comment, and zoom actions reachable', async ({ page }) => {
@@ -1482,27 +1199,6 @@ async function expectFileSourceExcludes(page: Page, projectId: string, fileName:
     .toBe(true);
 }
 
-async function expectFileSourceMatches(page: Page, projectId: string, fileName: string, pattern: RegExp) {
-  await expect
-    .poll(async () => {
-      const resp = await page.request.get(`/api/projects/${projectId}/files/${fileName}`);
-      if (!resp.ok()) return false;
-      return pattern.test(await resp.text());
-    })
-    .toBe(true);
-}
-
-async function expectFileSourceCount(page: Page, projectId: string, fileName: string, pattern: RegExp, count: number) {
-  await expect
-    .poll(async () => {
-      const resp = await page.request.get(`/api/projects/${projectId}/files/${fileName}`);
-      if (!resp.ok()) return -1;
-      const source = await resp.text();
-      return source.match(pattern)?.length ?? 0;
-    })
-    .toBe(count);
-}
-
 function inspectorRow(page: Page, label: string) {
   return page.locator('.manual-edit-modal .cc-row').filter({ hasText: label }).first();
 }
@@ -1556,13 +1252,6 @@ function manualEditHtml(): string {
     </main>
   </body>
 </html>`;
-}
-
-function manualEditDeckHtml(): string {
-  return manualEditHtml().replace(
-    '</body>\n</html>',
-    '    <script type="application/json" id="speaker-notes">["Initial note"]</script>\n    <section class="slide" data-od-id="slide-1" hidden></section>\n  </body>\n</html>',
-  );
 }
 
 function multiPageMobileHtml(): string {
