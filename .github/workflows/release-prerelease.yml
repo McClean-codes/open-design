@@ -925,10 +925,29 @@ jobs:
       - name: Setup NSIS
         shell: pwsh
         run: |
-          if ((Get-Command makensis.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe")) {
-            exit 0
+          # windows-latest no longer guarantees a preinstalled NSIS, and the
+          # Chocolatey community feed flakes: prerelease.4 hit a silent
+          # "Unable to find package 'nsis'" fetch failure that left this step
+          # green (pwsh -command does not propagate choco's exit code) and let
+          # the build die on makensis half an hour later. Retry the install
+          # and hard-fail HERE, with a clear message, if makensis still cannot
+          # be found — a red Setup NSIS step is diagnosable; a mid-build
+          # makensis error is not.
+          function Test-Makensis {
+            [bool]((Get-Command makensis.exe -ErrorAction SilentlyContinue) -or (Test-Path "C:\Program Files (x86)\NSIS\makensis.exe"))
           }
-          choco install nsis -y --no-progress
+          if (Test-Makensis) { Write-Host "makensis already present"; exit 0 }
+          foreach ($attempt in 1..4) {
+            Write-Host "choco install nsis (attempt $attempt)"
+            choco install nsis -y --no-progress
+            if (Test-Makensis) { break }
+            Start-Sleep -Seconds (15 * $attempt)
+          }
+          if (-not (Test-Makensis)) {
+            Write-Error "NSIS install failed after 4 attempts: makensis absent from PATH and C:\Program Files (x86)\NSIS"
+            exit 1
+          }
+          Write-Host "NSIS ready"
       - name: Build prerelease windows artifacts
         id: win_tools_pack_build
         shell: pwsh
