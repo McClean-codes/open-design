@@ -29,6 +29,8 @@ const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
 const autofixWorkflowPath = join(workspaceRoot, ".github", "workflows", "autofix.atom.yml");
 const reportWorkflowPath = join(workspaceRoot, ".github", "workflows", "report.atom.yml");
+const rerunWorkflowPath = join(workspaceRoot, ".github", "workflows", "rerun.atom.yml");
+const rerunInfraCancelScriptPath = join(workspaceRoot, ".github", "scripts", "rerun_infra_cancel.py");
 const bakePluginPreviewsWorkflowPath = join(workspaceRoot, ".github", "workflows", "bake-plugin-previews.yml");
 const bakePluginPreviewsPrWorkflowPath = join(workspaceRoot, ".github", "workflows", "bake-plugin-previews-pr.yml");
 const dockerImageWorkflowPath = join(workspaceRoot, ".github", "workflows", "docker-image.yml");
@@ -396,6 +398,42 @@ describe("packaged smoke workflow", () => {
     expect(reportWorkflow).toContain("workflows: [ci]");
     expect(reportWorkflow).toContain("github.event.workflow_run.event == 'pull_request'");
     expect(reportWorkflow).not.toContain("merge_group");
+  });
+
+  it("[P2] gates infra-cancel auto-rerun as a trusted workflow_run consumer", async () => {
+    const [rerunWorkflow, rerunScript, ciWorkflow] = await Promise.all([
+      readFile(rerunWorkflowPath, "utf8"),
+      readFile(rerunInfraCancelScriptPath, "utf8"),
+      readFile(ciWorkflowPath, "utf8"),
+    ]);
+
+    // Triggered only by completed `ci` runs; never a business-layer write inside ci.yml.
+    expect(rerunWorkflow).toContain("workflows: [ci]");
+    expect(rerunWorkflow).toContain("types: [completed]");
+    expect(rerunWorkflow).toContain("actions: write");
+    expect(rerunWorkflow).toContain("group: rerun-${{ github.event.workflow_run.id }}");
+    expect(rerunWorkflow).toContain("cancel-in-progress: false");
+    expect(rerunWorkflow).toContain("github.event.repository.default_branch");
+    expect(rerunWorkflow).toContain("python3 .github/scripts/rerun_infra_cancel.py self-check");
+    expect(rerunWorkflow).toContain("python3 .github/scripts/rerun_infra_cancel.py run");
+
+    // pull_request + merge_group only, one automatic retry, skip green/skipped conclusions.
+    expect(rerunWorkflow).toContain("github.event.workflow_run.event == 'pull_request'");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.event == 'merge_group'");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.run_attempt < 2");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.conclusion != 'success'");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.conclusion != 'skipped'");
+    expect(rerunWorkflow).not.toContain("workflow_dispatch");
+
+    // Decision stays in the helper; ci.yml itself must not gain actions:write or gh run rerun.
+    expect(rerunScript).toContain("The runner has received a shutdown signal");
+    expect(rerunScript).toContain("gh run rerun");
+    expect(rerunScript).toContain("--failed");
+    expect(rerunScript).toContain("DEFAULT_MAX_ATTEMPT = 2");
+    expect(rerunScript).toContain("mergeQueue");
+    expect(ciWorkflow).not.toContain("gh run rerun");
+    expect(ciWorkflow).toContain("actions: read");
+    expect(ciWorkflow).not.toContain("actions: write");
   });
 
   it("[P2] surfaces a merge-queue needs-validation ejection as a PR comment handoff", async () => {
@@ -1310,6 +1348,14 @@ process.stdin.on("end", () => {
       expect(runnerDecision(fallbackProfiles)).toEqual({ schema_version: 1, mode: "default" });
       expect(runnerRunsOn(fallbackProfiles).control).toEqual(["nexu-runners-small"]);
     }
+  });
+
+  it("[P1] keeps infra-cancel rerun eligibility gates unit-tested", async () => {
+    const { stdout, stderr } = await execFileAsync("python3", [rerunInfraCancelScriptPath, "self-check"], {
+      cwd: workspaceRoot,
+    });
+    expect(stderr).toBe("");
+    expect(stdout).toContain("rerun_infra_cancel self-check OK");
   });
 
   it("[P2] routes CI follow-ons through generic handoff workflows", async () => {
