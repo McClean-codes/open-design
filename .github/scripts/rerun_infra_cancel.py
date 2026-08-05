@@ -42,6 +42,18 @@ INFRA_CANCEL_MARKERS = (
     "Node is shutting down",
 )
 
+# ci.yml always() jobs that mirror leaf outcomes rather than run leaf work.
+# `Validate workspace` fails whenever a required leaf failed/cancelled, and
+# `Runtime summary` is diagnostic-only. Neither carries runner/spot markers, so
+# classifying them as ordinary would refuse every pure infra-cancel case that
+# still reaches the aggregate gate.
+IGNORED_AGGREGATE_JOB_NAMES = frozenset(
+    {
+        "Validate workspace",
+        "Runtime summary",
+    }
+)
+
 
 GhRequest = Callable[[str, str, dict[str, str] | None, str | None], Any]
 
@@ -139,6 +151,9 @@ def classify_non_success_jobs(
     rerun when any ordinary red leaf is present would hide a real assertion
     failure behind an automatic second attempt. Only pure infra-cancel sets
     may authorize a rerun.
+
+    Aggregate always() gates (see ``IGNORED_AGGREGATE_JOB_NAMES``) are excluded:
+    they fail as a consequence of leaf outcomes and never carry infra markers.
     """
     infra_names: list[str] = []
     ordinary_names: list[str] = []
@@ -151,6 +166,8 @@ def classify_non_success_jobs(
         if job.get("conclusion") in {None, "success", "skipped"}:
             continue
         label = job_display_name(job, job_id)
+        if label in IGNORED_AGGREGATE_JOB_NAMES:
+            continue
         annotations = annotations_by_job_id.get(job_id, [])
         if job_looks_like_infra_cancel(job, annotations):
             infra_names.append(label)
@@ -713,6 +730,84 @@ def self_check() -> None:
         merge_queue_head_shas=None,
     )
     assert ok and reason.startswith("rerun:"), reason
+
+    # Pure infra leaf cancel + always() aggregate gate failure must still
+    # authorize. Validate workspace / Runtime summary fail without infra
+    # annotations whenever a needed leaf failed or cancelled; counting them as
+    # ordinary would refuse the intended runner-shutdown recovery path.
+    gate_jobs = [
+        {"id": 40, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
+        {
+            "id": 41,
+            "name": "Validate workspace",
+            "conclusion": "failure",
+            "steps": [{"name": "Check workspace validation jobs", "conclusion": "failure"}],
+        },
+        {
+            "id": 42,
+            "name": "Runtime summary",
+            "conclusion": "failure",
+            "steps": [],
+        },
+    ]
+    gate_annotations = {
+        40: [shutdown_annotation],
+        41: [],
+        42: [],
+    }
+    infra_names, ordinary_names = classify_non_success_jobs(gate_jobs, gate_annotations)
+    assert infra_names == ["E2E Vitest"], infra_names
+    assert ordinary_names == [], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="failure",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert ok and reason.startswith("rerun:"), reason
+
+    # Ordinary leaf failure + aggregate gate still refuses (gate ignored; leaf
+    # ordinary failure remains the blocking signal).
+    ordinary_with_gate = [
+        {
+            "id": 50,
+            "name": "UI P0 (entry-settings)",
+            "conclusion": "failure",
+            "steps": [{"name": "Run UI P0 domain", "conclusion": "failure"}],
+        },
+        {
+            "id": 51,
+            "name": "Validate workspace",
+            "conclusion": "failure",
+            "steps": [],
+        },
+    ]
+    ordinary_with_gate_annotations = {
+        50: [{"message": "Error: expect(locator).toBeVisible() failed"}],
+        51: [],
+    }
+    infra_names, ordinary_names = classify_non_success_jobs(
+        ordinary_with_gate, ordinary_with_gate_annotations
+    )
+    assert infra_names == [], infra_names
+    assert ordinary_names == ["UI P0 (entry-settings)"], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="failure",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert not ok and "ordinary non-infra" in reason, reason
 
     # Closed PR + branch tip still at the failed run SHA must not resolve a
     # live head. commit→pulls has no open association; the bare branch ref is
