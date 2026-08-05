@@ -6,8 +6,9 @@ It is intentionally narrow:
 
 - only `pull_request` / `merge_group` ci runs
 - only while `run_attempt < max_attempt` (default 2 → one automatic retry)
-- only when every non-success leaf job looks like an infra/spot cancel (no
-  ordinary assertion failure / timeout mixed in)
+- only when every non-success leaf job carries a trusted infra fingerprint
+  (shutdown/spot markers — not bare `cancelled` alone; no ordinary assertion
+  failure / timeout mixed in)
 - only when the run's head SHA is still the live PR head or still sitting in
   the main merge queue
 
@@ -87,11 +88,6 @@ def require_sha(raw: str | None, label: str) -> str:
     return value
 
 
-def job_step_cancelled(job: dict[str, Any]) -> bool:
-    steps = job.get("steps") or []
-    return any(isinstance(step, dict) and step.get("conclusion") == "cancelled" for step in steps)
-
-
 def annotation_blob(annotations: list[dict[str, Any]]) -> str:
     parts: list[str] = []
     for item in annotations:
@@ -113,26 +109,19 @@ def job_looks_like_infra_cancel(job: dict[str, Any], annotations: list[dict[str,
 
     Real test failures stay False even when Playwright left pages closed after a
     normal assertion timeout.
+
+    Bare ``cancelled`` without a trusted infra marker is ordinary (manual cancel,
+    concurrency cancel, force-push cancel). Treating unmarked cancel as infra
+    would authorize ``gh run rerun --failed`` on work the user explicitly
+    stopped. Only annotation fingerprints in ``INFRA_CANCEL_MARKERS`` prove
+    runner/spot loss.
     """
-    conclusion = job.get("conclusion")
+    # job is retained for the classify call-site signature; conclusion alone is
+    # not an infra signal — only trusted annotation markers prove runner loss.
+    if not isinstance(job, dict):
+        return False
     blob = annotation_blob(annotations)
-
-    if has_infra_marker(blob):
-        return True
-
-    # A fully cancelled leaf job with no prior success path is the common
-    # cancel-in-progress / node-kill shape when annotations are empty.
-    if conclusion == "cancelled":
-        return True
-
-    # Observed Nexu shape: job conclusion=failure, the test step is cancelled,
-    # and annotations carry the shutdown signal (handled above). If annotations
-    # are missing but the only non-success step is cancelled, treat conservatively
-    # as non-infra unless a marker is present.
-    if conclusion == "failure" and job_step_cancelled(job) and has_infra_marker(blob):
-        return True
-
-    return False
+    return has_infra_marker(blob)
 
 
 def job_display_name(job: dict[str, Any], job_id: int) -> str:
@@ -592,16 +581,25 @@ def self_check() -> None:
     )
     assert not ok and "merge queue" in reason, reason
 
+    shutdown_annotation = {
+        "message": (
+            "The runner has received a shutdown signal. This can happen when "
+            "the runner service is stopped."
+        )
+    }
     job_shutdown = {
         "id": 1,
         "name": "UI P0 (entry-settings)",
         "conclusion": "failure",
         "steps": [{"name": "Run UI P0 domain", "conclusion": "cancelled"}],
     }
+    # Marker-backed shutdown (failure or cancelled conclusion) is infra.
+    assert job_looks_like_infra_cancel(job_shutdown, [shutdown_annotation])
     assert job_looks_like_infra_cancel(
-        job_shutdown,
-        [{"message": "The runner has received a shutdown signal. This can happen when the runner service is stopped."}],
+        {"id": 3, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
+        [shutdown_annotation],
     )
+    # Ordinary assertion failure is never infra.
     assert not job_looks_like_infra_cancel(
         {
             "id": 2,
@@ -611,12 +609,13 @@ def self_check() -> None:
         },
         [{"message": "Error: expect(locator).toBeVisible() failed"}],
     )
-    assert job_looks_like_infra_cancel(
-        {"id": 3, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
+    # Bare cancelled with empty annotations is ordinary (manual / concurrency cancel).
+    assert not job_looks_like_infra_cancel(
+        {"id": 4, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
         [],
     )
 
-    # Mixed leaf outcomes: one cancelled job + one ordinary assertion failure.
+    # Mixed leaf outcomes: marker-backed cancel + ordinary assertion failure.
     # Must refuse --failed (would also retry the genuine red leaf).
     mixed_jobs = [
         {"id": 10, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
@@ -628,7 +627,7 @@ def self_check() -> None:
         },
     ]
     mixed_annotations = {
-        10: [],
+        10: [shutdown_annotation],
         11: [{"message": "Error: expect(locator).toBeVisible() failed"}],
     }
     infra_names, ordinary_names = classify_non_success_jobs(mixed_jobs, mixed_annotations)
@@ -647,8 +646,10 @@ def self_check() -> None:
     )
     assert not ok and "ordinary non-infra" in reason, reason
 
-    # Pure cancelled set still authorizes when no ordinary failures exist.
-    pure_cancel_jobs = [
+    # Manually cancelled current-head PR run: leaves are bare cancelled with no
+    # infra markers. Must skip even though the head is still live — otherwise
+    # we would restart work the user explicitly cancelled.
+    manual_cancel_jobs = [
         {"id": 20, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
         {
             "id": 21,
@@ -657,12 +658,61 @@ def self_check() -> None:
             "steps": [],
         },
     ]
-    infra_names, ordinary_names = classify_non_success_jobs(pure_cancel_jobs, {})
+    infra_names, ordinary_names = classify_non_success_jobs(manual_cancel_jobs, {})
+    assert infra_names == [], infra_names
+    assert ordinary_names == [
+        "E2E Vitest",
+        "Playwright visual (settings-workspace)",
+    ], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="cancelled",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert not ok, reason
+    assert "ordinary non-infra" in reason or "no infra-cancel" in reason, reason
+
+    # Marker-backed pure infra-cancel set still authorizes when no ordinary
+    # failures exist (spot / runner shutdown with empty steps is common).
+    pure_infra_jobs = [
+        {"id": 30, "name": "E2E Vitest", "conclusion": "cancelled", "steps": []},
+        {
+            "id": 31,
+            "name": "Playwright visual (settings-workspace)",
+            "conclusion": "cancelled",
+            "steps": [],
+        },
+    ]
+    pure_infra_annotations = {
+        30: [shutdown_annotation],
+        31: [{"message": "SpotInterrupted"}],
+    }
+    infra_names, ordinary_names = classify_non_success_jobs(
+        pure_infra_jobs, pure_infra_annotations
+    )
     assert infra_names == [
         "E2E Vitest",
         "Playwright visual (settings-workspace)",
     ], infra_names
     assert ordinary_names == [], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="cancelled",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert ok and reason.startswith("rerun:"), reason
 
     # Closed PR + branch tip still at the failed run SHA must not resolve a
     # live head. commit→pulls has no open association; the bare branch ref is
