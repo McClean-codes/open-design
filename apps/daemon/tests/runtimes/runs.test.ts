@@ -61,8 +61,13 @@ describe('chat run service shutdown', () => {
         startedAtMs,
         endedAtMs: startedAtMs + stepIndex * 1_000,
         durationMs: stepIndex * 1_000,
+        ...(stepIndex === 1 ? { usage: { reasoningTokens: 7 } } : {}),
       });
     }
+    runs.emit(run, 'agent', {
+      type: 'usage',
+      usage: { inputTokens: 10, outputTokens: 3 },
+    });
     runs.emit(run, 'agent', {
       type: 'diagnostic',
       name: 'model_retry',
@@ -115,6 +120,7 @@ describe('chat run service shutdown', () => {
         cancelled: { state: 'available', value: 0 },
         incomplete: { state: 'available', value: 0 },
         retryCount: { state: 'available', value: 1 },
+        reasoningTokens: { state: 'available', value: 7, complete: false },
       },
       assistantMessages: {
         count: { state: 'available', value: 1 },
@@ -183,6 +189,50 @@ describe('chat run service shutdown', () => {
     expect(runs.statusBody(run).executionDiagnostics?.modelSteps.count).toMatchObject({
       state: 'not_collected',
       missingReason: 'assistant_message_lifecycle_not_exposed_by_runtime',
+    });
+  });
+
+  it('keeps retry anomalies available without assistant-message lifecycle events', () => {
+    const runs = createRuns();
+    const run = runs.create({ projectId: 'project-1', conversationId: 'conv-1', agentId: 'amr' }) as any;
+    runs.emit(run, 'agent', {
+      type: 'diagnostic',
+      name: 'model_retry',
+      attempt: 1,
+      errorClass: 'rate_limited',
+    });
+    runs.finish(run, 'succeeded', 0, null);
+
+    const diagnostics = runs.statusBody(run).executionDiagnostics;
+    expect(diagnostics?.assistantMessages.count).toMatchObject({
+      state: 'not_collected',
+      missingReason: 'assistant_message_lifecycle_not_exposed_by_runtime',
+    });
+    expect(diagnostics?.anomalies).toMatchObject({
+      retryCount: { state: 'available', value: 1 },
+      rateLimitedCount: { state: 'available', value: 1 },
+      timeoutCount: { state: 'available', value: 0 },
+      upstreamErrorCount: { state: 'available', value: 0 },
+    });
+  });
+
+  it('keeps classified terminal anomalies available without assistant-message lifecycle events', () => {
+    const runs = createRuns();
+    const run = runs.create({ projectId: 'project-1', conversationId: 'conv-1', agentId: 'amr' }) as any;
+    runs.emit(run, 'error', {
+      error: {
+        code: 'AGENT_EXECUTION_FAILED',
+        message: 'upstream provider timed out',
+        retryable: true,
+      },
+    });
+    runs.finish(run, 'failed', 1, null);
+
+    expect(runs.statusBody(run).executionDiagnostics?.anomalies).toMatchObject({
+      retryCount: { state: 'available', value: 0 },
+      rateLimitedCount: { state: 'available', value: 0 },
+      timeoutCount: { state: 'available', value: 1 },
+      upstreamErrorCount: { state: 'available', value: 0 },
     });
   });
 

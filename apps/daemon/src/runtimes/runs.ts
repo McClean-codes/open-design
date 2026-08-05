@@ -121,12 +121,17 @@ function summarizeModelStepEvents(events) {
       startedAtMs: undefined,
       endedAtMs: undefined,
       durationMs: undefined,
+      reasoningTokens: undefined,
     };
     if (data.phase === 'start') {
       if (Number.isFinite(data.startedAtMs)) current.startedAtMs = data.startedAtMs;
     } else if (data.phase === 'end') {
       if (Number.isFinite(data.startedAtMs)) current.startedAtMs = data.startedAtMs;
       if (Number.isFinite(data.endedAtMs)) current.endedAtMs = data.endedAtMs;
+      const usage = data.usage && typeof data.usage === 'object' ? data.usage : undefined;
+      if (Number.isFinite(usage?.reasoningTokens) && usage.reasoningTokens >= 0) {
+        current.reasoningTokens = usage.reasoningTokens;
+      }
       const preciseDurationBoundary = data.timingEvidence !== 'first_output_fallback';
       if (preciseDurationBoundary && Number.isFinite(data.durationMs) && data.durationMs >= 0) {
         current.durationMs = data.durationMs;
@@ -150,8 +155,14 @@ function summarizeModelStepEvents(events) {
   let failed = 0;
   let cancelled = 0;
   let incomplete = 0;
+  let reasoningTokens = 0;
+  let reasoningTokenSampleCount = 0;
   for (const step of steps.values()) {
     if (Number.isFinite(step.durationMs) && step.durationMs >= 0) durations.push(step.durationMs);
+    if (Number.isFinite(step.reasoningTokens) && step.reasoningTokens >= 0) {
+      reasoningTokens += step.reasoningTokens;
+      reasoningTokenSampleCount += 1;
+    }
     if (step.status === 'completed') completed += 1;
     else if (step.status === 'failed') failed += 1;
     else if (step.status === 'cancelled') cancelled += 1;
@@ -175,6 +186,11 @@ function summarizeModelStepEvents(events) {
     cancelled,
     incomplete,
     retryCount,
+    // AMR/OpenCode reports provider usage per model step. Summing the unique
+    // step records recovers the turn total without treating the values as
+    // cumulative snapshots or double-counting repeated lifecycle frames.
+    reasoningTokens: reasoningTokenSampleCount > 0 ? reasoningTokens : undefined,
+    reasoningTokensComplete: steps.size > 0 && reasoningTokenSampleCount === steps.size,
   };
 }
 
@@ -357,6 +373,13 @@ function buildExecutionDiagnostics(run) {
       ? missingDiagnostic('assistant_message_duration_boundary_incomplete', 'agent-runtime', 'upstream_unavailable')
       : availableDiagnostic(value, definition, complete, 'agent-runtime');
   };
+  const anomalyMetric = (value, definition) => eventStreamComplete
+    ? availableDiagnostic(value, definition, true, 'agent-runtime')
+    : missingDiagnostic(eventCompletenessReason, 'agent-runtime');
+  const reasoningTokens = usage.thought_tokens ?? modelSteps.reasoningTokens;
+  const reasoningTokensComplete = usage.thought_tokens !== undefined
+    ? eventStreamComplete
+    : eventStreamComplete && modelSteps.reasoningTokensComplete;
 
   return {
     schemaVersion: 1,
@@ -392,7 +415,7 @@ function buildExecutionDiagnostics(run) {
       cancelled: modelStepMetric(modelSteps.cancelled, 'model steps ending cancelled', true),
       incomplete: modelStepMetric(modelSteps.incomplete, 'model steps without a terminal lifecycle event', true),
       retryCount: modelStepMetric(modelSteps.retryCount, 'runtime-observed model retry events; retries do not increment model-step count', true),
-      reasoningTokens: optionalDiagnostic(usage.thought_tokens, 'provider-reported reasoning token count', eventStreamComplete, 'model_provider_did_not_return_reasoning_tokens', 'model-provider'),
+      reasoningTokens: optionalDiagnostic(reasoningTokens, 'provider-reported reasoning token count summed across unique model steps when turn-level usage is absent', reasoningTokensComplete, 'model_provider_did_not_return_reasoning_tokens', 'model-provider'),
       reasoningDurationMs: missingDiagnostic('reasoning_interval_boundaries_not_exposed_by_runtime', 'agent-runtime'),
     },
     assistantMessages: {
@@ -407,10 +430,10 @@ function buildExecutionDiagnostics(run) {
       incomplete: assistantMetric(assistantMessages.incomplete, 'assistant messages without a terminal lifecycle event', true),
     },
     anomalies: {
-      retryCount: assistantMetric(assistantMessages.retryCount, 'runtime-observed model retry events', true),
-      rateLimitedCount: assistantMetric(Math.max(assistantMessages.rateLimitedCount, terminalErrorClass === 'rate_limited' ? 1 : 0), 'runtime-observed 429 or rate-limit events', true),
-      timeoutCount: assistantMetric(Math.max(assistantMessages.timeoutCount, terminalErrorClass === 'timeout' ? 1 : 0), 'runtime-observed provider timeout events', true),
-      upstreamErrorCount: assistantMetric(Math.max(assistantMessages.upstreamErrorCount, terminalErrorClass === 'upstream_error' ? 1 : 0), 'runtime-observed upstream provider errors', true),
+      retryCount: anomalyMetric(assistantMessages.retryCount, 'runtime-observed model retry events'),
+      rateLimitedCount: anomalyMetric(Math.max(assistantMessages.rateLimitedCount, terminalErrorClass === 'rate_limited' ? 1 : 0), 'runtime-observed 429 or rate-limit events'),
+      timeoutCount: anomalyMetric(Math.max(assistantMessages.timeoutCount, terminalErrorClass === 'timeout' ? 1 : 0), 'runtime-observed provider timeout events'),
+      upstreamErrorCount: anomalyMetric(Math.max(assistantMessages.upstreamErrorCount, terminalErrorClass === 'upstream_error' ? 1 : 0), 'runtime-observed upstream provider errors'),
     },
     tools: {
       total: toolValue(tools.total, 'count of observed tool_use events'),
