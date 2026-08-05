@@ -659,9 +659,6 @@ describe('deploy file set', () => {
   it('runs in linear time on pathological unclosed url(', () => {
     const huge = '('.repeat(100_000);
     const input = `body{background:url${huge}}`;
-    // Fixed path finishes in low milliseconds; keep a sub-second ceiling so a
-    // regression that blocks the deploy event loop for multiple seconds fails
-    // this guard instead of hiding under a multi-second flake budget.
     const startExtract = Date.now();
     const refs = extractCssReferences(input);
     expect(Date.now() - startExtract).toBeLessThan(500);
@@ -803,8 +800,8 @@ describe('deploy plan and analyzer', () => {
     // linear: the tempered regex handles this in well under 1ms, whereas the
     // old lazy-body regex grew ~2x per added comment (seconds here, minutes
     // with a few more). The 500ms budget sits far above the fixed path (~100x
-    // headroom, no false failures) yet well below the vulnerable time (~5s on
-    // Node 24 for this fixture), so any regression blows it.
+    // headroom, no false failures) yet well below the vulnerable time, so any
+    // regression blows it.
     expect(warnings.map((w) => w.code)).toContain('no-doctype');
     expect(elapsedMs).toBeLessThan(500);
   });
