@@ -54,6 +54,11 @@ IGNORED_AGGREGATE_JOB_NAMES = frozenset(
     }
 )
 
+# List check-run annotations page size. GitHub defaults to 30 when omitted;
+# request a full page and walk until a short batch so mixed ordinary+infra
+# fingerprints cannot hide past the first page.
+ANNOTATIONS_PER_PAGE = 100
+
 
 GhRequest = Callable[[str, str, dict[str, str] | None, str | None], Any]
 
@@ -353,13 +358,34 @@ def paginate_jobs(request: GhRequest, repo: str, run_id: int) -> list[dict[str, 
 
 
 def fetch_annotations(request: GhRequest, repo: str, job_id: int) -> list[dict[str, Any]]:
-    path = f"/repos/{repo}/check-runs/{job_id}/annotations"
-    payload = request("GET", path, None, None)
-    if payload is None:
-        return []
-    if not isinstance(payload, list):
-        fail(f"Unexpected annotations payload for job {job_id}")
-    return [item for item in payload if isinstance(item, dict)]
+    """Fetch every check-run annotation page before classification.
+
+    GitHub's list-annotations endpoint defaults to 30 results when ``per_page``
+    is omitted. A job can carry a shutdown marker on page 1 and an ordinary
+    failure on a later page; classifying from the first page alone would treat
+    the job as pure infra and authorize ``gh run rerun --failed`` for a real
+    assertion failure. Walk pages until a batch shorter than the requested
+    page size (same pattern as ``paginate_jobs``).
+    """
+    annotations: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        path = (
+            f"/repos/{repo}/check-runs/{job_id}/annotations"
+            f"?per_page={ANNOTATIONS_PER_PAGE}&page={page}"
+        )
+        payload = request("GET", path, None, None)
+        if payload is None:
+            if page == 1:
+                return []
+            fail(f"Unexpected empty annotations page {page} for job {job_id}")
+        if not isinstance(payload, list):
+            fail(f"Unexpected annotations payload for job {job_id}")
+        annotations.extend(item for item in payload if isinstance(item, dict))
+        if len(payload) < ANNOTATIONS_PER_PAGE:
+            break
+        page += 1
+    return annotations
 
 
 def _open_pr_head_sha(pull: dict[str, Any]) -> str | None:
@@ -994,6 +1020,85 @@ def self_check() -> None:
         open_branch,
     )
     assert live_open == open_run_sha, live_open
+
+    # Annotation pagination: page 1 is full of the shutdown marker (would look
+    # pure-infra alone); page 2 carries an ordinary assertion failure. Without
+    # walking pages, job_looks_like_infra_cancel would authorize rerun --failed
+    # for a real failure. The fixture must refuse.
+    paged_job_id = 60
+    paged_repo = "nexu-io/open-design"
+    annotation_pages_seen: list[int] = []
+
+    def paged_annotations_request(
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> Any:
+        del method, headers, body
+        prefix = f"/repos/{paged_repo}/check-runs/{paged_job_id}/annotations"
+        if not path.startswith(prefix):
+            fail(f"unexpected fixture path {path!r}")
+        query = path[len(prefix) :]
+        assert query.startswith("?"), path
+        params = urllib.parse.parse_qs(query[1:])
+        assert params.get("per_page") == [str(ANNOTATIONS_PER_PAGE)], path
+        page_raw = (params.get("page") or ["1"])[0]
+        page_num = int(page_raw)
+        annotation_pages_seen.append(page_num)
+        if page_num == 1:
+            # Full first page of infra markers only.
+            return [
+                {
+                    "annotation_level": "failure",
+                    "message": (
+                        "The runner has received a shutdown signal. This can "
+                        "happen when the runner service is stopped."
+                    ),
+                }
+                for _ in range(ANNOTATIONS_PER_PAGE)
+            ]
+        if page_num == 2:
+            return [
+                {
+                    "annotation_level": "failure",
+                    "message": "Error: expect(locator).toBeVisible() failed",
+                }
+            ]
+        fail(f"unexpected annotations page {page_num} for path {path!r}")
+
+    paged_annotations = fetch_annotations(
+        paged_annotations_request, paged_repo, paged_job_id
+    )
+    assert annotation_pages_seen == [1, 2], annotation_pages_seen
+    assert len(paged_annotations) == ANNOTATIONS_PER_PAGE + 1, len(paged_annotations)
+    paged_job = {
+        "id": paged_job_id,
+        "name": "UI P0 (entry-settings)",
+        "conclusion": "failure",
+        "steps": [
+            {"name": "Run UI P0 domain", "conclusion": "failure"},
+            {"name": "Complete job", "conclusion": "cancelled"},
+        ],
+    }
+    assert not job_looks_like_infra_cancel(paged_job, paged_annotations)
+    infra_names, ordinary_names = classify_non_success_jobs(
+        [paged_job], {paged_job_id: paged_annotations}
+    )
+    assert infra_names == [], infra_names
+    assert ordinary_names == ["UI P0 (entry-settings)"], ordinary_names
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="failure",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=infra_names,
+        ordinary_job_names=ordinary_names,
+        live_pr_head_sha="a" * 40,
+        merge_queue_head_shas=None,
+    )
+    assert not ok and "ordinary non-infra" in reason, reason
 
     emit("rerun_infra_cancel self-check OK")
 
