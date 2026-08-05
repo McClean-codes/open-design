@@ -42,6 +42,7 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.badge).toBe('无限使用');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).toContain('8 月 6 日至 8 月 13 日');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.timing).not.toContain('权益生效后');
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.ruleSummary).not.toContain('20:00');
   });
 
   it('uses a neutral gray restricted badge for anti-abuse fallback', () => {

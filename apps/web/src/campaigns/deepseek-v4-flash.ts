@@ -11,7 +11,7 @@ export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
   badge: '无限使用',
   benefit: 'DeepSeek V4 Flash 无限使用',
   timing: '8 月 6 日至 8 月 13 日，活动期间免费使用',
-  ruleSummary: '8 月 6 日 20:00 至 8 月 13 日 20:00，付费用户可在产品内免费使用；大规模盗刷等违规行为将暂停活动权益。',
+  ruleSummary: '8 月 6 日至 8 月 13 日，付费用户可在产品内免费使用；大规模盗刷等违规行为将暂停活动权益。',
   audienceDefinition: {
     paid: '付费用户：当前存在有效个人或团队订阅的用户。',
     unpaid: '未付费用户：当前没有有效订阅的用户；曾经充值但没有订阅的用户仍归为未付费用户。',

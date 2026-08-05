@@ -95,9 +95,11 @@ describe("pricing contract", () => {
     assert.match(page, /campaignPreviewEndAt = Date\.now\(\) \+ 7 \* 24 \* 60 \* 60 \* 1000/);
     assert.doesNotMatch(page, /距开始/);
     assert.match(page, /FREE all week/);
-    assert.match(page, /body: '8 月 6 日 20:00—8 月 13 日 20:00，一周免费用'/);
-    assert.match(page, /paidBenefitNote: '8 月 6 日—8 月 13 日 · 一周免费用'/);
-    assert.match(page, /teamBenefitNote: '8 月 6 日—8 月 13 日 · 一周免费用'/);
+    assert.match(page, /body: '8月6日—8月13日，一周免费用'/);
+    assert.match(page, /body: 'FREE all week, Aug 6—Aug 13'/);
+    assert.doesNotMatch(page, /body: ['\"][^'\"]*20:00/);
+    assert.match(page, /paidBenefitNote: '8月6日—8月13日 · 一周免费用'/);
+    assert.match(page, /teamBenefitNote: '8月6日—8月13日 · 一周免费用'/);
     assert.match(page, /DEEPSEEK_V4_FLASH_CAMPAIGN\.startAt/);
     assert.match(page, /DEEPSEEK_V4_FLASH_CAMPAIGN\.endAtExclusive/);
     assert.match(page, /now >= campaignStartAt && now < campaignEndAt/);
