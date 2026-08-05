@@ -671,6 +671,11 @@ export const TOOL_DEFS = [
         },
         skill: { type: 'string', description: 'Optional skill id to seed the project with.' },
         pluginWorkflowId: PLUGIN_WORKFLOW_ID_ARG,
+        skills: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Additional skill ids from list_skills to compose into runs on this project alongside skill. Optional.',
+        },
       },
       required: ['name'],
       additionalProperties: false,
@@ -2376,6 +2381,9 @@ async function createProject(
   }
   if (typeof args.skill === 'string' && args.skill.length > 0) {
     body.skillId = args.skill;
+  }
+  if (Array.isArray(args.skills) && args.skills.length > 0) {
+    body.skillIds = args.skills;
   }
   // Send the workspace pair so the daemon binds the project to the
   // workspace immediately. If workspace authority fails (e.g. the cached
