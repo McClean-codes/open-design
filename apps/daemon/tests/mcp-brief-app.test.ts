@@ -8,6 +8,7 @@ import {
   handleMcpToolCall,
   localMcpResourceDefinitions,
   localMcpToolDefinitions,
+  readMcpResource,
 } from '../src/mcp.js';
 import { OPEN_DESIGN_BRIEF_APP_HTML } from '../src/mcp-apps/brief-resource.js';
 
@@ -272,6 +273,23 @@ describe('local Open Design MCP brief app', () => {
       (tool) => tool.name === 'confirm_brief',
     );
     expect(confirmBrief).not.toHaveProperty('_meta');
+  });
+
+  it('serves the brief app through the production runtime resource gateway', async () => {
+    const result = await readMcpResource(
+      'http://127.0.0.1:1',
+      'ui://open-design/artifact-card-v8.html',
+    );
+
+    expect(result).toEqual({
+      contents: [
+        expect.objectContaining({
+          uri: 'ui://open-design/artifact-card-v8.html',
+          mimeType: 'text/html;profile=mcp-app',
+          text: OPEN_DESIGN_BRIEF_APP_HTML,
+        }),
+      ],
+    });
   });
 
   it('keeps one brief card without a self-triggering resize observer', () => {

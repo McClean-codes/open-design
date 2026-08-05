@@ -868,6 +868,20 @@ export const TOOL_DEFS = [
 
 export async function readMcpResource(baseUrl: string, uri: unknown) {
   const normalizedBaseUrl = baseUrl.replace(/\/$/, '');
+  if (uri === OPEN_DESIGN_BRIEF_APP_RESOURCE) {
+    return {
+      contents: [
+        {
+          uri,
+          mimeType: 'text/html;profile=mcp-app',
+          text: OPEN_DESIGN_BRIEF_APP_HTML,
+          _meta: {
+            version: OPEN_DESIGN_BRIEF_APP_VERSION,
+          },
+        },
+      ],
+    };
+  }
   if (uri === 'od://focus/active') {
     const data = await getJson<ActiveContext>(`${normalizedBaseUrl}/api/active`);
     return {
