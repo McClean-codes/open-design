@@ -79,6 +79,10 @@ export interface ChatRequest {
   projectId?: string | null;
   conversationId?: string | null;
   sessionMode?: ChatSessionMode;
+  /** Client-minted id for the latest user turn. The daemon pins this row before
+   * the assistant row so concurrent best-effort message persistence cannot
+   * invert the visible turn order. */
+  userMessageId?: string | null;
   assistantMessageId?: string | null;
   clientRequestId?: string | null;
   skillId?: string | null;
@@ -95,10 +99,11 @@ export interface ChatRequest {
   reasoning?: string | null;
   serviceTier?: string | null;
   /**
-   * Non-secret reference to a daemon-owned BYOK profile. Runtime credentials
-   * are resolved from OS secure storage immediately before child spawn.
+   * Run-scoped BYOK provider credentials for the daemon-backed OpenCode
+   * adapter. The daemon must not persist this object; it is translated into
+   * child env + OPENCODE_CONFIG_CONTENT for the current run only.
    */
-  byokProfileId?: string;
+  byokProvider?: ByokChatProviderConfig;
   /**
    * Run-scoped BYOK media defaults selected in the chat UI. The daemon uses
    * these to guide OpenCode-backed `od media generate` calls for this run only.

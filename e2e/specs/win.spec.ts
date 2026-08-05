@@ -22,6 +22,7 @@ import {
 import { releaseAppVersionArgs, resolvePackagedWinInstallIdentity } from '@/vitest/packaged-win-identity';
 import { resolvePackagedSmokeNamespace } from '@/vitest/suite';
 import { startToolsServeUpdaterFixture, type ToolsServeUpdaterFixture } from '@/vitest/tools-serve-updater-fixture';
+import { missingWorkingWinInstallerOverwriteMarkers } from '@/vitest/win-installer-log';
 
 const execFileAsync = promisify(execFile);
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -46,6 +47,8 @@ const updateFixturePort = resolveOptionalFixturePort(process.env.OD_PACKAGED_E2E
 const updateFixtureMode = resolveUpdateFixtureMode(process.env.OD_PACKAGED_E2E_WIN_UPDATE_MODE);
 const releaseChannel = process.env.OD_PACKAGED_E2E_RELEASE_CHANNEL;
 const releaseVersion = process.env.OD_PACKAGED_E2E_RELEASE_VERSION;
+const packagedInviteDeeplink =
+  'opendesign://workspace/invite/continue?workspace_id=packaged-smoke-workspace&member_id=packaged-smoke-member&invite_id=packaged-smoke-invite&nonce=packaged-smoke-nonce';
 const updateScenario = resolvePackagedUpdateScenario({ releaseChannel, releaseVersion });
 const installIdentity = resolvePackagedWinInstallIdentity({ namespace, releaseVersion });
 
@@ -93,52 +96,6 @@ const healthExpression = `
     } finally {
       clearTimeout(timeout);
     }
-  })()
-`;
-const byokDpapiSmokeExpression = `
-  (async () => {
-    const profileId = 'byok-packaged-win-' + Date.now().toString(36);
-    const secret = 'packaged-win-dpapi-secret';
-    const createdResponse = await fetch('/api/byok/profiles', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        id: profileId,
-        label: 'Packaged Windows DPAPI smoke',
-        protocol: 'openai',
-        baseUrl: 'https://api.openai.com/v1',
-        model: 'gpt-5.4',
-        apiKey: secret,
-      }),
-    });
-    const createdText = await createdResponse.text();
-    const listedResponse = await fetch('/api/byok/profiles');
-    const listedText = await listedResponse.text();
-    const listed = JSON.parse(listedText);
-    const resolved = Array.isArray(listed.profiles)
-      ? listed.profiles.find((profile) => profile && profile.id === profileId)
-      : null;
-    const deletedResponse = await fetch(
-      '/api/byok/profiles/' + encodeURIComponent(profileId),
-      { method: 'DELETE' },
-    );
-    const finalResponse = await fetch('/api/byok/profiles');
-    const finalText = await finalResponse.text();
-    const final = JSON.parse(finalText);
-    return {
-      configured: resolved?.configured === true,
-      createStatus: createdResponse.status,
-      deleteStatus: deletedResponse.status,
-      finalStatus: finalResponse.status,
-      listStatus: listedResponse.status,
-      profileRemoved:
-        Array.isArray(final.profiles)
-        && !final.profiles.some((profile) => profile && profile.id === profileId),
-      responseLeakedSecret:
-        createdText.includes(secret)
-        || listedText.includes(secret)
-        || finalText.includes(secret),
-    };
   })()
 `;
 const pptxExportExpression = `
@@ -503,16 +460,6 @@ type HealthEvalValue = {
   title: string;
 };
 
-type ByokDpapiSmokeEvalValue = {
-  configured: boolean;
-  createStatus: number;
-  deleteStatus: number;
-  finalStatus: number;
-  listStatus: number;
-  profileRemoved: boolean;
-  responseLeakedSecret: boolean;
-};
-
 type PptxExportEvalValue = {
   byteLength: number;
   contentType: string | null;
@@ -629,6 +576,7 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(install.registryEntries.length).toBeGreaterThan(0);
       expect(JSON.stringify(install.registryEntries)).toContain(installIdentity.displayName);
       expect(JSON.stringify(install.registryEntries)).toContain(`Open Design-${installIdentity.namespaceToken}`);
+      await assertWindowsInviteProtocolRegistration(install.installDir);
       expect(install.installPayload.fileCount).toBeGreaterThan(0);
       expect(install.installPayload.totalBytes).toBeGreaterThan(0);
       expect(install.installPayload.topLevel.length).toBeGreaterThan(0);
@@ -716,17 +664,48 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(pty.exitCode, JSON.stringify(pty, null, 2)).toBe(0);
       expect(pty.cleanup.terminalStatus).toBe(200);
       expect(pty.cleanup.projectStatus).toBe(200);
-      const byokInspect = await measureSmokeStep(
-        timings,
-        'packaged Windows DPAPI credential profile',
-        async () => runToolsPackJson<WinInspectResult>('inspect', [
-          '--expr',
-          byokDpapiSmokeExpression,
-        ]),
-      );
-      assertByokDpapiSmokeEvalValue(byokInspect.eval?.value);
       assertLauncherPointer(inspect.launcher.active, updateScenario.expectedCurrentVersion, 0, 'initial active');
       assertLauncherPointer(inspect.launcher.lastSuccessful, updateScenario.expectedCurrentVersion, 0, 'initial lastSuccessful');
+
+      // Runtime registration must preserve the stable installed outer path;
+      // pointing at a versioned payload would break the scheme after cleanup.
+      await assertWindowsInviteProtocolRegistration(install.installDir);
+      const protocolHotPid = inspect.status?.pid ?? start.pid;
+      const protocolHotContinuationCount = await countInviteContinuationResults();
+      await invokeWindowsInviteDeeplink();
+      const [protocolHotInspect, protocolHotContinuation] = await measureSmokeStep(
+        timings,
+        'invite protocol hot delivery',
+        async () => Promise.all([
+          waitForHealthyDesktop(),
+          waitForInviteContinuationResult(protocolHotContinuationCount),
+        ]),
+      );
+      expect(protocolHotInspect.status?.pid).toBe(protocolHotPid);
+      expect(protocolHotContinuation.reason).not.toBe('daemon_unavailable');
+      expect(protocolHotContinuation.reason).not.toBe('unreachable');
+
+      if (verifyCoreOnly) {
+        const protocolStop = await measureSmokeStep(
+          timings,
+          'stop before invite protocol cold delivery',
+          async () => runToolsPackJson<WinStopResult>('stop'),
+        );
+        started = false;
+        expect(protocolStop.status).not.toBe('partial');
+        expect(protocolStop.remainingPids).toEqual([]);
+
+        await invokeWindowsInviteDeeplink();
+        started = true;
+        const protocolColdInspect = await measureSmokeStep(
+          timings,
+          'invite protocol cold delivery',
+          async () => waitForHealthyDesktop(),
+        );
+        expect(protocolColdInspect.status?.state).toBe('running');
+        expect(protocolColdInspect.status?.pid).not.toBe(protocolHotPid);
+        await assertWindowsInviteProtocolRegistration(install.installDir);
+      }
 
       if (!inspect.desktopIpcUnavailable) {
         await measureSmokeStep(timings, 'ensure main app shell', async () => ensureMainAppShell());
@@ -858,7 +837,9 @@ winDescribe('packaged windows runtime smoke', () => {
         );
         started = false;
         expect(reinstall.code).toBe(0);
-        assertTransactionalInPlaceInstallLog(reinstall.nsisLogTail);
+        assertWorkingWinInstallerOverwriteLog(reinstall.nsisLogTail);
+        expect(reinstall.nsisLogTail.join('\n')).toContain('running instances detected before silent install');
+        expect(reinstall.nsisLogTail.join('\n')).toMatch(/running instances close via (?:pwsh|powershell)\.exe exit=0/);
 
         start = await measureSmokeStep(timings, 'restart after direct reinstall', async () =>
           runToolsPackJson<WinStartResult>('start'),
@@ -909,6 +890,7 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(uninstall.residueObservation?.uninstallerExists).toBe(false);
       expect(uninstall.residueObservation?.startMenuShortcutExists).toBe(false);
       expect(uninstall.residueObservation?.userDesktopShortcutExists).toBe(false);
+      await assertWindowsInviteProtocolRemoved();
       await report.saveSummary({
         health: value,
         install: {
@@ -1662,7 +1644,7 @@ async function runInstallerFallbackAcceptance(options: {
     join(fixtureNamespaceRoot, 'logs', 'nsis.log'),
   );
   expect(install.code).toBe(0);
-  assertTransactionalInPlaceInstallLog(install.nsisLogTail);
+  assertWorkingWinInstallerOverwriteLog(install.nsisLogTail);
   process.env.OD_UPDATE_CURRENT_VERSION = targetVersion;
 
   const start = await runToolsPackJsonForVersion<WinStartResult>('start', targetVersion);
@@ -1763,18 +1745,12 @@ async function runToolsPackJsonForVersion<T>(
   }
 }
 
-function assertTransactionalInPlaceInstallLog(lines: string[]): void {
-  const log = lines.join('\n');
-  expect(log).toContain('existing installation found; silent install will overwrite it');
-  // The installer closes running instances via pwsh.exe, falling back to
-  // powershell.exe (#2799), before quarantining the old tree and atomically
-  // committing the replacement. These lifecycle events are the stable
-  // transaction contract; the older "running instances detected" prose is no
-  // longer emitted by the current NSIS implementation.
-  expect(log).toMatch(/running instances close via (?:pwsh|powershell)\.exe exit=0/);
-  expect(log).toMatch(/event=install_dir_after_quarantine .* exists=1/);
-  expect(log).toMatch(/event=install_dir_after_commit .* exists=1/);
-  expect(log).toContain('install transaction cleanup exit=0');
+function assertWorkingWinInstallerOverwriteLog(lines: string[]): void {
+  // #6008 deliberately restored this working replace flow after the
+  // transactional installer failed fresh installs. Keep the full release
+  // smoke aligned with the generated installer until a transactional redesign
+  // lands together with real installer coverage.
+  expect(missingWorkingWinInstallerOverwriteMarkers(lines)).toEqual([]);
 }
 
 async function runDirectInstaller(
@@ -2499,29 +2475,6 @@ function assertHealthEvalValue(value: unknown): HealthEvalValue {
   return normalized;
 }
 
-function assertByokDpapiSmokeEvalValue(value: unknown): ByokDpapiSmokeEvalValue {
-  if (
-    !isRecord(value)
-    || typeof value.configured !== 'boolean'
-    || typeof value.createStatus !== 'number'
-    || typeof value.deleteStatus !== 'number'
-    || typeof value.finalStatus !== 'number'
-    || typeof value.listStatus !== 'number'
-    || typeof value.profileRemoved !== 'boolean'
-    || typeof value.responseLeakedSecret !== 'boolean'
-  ) {
-    throw new Error(`unexpected Windows DPAPI smoke value: ${formatUnknown(value)}`);
-  }
-  expect(value.createStatus).toBe(201);
-  expect(value.listStatus).toBe(200);
-  expect(value.configured).toBe(true);
-  expect(value.responseLeakedSecret).toBe(false);
-  expect(value.deleteStatus).toBe(204);
-  expect(value.finalStatus).toBe(200);
-  expect(value.profileRemoved).toBe(true);
-  return value as ByokDpapiSmokeEvalValue;
-}
-
 function assertUpdaterClickEvalValue(value: unknown): UpdaterClickEvalValue {
   if (!isRecord(value) || typeof value.clicked !== 'boolean') {
     throw new Error(`unexpected updater click eval value: ${formatUnknown(value)}`);
@@ -2613,6 +2566,90 @@ function expectWindowsFallbackWebUrl(value: string | null | undefined): void {
 
 function expectWindowsDaemonUrl(value: string | null | undefined): void {
   expect(value).toEqual(expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+\/?$/));
+}
+
+async function assertWindowsInviteProtocolRegistration(installDir: string): Promise<void> {
+  const { stdout } = await execFileAsync('reg.exe', [
+    'query',
+    'HKCU\\Software\\Classes\\opendesign\\shell\\open\\command',
+    '/ve',
+  ]);
+  const normalized = stdout.toLowerCase();
+  expect(normalized).toContain(installDir.toLowerCase());
+  expect(normalized).toContain('%1');
+  expect(normalized).not.toContain('\\versions\\');
+}
+
+async function invokeWindowsInviteDeeplink(): Promise<void> {
+  const escaped = packagedInviteDeeplink.replaceAll("'", "''");
+  await execFileAsync('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    `Start-Process -FilePath '${escaped}'`,
+  ]);
+}
+
+type InviteContinuationResult = {
+  ok: boolean;
+  reason?: string;
+  status?: number;
+};
+
+async function countInviteContinuationResults(): Promise<number> {
+  return (await readInviteContinuationResults()).length;
+}
+
+async function waitForInviteContinuationResult(
+  priorCount: number,
+  timeoutMs = 30_000,
+): Promise<InviteContinuationResult> {
+  const startedAt = Date.now();
+  let lastCount = priorCount;
+  while (Date.now() - startedAt < timeoutMs) {
+    const results = await readInviteContinuationResults();
+    lastCount = results.length;
+    if (results.length > priorCount) return results.at(-1)!;
+    await delay(250);
+  }
+  throw new Error(
+    `invite deeplink did not produce a continuation result within ${timeoutMs}ms (before=${priorCount}, after=${lastCount})`,
+  );
+}
+
+async function readInviteContinuationResults(): Promise<InviteContinuationResult[]> {
+  const logPath = join(runtimeNamespaceRoot, 'logs', 'desktop', 'latest.log');
+  const content = await readFile(logPath, 'utf8').catch(() => '');
+  const results: InviteContinuationResult[] = [];
+  for (const line of content.split(/\r?\n/u)) {
+    if (line.trim().length === 0) continue;
+    let entry: unknown;
+    try {
+      entry = JSON.parse(line) as unknown;
+    } catch {
+      continue;
+    }
+    if (!isRecord(entry) || entry.message !== 'console.info' || !isRecord(entry.meta)) continue;
+    const args = entry.meta.args;
+    if (!Array.isArray(args) || args[0] !== '[open-design desktop] invite deeplink continuation completed') continue;
+    const outcome = args[1];
+    if (!isRecord(outcome) || typeof outcome.ok !== 'boolean') continue;
+    results.push({
+      ok: outcome.ok,
+      ...(typeof outcome.reason === 'string' ? { reason: outcome.reason } : {}),
+      ...(typeof outcome.status === 'number' ? { status: outcome.status } : {}),
+    });
+  }
+  return results;
+}
+
+async function assertWindowsInviteProtocolRemoved(): Promise<void> {
+  await expect(
+    execFileAsync('reg.exe', [
+      'query',
+      'HKCU\\Software\\Classes\\opendesign',
+    ]),
+  ).rejects.toMatchObject({ code: 1 });
 }
 
 async function fileSizeBytes(filePath: string): Promise<number> {
