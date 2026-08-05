@@ -67,6 +67,7 @@ Linux carrier artifact.
 | `ODP-B03` | Status returns immutable shell identity, configured suite paths, fixture observation, and the last persisted runtime update status without triggering acquisition. | Status unit/stdio tests | Required |
 | `ODP-B04` | Ensure returns the selected runtime manifest, exact binding, current composed identity, attach/acquire result, artifact reuse, handoff evidence, and update-check state. | Launcher and `tools-codex handoff` reports | Required |
 | `ODP-B05` | Dynamic OD tools/resources/UI are served by the acquired product runtime; the shell does not depend on unsupported same-turn MCP tool-list refresh. | Real runtime handoff plus existing dynamic-refresh decision evidence | Required |
+| `ODP-B06` | The installed plugin contains a product orchestration skill that keeps closure mechanics invisible, preserves one attributed workflow/request, enforces the selected Cloud or Local Codex mode, prevents recursive Local Codex routing, and delivers the real Studio or Preview URL. | Packed plugin inventory/contract tests plus product session trace audit | Required |
 
 ### C. Availability-first cold start
 
@@ -102,6 +103,7 @@ Linux carrier artifact.
 | `ODP-E04` | Controlled Desktop discovers the installed plugin and completes an operator-observed status or ensure tool call in a fresh chat. | Versioned operator screenshot observation plus acceptance report | Required per target |
 | `ODP-E05` | Unknown, multiple, or unstamped Desktop roots fail as `BLOCKED_BY_HOST_STATE`; tools never adopt or stop them. | `tools-codex` host-state tests/reports | Required |
 | `ODP-E06` | Stop and cleanup affect only exact recorded owners and managed roots. Credentials and default Codex home are untouched. | `tools-codex stop/clean` evidence | Required |
+| `ODP-E07` | A real managed Codex session completes Brief → project → selected agent → one start → polling → valid artifact delivery under one plugin identity and workflow. Desktop additionally shows the terminal product experience to the operator. | `tools-codex audit-product` report plus Desktop product screenshot | Required per target |
 
 ### F. Publication and release topology
 
@@ -149,6 +151,8 @@ One acceptance run must preserve:
 - artifact inventory and offline stdio observation;
 - fixture report and ordered promotion records;
 - Codex JSONL for acquisition and reattach;
+- minimal product trace audit bound to the hashed Codex rollout and its
+  operator-observed Desktop product screenshot;
 - update-status snapshots for deferred/current/available/unavailable;
 - `active.json`, `attempt.json`, binding, lease observations, handoff journals,
   and immutable version inventory at the relevant checkpoints;

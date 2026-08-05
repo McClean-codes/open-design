@@ -19,6 +19,10 @@ import {
   runToolCodexAcceptance,
   verifyAndRecordToolCodexRuntimeHandoff,
 } from "./plugin.js";
+import {
+  auditToolCodexProductSession,
+  type ToolCodexProductMode,
+} from "./product.js";
 import { resolveToolCodexRuntimeBinding } from "./runtime.js";
 import {
   ToolCodexError,
@@ -49,6 +53,12 @@ type StopOptions = CommonOptions & {
 type AcceptOptions = PrepareOptions & {
   desktopUiObservation?: string;
   out?: string;
+};
+
+type AuditProductOptions = CommonOptions & {
+  mode?: string;
+  out?: string;
+  sessionId?: string;
 };
 
 type RecordUiOptions = PrepareOptions & {
@@ -179,6 +189,30 @@ common(cli.command("auth-check", "Verify managed Codex auth is independent from 
     printResult(await verifyToolCodexManagedAuth({
       managedCodexHome: paths.codexHome,
     }), options);
+  });
+
+common(cli.command("audit-product", "Audit a managed Codex product session rollout"))
+  .option("--session-id <uuid>", "Managed Codex session ID to audit")
+  .option("--mode <mode>", "Product execution mode", { default: "local-codex" })
+  .option("--out <path>", "Product trace report path under the managed reports directory")
+  .action(async (options: AuditProductOptions) => {
+    if (options.sessionId == null || options.sessionId.length === 0) {
+      throw new ToolCodexError("PRODUCT_SESSION_ID_REQUIRED", "--session-id is required");
+    }
+    if (options.mode !== "local-codex") {
+      throw new ToolCodexError(
+        "PRODUCT_MODE_INVALID",
+        "--mode must be local-codex",
+      );
+    }
+    const report = await auditToolCodexProductSession({
+      mode: options.mode as ToolCodexProductMode,
+      outputPath: options.out == null ? undefined : resolve(options.out),
+      paths: pathsFor(options),
+      sessionId: options.sessionId,
+    });
+    printResult(report, options);
+    if (report.status === "FAIL") process.exitCode = 1;
   });
 
 common(cli.command("prepare", "Reconcile a packed Open Design plugin into the managed Codex home"))

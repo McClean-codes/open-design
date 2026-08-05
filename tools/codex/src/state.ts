@@ -93,6 +93,7 @@ export type ToolCodexPaths = {
   namespace: string;
   namespaceRoot: string;
   ownerPath: string;
+  productTraceReportPath: string;
   reportsRoot: string;
   root: string;
   runsRoot: string;
@@ -147,6 +148,7 @@ export function resolveToolCodexPaths(options: {
     namespace,
     namespaceRoot,
     ownerPath: join(root, ".owner.json"),
+    productTraceReportPath: join(reportsRoot, "product-trace-report.json"),
     reportsRoot,
     root,
     runsRoot: join(namespaceRoot, "runs"),

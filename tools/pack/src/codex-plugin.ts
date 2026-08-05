@@ -323,7 +323,7 @@ function codexPluginMcpConfig(
         command: `./${platformCarrierEntryPath(target)}`,
         cwd: ".",
         description:
-          "Expose the Open Design distribution identity and runtime bridge.",
+          "Create and refine design artifacts with the local Open Design runtime.",
         env_vars: [
           "OD_CODEX_PLUGIN_RUNTIME_MANIFEST_URL",
           "OD_DATA_DIR",

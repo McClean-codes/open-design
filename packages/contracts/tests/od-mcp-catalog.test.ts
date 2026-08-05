@@ -38,7 +38,7 @@ describe("Open Design MCP catalog", () => {
 
   it("publishes the active resource and installed-content templates", () => {
     expect(OD_MCP_STATIC_RESOURCES.map(({ uri }) => uri)).toEqual([
-      "ui://open-design/artifact-card-v6.html",
+      "ui://open-design/artifact-card-v8.html",
       "od://focus/active",
     ]);
     expect(OD_MCP_RESOURCE_TEMPLATES.map(({ uriTemplate }) => uriTemplate))

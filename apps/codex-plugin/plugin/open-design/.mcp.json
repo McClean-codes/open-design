@@ -2,7 +2,7 @@
   "mcpServers": {
     "open-design": {
       "title": "Open Design",
-      "description": "Expose the Open Design distribution identity and runtime bridge.",
+      "description": "Create and refine design artifacts with the local Open Design runtime.",
       "command": "./bin/node",
       "args": [
         "./mcp/server.mjs",

@@ -163,7 +163,7 @@ async function run(): Promise<void> {
         tools: {},
       },
       instructions:
-        "Open Design tools are declared by this shell and lazily acquire or attach the exact local runtime on first product tool or product resource read. Prefer get_artifact for a complete design bundle; use create_project then start_run and poll get_run for generation.",
+        "Create and refine Open Design artifacts through the product tools declared by this shell. The first product tool or resource read lazily acquires or attaches the exact local runtime. Start each logical generation with collect_brief, preserve its pluginWorkflowId through project and run calls, call start_run once with a stable requestId, then poll get_run to terminal delivery. Reuse the project but start a new brief workflow for a refinement. Prefer Studio or Preview delivery; use get_artifact only when source context is needed.",
     },
   );
 

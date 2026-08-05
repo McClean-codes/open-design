@@ -76,9 +76,9 @@ const EXTERNAL_PLUGIN_CONTEXT_ARG = {
 export const OD_MCP_TOOL_DEFS: OdMcpToolDefinition[] = [
   {
     _meta: {
-      "openai/outputTemplate": "ui://open-design/artifact-card-v6.html",
-      "ui/resourceUri": "ui://open-design/artifact-card-v6.html",
-      ui: { resourceUri: "ui://open-design/artifact-card-v6.html" },
+      "openai/outputTemplate": "ui://open-design/artifact-card-v8.html",
+      "ui/resourceUri": "ui://open-design/artifact-card-v8.html",
+      ui: { resourceUri: "ui://open-design/artifact-card-v8.html" },
     },
     annotations: { ...WRITE_ANNOTATIONS, title: "Collect Open Design brief" },
     description:
@@ -607,7 +607,7 @@ export const OD_MCP_STATIC_RESOURCES = [
     mimeType: "text/html;profile=mcp-app",
     name: "Open Design brief",
     title: "Choose the artifact direction",
-    uri: "ui://open-design/artifact-card-v6.html",
+    uri: "ui://open-design/artifact-card-v8.html",
   },
   {
     description: "The project/file the user has open in Open Design right now.",

@@ -13,6 +13,8 @@ The operator guide and evidence model live in
 - verifies a packed platform-targeted Codex plugin artifact;
 - installs the marketplace/plugin into an isolated `CODEX_HOME`;
 - probes the artifact's declared stdio MCP entry;
+- audits a persisted managed Codex session for one complete attributed Open
+  Design product lifecycle without copying prompt content into the report;
 - starts and stops only a positively owned Desktop process tree;
 - records operator-confirmed Desktop PNG evidence for the current run;
 - combines machine checks with that screenshot evidence and performs exact
@@ -70,6 +72,8 @@ Desktop PNG is not required.
 - `src/host.ts` — CLI/Desktop discovery and controlled lifecycle.
 - `src/plugin.ts` — artifact verification, marketplace prepare, stdio probe,
   operator screenshot recording, and acceptance classification.
+- `src/product.ts` — fail-closed managed-session discovery and product
+  lifecycle trace audit.
 - `src/runtime.ts` — explicit channel-root/runtime-manifest binding.
 - `src/clean.ts` — exact cleanup layers.
 
@@ -105,6 +109,10 @@ Adjacent owners:
   Require a current-run PNG that visibly shows the prompt, completed tool
   result, and complete distribution identity. Do not infer UI success from
   CLI output, logs, or process state.
+- A product-capability pass additionally requires `audit-product` to prove one
+  attributed Brief → project → selected agent → start → poll → valid delivery
+  lifecycle. The report may contain correlation ids and the delivery URL, but
+  must never persist prompt text or authentication material.
 - Do not use the Desktop lane to prove runtime update state transitions.
   Exercise initial acquisition, live-incompatible fail-closed, stale-owner
   recovery, same-host attach, startup failure pointer preservation, and
@@ -203,6 +211,23 @@ isolation preflight:
 pnpm tools-codex auth-check --namespace desktop-smoke --json
 ```
 
+After a complete Open Design product request finishes in the managed Codex
+home, audit its persisted session before using the result as product evidence:
+
+```bash
+pnpm tools-codex audit-product \
+  --namespace desktop-smoke \
+  --session-id <codex-session-uuid> \
+  --mode local-codex \
+  --json
+```
+
+The Local Codex audit requires one brief, one project resolution, an available
+Codex agent, one `start_run`, polling to terminal success, a valid deliverable,
+and a Studio or Preview URL. It rejects Cloud login, distribution diagnostic
+tools, caller-supplied plugin attribution, inconsistent correlation ids,
+recursive Open Design execution, failed tool calls, and duplicate generation.
+
 On a supported controlled host:
 
 ```bash
@@ -235,6 +260,13 @@ The operator Desktop UI checkpoint is required for PASS. `record-ui` copies
 the PNG into the managed reports directory and binds its digest, current run,
 tool, operator, outcome, and exact build identity. Do not use global
 keyboard/mouse/clipboard automation, delete chats, or rewrite evidence.
+
+The distribution screenshot and product-capability evidence are complementary.
+For the product checkpoint, run a real creation request in the same controlled
+Desktop instance, retain a screenshot of the terminal artifact and link, and
+run `audit-product` against that Desktop session id. A status/ensure screenshot
+alone does not prove the Open Design product experience; a CLI trace alone
+does not prove the Desktop rendering and interaction experience.
 
 ## Recovery and cleanup
 

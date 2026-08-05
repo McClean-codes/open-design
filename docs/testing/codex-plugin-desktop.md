@@ -414,6 +414,48 @@ Stop only the controlled run:
 pnpm tools-codex stop --namespace desktop-smoke --json
 ```
 
+## Product-capability lane
+
+Distribution acceptance above proves installation, runtime handoff, and the
+Desktop tool surface. It does not by itself prove that Codex can orchestrate a
+real Open Design creation request. In the same managed home, run a complete
+product scenario with an explicit execution choice, for example a responsive
+website brief ending with “Use Local Codex and complete it without follow-up
+questions.”
+
+The expected Codex interaction is product-facing: one Brief decision, project
+resolution, generation progress, and a final Studio or Preview link. Runtime
+identity JSON and `ensure_open_design_runtime` are diagnostic surfaces and
+must not appear in this normal creation flow.
+
+After the terminal response, copy the Codex session UUID and run:
+
+```bash
+pnpm tools-codex audit-product \
+  --namespace desktop-smoke \
+  --session-id <codex-session-uuid> \
+  --mode local-codex \
+  --json
+```
+
+`audit-product` reads only the matching rollout beneath the managed
+`CODEX_HOME`, hashes it, and writes
+`reports/product-trace-report.json`. A PASS requires:
+
+- exactly one brief and one `start_run`;
+- a single plugin identity, workflow, request, run, and explicit project;
+- Local Codex availability and the recursion boundary in the generation
+  prompt;
+- no Cloud login or distribution diagnostic tools;
+- successful tool calls, polling to `succeeded`, a valid deliverable, and a
+  current Studio or Preview URL.
+
+The report deliberately excludes the user prompt and tool payloads. Retain a
+manual Desktop screenshot showing the terminal artifact experience and link
+alongside this report. The trace proves orchestration; the screenshot proves
+the visible Desktop experience. Neither substitutes for the other, and the
+existing `record-ui`/`accept` distribution gate remains required.
+
 ## Windows controlled-host gate
 
 Windows status resolves the installed package/AUMID, exact full-trust

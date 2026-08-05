@@ -58,6 +58,9 @@ describe("tools-codex managed state", () => {
     expect(paths.acceptanceReportPath).toBe(
       join(paths.reportsRoot, "acceptance-report.json"),
     );
+    expect(paths.productTraceReportPath).toBe(
+      join(paths.reportsRoot, "product-trace-report.json"),
+    );
     expect(second.sentinel.createdAt).toBe("2026-07-27T00:00:00.000Z");
     await expect(access(paths.configPath)).rejects.toMatchObject({ code: "ENOENT" });
     if (process.platform !== "win32") {

@@ -1,7 +1,7 @@
 {
   "name": "open-design",
   "version": "0.1.0",
-  "description": "Use the Open Design runtime through Codex.",
+  "description": "Create and refine websites, presentations, prototypes, and design systems with Open Design from Codex.",
   "author": {
     "name": "OpenDesign",
     "email": "support@open-design.ai",
@@ -12,22 +12,33 @@
   "license": "Apache-2.0",
   "keywords": [
     "design",
-    "local-first",
-    "mcp"
+    "codex",
+    "mcp",
+    "prototype",
+    "presentation"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Open Design",
-    "shortDescription": "Use the Open Design runtime from Codex.",
-    "longDescription": "Open Design is distributed through Codex as a host shell over the same Open Design runtime used by the desktop channel.",
-    "developerName": "OpenDesign",
+    "shortDescription": "Create websites, presentations, and prototypes from Codex.",
+    "longDescription": "Generate and refine websites, presentations, product prototypes, documents, media, and design systems with Open Design directly from Codex.",
+    "developerName": "Open Design",
     "category": "Creativity",
     "capabilities": [
-      "Interactive"
+      "Interactive",
+      "Write"
     ],
-    "defaultPrompt": "Check the active Open Design distribution.",
+    "websiteURL": "https://open-design.ai/",
+    "privacyPolicyURL": "https://open-design.ai/privacy/",
+    "termsOfServiceURL": "https://open-design.ai/terms/",
+    "defaultPrompt": [
+      "Create a responsive website for an AI analytics startup.",
+      "Turn this product idea into an interactive prototype.",
+      "Create a presentation with a coherent visual system."
+    ],
     "brandColor": "#111111",
-    "composerIcon": "./assets/icon.svg"
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/icon.svg"
   },
   "mcpServers": "./.mcp.json"
 }
