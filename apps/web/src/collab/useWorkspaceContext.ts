@@ -1009,6 +1009,7 @@ class WorkspaceBillingHttpError extends Error {
 export function resetWorkspaceBillingCache(): void {
   cachedWorkspaceBillingResponses.clear();
   resetWorkspaceBillingInterestRegistry();
+  resetWorkspaceBillingRetrySchedules();
 }
 
 type BillingInvalidation = Extract<
@@ -1101,7 +1102,6 @@ export function useWorkspaceBillingResponse(
   const activeScopeKeyRef = useRef<string | null>(billingScopeKey);
   const activeRequestKeyRef = useRef<string | null>(billingRequestKey);
   const requestEpochRef = useRef(0);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const runtimeManagedRef = useRef(false);
   const interestOwnerIdRef = useRef('');
   if (!interestOwnerIdRef.current) {
@@ -1115,7 +1115,9 @@ export function useWorkspaceBillingResponse(
     return () => {
       mountedRef.current = false;
       requestEpochRef.current += 1;
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      // The retry schedule is module-level and deliberately survives this
+      // unmount: another consumer of the same requestKey may still be
+      // mounted, and a timer that fires with no listeners is a no-op.
     };
   }, []);
 
@@ -1195,10 +1197,7 @@ export function useWorkspaceBillingResponse(
         activeRequestKeyRef.current === requestKey
       ) {
         runtimeManagedRef.current = Boolean(response.workspaceRuntime);
-        if (retryTimerRef.current) {
-          clearTimeout(retryTimerRef.current);
-          retryTimerRef.current = null;
-        }
+        clearWorkspaceBillingRetryFailures(requestKey);
         cachedWorkspaceBillingResponses.set(scopeKey, response);
         setState({ scopeKey, response });
       }
@@ -1231,20 +1230,10 @@ export function useWorkspaceBillingResponse(
             },
           });
         }
-        if (!revoked && !retryTimerRef.current) {
-          retryTimerRef.current = setTimeout(() => {
-            retryTimerRef.current = null;
-            if (
-              mountedRef.current &&
-              activeScopeKeyRef.current === scopeKey &&
-              activeRequestKeyRef.current === requestKey
-            ) {
-              window.dispatchEvent(new CustomEvent(WORKSPACE_BILLING_RETRY_EVENT, {
-                detail: { requestKey },
-              }));
-            }
-          }, WORKSPACE_BILLING_RETRY_MS);
-        }
+        // A revoked read (403) fails closed and must not retry. Everything
+        // else — including the packaged client's synthetic proxy 502s —
+        // retries on the shared, exponentially backed-off schedule.
+        if (!revoked) scheduleWorkspaceBillingRetry(requestKey);
       }
     }
   }, [
@@ -1306,8 +1295,13 @@ export function useWorkspaceBillingResponse(
       const expired = enforceWorkspaceBillingHardExpiry(current);
       cachedWorkspaceBillingResponses.set(scopeKey, expired);
       setState({ scopeKey, response: expired });
+      // `force: true` — hard expiry KNOWS the cached answer is void (that is
+      // the whole point of the timer), so the revalidation must bypass any
+      // settled coalescing entry, exactly like an identity change. Failure
+      // retries deliberately dispatch WITHOUT force so they can share a
+      // concurrent consumer's fresh success instead.
       window.dispatchEvent(new CustomEvent(WORKSPACE_BILLING_RETRY_EVENT, {
-        detail: { requestKey },
+        detail: { requestKey, force: true },
       }));
     };
     timer = setTimeout(
@@ -1381,8 +1375,15 @@ export function useWorkspaceBillingResponse(
       if (event.key === WORKSPACE_BILLING_REFRESH_STORAGE_KEY) refreshAfterIdentityChange();
     };
     const onRetry = (event: Event) => {
-      const requestKey = (event as CustomEvent<{ requestKey?: string }>).detail?.requestKey;
-      if (requestKey === activeRequestKeyRef.current) void loadBilling(false, true);
+      const detail = (event as CustomEvent<{ requestKey?: string; force?: boolean }>).detail;
+      if (detail?.requestKey !== activeRequestKeyRef.current) return;
+      // Failure retries are deliberately NOT forced: a failed read is never
+      // cached, so the plain coalesced path is a genuine refetch — and when a
+      // concurrent consumer just succeeded, joining that fresh result re-syncs
+      // this one without adding another request to an already-struggling
+      // transport. Hard-expiry revalidation dispatches with `force: true`
+      // because its cached answer is void by definition.
+      void loadBilling(false, detail?.force === true);
     };
     window.addEventListener('focus', refresh);
     window.addEventListener('pageshow', refresh);
@@ -1577,8 +1578,74 @@ export function workspaceBillingSnapshotForContext(
 }
 
 const WORKSPACE_BILLING_POLL_MS = 30_000;
-const WORKSPACE_BILLING_RETRY_MS = 5_000;
+const WORKSPACE_BILLING_RETRY_BASE_MS = 5_000;
+const WORKSPACE_BILLING_RETRY_MAX_MS = 60_000;
 const WORKSPACE_BILLING_RETRY_EVENT = 'od:workspace-billing-retry';
+
+/**
+ * One retry schedule per billing `requestKey`, shared by every mounted
+ * consumer — the module-level counterpart of the per-hook timer it replaced.
+ *
+ * Two properties are load-bearing for the packaged (od://) client, whose
+ * proxy answers with synthetic 502s (`OD_PROTOCOL_PROXY_FAILED`) when the
+ * bursty first-open request load hits a transient transport failure:
+ *
+ *  1. The delay grows exponentially (5s → 10s → 20s → 40s → 60s cap) while
+ *     failures are consecutive. A fixed 5s cadence against a struggling
+ *     transport is self-defeating — each retry adds to the very burst that
+ *     is producing the 502s it is retrying.
+ *  2. The schedule is keyed once per requestKey, not once per mounted hook.
+ *     N consumers failing on the same shared read used to arm N timers whose
+ *     N events each fanned out to N listeners; one schedule dispatches one
+ *     retry event per cycle and the listeners' coalesced reads share one
+ *     network request.
+ *
+ * A success only RESETS the consecutive-failure count — it deliberately does
+ * not cancel a pending timer. Consumers hold their own state, so a success
+ * observed by one consumer has not reached the others; letting the pending
+ * retry fire re-syncs them through the coalescing cache (a fresh success
+ * within the share window costs zero network requests).
+ */
+type WorkspaceBillingRetrySchedule = {
+  consecutiveFailures: number;
+  timer: ReturnType<typeof setTimeout> | null;
+};
+const workspaceBillingRetrySchedules = new Map<string, WorkspaceBillingRetrySchedule>();
+
+function scheduleWorkspaceBillingRetry(requestKey: string): void {
+  if (typeof window === 'undefined') return;
+  let schedule = workspaceBillingRetrySchedules.get(requestKey);
+  if (!schedule) {
+    schedule = { consecutiveFailures: 0, timer: null };
+    workspaceBillingRetrySchedules.set(requestKey, schedule);
+  }
+  if (schedule.timer != null) return;
+  const delay = Math.min(
+    WORKSPACE_BILLING_RETRY_BASE_MS * 2 ** schedule.consecutiveFailures,
+    WORKSPACE_BILLING_RETRY_MAX_MS,
+  );
+  schedule.consecutiveFailures += 1;
+  schedule.timer = setTimeout(() => {
+    schedule.timer = null;
+    // Dispatch unconditionally: listeners filter on their own active
+    // requestKey, and an event nobody is mounted for is a no-op.
+    window.dispatchEvent(
+      new CustomEvent(WORKSPACE_BILLING_RETRY_EVENT, { detail: { requestKey } }),
+    );
+  }, delay);
+}
+
+function clearWorkspaceBillingRetryFailures(requestKey: string): void {
+  const schedule = workspaceBillingRetrySchedules.get(requestKey);
+  if (schedule) schedule.consecutiveFailures = 0;
+}
+
+function resetWorkspaceBillingRetrySchedules(): void {
+  for (const schedule of workspaceBillingRetrySchedules.values()) {
+    if (schedule.timer != null) clearTimeout(schedule.timer);
+  }
+  workspaceBillingRetrySchedules.clear();
+}
 export const WORKSPACE_BILLING_REFRESH_EVENT = 'od:workspace-billing-refresh';
 const WORKSPACE_BILLING_REFRESH_STORAGE_KEY = 'od.workspaceBilling.refreshAt';
 
