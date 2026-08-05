@@ -24,6 +24,7 @@ import type {
 import type {
   TrackingRunFailureCategory,
   TrackingRunFailureDetail,
+  TrackingRunRecoveryActionType,
 } from '../analytics/events.js';
 
 // The daemon's run-failure taxonomy, re-exported under product-facing names so
@@ -135,7 +136,7 @@ export interface ChatRequest {
    */
   toolBundle?: RunScopedToolBundle;
   /**
-   * Optional analytics context for the v2 run_created / run_finished
+   * Optional analytics context for the current run_created / run_finished
    * events. The daemon never trusts these for behavior — they only
    * shape PostHog props. `entryFrom` is one of the documented
    * `entry_from` enums; `designSystemRunContext` carries the
@@ -230,6 +231,13 @@ export interface ChatAnalyticsHints {
   // session), this persists in localStorage keyed by project id. Optional:
   // omitted when storage is unavailable (SSR / privacy mode).
   projectTurnIndex?: number;
+  /** Stable task lineage shared by the initial Run and all recovery Runs. */
+  taskExecutionId?: string;
+  initialRunId?: string;
+  sourceRunId?: string;
+  taskRunIndex?: number;
+  recoveryActionType?: TrackingRunRecoveryActionType;
+  recoveryActionInstanceId?: string;
   // Active execution runtime for THIS run, computed client-side at launch
   // (the only layer that can tell BYOK from amr_cloud). The daemon stamps it
   // onto run_created / run_finished, overriding its own BYOK-blind
@@ -742,6 +750,10 @@ export interface ChatMessage {
   endedAt?: number;
   sessionMode?: ChatSessionMode;
   runContext?: RunContextSelection;
+  /** Analytics-only task lineage persisted with the message so retries,
+   *  resumes and clarification answers survive reloads without splitting one
+   *  user intent into unrelated failures. */
+  taskAnalytics?: ChatTaskExecutionAnalytics;
   appliedPluginSnapshot?: AppliedPluginSnapshot;
   attachments?: ChatAttachment[];
   commentAttachments?: ChatCommentAttachment[];
@@ -756,4 +768,13 @@ export interface ChatMessage {
    * avoid telemetry reads before content and producedFiles are finalized.
    */
   telemetryFinalized?: boolean;
+}
+
+export interface ChatTaskExecutionAnalytics {
+  taskExecutionId: string;
+  initialRunId?: string;
+  sourceRunId?: string;
+  taskRunIndex: number;
+  recoveryActionType?: TrackingRunRecoveryActionType;
+  recoveryActionInstanceId?: string;
 }
