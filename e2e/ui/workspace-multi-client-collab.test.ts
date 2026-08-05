@@ -179,8 +179,8 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     await expect(twoPersonPresence.locator('[title]')).toHaveCount(2);
 
     // Reopen the same member/project in a second browser page. Each mounted
-    // CollabClient owns a distinct presence lease; closing the replacement
-    // page must release only that lease and leave the original member online.
+    // CollabClient owns a distinct presence lease; the replacement page's
+    // unload must release only that lease and leave the original member online.
     const originalMemberHeartbeat = [...hub.commandLog].reverse().find(
       (entry) =>
         entry.memberId === MEMBER.memberId &&
@@ -217,8 +217,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
     const replacementClientId = commandFlag(replacementHeartbeat.args, '--client-id');
     expect(replacementClientId).toBeTruthy();
 
-    await replacementMemberPage.close();
-    await hub.waitForCommand(
+    const replacementLeave = hub.waitForCommand(
       (entry) =>
         entry.memberId === MEMBER.memberId &&
         entry.args[0] === 'collab' &&
@@ -228,6 +227,15 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
         commandFlag(entry.args, '--client-id') === replacementClientId,
       T.long,
     );
+    // Playwright page.close() tears the target down without guaranteeing that
+    // a workspace-authenticated keepalive fetch reaches the daemon. Dispatch
+    // the browser's actual hard-unload signal and observe the daemon boundary
+    // before destroying the page; CollabClient unit coverage owns the payload.
+    await replacementMemberPage.evaluate(() => {
+      window.dispatchEvent(new Event('pagehide'));
+    });
+    await replacementLeave;
+    await replacementMemberPage.close();
     await expect(twoPersonPresence).toBeVisible({ timeout: T.long });
     await expect(twoPersonPresence.locator('[title]')).toHaveCount(2);
 
@@ -742,10 +750,22 @@ async function openHomeAndPinWorkspace(page: Page, workspaceMemberId: string): P
     timeout: T.long,
   });
   expect(response.ok(), await response.text()).toBeTruthy();
+  const workspaceEventsReady = page.waitForResponse(
+    (candidate) => {
+      const url = new URL(candidate.url());
+      return url.pathname.endsWith('/api/workspace/events') && candidate.ok();
+    },
+    { timeout: T.long },
+  );
   await page.reload({ waitUntil: 'domcontentloaded', timeout: T.xlong });
   await expect(page.getByText('Loading Open Design…')).toHaveCount(0, {
     timeout: T.xlong,
   });
+  // Loading the shell is not enough for live collaboration assertions: the
+  // browser must also finish hop 2 (daemon -> EventSource) before the fake hub
+  // emits an invalidation, or the UI can retain stale permissions until the
+  // connected-stream safety poll runs much later.
+  await workspaceEventsReady;
 }
 
 async function registerWorkspaceEventInterest(
