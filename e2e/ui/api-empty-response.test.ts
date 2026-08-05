@@ -1,5 +1,9 @@
 import { expect, test } from '@/playwright/suite';
-import { fulfillAgentsRoute, routeSuccessfulRuns } from '@/playwright/mock-factory';
+import {
+  fulfillAgentsRoute,
+  routeSignedOutVelaStatus,
+  routeSuccessfulRuns,
+} from '@/playwright/mock-factory';
 import { openNewProjectModal as openNewProjectModalFromProjects } from '@/playwright/rail';
 import type { Page } from '@playwright/test';
 import { T } from '@/timeouts';
@@ -9,6 +13,7 @@ const STORAGE_KEY = 'open-design:config';
 test.describe.configure({ timeout: T.xlong });
 
 test.beforeEach(async ({ page }) => {
+  await routeSignedOutVelaStatus(page);
   await page.addInitScript((key) => {
     window.localStorage.setItem(
       key,
