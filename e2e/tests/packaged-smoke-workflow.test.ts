@@ -1153,8 +1153,8 @@ process.stdin.on("end", () => {
     expect(e2eVitest).not.toContain('"od-persistent-ci"');
     expect(preflight).toContain("fromJSON(needs.runners.outputs.runs_on).general_medium");
     expect(preflight).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).general_medium)");
-    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_hot");
-    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_hot)");
+    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0");
+    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_p0)");
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
@@ -1247,6 +1247,7 @@ process.stdin.on("end", () => {
     expect(benchmarkWorkflow).toContain("Preserve project-runtime domain artifact");
     expect(benchmarkWorkflow).toContain("--grep-invert '@merge-extra'");
     expect(benchmarkWorkflow).toContain("name: project-workspace");
+    expect(benchmarkWorkflow).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_p0");
     expect(fullUi).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_hot");
     expect(fullUi).toContain("shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]");
     expect(fullUi).toContain('OD_PLAYWRIGHT_FULLY_PARALLEL: "1"');
@@ -1268,6 +1269,7 @@ process.stdin.on("end", () => {
       "general_medium",
       "js_hot",
       "ui_hot",
+      "ui_p0",
       "visual_hot",
       "windows_tools",
       "workspace_unit",
@@ -1278,6 +1280,7 @@ process.stdin.on("end", () => {
     expect(defaultRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(defaultRunsOn.js_hot).toEqual(["nexu-runners-medium"]);
     expect(defaultRunsOn.ui_hot).toEqual(["nexu-runners-large"]);
+    expect(defaultRunsOn.ui_p0).toEqual(["nexu-runners-xlarge"]);
     expect(defaultRunsOn.visual_hot).toEqual(["nexu-runners-large"]);
     expect(defaultProfiles).not.toHaveProperty("contabo_control");
     expect(defaultProfiles).not.toHaveProperty("hosted_or_blacksmith");
@@ -1292,6 +1295,7 @@ process.stdin.on("end", () => {
     expect(performanceRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(performanceRunsOn.js_hot).toEqual(["nexu-runners-medium"]);
     expect(performanceRunsOn.ui_hot).toEqual(["nexu-runners-large"]);
+    expect(performanceRunsOn.ui_p0).toEqual(["nexu-runners-xlarge"]);
     expect(performanceRunsOn.visual_hot).toEqual(["nexu-runners-large"]);
 
     const economicProfiles = await runRunners("economic");
@@ -1303,6 +1307,7 @@ process.stdin.on("end", () => {
     expect(economicRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(economicRunsOn.js_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.ui_hot).toEqual(["ubuntu-24.04"]);
+    expect(economicRunsOn.ui_p0).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.visual_hot).toEqual(["ubuntu-24.04"]);
 
     for (const invalidMode of ["Economic", " economic "]) {
