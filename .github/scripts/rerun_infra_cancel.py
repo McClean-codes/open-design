@@ -326,7 +326,24 @@ def fetch_annotations(request: GhRequest, repo: str, job_id: int) -> list[dict[s
     return [item for item in payload if isinstance(item, dict)]
 
 
+def _open_pr_head_sha(pull: dict[str, Any]) -> str | None:
+    """Return the head SHA of an open PR, or None when the PR is not live."""
+    if pull.get("state") != "open":
+        return None
+    head = pull.get("head") or {}
+    if not isinstance(head, dict):
+        return None
+    sha = head.get("sha")
+    return sha if isinstance(sha, str) and sha else None
+
+
 def resolve_live_pr_head(request: GhRequest, repo: str, head_sha: str, head_branch: str | None) -> str | None:
+    """Resolve the live head SHA of an open PR for this run, or None.
+
+    Evidence must come from an *open* pull request. A same-repo branch tip is
+    not enough: closing a PR can leave the branch at the failed run SHA while
+    no live PR remains, and a trusted rerun must not fire for that shape.
+    """
     owner, _, name = repo.partition("/")
     if not owner or not name:
         fail(f"Invalid repository {repo!r}")
@@ -339,36 +356,44 @@ def resolve_live_pr_head(request: GhRequest, repo: str, head_sha: str, head_bran
         None,
     )
     if isinstance(pulls, list):
+        preferred: str | None = None
+        fallback: str | None = None
         for pull in pulls:
             if not isinstance(pull, dict):
                 continue
-            head = pull.get("head") or {}
-            if not isinstance(head, dict):
+            sha = _open_pr_head_sha(pull)
+            if not sha:
                 continue
-            sha = head.get("sha")
             base = pull.get("base") or {}
             base_ref = base.get("ref") if isinstance(base, dict) else None
-            state = pull.get("state")
-            if state == "open" and isinstance(sha, str) and sha:
-                # Prefer PRs targeting main/master when multiple match.
-                if base_ref in {None, "main", "master"}:
-                    return sha
-        for pull in pulls:
-            if not isinstance(pull, dict):
-                continue
-            head = pull.get("head") or {}
-            sha = head.get("sha") if isinstance(head, dict) else None
-            if pull.get("state") == "open" and isinstance(sha, str) and sha:
-                return sha
+            # Prefer PRs targeting main/master when multiple match.
+            if base_ref in {None, "main", "master"}:
+                preferred = sha
+                break
+            if fallback is None:
+                fallback = sha
+        if preferred is not None:
+            return preferred
+        if fallback is not None:
+            return fallback
 
+    # Same-repo open PR by repository-qualified head ref. Unlike the branch
+    # tip, this requires state=open so a closed PR cannot authorize a rerun.
     if head_branch:
-        # Fallback: branch tip (same-repo heads only).
-        encoded = urllib.parse.quote(head_branch, safe="")
-        ref = request("GET", f"/repos/{repo}/git/ref/heads/{encoded}", None, None)
-        if isinstance(ref, dict):
-            obj = ref.get("object") or {}
-            if isinstance(obj, dict) and isinstance(obj.get("sha"), str):
-                return obj["sha"]
+        head_filter = urllib.parse.quote(f"{owner}:{head_branch}", safe="")
+        open_pulls = request(
+            "GET",
+            f"/repos/{repo}/pulls?state=open&head={head_filter}&per_page=10",
+            None,
+            None,
+        )
+        if isinstance(open_pulls, list):
+            for pull in open_pulls:
+                if not isinstance(pull, dict):
+                    continue
+                sha = _open_pr_head_sha(pull)
+                if sha:
+                    return sha
 
     # GraphQL fallback for fork PRs associated to the run SHA.
     query = (
@@ -638,6 +663,116 @@ def self_check() -> None:
         "Playwright visual (settings-workspace)",
     ], infra_names
     assert ordinary_names == [], ordinary_names
+
+    # Closed PR + branch tip still at the failed run SHA must not resolve a
+    # live head. commit→pulls has no open association; the bare branch ref is
+    # unchanged. Branch-tip evidence alone used to authorize a trusted rerun.
+    closed_run_sha = "d" * 40
+    closed_branch = "agent/closed-pr-still-on-tip"
+    seen_paths: list[str] = []
+
+    def closed_pr_request(
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> Any:
+        del method, headers, body
+        seen_paths.append(path)
+        if path.startswith(f"/repos/nexu-io/open-design/commits/{closed_run_sha}/pulls"):
+            # Association exists but is closed/open-filtered away.
+            return [
+                {
+                    "state": "closed",
+                    "head": {"sha": closed_run_sha, "ref": closed_branch},
+                    "base": {"ref": "main"},
+                }
+            ]
+        if path.startswith("/repos/nexu-io/open-design/pulls?"):
+            # No open PR for this repository-qualified head ref.
+            expected_head = urllib.parse.quote(f"nexu-io:{closed_branch}", safe="")
+            assert "state=open" in path, path
+            assert f"head={expected_head}" in path, path
+            return []
+        if path.startswith("/repos/nexu-io/open-design/git/ref/heads/"):
+            # If consulted, tip still matches the failed SHA — but live-PR
+            # resolution must not use bare branch tip as evidence.
+            return {"object": {"sha": closed_run_sha, "type": "commit"}}
+        if path.startswith("graphql:"):
+            return {
+                "data": {
+                    "repository": {
+                        "pullRequests": {
+                            "nodes": [
+                                {
+                                    "headRefOid": "e" * 40,
+                                    "headRepository": {"nameWithOwner": "nexu-io/open-design"},
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        fail(f"unexpected fixture path {path!r}")
+
+    live = resolve_live_pr_head(
+        closed_pr_request,
+        "nexu-io/open-design",
+        closed_run_sha,
+        closed_branch,
+    )
+    assert live is None, live
+    assert any("/commits/" in p and p.endswith("/pulls") for p in seen_paths), seen_paths
+    assert any(p.startswith("/repos/nexu-io/open-design/pulls?") for p in seen_paths), seen_paths
+    # Branch tip must not be consulted as live-PR evidence.
+    assert not any("/git/ref/heads/" in p for p in seen_paths), seen_paths
+
+    ok, reason = decide(
+        event_name="pull_request",
+        conclusion="failure",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha=closed_run_sha,
+        infra_job_names=["UI P0 (entry-settings)"],
+        ordinary_job_names=[],
+        live_pr_head_sha=live,
+        merge_queue_head_shas=None,
+    )
+    assert not ok and "could not resolve live pull request head" in reason, reason
+
+    # Open PR via repository-qualified head ref still resolves when commit
+    # association is empty (e.g. timing) but the PR remains open.
+    open_run_sha = "f" * 40
+    open_branch = "agent/open-pr-head-ref"
+
+    def open_pr_by_head_request(
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> Any:
+        del method, headers, body
+        if path.startswith(f"/repos/nexu-io/open-design/commits/{open_run_sha}/pulls"):
+            return []
+        if path.startswith("/repos/nexu-io/open-design/pulls?"):
+            return [
+                {
+                    "state": "open",
+                    "head": {"sha": open_run_sha, "ref": open_branch},
+                    "base": {"ref": "main"},
+                }
+            ]
+        if path.startswith("graphql:"):
+            return {"data": {"repository": {"pullRequests": {"nodes": []}}}}
+        fail(f"unexpected fixture path {path!r}")
+
+    live_open = resolve_live_pr_head(
+        open_pr_by_head_request,
+        "nexu-io/open-design",
+        open_run_sha,
+        open_branch,
+    )
+    assert live_open == open_run_sha, live_open
 
     emit("rerun_infra_cancel self-check OK")
 
