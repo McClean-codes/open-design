@@ -17,4 +17,14 @@ interface ImportMeta {
 interface Window {
   // Defined by posthog-analytics.astro; no-op shim until PostHog loads.
   __odTrack?: (name: string, props?: Record<string, unknown>) => void;
+  __odRecordCampaignEntry?: (sourceDetail: string) => {
+    entry_id: string;
+    source_product: 'open_design';
+    source_detail: string;
+    entry_occurred_at: string;
+  };
+  __odAttributedUrl?: (
+    href: string,
+    attribution?: ReturnType<NonNullable<Window['__odRecordCampaignEntry']>>,
+  ) => string;
 }

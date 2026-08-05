@@ -714,17 +714,26 @@ const jsonLd = [
           }
         } catch (e) {}
       };
+      track('surface_view', {
+        area: 'campaign_banner',
+        element: 'deepseek_v4_flash',
+        campaign_id: 'deepseek_v4_flash',
+        user_state: 'unknown',
+      });
 
       // The public page never guesses an active Workspace. It preserves only a
       // workspaceId explicitly supplied on the inbound URL, then opens Vela's
       // stable billing-plan chooser. Plan/interval choice remains authoritative
       // inside the authenticated dashboard.
-      const inboundWorkspaceId = new URLSearchParams(window.location.search)
-        .get('workspaceId')
-        ?.trim();
+      const inboundParams = new URLSearchParams(window.location.search);
+      const inboundWorkspaceId = inboundParams.get('workspaceId')?.trim();
       const scopedBillingPlanUrl = () => {
         const target = new URL(billingPlanUrl);
         if (inboundWorkspaceId) target.searchParams.set('workspaceId', inboundWorkspaceId);
+        for (const key of ['od_origin', 'od_entry_id', 'od_entry_source', 'od_entry_at']) {
+          const value = inboundParams.get(key);
+          if (value) target.searchParams.set(key, value);
+        }
         return target.toString();
       };
       const usd = (n) => '$' + Math.round(n).toLocaleString('en-US');
@@ -742,7 +751,19 @@ const jsonLd = [
       syncCtas();
 
       // ── Creator / Team audience toggle ─────────────────────────────────
-      const activateAudience = (audience) => {
+      let lastCampaignBenefitAudience = null;
+      const trackCampaignBenefit = (audience) => {
+        if (lastCampaignBenefitAudience === audience) return;
+        lastCampaignBenefitAudience = audience;
+        track('surface_view', {
+          area: audience === 'team' ? 'pricing_team_plan' : 'pricing_personal_plan',
+          element: 'deepseek_v4_flash_benefit',
+          campaign_id: 'deepseek_v4_flash',
+          user_state: 'unknown',
+          audience,
+        });
+      };
+      const activateAudience = (audience, shouldTrackClick = true) => {
         root.setAttribute('data-audience', audience);
         for (const button of root.querySelectorAll('[data-audience-btn]')) {
           const active = button.getAttribute('data-audience-btn') === audience;
@@ -753,7 +774,14 @@ const jsonLd = [
         for (const panel of root.querySelectorAll('[data-audience-panel]')) {
           panel.hidden = panel.getAttribute('data-audience-panel') !== audience;
         }
-        track('pricing_audience_toggle', { audience });
+        if (shouldTrackClick) {
+          track('ui_click', {
+            area: 'pricing_controls',
+            element: 'audience_toggle',
+            audience,
+          });
+        }
+        trackCampaignBenefit(audience);
       };
       for (const button of root.querySelectorAll('[data-audience-btn]')) {
         button.addEventListener('click', () => {
@@ -775,7 +803,8 @@ const jsonLd = [
         });
       }
       const requestedAudience = new URLSearchParams(window.location.search).get('audience');
-      if (requestedAudience === 'team') activateAudience('team');
+      if (requestedAudience === 'team') activateAudience('team', false);
+      else trackCampaignBenefit('creator');
 
       // ── Billing interval toggle ──────────────────────────────────────────
       // One entry point so the toggle button and the "save $X yearly" nudge
@@ -788,7 +817,12 @@ const jsonLd = [
           b.setAttribute('aria-selected', on ? 'true' : 'false');
         }
         updateTeamPlan();
-        track('pricing_interval_toggle', { interval: interval, via: via || 'toggle' });
+        track('ui_click', {
+          area: 'pricing_controls',
+          element: 'billing_interval',
+          interval,
+          via: via || 'toggle',
+        });
       };
 
       for (const btn of root.querySelectorAll('[data-interval-btn]')) {
@@ -848,7 +882,11 @@ const jsonLd = [
         teamSeats = Math.max(tier.minSeats, teamSeats);
         closeTeamTierMenu(true);
         updateTeamPlan();
-        track('pricing_team_tier_change', { tier: tier.tier });
+        track('ui_click', {
+          area: 'pricing_team_plan',
+          element: 'tier_select',
+          tier: tier.tier,
+        });
       };
 
       const fillTeam = (template, values) =>
@@ -984,18 +1022,33 @@ const jsonLd = [
         })
         .catch(() => {});
 
-      // CTA analytics.
+      // CTA analytics + cross-product payment attribution. A new entry id is
+      // minted at this conversion click, not at campaign impression.
       root.addEventListener('click', (event) => {
         const cta = event.target && event.target.closest && event.target.closest('[data-pricing-cta]');
         if (!cta) return;
         try {
+          const audience = root.getAttribute('data-audience') || 'creator';
+          const attribution = window.__odRecordCampaignEntry?.(
+            audience === 'team' ? 'landing_pricing_team_plan' : 'landing_pricing_personal_plan',
+          );
           const props = {
             page_name: 'pricing',
+            area: audience === 'team' ? 'pricing_team_plan' : 'pricing_personal_plan',
+            element: 'subscribe',
             tier: cta.getAttribute('data-tier') || 'unknown',
             interval: root.getAttribute('data-interval') || 'monthly',
+            audience,
+            campaign_id: 'deepseek_v4_flash',
+            user_state: 'unknown',
+            ...(attribution || {}),
           };
-          if (typeof window.__odTrack === 'function') window.__odTrack('pricing_subscribe_click', props);
-          else if (window.posthog && window.posthog.capture) window.posthog.capture('pricing_subscribe_click', props);
+          if (typeof window.__odTrack === 'function') window.__odTrack('ui_click', props);
+          else if (window.posthog && window.posthog.capture) window.posthog.capture('ui_click', props);
+          if (attribution && window.__odAttributedUrl) {
+            event.preventDefault();
+            window.location.href = window.__odAttributedUrl(scopedBillingPlanUrl(), attribution);
+          }
         } catch (e) {}
       });
 

@@ -96,6 +96,11 @@ describe("pricing contract", () => {
     assert.match(page, /<\/aside>\s*<p class="pr-campaign-disclaimer">\{deepSeekCampaign\.disclaimer\}<\/p>/);
     assert.doesNotMatch(page, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
     assert.match(page, /\.pr-campaign-disclaimer\s*\{[\s\S]*font-size:\s*\.82rem;/);
+    assert.match(page, /track\('surface_view',\s*\{\s*area:\s*'campaign_banner'/);
+    assert.match(page, /element:\s*'deepseek_v4_flash_benefit'/);
+    assert.match(page, /window\.__odRecordCampaignEntry\?\./);
+    assert.match(page, /window\.__odTrack\('ui_click', props\)/);
+    assert.doesNotMatch(page, /pricing_subscribe_click/);
     const disclaimerRule = page.match(
       /\.pr-campaign-disclaimer\s*\{([^}]*)\}/,
     )?.[1];

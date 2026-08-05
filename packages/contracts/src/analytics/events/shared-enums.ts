@@ -84,11 +84,15 @@ export type TrackingAmrEntrySource =
   | 'settings_amr_upgrade'
   | 'inline_amr_upgrade'
   | 'deepseek_unpaid_modal'
+  | 'deepseek_workbench_badge'
   | 'deepseek_model_switcher_upgrade'
   | 'avatar_amr_upgrade'
   | 'avatar_amr_agent_card'
   | 'artifact_success_upgrade'
   | 'home_artifact_upgrade';
+
+export type TrackingCampaignId = 'deepseek_v4_flash';
+export type TrackingCampaignUserState = 'paid' | 'unpaid';
 
 export interface AmrEntryAttribution {
   entryId: string;

@@ -43,9 +43,12 @@ import {
   trackOnboardingCompleteResult,
   trackOnboardingRuntimeScanResult,
   trackPageView,
+  trackDeepSeekCampaignBadgeClick,
+  trackDeepSeekCampaignBadgeSurfaceView,
 } from '../analytics/events';
 import {
   amrHandoffDeviceId,
+  attributedAmrUrl,
   recordAmrEntry,
   syncAmrAttributionWithOnboardingProfile,
   type AmrEntryAttribution,
@@ -1023,6 +1026,37 @@ export function EntryShell({
     scrollContainer.scrollTop = 0;
   }, [view]);
   const analytics = useAnalytics();
+  useEffect(() => {
+    if (view !== 'home' || deepSeekV4FlashCampaignAudience === 'unknown') return;
+    trackDeepSeekCampaignBadgeSurfaceView(analytics.track, {
+      page_name: 'home',
+      area: 'campaign_badge',
+      element: 'deepseek_v4_flash',
+      campaign_id: 'deepseek_v4_flash',
+      user_state: deepSeekV4FlashCampaignAudience,
+    });
+  }, [analytics.track, deepSeekV4FlashCampaignAudience, view]);
+  const openDeepSeekCampaignPricing = useCallback(() => {
+    if (deepSeekV4FlashCampaignAudience === 'unknown') return;
+    trackDeepSeekCampaignBadgeClick(analytics.track, {
+      page_name: 'home',
+      area: 'campaign_badge',
+      element: 'open_pricing',
+      campaign_id: 'deepseek_v4_flash',
+      user_state: deepSeekV4FlashCampaignAudience,
+    });
+    const attribution = recordAmrEntry(
+      analytics.track,
+      'deepseek_workbench_badge',
+      new Date(),
+      { metricsConsent: config.telemetry?.metrics === true },
+    );
+    window.open(
+      attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution),
+      '_blank',
+      'noopener,noreferrer',
+    );
+  }, [analytics.track, config.telemetry?.metrics, deepSeekV4FlashCampaignAudience]);
   function changeView(next: EntryViewKind) {
     const navElement = navElementForView(next);
     if (navElement) {
@@ -1497,17 +1531,16 @@ export function EntryShell({
               or portalled so it occupies no layout space here. */}
           <WhatsNewPopup active={view === 'home'} />
           {view === 'home' && deepSeekV4FlashCampaignAudience !== 'unknown' ? (
-            <a
+            <button
+              type="button"
               className="entry-deepseek-campaign-badge"
-              href={DEEPSEEK_CAMPAIGN_PRICING_URL}
-              target="_blank"
-              rel="noopener noreferrer"
+              onClick={openDeepSeekCampaignPricing}
               aria-label="DeepSeek V4 无限免费用，查看官网 Pricing"
               data-testid="deepseek-campaign-pricing-badge"
             >
               <span>DeepSeek V4无限免费用</span>
               <Icon name="arrow-right" size={13} />
-            </a>
+            </button>
           ) : null}
           {amrBalanceGateBlock ? (
             <AmrBalanceDialog

@@ -336,6 +336,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
       (() => {
         const dismissKey = 'open-design:home-campaign-banner-dismissed:deepseek-v4-flash-fixed-window-countdown-v2';
         const banner = document.querySelector('[data-home-campaign-banner]');
+        const campaignLink = banner?.querySelector('.home-campaign-banner__link');
         const countdown = document.querySelector('[data-home-campaign-countdown]');
         const close = document.querySelector('[data-home-campaign-close]');
         const isZh = banner?.getAttribute('data-campaign-locale') === 'zh';
@@ -368,12 +369,45 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
             if (!updateCountdown()) window.clearInterval(countdownTimer);
           }, 1000);
         }
+        let dismissed = false;
         try {
           if (window.localStorage.getItem(dismissKey) === '1') {
+            dismissed = true;
             document.documentElement.classList.add('home-campaign-banner-dismissed');
           }
         } catch {}
+        if (!dismissed && typeof window.__odTrack === 'function') {
+          window.__odTrack('surface_view', {
+            page_name: 'landing_home',
+            area: 'campaign_banner',
+            element: 'deepseek_v4_flash',
+            campaign_id: 'deepseek_v4_flash',
+            user_state: 'unknown',
+          });
+        }
+        campaignLink?.addEventListener('click', (event) => {
+          const attribution = window.__odRecordCampaignEntry?.('landing_home_banner');
+          window.__odTrack?.('ui_click', {
+            page_name: 'landing_home',
+            area: 'campaign_banner',
+            element: 'open_pricing',
+            campaign_id: 'deepseek_v4_flash',
+            user_state: 'unknown',
+            ...(attribution || {}),
+          });
+          if (attribution && window.__odAttributedUrl) {
+            event.preventDefault();
+            window.location.href = window.__odAttributedUrl(campaignLink.href, attribution);
+          }
+        });
         close?.addEventListener('click', () => {
+          window.__odTrack?.('ui_click', {
+            page_name: 'landing_home',
+            area: 'campaign_banner',
+            element: 'close',
+            campaign_id: 'deepseek_v4_flash',
+            user_state: 'unknown',
+          });
           document.documentElement.classList.add('home-campaign-banner-dismissed');
           try { window.localStorage.setItem(dismissKey, '1'); } catch {}
         });

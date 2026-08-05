@@ -28,8 +28,9 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
 
   it('opens the official Pricing page in a separate browser context', () => {
     expect(entryShellSource).toContain('https://open-design.ai/zh/pricing/?source=desktop_campaign_badge');
-    expect(entryShellSource).toContain('target="_blank"');
-    expect(entryShellSource).toContain('rel="noopener noreferrer"');
+    expect(entryShellSource).toContain("'deepseek_workbench_badge'");
+    expect(entryShellSource).toContain('attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution)');
+    expect(entryShellSource).toContain("'noopener,noreferrer'");
   });
 
   it('uses the shared success-state color tokens for the campaign badge', () => {
@@ -59,5 +60,12 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(modelSwitcherSource).toContain("'deepseek_model_switcher_upgrade'");
     expect(modelSwitcherSource).toContain('attributedAmrUrl(');
     expect(modelSwitcherSource).toContain('campaignNeedsUpgrade');
+  });
+
+  it('tracks campaign discovery surfaces without replacing model-selection events', () => {
+    expect(entryShellSource).toContain('trackDeepSeekCampaignBadgeSurfaceView');
+    expect(entryShellSource).toContain('trackDeepSeekCampaignBadgeClick');
+    expect(modelSwitcherSource).toContain('trackDeepSeekCampaignModelBenefitSurfaceView');
+    expect(modelSwitcherSource).toContain('trackExecutionSettingsPopoverClick');
   });
 });

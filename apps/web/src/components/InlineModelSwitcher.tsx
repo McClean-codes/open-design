@@ -35,7 +35,10 @@ import {
 } from '../analytics/amr-attribution';
 import { amrPlansUrlForProfile } from '../runtime/amr-guidance';
 import { getResolvedDeviceId } from '../analytics/client';
-import { trackExecutionSettingsPopoverClick } from '../analytics/events';
+import {
+  trackDeepSeekCampaignModelBenefitSurfaceView,
+  trackExecutionSettingsPopoverClick,
+} from '../analytics/events';
 import {
   beginAmrAuthTracking,
   confirmAmrAuthTracking,
@@ -244,6 +247,7 @@ export function InlineModelSwitcher({
   const [campaignReviewModelId, setCampaignReviewModelId] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
+  const campaignBenefitTrackedForOpenRef = useRef(false);
   // Viewport clamp for the popover (issue #99): the anchor chip can sit
   // anywhere on screen (home hero mid-page, chat composer at the bottom), so
   // a fixed downward placement runs past the screen edge once the model list
@@ -774,7 +778,10 @@ export function InlineModelSwitcher({
     if (!compact || campaignAudienceOverride === null) return;
     const cloudAgent = agents.find((agent) => agent.id === 'amr');
     if (!cloudAgent) return;
-    if (currentAgent?.id !== cloudAgent.id) {
+    // `currentAgent` is intentionally projected to AMR while a campaign review
+    // URL is active. Compare the persisted config instead, otherwise the UI
+    // looks like AMR while the selected agent remains the previous CLI.
+    if (config.agentId !== cloudAgent.id) {
       onAgentChange(cloudAgent.id);
       return;
     }
@@ -782,7 +789,7 @@ export function InlineModelSwitcher({
     agents,
     campaignAudienceOverride,
     compact,
-    currentAgent?.id,
+    config.agentId,
     onAgentChange,
   ]);
 
@@ -791,13 +798,17 @@ export function InlineModelSwitcher({
   }, [campaignAudienceOverride]);
 
   useEffect(() => {
-    if (!currentAgentId || !normalizedCurrentModelId) return;
+    const modelToPersist =
+      campaignReviewActive && currentAgentId === 'amr' && currentModelId
+        ? currentModelId
+        : normalizedCurrentModelId;
+    if (!currentAgentId || !modelToPersist) return;
     const nextChoice: {
       model: string;
       reasoning?: string;
       serviceTier?: string;
     } = {
-      model: normalizedCurrentModelId,
+      model: modelToPersist,
       reasoning: normalizedCurrentReasoning,
     };
     if (normalizedCurrentServiceTier !== undefined) {
@@ -805,7 +816,9 @@ export function InlineModelSwitcher({
     }
     onAgentModelChange(currentAgentId, nextChoice);
   }, [
+    campaignReviewActive,
     currentAgentId,
+    currentModelId,
     normalizedCurrentModelId,
     normalizedCurrentReasoning,
     normalizedCurrentServiceTier,
@@ -873,6 +886,29 @@ export function InlineModelSwitcher({
       })),
     [campaignAudienceOverride, compact, currentAgent, inlineAgentModelOptions],
   );
+
+  useEffect(() => {
+    if (!open) {
+      campaignBenefitTrackedForOpenRef.current = false;
+      return;
+    }
+    if (
+      !compact
+      || campaignBenefitTrackedForOpenRef.current
+      || !compactModelRows.some(({ model }) => isDeepSeekV4FlashCampaignModel(model.id))
+    ) {
+      return;
+    }
+    campaignBenefitTrackedForOpenRef.current = true;
+    trackDeepSeekCampaignModelBenefitSurfaceView(analytics.track, {
+      page_name: 'home',
+      area: 'execution_settings_popover',
+      element: 'deepseek_v4_flash_benefit',
+      campaign_id: 'deepseek_v4_flash',
+      user_state: campaignNeedsUpgrade ? 'unpaid' : 'paid',
+      model_id: 'deepseek-v4-flash',
+    });
+  }, [analytics.track, campaignNeedsUpgrade, compact, compactModelRows, open]);
 
   /** Where a refused model pick sends the user instead — the same plans
    *  destination the settings picker's upgrade lock already opens. */

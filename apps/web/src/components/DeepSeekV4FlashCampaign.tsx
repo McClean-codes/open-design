@@ -14,6 +14,10 @@ import {
 } from '../runtime/amr-guidance';
 import { useAnalytics } from '../analytics/provider';
 import { attributedAmrUrl, recordAmrEntry } from '../analytics/amr-attribution';
+import {
+  trackDeepSeekCampaignModalClick,
+  trackDeepSeekCampaignModalSurfaceView,
+} from '../analytics/events';
 import { Icon } from './Icon';
 import styles from './DeepSeekV4FlashCampaign.module.css';
 
@@ -74,6 +78,13 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
 
   useEffect(() => {
     if (!modalOpen) return;
+    trackDeepSeekCampaignModalSurfaceView(analytics.track, {
+      page_name: 'home',
+      area: 'deepseek_campaign_modal',
+      element: 'modal',
+      campaign_id: 'deepseek_v4_flash',
+      user_state: audience === 'paid' ? 'paid' : 'unpaid',
+    });
     const panel = document.getElementById(dialogId);
     if (!panel) return;
     const previouslyFocused =
@@ -86,7 +97,7 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
       document.body.style.overflow = previousBodyOverflow;
       if (previouslyFocused?.isConnected) previouslyFocused.focus();
     };
-  }, [audience, dialogId, modalOpen]);
+  }, [analytics.track, audience, dialogId, modalOpen]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -97,15 +108,33 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
     return () => window.clearInterval(countdownTimer);
   }, [modalOpen]);
 
-  const closeModal = () => {
+  const dismissModal = () => {
     markCampaignSeen();
     setModalOpen(false);
   };
 
   const paid = audience === 'paid';
   const presentation = paid ? campaign.paid : campaign.unpaid;
+  const trackModalClick = (element: 'close' | 'later' | 'use_now' | 'upgrade') => {
+    trackDeepSeekCampaignModalClick(analytics.track, {
+      page_name: 'home',
+      area: 'deepseek_campaign_modal',
+      element,
+      campaign_id: 'deepseek_v4_flash',
+      user_state: paid ? 'paid' : 'unpaid',
+    });
+  };
+  const closeModal = () => {
+    trackModalClick('close');
+    dismissModal();
+  };
+  const postponeModal = () => {
+    trackModalClick('later');
+    dismissModal();
+  };
   const takeAction = () => {
-    closeModal();
+    trackModalClick(paid ? 'use_now' : 'upgrade');
+    dismissModal();
     if (paid) {
       window.setTimeout(focusModelSwitcher, 0);
       return;
@@ -177,7 +206,7 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
       <p className={styles.boundary}>{campaign.boundary}</p>
       <div className={styles.actions}>
         {paid ? (
-          <Button variant="ghost" className={styles.laterAction} onClick={closeModal}>
+          <Button variant="ghost" className={styles.laterAction} onClick={postponeModal}>
             稍后再说
           </Button>
         ) : null}

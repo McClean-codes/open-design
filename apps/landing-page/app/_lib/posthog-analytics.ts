@@ -38,6 +38,37 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
       try { if (window.posthog) window.posthog.capture(name, props || {}); } catch (e) {}
     };
 
+    // Cross-product campaign attribution is minted on the click that enters a
+    // conversion path, never on impression. A new click gets a new entry id;
+    // the receiving Pricing/AMR page carries the same id forward to payment.
+    window.__odRecordCampaignEntry = function (sourceDetail) {
+      var random = '';
+      try {
+        random = window.crypto && typeof window.crypto.randomUUID === 'function'
+          ? window.crypto.randomUUID()
+          : Math.random().toString(36).slice(2) + Date.now().toString(36);
+      } catch (e) { random = Math.random().toString(36).slice(2) + Date.now().toString(36); }
+      return {
+        entry_id: 'od-campaign-' + random,
+        source_product: 'open_design',
+        source_detail: String(sourceDetail || 'unknown'),
+        entry_occurred_at: new Date().toISOString(),
+      };
+    };
+
+    window.__odAttributedUrl = function (href, attribution) {
+      try {
+        var target = new URL(href, window.location.href);
+        if (attribution) {
+          target.searchParams.set('od_origin', attribution.source_product || 'open_design');
+          target.searchParams.set('od_entry_id', attribution.entry_id || '');
+          target.searchParams.set('od_entry_source', attribution.source_detail || 'unknown');
+          target.searchParams.set('od_entry_at', attribution.entry_occurred_at || new Date().toISOString());
+        }
+        return target.toString();
+      } catch (e) { return href; }
+    };
+
     var REPO = 'github.com/nexu-io/open-design';
     var PAGE = ${JSON.stringify(pageName)};
     var DOWNLOAD_ATTRIBUTION_URL = ${JSON.stringify(downloadAttributionUrl)};
