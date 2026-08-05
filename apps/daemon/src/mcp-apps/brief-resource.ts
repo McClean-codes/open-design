@@ -1,4 +1,4 @@
-export const OPEN_DESIGN_BRIEF_APP_VERSION = 'v7' as const;
+export const OPEN_DESIGN_BRIEF_APP_VERSION = 'v8' as const;
 
 /**
  * Self-contained MCP Apps resource. It intentionally has no remote assets,
@@ -67,6 +67,7 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
         let phase = "loading";
         let confirmedPayload = null;
         let standardBridgeReady = false;
+        let standardBridgeInitialization = null;
         let hostCapabilities = null;
         let sizeFrame = 0;
         let lastWidth = -1;
@@ -416,7 +417,13 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
         }
 
         async function clearModelContext() {
-          if (!standardBridgeReady || !hostSupports("updateModelContext")) {
+          if (!standardBridgeReady) {
+            const initialized = standardBridgeInitialization
+              ? await standardBridgeInitialization
+              : false;
+            if (!initialized) return false;
+          }
+          if (!hostSupports("updateModelContext")) {
             return true;
           }
           try {
@@ -517,9 +524,9 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
           render(window.openai.toolOutput);
         }
         showLoading();
-        request("ui/initialize", {
+        standardBridgeInitialization = request("ui/initialize", {
           protocolVersion: "2026-01-26",
-          appInfo: { name: "open-design-brief", version: "v7" },
+          appInfo: { name: "open-design-brief", version: "v8" },
           appCapabilities: {},
         }).then((result) => {
           standardBridgeReady = true;
@@ -531,14 +538,16 @@ export const OPEN_DESIGN_BRIEF_APP_HTML = String.raw`<!doctype html>
           notify("ui/notifications/initialized", {});
           render(toolPayload(result));
           scheduleSizeChanged();
+          return true;
         }).catch(() => {
           if (window.openai && window.openai.toolOutput) {
             render(window.openai.toolOutput);
-            return;
+            return false;
           }
           main.hidden = false;
           status.textContent = copy().bridgeUnavailable;
           scheduleSizeChanged();
+          return false;
         });
         window.addEventListener("resize", scheduleSizeChanged);
       })();
