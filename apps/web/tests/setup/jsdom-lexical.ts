@@ -10,8 +10,10 @@ import { resetPluginsCache } from '../../src/state/projects';
 
 // Failure budget for waitFor/findBy under CI CPU contention — not expected
 // duration. Default Testing Library async timeout is 1000ms; recent Web
-// workspace flakes clustered at 1015–1093ms on contended runners.
-configure({ asyncUtilTimeout: 5_000 });
+// workspace flakes clustered at 1015–1093ms on contended runners. Use 10s
+// (not 5s): several product timers and test setTimeout spies use exactly
+// 5000ms, and TL's overall waitFor timer collides with those spies.
+configure({ asyncUtilTimeout: 10_000 });
 
 // The visible-plugins cache is module-level so it survives Home remounts in the
 // app (a deliberate perf choice). In tests that persistence would leak a case's
