@@ -53,18 +53,19 @@ export const uiP0Groups = {
       "ui/app-manual-edit.test.ts",
       "ui/project-management-flows.test.ts",
       "ui/workspace-team-design-system-picker.test.ts",
+      "ui/workspace-keyboard-flows.test.ts",
     ],
   },
   // Split out of "project-workspace" (2026-08-04): the two multi-client collab
   // specs alone accounted for ~10 of that group's ~26min single-worker wall
   // time (workspace-multi-client-collab.test.ts spins up two isolated
-  // client/daemon runtimes per case). Carving them into their own single-worker
-  // shard lets both halves run concurrently as separate CI jobs instead of
-  // serially on one worker, without changing per-shard worker isolation.
+  // client/daemon runtimes per case). Keep this shard limited to the cluster-
+  // owned spec so it does not also boot the default worker runtime needed by
+  // ordinary UI files.
   "project-collab": {
     grep: String.raw`\[P0\]`,
     workers: 1,
-    files: ["ui/workspace-multi-client-collab.test.ts", "ui/workspace-keyboard-flows.test.ts"],
+    files: ["ui/workspace-multi-client-collab.test.ts"],
   },
   "project-runtime": {
     grep: String.raw`\[P0\]`,
