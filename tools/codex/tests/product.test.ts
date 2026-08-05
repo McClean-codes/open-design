@@ -153,6 +153,28 @@ describe("tools-codex product trace audit", () => {
     );
   });
 
+  it("accepts an available agent returned by the default filtered listing", async () => {
+    const events = validProductEvents();
+    const listAgents = events.find((event) =>
+      (event.payload as JsonRecord | undefined)?.type === "mcp_tool_call_end"
+      && ((event.payload as JsonRecord).invocation as JsonRecord).tool === "list_agents"
+    )!;
+    const result = (listAgents.payload as JsonRecord).result as JsonRecord;
+    const ok = result.Ok as JsonRecord;
+    const content = ok.content as JsonRecord[];
+    content[0]!.text = JSON.stringify({ agents: [{ id: "codex" }] });
+    const paths = await createManagedRollout(events);
+
+    const report = await auditToolCodexProductSession({
+      mode: "local-codex",
+      paths,
+      sessionId: SESSION_ID,
+    });
+
+    expect(report.status).toBe("PASS");
+    expect(report.signals.codexAgentAvailable).toBe(true);
+  });
+
   it("fails closed when Local Codex is started more than once", async () => {
     const events = validProductEvents();
     events.push(events.find((event) =>

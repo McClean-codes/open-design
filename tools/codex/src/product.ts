@@ -252,7 +252,7 @@ function findDeliveryUrl(result: JsonRecord | null): string | null {
 
 function agentAvailable(result: JsonRecord | null, id: string): boolean {
   return Array.isArray(result?.agents) && result.agents.some((agent) =>
-    isRecord(agent) && agent.id === id && agent.available === true
+    isRecord(agent) && agent.id === id && agent.available !== false
   );
 }
 
