@@ -5,7 +5,7 @@
 import type { DesignSystemEnrichClickProps, TrackingDesignSystemEditSurface } from './design-systems.js';
 import type { TrackingPageName, TrackingSettingsPage } from './event-names.js';
 import type { OnboardingClickProps, TrackingOnboardingFirstLoopStep, TrackingOnboardingProductType, TrackingOnboardingRole, TrackingOnboardingUseCase } from './onboarding.js';
-import type { TrackingAmrEntrySource, TrackingArtifactKind, TrackingByokProviderId, TrackingCampaignId, TrackingCampaignUserState, TrackingCliProviderId, TrackingExecutionMode, TrackingExportFormat, TrackingFeedbackProviderId, TrackingNewProjectTab, TrackingProjectKind, TrackingProjectSource } from './shared-enums.js';
+import type { TrackingAmrEntrySource, TrackingArtifactKind, TrackingByokProviderId, TrackingCampaignConversionSource, TrackingCampaignId, TrackingCampaignUserState, TrackingCliProviderId, TrackingExecutionMode, TrackingExportFormat, TrackingFeedbackProviderId, TrackingNewProjectTab, TrackingProjectKind, TrackingProjectSource } from './shared-enums.js';
 // ---- ui_click ------------------------------------------------------------
 //
 // Each surface lives in its own `*ClickProps` interface so call sites stay
@@ -936,6 +936,8 @@ export interface AmrEntryClickProps {
   source_product: 'open_design';
   source_detail: TrackingAmrEntrySource;
   entry_occurred_at: string;
+  campaign_id?: TrackingCampaignId;
+  conversion_source?: TrackingCampaignConversionSource;
 }
 
 export interface DeepSeekCampaignModalClickProps {

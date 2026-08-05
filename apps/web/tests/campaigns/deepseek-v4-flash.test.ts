@@ -5,6 +5,7 @@ import {
   formatDeepSeekV4FlashCampaignCountdown,
   formatDeepSeekV4FlashCampaignMockRemaining,
   isDeepSeekV4FlashCampaignWindowOpen,
+  isDeepSeekV4FlashCampaignVisible,
   resolveDeepSeekV4FlashCampaignAudience,
   isDeepSeekV4FlashCampaignModel,
 } from '../../src/campaigns/deepseek-v4-flash';
@@ -54,6 +55,7 @@ describe('DeepSeek V4 Flash campaign', () => {
   });
 
   it('keeps the campaign promise stable while routing actions by entitlement', () => {
+    const activeAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.paid.cta).toBe('立即使用');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.cta).toContain('升级套餐');
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge).toBe('无限使用');
@@ -64,22 +66,35 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.boundary).toBe(
       '套餐内的无限制模型额度与免费生成次数，仅可通过Open Design使用；无法在MCP/CLI/API及其他场景使用。解释权归官方所有。',
     );
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.audienceDefinition.paid).toContain(
+      '当前存在有效个人或团队订阅',
+    );
+    expect(DEEPSEEK_V4_FLASH_CAMPAIGN.audienceDefinition.unpaid).toContain(
+      '曾经充值但没有订阅',
+    );
 
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'plus',
       loggedIn: true,
+      now: activeAt,
     })).toBe('paid');
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'team_pro',
       loggedIn: true,
+      now: activeAt,
     })).toBe('paid');
+    // A positive wallet balance or historical recharge is intentionally absent
+    // from the resolver: backend-confirmed `free` still routes to the unpaid
+    // modal because only an active subscription counts as paid.
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'free',
       loggedIn: true,
+      now: activeAt,
     })).toBe('unpaid');
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: null,
       loggedIn: null,
+      now: activeAt,
     })).toBe('unknown');
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'plus',
@@ -145,5 +160,18 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(isDeepSeekV4FlashCampaignWindowOpen(start)).toBe(true);
     expect(isDeepSeekV4FlashCampaignWindowOpen(end - 1)).toBe(true);
     expect(isDeepSeekV4FlashCampaignWindowOpen(end)).toBe(false);
+    expect(isDeepSeekV4FlashCampaignVisible({ now: start - 1 })).toBe(false);
+    expect(isDeepSeekV4FlashCampaignVisible({ now: start })).toBe(true);
+    expect(isDeepSeekV4FlashCampaignVisible({ now: end })).toBe(false);
+    expect(isDeepSeekV4FlashCampaignVisible({
+      now: end,
+      search: '?campaign=deepseek-v4-flash',
+    })).toBe(true);
+    expect(resolveDeepSeekV4FlashCampaignAudience({
+      plan: 'plus', loggedIn: true, now: start - 1,
+    })).toBe('unknown');
+    expect(resolveDeepSeekV4FlashCampaignAudience({
+      plan: 'plus', loggedIn: true, now: end,
+    })).toBe('unknown');
   });
 });

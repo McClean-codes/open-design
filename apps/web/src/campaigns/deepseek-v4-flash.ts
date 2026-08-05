@@ -12,6 +12,10 @@ export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
   benefit: 'DeepSeek V4 Flash 无限使用',
   timing: '8 月 6 日至 8 月 13 日，活动期间免费使用',
   ruleSummary: '8 月 6 日 20:00 至 8 月 13 日 20:00，付费用户可在产品内免费使用；大规模盗刷等违规行为将暂停活动权益。',
+  audienceDefinition: {
+    paid: '付费用户：当前存在有效个人或团队订阅的用户。',
+    unpaid: '未付费用户：当前没有有效订阅的用户；曾经充值但没有订阅的用户仍归为未付费用户。',
+  },
   paid: {
     eyebrow: '7 天免费开放',
     status: '已解锁 · 8 月 6 日—8 月 13 日',
@@ -41,6 +45,31 @@ export function isDeepSeekV4FlashCampaignWindowOpen(now: number): boolean {
   const startAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
   const endAtExclusive = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
   return now >= startAt && now < endAtExclusive;
+}
+
+export function isDeepSeekV4FlashCampaignReview(
+  search: string | null | undefined,
+): boolean {
+  if (!search) return false;
+  const params = new URLSearchParams(search);
+  return params.get('campaign') === DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM
+    || deepSeekV4FlashCampaignAudienceOverride(search) !== null;
+}
+
+export function isDeepSeekV4FlashCampaignVisible(input: {
+  now: number;
+  search?: string | null;
+}): boolean {
+  return isDeepSeekV4FlashCampaignReview(input.search)
+    || isDeepSeekV4FlashCampaignWindowOpen(input.now);
+}
+
+export function deepSeekV4FlashCampaignNextBoundary(now: number): number | null {
+  const startAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
+  const endAtExclusive = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
+  if (now < startAt) return startAt;
+  if (now < endAtExclusive) return endAtExclusive;
+  return null;
 }
 
 function formatCampaignRemaining(remainingMs: number): string {
@@ -86,13 +115,26 @@ export function resolveDeepSeekV4FlashCampaignAudience(input: {
   plan: string | null | undefined;
   loggedIn: boolean | null | undefined;
   search?: string | null;
+  now?: number;
 }): DeepSeekV4FlashCampaignAudience {
+  if (!isDeepSeekV4FlashCampaignVisible({
+    now: input.now ?? Date.now(),
+    search: input.search,
+  })) return 'unknown';
+
   const override = deepSeekV4FlashCampaignAudienceOverride(input.search);
   if (override) return override;
 
+  // Campaign audience is determined ONLY by the current subscription tier.
+  // Wallet balance, historical top-ups, and previous recharges are deliberately
+  // not inputs: a user who has funded the wallet but has no active subscription
+  // must receive the unpaid (upgrade) modal.
   const plan = input.plan?.trim().toLowerCase() ?? '';
   if (plan === 'free' || input.loggedIn === false) return 'unpaid';
   if (plan) return 'paid';
+  // A missing tier while billing/context is loading is unknown, not unpaid.
+  // EntryShell passes a positive `free` tier once the backend confirms that the
+  // logged-in workspace has no subscription, preventing a paid-user flash.
   return 'unknown';
 }
 

@@ -5,6 +5,7 @@ import {
   DEEPSEEK_V4_FLASH_CAMPAIGN as campaign,
   DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM,
   formatDeepSeekV4FlashCampaignMockRemaining,
+  isDeepSeekV4FlashCampaignReview,
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
@@ -25,6 +26,10 @@ const SEEN_KEY = `open-design:campaign-seen:${campaign.id}`;
 const REVIEW_COUNTDOWN_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface Props {
+  /**
+   * paid = an active personal/team subscription; unpaid = no active
+   * subscription (including users who previously recharged their wallet).
+   */
   audience: DeepSeekV4FlashCampaignAudience;
 }
 
@@ -102,7 +107,10 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
   useEffect(() => {
     if (!modalOpen) return;
     const openedAt = Date.now();
-    countdownEndsAtRef.current = openedAt + REVIEW_COUNTDOWN_DURATION_MS;
+    const search = typeof window === 'undefined' ? null : window.location.search;
+    countdownEndsAtRef.current = isDeepSeekV4FlashCampaignReview(search)
+      ? openedAt + REVIEW_COUNTDOWN_DURATION_MS
+      : Date.parse(campaign.window.endAtExclusive);
     setCountdownNow(openedAt);
     const countdownTimer = window.setInterval(() => setCountdownNow(Date.now()), 1_000);
     return () => window.clearInterval(countdownTimer);
@@ -145,6 +153,11 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
     const attribution = recordAmrEntry(
       analytics.track,
       'deepseek_unpaid_modal',
+      new Date(),
+      {
+        campaignId: 'deepseek_v4_flash',
+        conversionSource: 'deepseek_unpaid_modal',
+      },
     );
     window.open(
       attributedAmrUrl(plansUrl, attribution),

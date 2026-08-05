@@ -152,8 +152,9 @@ import {
   workspaceBillingSummaryForContext,
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
-import { resolvePlanTier } from '../collab/team-plan';
+import { resolvePlanLabelTier } from '../collab/team-plan';
 import { resolveDeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
+import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 import {
   beginWorkspaceScopedRead,
   workspaceIdentityCacheKey,
@@ -639,10 +640,20 @@ export function EntryShell({
     workspaceBillingResponse,
     workspaceContext,
   );
+  const deepSeekCampaignSearch = typeof window === 'undefined'
+    ? null
+    : window.location.search;
+  const deepSeekCampaignVisibility = useDeepSeekV4FlashCampaignVisibility(
+    deepSeekCampaignSearch,
+  );
   const deepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
-    plan: resolvePlanTier({ billing: workspaceBilling, context: workspaceContext }),
+    // Subscription is the only campaign segmentation axis. In particular,
+    // `resolvePlanLabelTier` turns the backend-confirmed unsubscribed state into
+    // `free`; wallet balance / historical recharge never upgrades this audience.
+    plan: resolvePlanLabelTier({ billing: workspaceBilling, context: workspaceContext }),
     loggedIn: amrLoggedIn,
-    search: typeof window === 'undefined' ? null : window.location.search,
+    search: deepSeekCampaignSearch,
+    now: deepSeekCampaignVisibility.now,
   });
   const workspaceBalanceUsd = workspaceBillingBalanceUsd(
     workspaceBillingResponse,
@@ -1049,7 +1060,11 @@ export function EntryShell({
       analytics.track,
       'deepseek_workbench_badge',
       new Date(),
-      { metricsConsent: config.telemetry?.metrics === true },
+      {
+        metricsConsent: config.telemetry?.metrics === true,
+        campaignId: 'deepseek_v4_flash',
+        conversionSource: 'deepseek_workbench_badge',
+      },
     );
     window.open(
       attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution),

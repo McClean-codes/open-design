@@ -38,10 +38,16 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
       try { if (window.posthog) window.posthog.capture(name, props || {}); } catch (e) {}
     };
 
-    // Cross-product campaign attribution is minted on the click that enters a
-    // conversion path, never on impression. A new click gets a new entry id;
-    // the receiving Pricing/AMR page carries the same id forward to payment.
-    window.__odRecordCampaignEntry = function (sourceDetail) {
+    // Cross-product campaign attribution is minted on the first click that
+    // enters a conversion path. Later Pricing clicks preserve that first-touch
+    // id/source and add a separate conversion source, allowing Vela's final
+    // payment event to report both entry and checkout placement.
+    window.__odRecordCampaignEntry = function (sourceDetail, campaignId) {
+      var inbound = null;
+      try { inbound = new URLSearchParams(window.location.search || ''); } catch (e) {}
+      var inboundEntryId = inbound && inbound.get('od_entry_id');
+      var inboundEntrySource = inbound && inbound.get('od_entry_source');
+      var inboundEntryAt = inbound && inbound.get('od_entry_at');
       var random = '';
       try {
         random = window.crypto && typeof window.crypto.randomUUID === 'function'
@@ -49,10 +55,12 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
           : Math.random().toString(36).slice(2) + Date.now().toString(36);
       } catch (e) { random = Math.random().toString(36).slice(2) + Date.now().toString(36); }
       return {
-        entry_id: 'od-campaign-' + random,
+        entry_id: inboundEntryId || ('od-campaign-' + random),
         source_product: 'open_design',
-        source_detail: String(sourceDetail || 'unknown'),
-        entry_occurred_at: new Date().toISOString(),
+        source_detail: inboundEntrySource || String(sourceDetail || 'unknown'),
+        entry_occurred_at: inboundEntryAt || new Date().toISOString(),
+        conversion_source: String(sourceDetail || 'unknown'),
+        campaign_id: campaignId || (inbound && inbound.get('od_campaign_id')) || undefined,
       };
     };
 
@@ -64,6 +72,8 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
           target.searchParams.set('od_entry_id', attribution.entry_id || '');
           target.searchParams.set('od_entry_source', attribution.source_detail || 'unknown');
           target.searchParams.set('od_entry_at', attribution.entry_occurred_at || new Date().toISOString());
+          target.searchParams.set('od_conversion_source', attribution.conversion_source || attribution.source_detail || 'unknown');
+          if (attribution.campaign_id) target.searchParams.set('od_campaign_id', attribution.campaign_id);
         }
         return target.toString();
       } catch (e) { return href; }

@@ -1062,21 +1062,38 @@
   gap: 7px;
   min-height: 32px;
   padding: 7px 11px 7px 13px;
-  border: 1px solid var(--green-border);
-  border-radius: 999px;
-  color: var(--green);
-  background: var(--green-bg);
-  box-shadow: none;
+  border: 1px solid color-mix(in srgb, var(--brand) 42%, var(--border));
+  border-radius: var(--radius-pill);
+  color: var(--brand-text);
+  background: color-mix(in srgb, var(--brand-soft) 82%, var(--bg-panel));
+  box-shadow: var(--shadow-xs);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   font-size: 12px;
   font-weight: 700;
+  font-family: inherit;
   line-height: 1;
   text-decoration: none;
+  cursor: pointer;
   transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
+.entry-deepseek-campaign-badge::before {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: var(--radius-circular);
+  background: var(--brand-text);
+  content: '';
+}
+
+.entry-deepseek-campaign-badge svg {
+  color: var(--brand-text);
+}
+
 .entry-deepseek-campaign-badge:hover {
-  border-color: color-mix(in srgb, var(--green) 42%, var(--green-border));
-  background: color-mix(in srgb, var(--green) 8%, var(--bg-panel));
+  border-color: color-mix(in srgb, var(--brand) 70%, var(--border));
+  background: var(--brand-soft);
   transform: translateY(-1px);
 }
 

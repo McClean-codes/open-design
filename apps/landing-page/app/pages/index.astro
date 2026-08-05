@@ -29,6 +29,7 @@ import {
 import { getCatalogCounts } from '../_lib/catalog';
 import { getGithubRepoMeta } from '../_lib/github';
 import { clampDescription } from '../_lib/clamp-description';
+import { DEEPSEEK_V4_FLASH_CAMPAIGN } from '../_lib/deepseek-v4-flash-campaign';
 
 const locale: LandingLocaleCode = localeFromPath(Astro.url.pathname);
 const localeDef = getLocaleDefinition(locale);
@@ -229,7 +230,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
     <script is:inline type="application/ld+json" set:html={JSON.stringify(homepageGraph)} />
   </head>
   <body>
-    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at="2026-08-06T20:00:00+08:00" data-campaign-end-at="2026-08-13T20:00:00+08:00">
+    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam} hidden>
       <a class="home-campaign-banner__link" href={campaignPricingHref} aria-label={`${campaignCopy.title} · ${campaignCopy.linkLabel}`}>
         <span class="home-campaign-banner__badge" data-home-campaign-countdown>{campaignCopy.badge}</span>
         <span class="home-campaign-banner__divider" aria-hidden="true">|</span>
@@ -242,7 +243,8 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
     </div>
     <Fragment set:html={pageHtml} />
     <style is:global>
-      :root { --home-campaign-banner-height: 44px; }
+      :root { --home-campaign-banner-height: 0px; }
+      html.home-campaign-banner-active { --home-campaign-banner-height: 44px; }
       .home-campaign-banner {
         position: fixed;
         z-index: 70;
@@ -318,7 +320,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
       html.home-campaign-banner-dismissed .home-campaign-banner { display: none; }
       .site-chrome { top: var(--home-campaign-banner-height); }
       @media (max-width: 680px) {
-        :root { --home-campaign-banner-height: 52px; }
+        html.home-campaign-banner-active { --home-campaign-banner-height: 52px; }
         .home-campaign-banner__link {
           justify-content: flex-start;
           gap: 8px;
@@ -340,8 +342,11 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         const countdown = document.querySelector('[data-home-campaign-countdown]');
         const close = document.querySelector('[data-home-campaign-close]');
         const isZh = banner?.getAttribute('data-campaign-locale') === 'zh';
-        const mockCountdownDurationMs = 7 * 24 * 60 * 60 * 1000;
-        const mockCountdownEndAt = Date.now() + mockCountdownDurationMs;
+        const startAt = Date.parse(banner?.getAttribute('data-campaign-start-at') || '');
+        const endAt = Date.parse(banner?.getAttribute('data-campaign-end-at') || '');
+        const reviewParam = banner?.getAttribute('data-campaign-review-param');
+        const preview = new URLSearchParams(window.location.search).get('campaign') === reviewParam;
+        const previewEndAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
 
         const formatRemaining = (remainingMs) => {
           const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
@@ -353,22 +358,6 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
           return time;
         };
 
-        const updateCountdown = () => {
-          if (!countdown) return false;
-          const remainingMs = mockCountdownEndAt - Date.now();
-          if (remainingMs > 0) {
-            countdown.textContent = `${isZh ? '活动剩余' : 'Ends in'} ${formatRemaining(remainingMs)}`;
-            return true;
-          }
-          countdown.textContent = isZh ? '活动已结束' : 'Campaign ended';
-          return false;
-        };
-
-        if (updateCountdown()) {
-          const countdownTimer = window.setInterval(() => {
-            if (!updateCountdown()) window.clearInterval(countdownTimer);
-          }, 1000);
-        }
         let dismissed = false;
         try {
           if (window.localStorage.getItem(dismissKey) === '1') {
@@ -376,17 +365,36 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
             document.documentElement.classList.add('home-campaign-banner-dismissed');
           }
         } catch {}
-        if (!dismissed && typeof window.__odTrack === 'function') {
-          window.__odTrack('surface_view', {
-            page_name: 'landing_home',
-            area: 'campaign_banner',
-            element: 'deepseek_v4_flash',
-            campaign_id: 'deepseek_v4_flash',
-            user_state: 'unknown',
-          });
+        let impressionTracked = false;
+        const updateCampaignVisibility = () => {
+          const now = Date.now();
+          const active = preview || (now >= startAt && now < endAt);
+          const visible = active && !dismissed;
+          if (banner) banner.hidden = !visible;
+          document.documentElement.classList.toggle('home-campaign-banner-active', visible);
+          if (!active || !countdown) return active;
+          const remainingMs = (preview ? previewEndAt : endAt) - now;
+          countdown.textContent = `${isZh ? '活动剩余' : 'Ends in'} ${formatRemaining(remainingMs)}`;
+          if (visible && !impressionTracked && typeof window.__odTrack === 'function') {
+            impressionTracked = true;
+            window.__odTrack('surface_view', {
+              page_name: 'landing_home', area: 'campaign_banner',
+              element: 'deepseek_v4_flash', campaign_id: 'deepseek_v4_flash',
+              user_state: 'unknown',
+            });
+          }
+          return active;
+        };
+        updateCampaignVisibility();
+        const campaignTimer = window.setInterval(updateCampaignVisibility, 1000);
+        window.addEventListener('pagehide', () => window.clearInterval(campaignTimer), { once: true });
+        if (preview && campaignLink) {
+          const previewUrl = new URL(campaignLink.href);
+          previewUrl.searchParams.set('campaign', reviewParam || 'deepseek-v4-flash');
+          campaignLink.href = previewUrl.toString();
         }
         campaignLink?.addEventListener('click', (event) => {
-          const attribution = window.__odRecordCampaignEntry?.('landing_home_banner');
+          const attribution = window.__odRecordCampaignEntry?.('landing_home_banner', 'deepseek_v4_flash');
           window.__odTrack?.('ui_click', {
             page_name: 'landing_home',
             area: 'campaign_banner',
@@ -409,6 +417,9 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
             user_state: 'unknown',
           });
           document.documentElement.classList.add('home-campaign-banner-dismissed');
+          document.documentElement.classList.remove('home-campaign-banner-active');
+          if (banner) banner.hidden = true;
+          dismissed = true;
           try { window.localStorage.setItem(dismissKey, '1'); } catch {}
         });
       })();

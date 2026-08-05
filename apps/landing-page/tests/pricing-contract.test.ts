@@ -75,6 +75,15 @@ function assertPlanContract(value: unknown): asserts value is PricingContract {
 }
 
 describe("pricing contract", () => {
+  it("keeps the existing Free entry card while the Go proposal remains isolated", async () => {
+    const page = await readFile(PRICING_PAGE_PATH, "utf8");
+
+    assert.match(page, /data-tier="free"/);
+    assert.match(page, /<span class="pr-tier-name">Free<\/span>/);
+    assert.doesNotMatch(page, /data-tier="go"/);
+    assert.doesNotMatch(page, /const goPlan/);
+  });
+
   it("renders the final DeepSeek campaign promise on personal and team pricing", async () => {
     const page = await readFile(PRICING_PAGE_PATH, "utf8");
 
@@ -83,22 +92,27 @@ describe("pricing contract", () => {
     assert.match(page, /windowLabel: '活动倒计时'/);
     assert.match(page, /windowValue: '7天 00:00:00'/);
     assert.match(page, /data-pricing-campaign-countdown/);
-    assert.match(page, /mockCampaignCountdownDurationMs = 7 \* 24 \* 60 \* 60 \* 1000/);
+    assert.match(page, /campaignPreviewEndAt = Date\.now\(\) \+ 7 \* 24 \* 60 \* 60 \* 1000/);
     assert.doesNotMatch(page, /距开始/);
     assert.match(page, /FREE all week/);
     assert.match(page, /body: '8 月 6 日 20:00—8 月 13 日 20:00，一周免费用'/);
     assert.match(page, /paidBenefitNote: '8 月 6 日—8 月 13 日 · 一周免费用'/);
     assert.match(page, /teamBenefitNote: '8 月 6 日—8 月 13 日 · 一周免费用'/);
-    assert.match(page, /2026-08-06T20:00:00\+08:00/);
-    assert.match(page, /2026-08-13T20:00:00\+08:00/);
+    assert.match(page, /DEEPSEEK_V4_FLASH_CAMPAIGN\.startAt/);
+    assert.match(page, /DEEPSEEK_V4_FLASH_CAMPAIGN\.endAtExclusive/);
+    assert.match(page, /now >= campaignStartAt && now < campaignEndAt/);
+    assert.match(page, /data-pricing-campaign-surface/);
     assert.match(page, /class="pr-campaign-disclaimer"/);
     assert.match(page, /套餐内的无限制模型额度与免费生成次数，仅可通过Open Design使用；无法在MCP\/CLI\/API及其他场景使用。解释权归官方所有。/);
-    assert.match(page, /<\/aside>\s*<p class="pr-campaign-disclaimer">\{deepSeekCampaign\.disclaimer\}<\/p>/);
+    assert.match(page, /<p class="pr-foot" set:html=\{footnoteHtml\} \/>\s*<p class="pr-campaign-disclaimer" data-pricing-campaign-surface hidden>\{deepSeekCampaign\.disclaimer\}<\/p>/);
     assert.doesNotMatch(page, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
     assert.match(page, /\.pr-campaign-disclaimer\s*\{[\s\S]*font-size:\s*\.82rem;/);
     assert.match(page, /track\('surface_view',\s*\{\s*area:\s*'campaign_banner'/);
     assert.match(page, /element:\s*'deepseek_v4_flash_benefit'/);
     assert.match(page, /window\.__odRecordCampaignEntry\?\./);
+    assert.match(page, /'landing_pricing_team_plan'\s*:\s*'landing_pricing_personal_plan'/);
+    assert.match(page, /'deepseek_v4_flash'/);
+    assert.match(page, /'od_conversion_source', 'od_campaign_id'/);
     assert.match(page, /window\.__odTrack\('ui_click', props\)/);
     assert.doesNotMatch(page, /pricing_subscribe_click/);
     const disclaimerRule = page.match(
@@ -111,6 +125,7 @@ describe("pricing contract", () => {
     assert.match(disclaimerRule, /max-width:\s*none;/);
     assert.match(disclaimerRule, /margin:\s*0 0 36px;/);
     assert.match(disclaimerRule, /padding:\s*0;/);
+    assert.match(disclaimerRule, /text-align:\s*center;/);
     assert.doesNotMatch(page, /权益生效后连续 7 天/);
     assert.doesNotMatch(page, /2026-08-22T00:00:00\+08:00/);
     assert.doesNotMatch(page, /限时抢购/);

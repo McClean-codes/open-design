@@ -1,6 +1,8 @@
 import type {
   AmrEntryAttribution,
   TrackingAmrEntrySource,
+  TrackingCampaignConversionSource,
+  TrackingCampaignId,
   TrackingPageName,
 } from '@open-design/contracts/analytics';
 import {
@@ -18,6 +20,8 @@ type Track = (
 interface RecordAmrEntryOptions {
   metricsConsent?: boolean;
   reuseExistingFrom?: readonly TrackingAmrEntrySource[];
+  campaignId?: TrackingCampaignId;
+  conversionSource?: TrackingCampaignConversionSource;
 }
 
 interface SyncAmrProfileOptions {
@@ -94,6 +98,10 @@ export function recordAmrEntry(
     sourceProduct: 'open_design',
     sourceDetail,
     occurredAt: now.toISOString(),
+    ...(options.campaignId ? { campaignId: options.campaignId } : {}),
+    ...(options.conversionSource
+      ? { conversionSource: options.conversionSource }
+      : {}),
     ...(profile?.role ? { odRole: profile.role } : {}),
     ...(profile?.orgSize ? { odOrgSize: profile.orgSize } : {}),
     ...(profile?.useCase && profile.useCase.length > 0
@@ -111,6 +119,10 @@ export function recordAmrEntry(
     source_product: attribution.sourceProduct,
     source_detail: attribution.sourceDetail,
     entry_occurred_at: attribution.occurredAt,
+    ...(attribution.campaignId ? { campaign_id: attribution.campaignId } : {}),
+    ...(attribution.conversionSource
+      ? { conversion_source: attribution.conversionSource }
+      : {}),
   });
   if (options.metricsConsent === true) {
     void mirrorAmrEntryToAmrAnalytics(attribution);
@@ -204,6 +216,10 @@ export function attributedAmrUrl(
     od_entry_source: attribution.sourceDetail,
     od_entry_at: attribution.occurredAt,
   };
+  if (attribution.campaignId) params.od_campaign_id = attribution.campaignId;
+  if (attribution.conversionSource) {
+    params.od_conversion_source = attribution.conversionSource;
+  }
   if (deviceId) params.od_device_id = deviceId;
   try {
     const url = new URL(baseUrl);
@@ -286,6 +302,10 @@ async function mirrorAmrEntryToAmrAnalytics(
           sourceProduct: attribution.sourceProduct,
           sourceDetail: attribution.sourceDetail,
           entryOccurredAt: attribution.occurredAt,
+          ...(attribution.campaignId ? { campaignId: attribution.campaignId } : {}),
+          ...(attribution.conversionSource
+            ? { conversionSource: attribution.conversionSource }
+            : {}),
           // Self-reported onboarding profile (optional). Anchored to entryId on
           // the AMR side for paid-conversion segmentation. Not added to the
           // redirect URL — kept to the consent-gated mirror channel only.

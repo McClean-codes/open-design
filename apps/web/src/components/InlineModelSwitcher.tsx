@@ -99,6 +99,7 @@ import {
   deepSeekV4FlashCampaignAudienceOverride,
   isDeepSeekV4FlashCampaignModel,
 } from '../campaigns/deepseek-v4-flash';
+import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 
 function deepSeekCampaignUsageRestricted(): boolean {
   if (typeof window === 'undefined') return false;
@@ -218,6 +219,9 @@ export function InlineModelSwitcher({
   const campaignAudienceOverride = typeof window === 'undefined'
     ? null
     : deepSeekV4FlashCampaignAudienceOverride(window.location.search);
+  const campaignVisibility = useDeepSeekV4FlashCampaignVisibility(
+    typeof window === 'undefined' ? null : window.location.search,
+  );
   const campaignReviewActive = compact && campaignAudienceOverride !== null;
   const campaignNeedsUpgrade = campaignAudienceOverride === 'unpaid';
   const campaignModelBadge = campaignUsageRestricted
@@ -894,6 +898,7 @@ export function InlineModelSwitcher({
     }
     if (
       !compact
+      || !campaignVisibility.visible
       || campaignBenefitTrackedForOpenRef.current
       || !compactModelRows.some(({ model }) => isDeepSeekV4FlashCampaignModel(model.id))
     ) {
@@ -908,7 +913,14 @@ export function InlineModelSwitcher({
       user_state: campaignNeedsUpgrade ? 'unpaid' : 'paid',
       model_id: 'deepseek-v4-flash',
     });
-  }, [analytics.track, campaignNeedsUpgrade, compact, compactModelRows, open]);
+  }, [
+    analytics.track,
+    campaignNeedsUpgrade,
+    campaignVisibility.visible,
+    compact,
+    compactModelRows,
+    open,
+  ]);
 
   /** Where a refused model pick sends the user instead — the same plans
    *  destination the settings picker's upgrade lock already opens. */
@@ -919,7 +931,15 @@ export function InlineModelSwitcher({
         ? 'deepseek_model_switcher_upgrade'
         : 'inline_amr_upgrade',
       new Date(),
-      { metricsConsent: config.telemetry?.metrics === true },
+      {
+        metricsConsent: config.telemetry?.metrics === true,
+        ...(campaignNeedsUpgrade
+          ? {
+              campaignId: 'deepseek_v4_flash' as const,
+              conversionSource: 'deepseek_model_switcher_upgrade' as const,
+            }
+          : {}),
+      },
     );
     const deviceId = amrHandoffDeviceId({
       metricsConsent: config.telemetry?.metrics === true,
@@ -1240,7 +1260,7 @@ export function InlineModelSwitcher({
               aria-hidden="true"
             />
             <span className="inline-switcher__chip-model-name">{chipModel}</span>
-            {isDeepSeekV4FlashCampaignModel(currentModelId) ? (
+            {campaignVisibility.visible && isDeepSeekV4FlashCampaignModel(currentModelId) ? (
               <span
                 className={`inline-switcher__campaign-badge od-tooltip${campaignBadgeStateClass}`}
                 data-tooltip={campaignModelTooltip}
@@ -1367,7 +1387,8 @@ export function InlineModelSwitcher({
                     // A model above the caller's plan is shown, but honestly:
                     // disabled with the reason the settings picker already uses,
                     // never as a normal row whose click gets reverted.
-                    const campaignModel = isDeepSeekV4FlashCampaignModel(m.id);
+                    const campaignModel = campaignVisibility.visible
+                      && isDeepSeekV4FlashCampaignModel(m.id);
                     const lockedHint = selectable
                       ? null
                       : t('settings.amrModelUpgradeHint');

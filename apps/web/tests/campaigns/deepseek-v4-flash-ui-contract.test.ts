@@ -33,16 +33,19 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(entryShellSource).toContain("'noopener,noreferrer'");
   });
 
-  it('uses the shared success-state color tokens for the campaign badge', () => {
+  it('uses a restrained green campaign treatment from shared brand tokens', () => {
     const badgeRule = entryLayoutStyles.match(
       /\.entry-deepseek-campaign-badge\s*\{([^}]*)\}/,
     )?.[1];
 
-    expect(badgeRule).toContain('background: var(--green-bg)');
-    expect(badgeRule).toContain('color: var(--green)');
-    expect(badgeRule).toContain('border: 1px solid var(--green-border)');
-    expect(badgeRule).toContain('box-shadow: none');
-    expect(badgeRule).not.toContain('#205b16');
+    expect(badgeRule).toContain('color: var(--brand-text)');
+    expect(badgeRule).toContain('border: 1px solid color-mix(in srgb, var(--brand) 42%, var(--border))');
+    expect(badgeRule).toContain('background: color-mix(in srgb, var(--brand-soft) 82%, var(--bg-panel))');
+    expect(badgeRule).toContain('border-radius: var(--radius-pill)');
+    expect(entryLayoutStyles).toContain('.entry-deepseek-campaign-badge::before');
+    expect(entryLayoutStyles).toContain('background: var(--brand-text)');
+    expect(entryLayoutStyles).toContain('.entry-deepseek-campaign-badge svg');
+    expect(badgeRule).not.toContain('color: var(--green)');
     expect(badgeRule).not.toContain('background: transparent');
   });
 

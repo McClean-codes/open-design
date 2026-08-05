@@ -142,6 +142,7 @@ function isOffered(row: HTMLElement): boolean {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.history.replaceState({}, '', '/');
 });
 
 describe('compact home model list — a clicked model reaches the chip', () => {
@@ -241,6 +242,11 @@ describe('compact home model list — a clicked model reaches the chip', () => {
   });
 
   it('shows the unlimited badge only on DeepSeek V4 Flash and keeps it in the selected chip', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?campaign=deepseek-v4-flash&campaignAudience=paid',
+    );
     render(<StatefulSwitcher agents={[amrAgentAllEnabled]} />);
 
     expect(chipText()).toContain('deepseek-v4-flash');
