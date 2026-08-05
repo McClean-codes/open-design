@@ -951,6 +951,7 @@ test("runtime-definition shadow fails closed for mixed, unknown, empty, and unre
         "entry-settings",
         "entry-automations",
         "project-workspace",
+        "project-workspace-editor",
         "project-collab",
         "project-runtime",
         "workspace-restoration",

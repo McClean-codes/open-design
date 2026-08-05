@@ -1160,19 +1160,26 @@ process.stdin.on("end", () => {
       "entry-settings",
       "entry-automations",
       "project-workspace",
+      "project-workspace-editor",
       "project-collab",
       "project-runtime",
       "workspace-restoration",
     ]);
     expect(uiP0Groups["project-workspace"].files).toEqual([
       "ui/app.test.ts",
-      "ui/app-design-files.test.ts",
-      "ui/app-manual-edit.test.ts",
       "ui/project-management-flows.test.ts",
-      "ui/workspace-team-design-system-picker.test.ts",
       "ui/workspace-keyboard-flows.test.ts",
     ]);
     expect(uiP0Groups["project-workspace"].workers).toBe(1);
+    expect(uiP0Groups["project-workspace-editor"]).toEqual({
+      grep: String.raw`\[P0\]`,
+      workers: 1,
+      files: [
+        "ui/app-design-files.test.ts",
+        "ui/app-manual-edit.test.ts",
+        "ui/workspace-team-design-system-picker.test.ts",
+      ],
+    });
     expect(uiP0Groups["project-collab"].files).toEqual([
       "ui/workspace-multi-client-collab.test.ts",
     ]);

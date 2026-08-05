@@ -815,7 +815,7 @@ test('[P0] @critical edited HTML file restores selected tab and preview after re
   const restoredFrame = artifactPreviewFrame(page);
   const restoredTitle = restoredFrame.getByRole('heading', { name: 'Original Hero' });
   await expect(restoredTitle).toBeVisible();
-  await expect.poll(async () => restoredTitle.evaluate((el) => getComputedStyle(el).fontSize)).toBe('52px');
+  await expect(restoredTitle).toHaveCSS('font-size', '52px');
   await expect(restoredTitle).toHaveCSS('color', 'rgb(37, 99, 235)');
 });
 

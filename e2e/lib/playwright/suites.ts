@@ -49,11 +49,22 @@ export const uiP0Groups = {
     workers: 1,
     files: [
       "ui/app.test.ts",
+      "ui/project-management-flows.test.ts",
+      "ui/workspace-keyboard-flows.test.ts",
+    ],
+  },
+  // Keep editor-heavy files on a separate single-worker runtime. Running the
+  // whole workspace domain serially took 11.6 minutes on CI, while enabling a
+  // second worker in one job is unsafe because these flows share Workspace
+  // authority state outside the worker-local daemon. Two runner-isolated jobs
+  // preserve that boundary and balance the historical file timings.
+  "project-workspace-editor": {
+    grep: String.raw`\[P0\]`,
+    workers: 1,
+    files: [
       "ui/app-design-files.test.ts",
       "ui/app-manual-edit.test.ts",
-      "ui/project-management-flows.test.ts",
       "ui/workspace-team-design-system-picker.test.ts",
-      "ui/workspace-keyboard-flows.test.ts",
     ],
   },
   // Split out of "project-workspace" (2026-08-04): the two multi-client collab
@@ -85,6 +96,7 @@ export const uiP0CiMatrix = [
   { name: "entry-settings", shard: "entry-settings" },
   { name: "entry-automations", shard: "entry-automations" },
   { name: "project-workspace", shard: "project-workspace" },
+  { name: "project-workspace-editor", shard: "project-workspace-editor" },
   { name: "project-collab", shard: "project-collab" },
   { name: "project-runtime", shard: "project-runtime" },
   { name: "workspace-restoration", shard: "workspace-restoration" },
