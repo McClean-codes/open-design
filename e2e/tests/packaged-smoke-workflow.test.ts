@@ -1191,6 +1191,15 @@ process.stdin.on("end", () => {
     expect(uiP0).toContain("Preserve project-runtime domain artifact");
     expect(visual).toContain("fromJSON(needs.runners.outputs.runs_on).visual_hot");
     expect(visual).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).visual_hot)");
+    // visual-pr-capture-* is consumed by report.atom.yml; pin retain-on-failure traces so a
+    // later YAML edit cannot drop e2e/ui/reports/visual-test-results while the suite still passes.
+    expect(visual).toContain(
+      "name: visual-pr-capture-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ matrix.name }}",
+    );
+    expect(visual).toContain("name: visual-ci-${{ github.run_id }}-${{ matrix.name }}");
+    expect(visual).toContain("e2e/ui/reports/visual-test-results");
+    // Both PR and manual upload path lists include retain-on-failure diagnostics.
+    expect(visual.match(/e2e\/ui\/reports\/visual-test-results/g)?.length).toBe(2);
     expect(workflow).not.toContain("needs.runners.outputs.contabo_control");
     expect(workflow).not.toContain("needs.runners.outputs.hosted_or_blacksmith");
     expect(workflow).not.toContain("needs.runners.outputs.blacksmith_default");
