@@ -3156,6 +3156,9 @@ describe('parseAmrEntryAnalyticsPayload — entry sources added in this PR', () 
     const cases: Array<[string, string]> = [
       ['settings_amr_upgrade', 'settings'],
       ['inline_amr_upgrade', 'chat_panel'],
+      ['deepseek_unpaid_modal', 'home'],
+      ['deepseek_workbench_badge', 'home'],
+      ['deepseek_model_switcher_upgrade', 'chat_panel'],
       ['avatar_amr_upgrade', 'chat_panel'],
       ['avatar_amr_agent_card', 'chat_panel'],
       ['artifact_success_upgrade', 'artifact'],

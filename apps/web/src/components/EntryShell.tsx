@@ -42,9 +42,12 @@ import {
   trackOnboardingCompleteResult,
   trackOnboardingRuntimeScanResult,
   trackPageView,
+  trackDeepSeekCampaignBadgeClick,
+  trackDeepSeekCampaignBadgeSurfaceView,
 } from '../analytics/events';
 import {
   amrHandoffDeviceId,
+  attributedAmrUrl,
   recordAmrEntry,
   syncAmrAttributionWithOnboardingProfile,
   type AmrEntryAttribution,
@@ -149,6 +152,9 @@ import {
   workspaceBillingSummaryForContext,
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
+import { resolvePlanLabelTier } from '../collab/team-plan';
+import { resolveDeepSeekV4FlashCampaignAudience } from '../campaigns/deepseek-v4-flash';
+import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 import {
   beginWorkspaceScopedRead,
   workspaceIdentityCacheKey,
@@ -230,6 +236,9 @@ import {
 } from './entryRailBridge';
 import { enterpriseUrl } from './enterpriseUrl';
 import { resolveByokModelPreference } from './byok/validation';
+
+const DEEPSEEK_CAMPAIGN_PRICING_URL =
+  'https://open-design.ai/zh/pricing/?source=desktop_campaign_badge';
 
 // Persist the entry nav-rail open/collapsed state so it survives both a
 // home -> project -> home navigation (EntryShell unmounts on the project
@@ -630,6 +639,21 @@ export function EntryShell({
     workspaceBillingResponse,
     workspaceContext,
   );
+  const deepSeekCampaignSearch = typeof window === 'undefined'
+    ? null
+    : window.location.search;
+  const deepSeekCampaignVisibility = useDeepSeekV4FlashCampaignVisibility(
+    deepSeekCampaignSearch,
+  );
+  const deepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
+    // Subscription is the only campaign segmentation axis. In particular,
+    // `resolvePlanLabelTier` turns the backend-confirmed unsubscribed state into
+    // `free`; wallet balance / historical recharge never upgrades this audience.
+    plan: resolvePlanLabelTier({ billing: workspaceBilling, context: workspaceContext }),
+    loggedIn: amrLoggedIn,
+    search: deepSeekCampaignSearch,
+    now: deepSeekCampaignVisibility.now,
+  });
   const workspaceBalanceUsd = workspaceBillingBalanceUsd(
     workspaceBillingResponse,
     workspaceContext,
@@ -1079,6 +1103,41 @@ export function EntryShell({
     scrollContainer.scrollTop = 0;
   }, [view]);
   const analytics = useAnalytics();
+  useEffect(() => {
+    if (view !== 'home' || deepSeekV4FlashCampaignAudience === 'unknown') return;
+    trackDeepSeekCampaignBadgeSurfaceView(analytics.track, {
+      page_name: 'home',
+      area: 'campaign_badge',
+      element: 'deepseek_v4_flash',
+      campaign_id: 'deepseek_v4_flash',
+      user_state: deepSeekV4FlashCampaignAudience,
+    });
+  }, [analytics.track, deepSeekV4FlashCampaignAudience, view]);
+  const openDeepSeekCampaignPricing = useCallback(() => {
+    if (deepSeekV4FlashCampaignAudience === 'unknown') return;
+    trackDeepSeekCampaignBadgeClick(analytics.track, {
+      page_name: 'home',
+      area: 'campaign_badge',
+      element: 'open_pricing',
+      campaign_id: 'deepseek_v4_flash',
+      user_state: deepSeekV4FlashCampaignAudience,
+    });
+    const attribution = recordAmrEntry(
+      analytics.track,
+      'deepseek_workbench_badge',
+      new Date(),
+      {
+        metricsConsent: config.telemetry?.metrics === true,
+        campaignId: 'deepseek_v4_flash',
+        conversionSource: 'deepseek_workbench_badge',
+      },
+    );
+    window.open(
+      attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution),
+      '_blank',
+      'noopener,noreferrer',
+    );
+  }, [analytics.track, config.telemetry?.metrics, deepSeekV4FlashCampaignAudience]);
   function changeView(next: EntryViewKind) {
     const navElement = navElementForView(next);
     if (navElement) {
@@ -1559,6 +1618,18 @@ export function EntryShell({
               lives in the rail footer, and everything below is fixed-position
               or portalled so it occupies no layout space here. */}
           <WhatsNewPopup active={view === 'home'} />
+          {view === 'home' && deepSeekV4FlashCampaignAudience !== 'unknown' ? (
+            <button
+              type="button"
+              className="entry-deepseek-campaign-badge"
+              onClick={openDeepSeekCampaignPricing}
+              aria-label="DeepSeek V4 无限免费用，查看官网 Pricing"
+              data-testid="deepseek-campaign-pricing-badge"
+            >
+              <span>DeepSeek V4无限免费用</span>
+              <Icon name="arrow-right" size={13} />
+            </button>
+          ) : null}
           {amrBalanceGateBlock ? (
             <AmrBalanceDialog
               reason={amrBalanceGateBlock.reason}
@@ -1622,6 +1693,7 @@ export function EntryShell({
                 onRecommendationDismiss={dismissRecommendation}
                 executionSwitcher={view === 'home' ? homeExecutionSwitcher : undefined}
                 artifactUpgradeSlot={artifactUpgradeSlot}
+                deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
               />
             </div>
             <div data-testid="entry-view-projects" data-active={view === 'projects' ? 'true' : 'false'} {...inactiveViewProps(view === 'projects')}>

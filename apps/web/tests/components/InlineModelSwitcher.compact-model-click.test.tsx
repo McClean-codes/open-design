@@ -142,6 +142,7 @@ function isOffered(row: HTMLElement): boolean {
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  window.history.replaceState({}, '', '/');
 });
 
 describe('compact home model list — a clicked model reaches the chip', () => {
@@ -238,6 +239,83 @@ describe('compact home model list — a clicked model reaches the chip', () => {
 
     expect(chipText()).toContain('deepseek-v4-flash');
     expect(screen.queryByTestId('inline-model-switcher-popover')).toBeNull();
+  });
+
+  it('shows the unlimited badge only on DeepSeek V4 Flash and keeps it in the selected chip', () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/?campaign=deepseek-v4-flash&campaignAudience=paid',
+    );
+    render(<StatefulSwitcher agents={[amrAgentAllEnabled]} />);
+
+    expect(chipText()).toContain('deepseek-v4-flash');
+    expect(within(screen.getByTestId('inline-model-switcher-chip')).getByText('无限使用'))
+      .toBeInTheDocument();
+
+    const popover = openSwitcher();
+    expect(within(compactRow('deepseek-v4-flash')).getByText('无限使用'))
+      .toBeInTheDocument();
+    expect(within(compactRow('deepseek-v4-pro')).queryByText('无限使用'))
+      .toBeNull();
+    expect(within(popover).getAllByText('无限使用')).toHaveLength(1);
+  });
+
+  it('puts the explicit paid review URL on the Cloud agent and Flash model', () => {
+    window.history.replaceState({}, '', '/?campaignAudience=paid');
+    const codexAgent: AgentInfo = {
+      id: 'codex',
+      name: 'Codex CLI',
+      bin: 'codex',
+      available: true,
+      version: '1.0.0',
+      models: [{ id: 'default', label: 'Default', enabled: true, default: true }],
+    };
+    const onAgentChange = vi.fn();
+    const onAgentModelChange = vi.fn();
+
+    const { rerender } = render(
+      <InlineModelSwitcher
+        config={{ ...baseConfig, agentId: 'codex' }}
+        agents={[codexAgent, amrAgentAllEnabled]}
+        providerModelsCache={{}}
+        compact
+        daemonLive
+        onModeChange={vi.fn()}
+        onAgentChange={onAgentChange}
+        onAgentModelChange={onAgentModelChange}
+        onApiProtocolChange={vi.fn()}
+        onApiModelChange={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(onAgentChange).toHaveBeenCalledWith('amr');
+
+    rerender(
+      <InlineModelSwitcher
+        config={{
+          ...baseConfig,
+          agentId: 'amr',
+          agentModels: { amr: { model: 'deepseek-v4-pro' } },
+        }}
+        agents={[codexAgent, amrAgentAllEnabled]}
+        providerModelsCache={{}}
+        compact
+        daemonLive
+        onModeChange={vi.fn()}
+        onAgentChange={onAgentChange}
+        onAgentModelChange={onAgentModelChange}
+        onApiProtocolChange={vi.fn()}
+        onApiModelChange={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    );
+
+    expect(onAgentModelChange).toHaveBeenCalledWith('amr', {
+      model: 'deepseek-v4-flash',
+    });
+    window.history.replaceState({}, '', '/');
   });
 
   it('still closes on a click genuinely outside the switcher', () => {
