@@ -5,6 +5,7 @@ import {
   evaluatePackagedAppShellProbe,
   packagedAppShellExpression,
   packagedAppShellFailureReason,
+  packagedAppShellPolicy,
   packagedAppShellSettled,
   packagedAppShellState,
   type PackagedAppShellProbeDocument,
@@ -214,6 +215,60 @@ describe('packaged app-shell terminal state', () => {
   });
 
   it('rejects a snapshot the renderer could not produce', () => {
+    expect(packagedAppShellState(null)).toBeNull();
+    expect(packagedAppShellState({ homeVisible: true })).toBeNull();
+    expect(packagedAppShellSettled(undefined, { acceptOnboardingLanding: true })).toBe(false);
+    expect(packagedAppShellFailureReason(null, { acceptOnboardingLanding: true })).toContain(
+      'no app-shell snapshot',
+    );
+  });
+});
+
+// The postcondition PerishCode's review on #6481 asked to keep: a run that
+// seeds onboarding as completed must still notice when the app ignores it.
+// The setup's claim and the accepted terminal state have to come from the same
+// fact, so the policy reads the daemon's own `onboardingCompleted` (served from
+// `readAppConfig(RUNTIME_DATA_DIR)`) rather than the smoke profile.
+describe('packaged app-shell policy', () => {
+  it('requires home once the daemon confirms onboarding is completed', () => {
+    expect(
+      packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: true }),
+    ).toEqual({ acceptOnboardingLanding: false });
+    expect(
+      packagedAppShellPolicy({ coreProfile: false, daemonOnboardingCompleted: true }),
+    ).toEqual({ acceptOnboardingLanding: false });
+  });
+
+  it('accepts the landing only when the daemon reports onboarding is not completed', () => {
+    expect(
+      packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false }),
+    ).toEqual({ acceptOnboardingLanding: true });
+  });
+
+  it('keeps a seeded run failing when the app ignores completed onboarding', () => {
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: true });
+
+    expect(packagedAppShellSettled(landing, policy)).toBe(false);
+    expect(packagedAppShellFailureReason(landing, policy)).toContain('needs home');
+  });
+
+  it('lets an unseeded run settle on the landing', () => {
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false });
+
+    expect(packagedAppShellSettled(landing, policy)).toBe(true);
+  });
+
+  it('still requires a real surface when onboarding is not completed', () => {
+    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false });
+
+    expect(packagedAppShellSettled(probe(renderFixture([])), policy)).toBe(false);
+  });
+});
+
+describe('packaged app-shell snapshot guards', () => {
+  it('rejects a malformed snapshot', () => {
     expect(packagedAppShellState(null)).toBeNull();
     expect(packagedAppShellState({ homeVisible: true })).toBeNull();
     expect(packagedAppShellSettled(undefined, { acceptOnboardingLanding: true })).toBe(false);

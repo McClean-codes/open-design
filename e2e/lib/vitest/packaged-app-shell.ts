@@ -127,6 +127,28 @@ export function packagedAppShellState(value: unknown): PackagedAppShellState | n
   return null;
 }
 
+export type PackagedAppShellPolicyInput = {
+  /**
+   * What the daemon itself reports for `onboardingCompleted`, read from
+   * `GET /api/app-config` — which serves `readAppConfig(RUNTIME_DATA_DIR)`, the
+   * daemon's own resolved data root.
+   */
+  readonly daemonOnboardingCompleted: boolean;
+  /** Whether the run is the core smoke profile. */
+  readonly coreProfile: boolean;
+};
+
+/**
+ * Which terminal states this run may settle on.
+ *
+ * Currently keyed off the smoke profile alone.
+ */
+export function packagedAppShellPolicy(
+  input: PackagedAppShellPolicyInput,
+): { readonly acceptOnboardingLanding: boolean } {
+  return { acceptOnboardingLanding: input.coreProfile };
+}
+
 /**
  * Whether the renderer has reached a surface the caller can proceed from.
  *
