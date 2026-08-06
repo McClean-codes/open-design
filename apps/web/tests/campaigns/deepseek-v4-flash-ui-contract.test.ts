@@ -33,7 +33,7 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
   it('opens the official Pricing page in a separate browser context', () => {
     expect(entryShellSource).toContain('https://open-design.ai/zh/pricing/?source=desktop_campaign_badge');
     expect(entryShellSource).toContain("'deepseek_workbench_badge'");
-    expect(entryShellSource).toContain('attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution)');
+    expect(entryShellSource).toContain('attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution, deviceId)');
     expect(entryShellSource).toContain("'noopener,noreferrer'");
   });
 

@@ -1126,12 +1126,22 @@ export function EntryShell({
         conversionSource: 'deepseek_workbench_badge',
       },
     );
+    const deviceId = amrHandoffDeviceId({
+      metricsConsent: config.telemetry?.metrics === true,
+      resolvedDeviceId: getResolvedDeviceId(),
+      installationId: config.installationId,
+    });
     window.open(
-      attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution),
+      attributedAmrUrl(DEEPSEEK_CAMPAIGN_PRICING_URL, attribution, deviceId),
       '_blank',
       'noopener,noreferrer',
     );
-  }, [analytics.track, config.telemetry?.metrics, deepSeekV4FlashCampaignAudience]);
+  }, [
+    analytics.track,
+    config.installationId,
+    config.telemetry?.metrics,
+    deepSeekV4FlashCampaignAudience,
+  ]);
   // 产品拍板 D5: the campaign modal's paid 立即使用 performs the REAL switch —
   // agent to Cloud (amr) + model to DeepSeek V4 Flash — through the same
   // persistence callbacks the InlineModelSwitcher writes through.
