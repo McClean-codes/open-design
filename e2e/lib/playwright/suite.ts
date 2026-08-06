@@ -93,6 +93,14 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   ],
 });
 
+/**
+ * Playwright lifecycle for specs that allocate and release their own isolated
+ * tools-dev runtimes. Keeping this entrypoint in the suite module preserves
+ * the UI-test ownership boundary without booting an unused worker runtime in
+ * addition to the runtimes owned by the spec.
+ */
+export const clusterTest = base;
+
 export { expect };
 export type { PlaywrightToolsDevSuite };
 

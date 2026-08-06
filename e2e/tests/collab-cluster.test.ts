@@ -41,6 +41,52 @@ afterEach(async () => {
 });
 
 describe('createCollabCluster acquisition cleanup', () => {
+  it('starts and stops isolated client runtimes concurrently', async () => {
+    const firstRuntime = runtime('first');
+    const secondRuntime = runtime('second');
+    const firstStart = deferred<unknown>();
+    const firstStop = deferred<unknown>();
+    firstRuntime.startWeb.mockImplementationOnce(() => firstStart.promise);
+    firstRuntime.stopWeb.mockImplementationOnce(() => firstStop.promise);
+    runtimeMocks.createToolsDevSuite
+      .mockReturnValueOnce(firstRuntime)
+      .mockReturnValueOnce(secondRuntime);
+
+    const browser = {
+      newContext: vi.fn()
+        .mockResolvedValueOnce(contextWithPage())
+        .mockResolvedValueOnce(contextWithPage()),
+    } as unknown as Browser;
+
+    const clusterPromise = createCollabCluster(browser, info('passed'), specs());
+    let startAssertion: unknown;
+    try {
+      await vi.waitFor(() => expect(secondRuntime.startWeb).toHaveBeenCalledTimes(1), {
+        timeout: 1_000,
+      });
+    } catch (error) {
+      startAssertion = error;
+    } finally {
+      firstStart.resolve({});
+    }
+    const cluster = await clusterPromise;
+    if (startAssertion) throw startAssertion;
+
+    const closePromise = cluster.close();
+    let stopAssertion: unknown;
+    try {
+      await vi.waitFor(() => expect(secondRuntime.stopWeb).toHaveBeenCalledTimes(1), {
+        timeout: 1_000,
+      });
+    } catch (error) {
+      stopAssertion = error;
+    } finally {
+      firstStop.resolve(undefined);
+    }
+    await closePromise;
+    if (stopAssertion) throw stopAssertion;
+  });
+
   it('closes a successful cluster exactly once and removes its allocated root', async () => {
     const firstRuntime = runtime('first');
     const secondRuntime = runtime('second');
@@ -165,4 +211,15 @@ function specs() {
     { id: 'first', env: { CLIENT: 'first' } },
     { id: 'second', env: { CLIENT: 'second' } },
   ] as const;
+}
+
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }

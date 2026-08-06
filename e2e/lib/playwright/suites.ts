@@ -39,27 +39,44 @@ export const uiP0Groups = {
       "ui/workspace-team-interactions.test.ts",
     ],
   },
+  "entry-automations": {
+    grep: String.raw`\[P0\]`,
+    workers: 1,
+    files: ["ui/automations-page.test.ts"],
+  },
   "project-workspace": {
     grep: String.raw`\[P0\]`,
     workers: 1,
     files: [
       "ui/app.test.ts",
+      "ui/project-management-flows.test.ts",
+      "ui/workspace-keyboard-flows.test.ts",
+    ],
+  },
+  // Keep editor-heavy files on a separate single-worker runtime. Running the
+  // whole workspace domain serially took 11.6 minutes on CI, while enabling a
+  // second worker in one job is unsafe because these flows share Workspace
+  // authority state outside the worker-local daemon. Two runner-isolated jobs
+  // preserve that boundary and balance the historical file timings.
+  "project-workspace-editor": {
+    grep: String.raw`\[P0\]`,
+    workers: 1,
+    files: [
       "ui/app-design-files.test.ts",
       "ui/app-manual-edit.test.ts",
-      "ui/project-management-flows.test.ts",
       "ui/workspace-team-design-system-picker.test.ts",
     ],
   },
   // Split out of "project-workspace" (2026-08-04): the two multi-client collab
   // specs alone accounted for ~10 of that group's ~26min single-worker wall
   // time (workspace-multi-client-collab.test.ts spins up two isolated
-  // client/daemon runtimes per case). Carving them into their own single-worker
-  // shard lets both halves run concurrently as separate CI jobs instead of
-  // serially on one worker, without changing per-shard worker isolation.
+  // client/daemon runtimes per case). Keep this shard limited to the cluster-
+  // owned spec so it does not also boot the default worker runtime needed by
+  // ordinary UI files.
   "project-collab": {
     grep: String.raw`\[P0\]`,
     workers: 1,
-    files: ["ui/workspace-multi-client-collab.test.ts", "ui/workspace-keyboard-flows.test.ts"],
+    files: ["ui/workspace-multi-client-collab.test.ts"],
   },
   "project-runtime": {
     grep: String.raw`\[P0\]`,
@@ -77,7 +94,9 @@ export type UiP0GroupName = keyof typeof uiP0Groups;
 
 export const uiP0CiMatrix = [
   { name: "entry-settings", shard: "entry-settings" },
+  { name: "entry-automations", shard: "entry-automations" },
   { name: "project-workspace", shard: "project-workspace" },
+  { name: "project-workspace-editor", shard: "project-workspace-editor" },
   { name: "project-collab", shard: "project-collab" },
   { name: "project-runtime", shard: "project-runtime" },
   { name: "workspace-restoration", shard: "workspace-restoration" },
@@ -97,6 +116,7 @@ const uiP0CoverageFiles = [
   "ui/app-manual-edit.test.ts",
   "ui/app-restoration.test.ts",
   "ui/app.test.ts",
+  "ui/automations-page.test.ts",
   "ui/critical-smoke.test.ts",
   "ui/entry-chrome-flows.test.ts",
   "ui/entry-configuration-flows.test.ts",
