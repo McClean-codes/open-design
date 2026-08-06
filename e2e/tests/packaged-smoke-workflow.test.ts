@@ -1222,7 +1222,6 @@ process.stdin.on("end", () => {
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
-      "entry-automations",
       "project-workspace",
       "project-workspace-editor",
       "project-collab",
@@ -1357,7 +1356,7 @@ process.stdin.on("end", () => {
   });
 
   it("[P2] rejects duplicate file assignments across UI P0 shards", () => {
-    const files = uiP0Groups["entry-automations"].files as unknown as string[];
+    const files = uiP0Groups["workspace-restoration"].files as unknown as string[];
     files.push("ui/app.test.ts");
     try {
       expect(validatePlaywrightSuiteTopology()).toContain(

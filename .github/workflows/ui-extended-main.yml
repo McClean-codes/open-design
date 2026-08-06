@@ -50,8 +50,6 @@ jobs:
         include:
           - name: entry-settings
             shard: entry-settings
-          - name: entry-automations
-            shard: entry-automations
           - name: project-workspace
             shard: project-workspace
           - name: project-workspace-editor
