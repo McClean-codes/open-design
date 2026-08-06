@@ -147,7 +147,7 @@ describe('unpaid upgrade path carries telemetry consent', () => {
     fireEvent.click(screen.getByRole('button', { name: '升级套餐，立即使用' }));
 
     expect(open).toHaveBeenCalledTimes(1);
-    const url = new URL(open.mock.calls[0][0] as string);
+    const url = new URL(String(open.mock.calls[0]?.[0]));
     expect(url.searchParams.get('od_campaign_id')).toBe('deepseek_v4_flash');
     expect(url.searchParams.get('od_conversion_source')).toBe('deepseek_unpaid_modal');
     expect(url.searchParams.get('od_device_id')).toBe('install-abc123');
@@ -168,7 +168,7 @@ describe('unpaid upgrade path carries telemetry consent', () => {
     fireEvent.click(screen.getByRole('button', { name: '升级套餐，立即使用' }));
 
     expect(open).toHaveBeenCalledTimes(1);
-    const url = new URL(open.mock.calls[0][0] as string);
+    const url = new URL(String(open.mock.calls[0]?.[0]));
     expect(url.searchParams.get('od_device_id')).toBeNull();
     // Attribution itself is consent-independent.
     expect(url.searchParams.get('od_campaign_id')).toBe('deepseek_v4_flash');
