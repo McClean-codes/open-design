@@ -21,6 +21,7 @@ import {
   type ReactNode,
   type SetStateAction,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   defaultScenarioPluginIdForProjectMetadata,
   type AmrWalletSnapshot,
@@ -1565,18 +1566,27 @@ export function EntryShell({
               lives in the rail footer, and everything below is fixed-position
               or portalled so it occupies no layout space here. */}
           <WhatsNewPopup active={view === 'home'} />
-          {view === 'home' && deepSeekV4FlashCampaignAudience !== 'unknown' ? (
-            <button
-              type="button"
-              className="entry-deepseek-campaign-badge"
-              onClick={openDeepSeekCampaignPricing}
-              aria-label="DeepSeek V4 无限免费用，查看官网 Pricing"
-              data-testid="deepseek-campaign-pricing-badge"
-            >
-              <span>DeepSeek V4无限免费用</span>
-              <Icon name="arrow-right" size={13} />
-            </button>
-          ) : null}
+          {/* Portal to body so the pill is not trapped under
+              .workspace-tabs-chrome (z-index 120) — the tabs strip is a
+              full-width hit target in that header and was swallowing
+              clicks on the top-right badge even after raising its own z-index. */}
+          {view === 'home'
+            && deepSeekV4FlashCampaignAudience !== 'unknown'
+            && typeof document !== 'undefined'
+            ? createPortal(
+              <button
+                type="button"
+                className="entry-deepseek-campaign-badge"
+                onClick={openDeepSeekCampaignPricing}
+                aria-label="DeepSeek V4 无限免费用，查看官网 Pricing"
+                data-testid="deepseek-campaign-pricing-badge"
+              >
+                <span>DeepSeek V4无限免费用</span>
+                <Icon name="arrow-right" size={13} />
+              </button>,
+              document.body,
+            )
+            : null}
           {amrBalanceGateBlock ? (
             <AmrBalanceDialog
               reason={amrBalanceGateBlock.reason}
