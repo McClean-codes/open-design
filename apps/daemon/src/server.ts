@@ -337,6 +337,10 @@ import {
   deleteWorkspaceOwnedDesignSystem as removeWorkspaceOwnedDesignSystem,
 } from './design-systems/workspace-owned-create.js';
 import { createDesignSystemGenerationJobStore } from './design-systems/generation-jobs.js';
+import {
+  pinRunDesignSystemScope,
+  resolvePinnedRunDesignSystemScope,
+} from './design-systems/run-scope.js';
 import { createDesignSystemServerServices } from './design-systems/server-services.js';
 import {
   designSystemIdFromWorkspaceTeamBinding,
@@ -7416,44 +7420,18 @@ export async function startServer({
     paths: {
       ...pathDeps,
       resolveUserDesignSystemsRoot: (grant, designSystemId) => {
-        const workspaceId = grant.workspaceId?.trim();
-        if (!workspaceId || !designSystemId.startsWith('user:')) {
+        if (!designSystemId.startsWith('user:')) {
           return { ok: true, root: USER_DESIGN_SYSTEMS_DIR };
         }
-        const teamBinding = getWorkspaceResource(
+        const resolved = resolvePinnedRunDesignSystemScope({
           db,
-          'design_system',
-          workspaceId,
-          workspaceTeamDesignSystemBindingResourceId(workspaceId, designSystemId),
-        ) ?? getWorkspaceResource(db, 'design_system', workspaceId, designSystemId);
-        if (!teamBinding || teamBinding.resourceState === 'deleted') {
-          return {
-            ok: false,
-            code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE' as const,
-            message: 'active design system is no longer available in the run workspace',
-            details: { workspaceId, designSystemId },
-          };
-        }
-        if (teamBinding.visibility === 'team') {
-          return {
-            ok: true,
-            root: teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, workspaceId),
-          };
-        }
-        const workspaceMemberId = grant.workspaceMemberId?.trim();
-        if (
-          teamBinding.visibility === 'personal'
-          && workspaceMemberId
-          && teamBinding.createdByWorkspaceMemberId?.trim() === workspaceMemberId
-        ) {
-          return { ok: true, root: USER_DESIGN_SYSTEMS_DIR };
-        }
-        return {
-          ok: false,
-          code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE' as const,
-          message: 'active design system is not authorized for the run workspace',
-          details: { workspaceId, designSystemId },
-        };
+          scope: grant.designSystemScope,
+          designSystemId,
+          userRoot: USER_DESIGN_SYSTEMS_DIR,
+        });
+        return resolved.ok
+          ? { ok: true, root: resolved.root }
+          : resolved;
       },
     },
     projects: { getProject: (id: string) => getProject(db, id) },
@@ -8066,67 +8044,21 @@ export async function startServer({
     freeformDeckSignal,
     mediaHintSignal,
     platformHintSignal,
+    workspaceScope,
+    designSystemScope,
   }) => {
     const project =
       typeof projectId === 'string' && projectId
         ? getProject(db, projectId)
         : null;
-    const projectWorkspaceBinding =
-      typeof projectId === 'string' && projectId
-        ? getWorkspaceProjectByProjectId(db, projectId)
-        : null;
     const projectWorkspaceId =
-      typeof projectWorkspaceBinding?.workspaceId === 'string'
-        ? projectWorkspaceBinding.workspaceId.trim()
+      typeof workspaceScope?.workspaceId === 'string'
+        ? workspaceScope.workspaceId.trim()
         : '';
     const projectCreatorMemberId =
-      typeof projectWorkspaceBinding?.createdByWorkspaceMemberId === 'string'
-        ? projectWorkspaceBinding.createdByWorkspaceMemberId.trim()
+      typeof workspaceScope?.workspaceMemberId === 'string'
+        ? workspaceScope.workspaceMemberId.trim()
         : '';
-    const projectDesignSystemBinding = (summary) => {
-      if (!projectWorkspaceId || summary?.source === 'built-in') return null;
-      const logicalResourceId =
-        typeof summary?.id === 'string' ? summary.id.trim() : '';
-      if (!logicalResourceId) return null;
-      if (summary?.teamSynced === true) {
-        const canonicalTeamBinding = getWorkspaceResource(
-          db,
-          'design_system',
-          projectWorkspaceId,
-          workspaceTeamDesignSystemBindingResourceId(
-            projectWorkspaceId,
-            logicalResourceId,
-          ),
-        );
-        if (canonicalTeamBinding) return canonicalTeamBinding;
-      }
-      // Keep legacy rows readable while old local data converges to the
-      // Workspace-qualified Team envelope id.
-      return getWorkspaceResource(
-        db,
-        'design_system',
-        projectWorkspaceId,
-        logicalResourceId,
-      ) ?? null;
-    };
-    const designSystemVisibleToRun = (summary) => {
-      if (summary?.source === 'built-in') return true;
-      // A truly unbound local project is the legacy CLI/BYOK lane. Bound
-      // projects must resolve resources from their persisted project scope;
-      // shell/current Workspace state never participates.
-      if (!projectWorkspaceId) return true;
-      const binding = projectDesignSystemBinding(summary);
-      if (
-        !binding
-        || binding.resourceState === 'deleted'
-      ) {
-        return false;
-      }
-      if (binding.visibility === 'team') return true;
-      return binding.visibility === 'personal'
-        && Boolean(projectCreatorMemberId)
-        && binding.createdByWorkspaceMemberId?.trim() === projectCreatorMemberId;
-    };
     let appConfigForPrompt = null;
     try {
       appConfigForPrompt = await readAppConfig(RUNTIME_DATA_DIR);
@@ -8172,10 +8104,12 @@ export async function startServer({
           allowAppDefault: project === null,
         });
     const effectiveDesignSystemId = designSystemSelection.id;
-    const projectResourceScope =
-      typeof projectId === 'string' && projectId
-        ? getWorkspaceProjectByProjectId(db, projectId)
-        : null;
+    const projectResourceScope = projectWorkspaceId
+      ? {
+          workspaceId: projectWorkspaceId,
+          createdByWorkspaceMemberId: projectCreatorMemberId || null,
+        }
+      : null;
     let allSkillsPromise: ReturnType<typeof listAllSkillLikeEntries> | null = null;
     const loadAllSkills = async () => {
       allSkillsPromise ??= projectResourceScope?.workspaceId
@@ -8445,17 +8379,60 @@ export async function startServer({
     let activeDesignSystemId = null;
     let designSystemDigest = null;
     if (effectiveDesignSystemId) {
-      const designSystemListOptions = projectWorkspaceId
-        ? {
-            workspaceId: projectWorkspaceId,
-            workspaceMemberId: projectCreatorMemberId || null,
-          }
-        : {};
+      const userDesignSystem = effectiveDesignSystemId.startsWith('user:');
+      const effectivePinnedScope = designSystemScope
+        ?? (
+          userDesignSystem && !projectWorkspaceId
+            ? {
+                schemaVersion: 1,
+                kind: 'local',
+                projectId: typeof projectId === 'string' ? projectId : '',
+                designSystemId: effectiveDesignSystemId,
+              }
+            : null
+        );
+      const pinnedResolution = userDesignSystem
+        ? resolvePinnedRunDesignSystemScope({
+            db,
+            scope: effectivePinnedScope,
+            designSystemId: effectiveDesignSystemId,
+            userRoot: USER_DESIGN_SYSTEMS_DIR,
+          })
+        : null;
+      const designSystemListOptions = !userDesignSystem
+        ? (
+            projectWorkspaceId
+              ? {
+                  workspaceId: projectWorkspaceId,
+                  workspaceMemberId: projectCreatorMemberId || null,
+                }
+              : {}
+          )
+        : pinnedResolution?.ok && pinnedResolution.visibility === 'team'
+          ? {
+              workspaceId: pinnedResolution.workspaceId,
+              workspaceMemberId: pinnedResolution.workspaceMemberId,
+              exactTeam: true,
+            }
+          : pinnedResolution?.ok && pinnedResolution.visibility === 'personal'
+            ? {
+                workspaceId: pinnedResolution.workspaceId,
+                workspaceMemberId: pinnedResolution.workspaceMemberId,
+                exactPersonal: true,
+              }
+            : {};
+      const designSystemVisibleToPinnedRun = (system) => {
+        if (system?.source === 'built-in') return true;
+        if (!userDesignSystem || !pinnedResolution?.ok) return false;
+        return pinnedResolution.visibility === 'team'
+          ? system.teamSynced === true
+          : system.teamSynced !== true;
+      };
       let systems = await listAllDesignSystems(designSystemListOptions);
       let summary = systems.find(
         (system) =>
           system.id === effectiveDesignSystemId
-          && designSystemVisibleToRun(system),
+          && designSystemVisibleToPinnedRun(system),
       );
       if (summary?.source === 'user' && summary.teamSynced !== true) {
         await ensureUserDesignSystemWorkspaceProject(db, effectiveDesignSystemId);
@@ -8463,7 +8440,7 @@ export async function startServer({
         summary = systems.find(
           (system) =>
             system.id === effectiveDesignSystemId
-            && designSystemVisibleToRun(system),
+            && designSystemVisibleToPinnedRun(system),
         );
       }
       const editingOwnDraftDesignSystem =
@@ -8487,11 +8464,9 @@ export async function startServer({
         // live together inside `resolveDesignSystemAssets` so the whole
         // server-side asset-resolution path can be tested end-to-end
         // from real disk fixtures (see `tests/design-system-assets.test.ts`).
-        const resourceBinding = projectDesignSystemBinding(summary);
-        const scopedUserDesignSystemsRoot =
-          projectWorkspaceId && resourceBinding?.visibility === 'team'
-            ? teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, projectWorkspaceId)
-            : USER_DESIGN_SYSTEMS_DIR;
+        const scopedUserDesignSystemsRoot = pinnedResolution?.ok
+          ? pinnedResolution.root
+          : USER_DESIGN_SYSTEMS_DIR;
         const assets = await resolveDesignSystemAssets(
           effectiveDesignSystemId,
           DESIGN_SYSTEMS_DIR,
@@ -8931,13 +8906,49 @@ export async function startServer({
     // step. HTTP-created runs already carry the scope captured by the request
     // authorization transaction. Internal runs pin here. Retries reuse the
     // existing property and therefore never consult a later project rebind.
+    let runScopeChanged = false;
     if (!Object.prototype.hasOwnProperty.call(run, 'workspaceScope')) {
       run.workspaceScope =
         typeof projectId === 'string' && projectId
           ? pinRunWorkspaceScopeForProject(db, projectId)
           : null;
-      design.runs.persistState(run);
+      runScopeChanged = true;
     }
+    if (!Object.prototype.hasOwnProperty.call(run, 'designSystemScope')) {
+      const scopeProject =
+        typeof projectId === 'string' && projectId
+          ? getProject(db, projectId)
+          : null;
+      let scopePluginDesignSystemId = null;
+      if (run?.appliedPluginSnapshotId) {
+        try {
+          scopePluginDesignSystemId = designSystemIdFromPluginSnapshot(
+            getSnapshot(db, run.appliedPluginSnapshotId),
+          );
+        } catch {
+          scopePluginDesignSystemId = null;
+        }
+      }
+      const scopeSelection = scopeProject?.metadata?.intent === 'web-clone'
+        ? { id: null }
+        : resolveEffectiveDesignSystemSelection({
+            requestDesignSystemId: designSystemId,
+            pluginDesignSystemId: scopePluginDesignSystemId,
+            projectDesignSystemId: scopeProject?.designSystemId,
+            allowAppDefault: false,
+          });
+      run.designSystemScope =
+        typeof projectId === 'string' && projectId
+          ? pinRunDesignSystemScope({
+              db,
+              projectId,
+              designSystemId: scopeSelection.id,
+              workspaceScope: run.workspaceScope,
+            })
+          : null;
+      runScopeChanged = true;
+    }
+    if (runScopeChanged) design.runs.persistState(run);
     // Stash the original user prompt + per-turn config so the
     // langfuse-bridge report path can include them without reaching back
     // into chatBody across the createChatRunService boundary. Each field
@@ -9164,15 +9175,12 @@ export async function startServer({
         };
       }
     }
-    const toolWorkspaceBinding = typeof projectId === 'string' && projectId
-      ? getWorkspaceProjectByProjectId(db, projectId)
-      : null;
-    const toolWorkspaceId = typeof toolWorkspaceBinding?.workspaceId === 'string'
-      ? toolWorkspaceBinding.workspaceId.trim()
+    const toolWorkspaceId = typeof run.workspaceScope?.workspaceId === 'string'
+      ? run.workspaceScope.workspaceId.trim()
       : '';
     const toolWorkspaceMemberId =
-      typeof toolWorkspaceBinding?.createdByWorkspaceMemberId === 'string'
-        ? toolWorkspaceBinding.createdByWorkspaceMemberId.trim()
+      typeof run.workspaceScope?.workspaceMemberId === 'string'
+        ? run.workspaceScope.workspaceMemberId.trim()
         : '';
     const toolTokenGrant = cwd && typeof projectId === 'string' && projectId
       ? toolTokenRegistry.mint({
@@ -9181,6 +9189,9 @@ export async function startServer({
           ...(toolWorkspaceId ? { workspaceId: toolWorkspaceId } : {}),
           ...(toolWorkspaceMemberId
             ? { workspaceMemberId: toolWorkspaceMemberId }
+            : {}),
+          ...(run.designSystemScope
+            ? { designSystemScope: run.designSystemScope }
             : {}),
           allowedEndpoints: CHAT_TOOL_ENDPOINTS,
           allowedOperations: CHAT_TOOL_OPERATIONS,
@@ -9347,6 +9358,8 @@ export async function startServer({
         freeformDeckSignal: intentSignals.deck,
         mediaHintSignal: intentSignals.media,
         platformHintSignal: intentSignals.platform,
+        workspaceScope: run.workspaceScope,
+        designSystemScope: run.designSystemScope,
       });
 
     run.designSystemId = designSystemSelection?.id ?? null;

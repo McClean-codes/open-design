@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 
+import type { PinnedRunDesignSystemScope } from './design-systems/run-scope.js';
+
 export const DEFAULT_TOOL_TOKEN_TTL_MS = 15 * 60 * 1000;
 
 // Capability key for the parameterized media wait route. Token grants cannot
@@ -53,6 +55,8 @@ export interface ToolTokenGrant {
   workspaceId?: string;
   /** Member identity paired with workspaceId for personal-resource checks. */
   workspaceMemberId?: string;
+  /** Exact Personal/Team DS binding captured when the run starts. */
+  designSystemScope?: PinnedRunDesignSystemScope;
   allowedEndpoints: readonly ToolEndpoint[];
   allowedOperations: readonly ToolOperation[];
   issuedAt: string;
@@ -73,6 +77,7 @@ export interface MintToolTokenOptions {
   projectId: string;
   workspaceId?: string;
   workspaceMemberId?: string;
+  designSystemScope?: PinnedRunDesignSystemScope;
   allowedEndpoints?: readonly ToolEndpoint[];
   allowedOperations?: readonly ToolOperation[];
   ttlMs?: number;
@@ -161,6 +166,13 @@ export class ToolTokenRegistry {
       ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
       ...(options.workspaceMemberId
         ? { workspaceMemberId: options.workspaceMemberId }
+        : {}),
+      ...(options.designSystemScope
+        ? {
+            designSystemScope: Object.freeze({
+              ...options.designSystemScope,
+            }) as PinnedRunDesignSystemScope,
+          }
         : {}),
       allowedEndpoints: [...(options.allowedEndpoints ?? CHAT_TOOL_ENDPOINTS)],
       allowedOperations: [...(options.allowedOperations ?? CHAT_TOOL_OPERATIONS)],
