@@ -174,11 +174,16 @@ function pumpHtmlThumbnailFetchQueue(): void {
 /**
  * FIFO concurrency gate for thumbnail content fetches. `start` runs once a
  * slot is free (synchronously when one is available now) and receives the
- * release function to call when the fetch settles. The returned release is
- * the same function, for effect cleanup; it is idempotent, so settling and a
- * later unmount may both call it:
- * - released before starting → the queued task is removed and never runs;
- * - released after starting → the slot frees and the queue pumps (async).
+ * release function to call when the fetch settles. The returned function
+ * abandons the reservation, for effect cleanup:
+ * - abandoned before starting → the queued task is removed and never runs;
+ * - abandoned after starting → the slot stays held until the underlying
+ *   request settles and the settle path calls `release`. Cleanup must never
+ *   free a slot whose request is still on the network: releasing early would
+ *   let the queue pump start replacement fetches while the abandoned ones are
+ *   still in flight, pushing real connection concurrency above the cap during
+ *   directory/project navigation — the exact socket-exhaustion path this pool
+ *   exists to prevent.
  */
 function acquireHtmlThumbnailFetchSlot(
   start: (release: () => void) => void,
@@ -188,26 +193,27 @@ function acquireHtmlThumbnailFetchSlot(
   const release = () => {
     if (released) return;
     released = true;
-    if (!started) {
-      const index = queuedHtmlThumbnailFetches.indexOf(run);
-      if (index >= 0) queuedHtmlThumbnailFetches.splice(index, 1);
-      return;
-    }
     activeHtmlThumbnailFetches -= 1;
     pumpHtmlThumbnailFetchQueue();
   };
   const run = () => {
-    if (released) return;
     started = true;
     activeHtmlThumbnailFetches += 1;
     start(release);
+  };
+  let abandoned = false;
+  const abandon = () => {
+    if (abandoned || started) return;
+    abandoned = true;
+    const index = queuedHtmlThumbnailFetches.indexOf(run);
+    if (index >= 0) queuedHtmlThumbnailFetches.splice(index, 1);
   };
   if (activeHtmlThumbnailFetches < MAX_CONCURRENT_HTML_THUMBNAIL_FETCHES) {
     run();
   } else {
     queuedHtmlThumbnailFetches.push(run);
   }
-  return release;
+  return abandon;
 }
 
 function fileCategory(file: ProjectFile): FileCategory {
@@ -2009,7 +2015,7 @@ function HtmlCardThumbnail({
     // gate + pool that keep a huge grid from firing thousands of fetches.
     if (!nearViewport) return;
     let cancelled = false;
-    const releaseSlot = acquireHtmlThumbnailFetchSlot((release) => {
+    const abandonSlot = acquireHtmlThumbnailFetchSlot((release) => {
       void loadHtmlThumbnailSource(
         thumbnailIdentity,
         async () => {
@@ -2027,14 +2033,16 @@ function HtmlCardThumbnail({
         .catch(() => {
           if (!cancelled) setSrcDoc(null);
         })
-        // Success, failure, and abandonment all pass through here exactly
-        // once per acquired slot; release itself is idempotent, so the
-        // unmount cleanup below calling it again is safe.
+        // Success and failure both pass through here exactly once per
+        // started fetch — the ONLY place a started fetch's slot is freed.
+        // Cleanup below abandons the reservation without freeing the slot,
+        // so a fetch abandoned mid-flight keeps its slot until the network
+        // actually settles it and real concurrency stays within the cap.
         .finally(release);
     });
     return () => {
       cancelled = true;
-      releaseSlot();
+      abandonSlot();
     };
   }, [
     authorizationScopeKey,

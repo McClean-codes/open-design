@@ -6,8 +6,10 @@
 // fetches exhausted local sockets (net::ERR_INSUFFICIENT_RESOURCES) and
 // 502'd the web<->daemon proxy. The contract under test:
 //   1. thumbnail content fetches start only once a card nears the viewport;
-//   2. at most 6 thumbnail fetches are in flight at once (FIFO queue), and
-//      slots return on completion AND on unmount;
+//   2. at most 6 thumbnail fetches are in flight at once (FIFO queue);
+//      unmount drops queued tasks, but a slot whose request already started
+//      stays held until the request settles — real network concurrency must
+//      never exceed the cap, even across unmount/remount navigation churn;
 //   3. the page-card grid and image masonry render incrementally behind an
 //      invisible end-of-grid sentinel (no visible UI change);
 //   4. the root directory still lists every nested file (semantics guard).
@@ -154,13 +156,22 @@ function renderPanel(
   );
 }
 
-/** fetch stub whose responses stay pending until the test releases them. */
+/**
+ * fetch stub whose responses stay pending until the test releases them.
+ * Every release is also registered module-wide so afterEach can settle
+ * whatever a test left pending: an in-flight request holds its pool slot
+ * until it settles (slots are NOT freed by unmount), so an unsettled mock
+ * fetch would leak its slot into the next test. Firing a release twice is
+ * harmless — resolving an already-resolved promise is a no-op.
+ */
+const outstandingReleases: Array<() => void> = [];
+
 function pendingFetchMock() {
   const releases: Array<() => void> = [];
   const fetchMock = vi.fn(
     () =>
       new Promise<Response>((resolve) => {
-        releases.push(() =>
+        const release = () =>
           resolve(
             new Response(
               "<!doctype html><html><body><main>page</main></body></html>",
@@ -169,8 +180,9 @@ function pendingFetchMock() {
                 headers: { "Content-Type": "text/html; charset=utf-8" },
               },
             ),
-          ),
-        );
+          );
+        releases.push(release);
+        outstandingReleases.push(release);
       }),
   );
   return { fetchMock, releases };
@@ -195,8 +207,13 @@ beforeEach(() => {
   vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  // Settle every request the test left pending so retained slots return to
+  // the pool before the next test starts (see pendingFetchMock docblock).
+  await act(async () => {
+    for (const release of outstandingReleases.splice(0)) release();
+  });
   vi.unstubAllGlobals();
 });
 
@@ -234,23 +251,41 @@ describe("DesignFilesPanel thumbnail fetch viewport gating", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(9));
   });
 
-  it("returns slots on unmount so later cards can still start fetching", () => {
-    const { fetchMock } = pendingFetchMock();
+  it("keeps unmounted in-flight requests counted against the cap and drops their queued siblings", async () => {
+    const { fetchMock, releases } = pendingFetchMock();
     vi.stubGlobal("fetch", fetchMock);
 
     const first = renderPanel(nestedHtmlFiles(10, "ja"));
     intersectAll(".df-thumb-scale-host");
     expect(fetchMock).toHaveBeenCalledTimes(6);
 
-    // Unmounting with 6 fetches in flight and 4 queued must release every
-    // slot AND drop the queued tasks — without starting them mid-teardown.
+    // Unmounting with 6 fetches in flight and 4 queued must drop the queued
+    // tasks without starting them. The 6 in-flight requests are still on the
+    // network — cleanup must NOT free their slots early.
     first.unmount();
     expect(fetchMock).toHaveBeenCalledTimes(6);
 
+    // A replacement grid mounts while the abandoned requests are still in
+    // flight (the directory-switch scenario from the incident). Its cards
+    // must queue behind them: releasing slots at unmount would start 6 new
+    // fetches here and push real network concurrency to 12.
     const second = renderPanel(nestedHtmlFiles(10, "de"));
     intersectAll(".df-thumb-scale-host");
-    // A leaked pool would leave 0 free slots and start nothing here.
-    expect(fetchMock).toHaveBeenCalledTimes(12);
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+
+    // Only as the abandoned requests actually settle do their slots return
+    // and the queued replacement cards start, FIFO, still capped at 6.
+    await act(async () => {
+      for (const release of releases.splice(0, 6)) release();
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(12));
+
+    // Settling the replacement wave starts the remaining 4 queued cards:
+    // 6 abandoned + 10 replacement requests total, never more than 6 live.
+    await act(async () => {
+      for (const release of releases.splice(0, 6)) release();
+    });
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
     second.unmount();
   });
 });
