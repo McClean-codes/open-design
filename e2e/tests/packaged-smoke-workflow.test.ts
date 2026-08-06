@@ -1218,7 +1218,6 @@ process.stdin.on("end", () => {
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
-      "entry-automations",
       "project-workspace",
       "project-workspace-editor",
       "project-collab",
