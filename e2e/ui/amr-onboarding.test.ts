@@ -9,6 +9,7 @@ import {
   waitForLoadingToClear,
 } from '@/playwright/amr';
 import { expectStableCount } from '@/playwright/assertions';
+import { ensureRailOpen } from '@/playwright/rail';
 import {
   fulfillAgentsRoute,
   routeSuccessfulRuns,
@@ -25,7 +26,7 @@ type OnboardingConfig = {
   model: string;
   agentId: string | null;
   skillId: null;
-  designSystemId: null;
+  designSystemId: string | null;
   onboardingCompleted: boolean;
   mediaProviders: Record<string, never>;
   agentModels: Record<string, { model: string; reasoning: string }>;
@@ -386,6 +387,76 @@ test('[P0] onboarding AMR runtime selection carries into the first Home run requ
   });
 });
 
+test('[P0] completed BYOK setup resumes after passive Cloud reauthentication without reopening the chooser', async ({ page }) => {
+  const config = await wireOnboardingMocks(page, {
+    amrAvailable: true,
+    initialLoggedIn: false,
+  });
+  Object.assign(config, {
+    mode: 'api',
+    apiKey: 'persisted-byok-key',
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-sonnet-4-5',
+    agentId: null,
+    onboardingCompleted: true,
+  } satisfies Partial<OnboardingConfig>);
+  await seedOnboardingConfig(page, config);
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await waitForLoadingToClear(page);
+  await dismissPrivacyDialog(page);
+  await expect(page).toHaveURL(/\/onboarding$/);
+
+  await clickCloudPrimary(page);
+  await expectOnboardingFinished(page);
+  await expect(page.getByRole('heading', { name: /Choose your model source|选择模型来源/i })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => window.__amrOnboardingLoginCalls ?? 0)).toBe(1);
+  await pollStoredConfig(page).toMatchObject({
+    mode: 'api',
+    apiKey: 'persisted-byok-key',
+    baseUrl: 'https://api.anthropic.com',
+    model: 'claude-sonnet-4-5',
+    onboardingCompleted: true,
+  });
+});
+
+test('[P0] active Cloud sign-out clears execution setup, preserves unrelated preferences, and returns to onboarding', async ({ page }) => {
+  const config = await wireOnboardingMocks(page, {
+    amrAvailable: true,
+    initialLoggedIn: true,
+  });
+  Object.assign(config, {
+    mode: 'api',
+    apiKey: 'private-key',
+    baseUrl: 'https://private.example/v1',
+    model: 'private-model',
+    agentId: 'amr',
+    designSystemId: 'keep-design-system',
+    onboardingCompleted: true,
+  } satisfies Partial<OnboardingConfig>);
+  await mockAmrPersonalWorkspace(page);
+  await seedOnboardingConfig(page, config);
+
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await waitForLoadingToClear(page);
+  await dismissPrivacyDialog(page);
+  await expect(page.getByTestId('home-view')).toBeVisible();
+  await ensureRailOpen(page);
+  await page.getByTestId('entry-nav-account').hover();
+  await page.getByRole('menuitem', { name: /Sign out|退出登录/i }).click();
+  await expect(page.getByTestId('sign-out-confirm-dialog')).toBeVisible();
+  await page.getByTestId('sign-out-confirm-accept').click();
+
+  await expect(page).toHaveURL(/\/onboarding$/);
+  await pollStoredConfig(page).toMatchObject({
+    mode: 'daemon',
+    apiKey: '',
+    agentId: null,
+    designSystemId: 'keep-design-system',
+    onboardingCompleted: false,
+  });
+});
+
 test('[P0] signed-out users can open Home directly without completing onboarding', async ({ page }) => {
   test.fail(
     true,
@@ -408,9 +479,13 @@ test('[P0] signed-out users can open Home directly without completing onboarding
 });
 
 for (const destination of [
-  { name: 'Community', path: '/community', testId: 'entry-nav-community' },
-  { name: 'Design Systems', path: '/design-systems', testId: 'entry-view-design-systems' },
-  { name: 'Plugins', path: '/plugins', testId: 'entry-view-plugins' },
+  { name: 'Community', path: '/community', selector: '[data-testid="entry-nav-community"]' },
+  { name: 'Projects', path: '/projects', selector: '[data-testid="entry-view-projects"][data-active="true"]' },
+  { name: 'Automations', path: '/automations', selector: '[data-testid="entry-view-tasks"][data-active="true"]' },
+  { name: 'Design Systems', path: '/design-systems', selector: '[data-testid="entry-view-design-systems"][data-active="true"]' },
+  { name: 'Plugins', path: '/plugins', selector: '[data-testid="entry-view-plugins"][data-active="true"]' },
+  { name: 'Integrations', path: '/integrations', selector: '.integrations-view' },
+  { name: 'Settings', path: '/settings', selector: '.settings-page-surface' },
 ] as const) {
   test(`[P0] signed-out users can open ${destination.name} directly`, async ({ page }) => {
     test.fail(
@@ -429,7 +504,7 @@ for (const destination of [
     await dismissPrivacyDialog(page);
 
     await expect(page).toHaveURL(new RegExp(`${destination.path}$`));
-    await expect(page.getByTestId(destination.testId)).toBeVisible({ timeout: T.long });
+    await expect(page.locator(destination.selector)).toBeVisible({ timeout: T.long });
     await expect.poll(() => page.evaluate(() => window.__amrOnboardingLoginCalls ?? 0)).toBe(0);
   });
 }
@@ -946,6 +1021,12 @@ async function wireOnboardingMocks(
       window.__amrOnboardingCancelCalls = calls;
     }, cancelCalls);
     await route.fulfill({ json: { canceled: true, pids: [4242] } });
+  });
+
+  await page.route('**/api/integrations/vela/logout', async (route) => {
+    loggedIn = false;
+    loginInFlight = false;
+    await route.fulfill({ json: { ok: true } });
   });
 
   return config;
