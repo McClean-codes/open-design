@@ -1,13 +1,9 @@
 import { expect, test } from '@/playwright/suite';
-<<<<<<< HEAD
-import { fulfillAgentsRoute, routeSuccessfulRuns } from '@/playwright/mock-factory';
-=======
 import {
   fulfillAgentsRoute,
   routeSuccessfulRuns,
 } from '@/playwright/mock-factory';
 import { mockAmrPersonalWorkspace } from '@/playwright/amr';
->>>>>>> 886bcc4db (feat(web): streamline onboarding model source flow (#6475))
 import { openNewProjectModal as openNewProjectModalFromProjects } from '@/playwright/rail';
 import type { Page } from '@playwright/test';
 import { T } from '@/timeouts';
@@ -17,8 +13,6 @@ const STORAGE_KEY = 'open-design:config';
 test.describe.configure({ timeout: T.xlong });
 
 test.beforeEach(async ({ page }) => {
-<<<<<<< HEAD
-=======
   await page.route('**/api/integrations/vela/status*', async (route) => {
     await route.fulfill({
       json: {
@@ -30,7 +24,6 @@ test.beforeEach(async ({ page }) => {
     });
   });
   await mockAmrPersonalWorkspace(page);
->>>>>>> 886bcc4db (feat(web): streamline onboarding model source flow (#6475))
   await page.addInitScript((key) => {
     window.localStorage.setItem(
       key,

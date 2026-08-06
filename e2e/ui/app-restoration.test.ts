@@ -14,14 +14,11 @@ import type { UiScenario } from '@/playwright/resources';
 import { T } from '@/timeouts';
 import { expectStableCount } from '../lib/playwright/assertions.js';
 import {
-<<<<<<< HEAD
-=======
   AMR_PERSONAL_WORKSPACE_HEADERS,
   mockAmrPersonalWorkspace,
 } from '@/playwright/amr';
 import {
   applyStandardMocks,
->>>>>>> 886bcc4db (feat(web): streamline onboarding model source flow (#6475))
   failedRunEventBody,
   routeMockAgents,
   routeRunSequence,

@@ -947,18 +947,7 @@ test("runtime-definition shadow fails closed for mixed, unknown, empty, and unre
     assert.equal(decision.mode, "full-fallback", files.join(", "));
     assert.deepEqual(
       decision.matrix.map((entry) => entry.name),
-<<<<<<< HEAD
       ["entry-settings", "project-workspace", "project-collab", "project-runtime", "workspace-restoration"],
-=======
-      [
-        "entry-settings",
-        "project-workspace",
-        "project-workspace-editor",
-        "project-collab",
-        "project-runtime",
-        "workspace-restoration",
-      ],
->>>>>>> 886bcc4db (feat(web): streamline onboarding model source flow (#6475))
     );
   }
   assert.equal(evaluateUiP0Shadow([], false).reason, "files-unresolved");

@@ -62,11 +62,6 @@ export async function applyStandardMocks(page: Page): Promise<void> {
   await applyStorageConfig(page);
   await routeMockAgents(page);
   await routeAppConfig(page);
-<<<<<<< HEAD
-  await suppressWhatsNew(page);
-}
-
-=======
   // Keep this explicit even though the shared suite fixture also installs the
   // route: callers use applyStandardMocks for extra pages/contexts that are
   // created outside the built-in Playwright `page` fixture.
@@ -114,7 +109,6 @@ export async function routeSignedOutVelaStatus(page: Page): Promise<void> {
   });
 }
 
->>>>>>> 886bcc4db (feat(web): streamline onboarding model source flow (#6475))
 /** Keep unrelated release announcements from covering the surface under test. */
 export async function suppressWhatsNew(page: Page): Promise<void> {
   await page.route('**/api/whats-new', async (route) => {
