@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import type { Browser, BrowserContext, Page, TestInfo } from '@playwright/test';
 
+import { seedCampaignDismissals } from './campaign-dismissals.ts';
 import { createToolsDevSuite, e2eWorkspaceRoot } from '../tools-dev/runtime.ts';
 import type { ToolsDevSuite } from '../tools-dev/types.ts';
 
@@ -71,6 +72,10 @@ export async function createCollabCluster(
       try {
         await runtime.startWeb(spec.env);
         context = await browser.newContext({ baseURL: runtime.url.web() });
+        // Collab clients allocate their own BrowserContext, so the suite-level
+        // context fixture never runs here. Seed campaign dismissals before the
+        // first navigation or the home modal backdrop blocks rail clicks.
+        await seedCampaignDismissals(context);
         const page = await context.newPage();
         started.push({ ...spec, context, page, runtime });
       } catch (error) {
