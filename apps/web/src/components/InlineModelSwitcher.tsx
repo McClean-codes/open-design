@@ -775,46 +775,25 @@ export function InlineModelSwitcher({
   const currentModelOption =
     currentAgentModels.find((m) => m.id === currentModelId) ?? null;
 
-  // The explicit campaign URLs are product-review fixtures. Both audiences
-  // represent signed-in users, so keep them on the Cloud agent and expose its
-  // existing model list. Paid review selects DeepSeek; unpaid review keeps an
-  // included model selected while DeepSeek remains the upgrade row. This never
-  // changes normal user state without the explicit review query.
-  useEffect(() => {
-    if (!compact || campaignAudienceOverride === null) return;
-    const cloudAgent = agents.find((agent) => agent.id === 'amr');
-    if (!cloudAgent) return;
-    // `currentAgent` is intentionally projected to AMR while a campaign review
-    // URL is active. Compare the persisted config instead, otherwise the UI
-    // looks like AMR while the selected agent remains the previous CLI.
-    if (config.agentId !== cloudAgent.id) {
-      onAgentChange(cloudAgent.id);
-      return;
-    }
-  }, [
-    agents,
-    campaignAudienceOverride,
-    compact,
-    config.agentId,
-    onAgentChange,
-  ]);
-
+  // The explicit campaign URLs are product-review fixtures rendered as a pure
+  // UI projection (`currentAgent`/`currentModelId` are projected to AMR +
+  // DeepSeek below). Review must never mutate the user's persisted agent or
+  // model configuration — closing the review URL leaves state untouched.
   useEffect(() => {
     setCampaignReviewModelId(null);
   }, [campaignAudienceOverride]);
 
   useEffect(() => {
-    const modelToPersist =
-      campaignReviewActive && currentAgentId === 'amr' && currentModelId
-        ? currentModelId
-        : normalizedCurrentModelId;
-    if (!currentAgentId || !modelToPersist) return;
+    if (!currentAgentId || !normalizedCurrentModelId) return;
+    // While a campaign review URL is active the projected model must not be
+    // persisted; skip write-back entirely instead of writing the projection.
+    if (campaignReviewActive) return;
     const nextChoice: {
       model: string;
       reasoning?: string;
       serviceTier?: string;
     } = {
-      model: modelToPersist,
+      model: normalizedCurrentModelId,
       reasoning: normalizedCurrentReasoning,
     };
     if (normalizedCurrentServiceTier !== undefined) {
@@ -824,7 +803,6 @@ export function InlineModelSwitcher({
   }, [
     campaignReviewActive,
     currentAgentId,
-    currentModelId,
     normalizedCurrentModelId,
     normalizedCurrentReasoning,
     normalizedCurrentServiceTier,

@@ -261,7 +261,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     expect(within(popover).getAllByText('无限使用')).toHaveLength(1);
   });
 
-  it('puts the explicit paid review URL on the Cloud agent and Flash model', () => {
+  it('projects the paid review URL onto the Cloud agent without touching persisted config', () => {
     window.history.replaceState({}, '', '/?campaignAudience=paid');
     const codexAgent: AgentInfo = {
       id: 'codex',
@@ -274,7 +274,7 @@ describe('compact home model list — a clicked model reaches the chip', () => {
     const onAgentChange = vi.fn();
     const onAgentModelChange = vi.fn();
 
-    const { rerender } = render(
+    render(
       <InlineModelSwitcher
         config={{ ...baseConfig, agentId: 'codex' }}
         agents={[codexAgent, amrAgentAllEnabled]}
@@ -290,31 +290,13 @@ describe('compact home model list — a clicked model reaches the chip', () => {
       />,
     );
 
-    expect(onAgentChange).toHaveBeenCalledWith('amr');
-
-    rerender(
-      <InlineModelSwitcher
-        config={{
-          ...baseConfig,
-          agentId: 'amr',
-          agentModels: { amr: { model: 'deepseek-v4-pro' } },
-        }}
-        agents={[codexAgent, amrAgentAllEnabled]}
-        providerModelsCache={{}}
-        compact
-        daemonLive
-        onModeChange={vi.fn()}
-        onAgentChange={onAgentChange}
-        onAgentModelChange={onAgentModelChange}
-        onApiProtocolChange={vi.fn()}
-        onApiModelChange={vi.fn()}
-        onOpenSettings={vi.fn()}
-      />,
-    );
-
-    expect(onAgentModelChange).toHaveBeenCalledWith('amr', {
-      model: 'deepseek-v4-flash',
-    });
+    // The review URL is a pure UI projection: the chip shows the Cloud agent
+    // with the Flash model, while the user's persisted agent/model config
+    // stays untouched (closing the review URL must leave no residue).
+    expect(screen.getByTestId('inline-model-switcher-chip').textContent)
+      .toContain('deepseek-v4-flash');
+    expect(onAgentChange).not.toHaveBeenCalled();
+    expect(onAgentModelChange).not.toHaveBeenCalled();
     window.history.replaceState({}, '', '/');
   });
 
