@@ -908,6 +908,10 @@ function AppInner() {
   const workspaceContextStateRef = useRef(workspaceContextState);
   const projectRouteWorkspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const amrModelsCatalogContextRef = useRef<WorkspaceCollabContext | null>(null);
+  // Keep pending/identity in refs so refreshAgents (stable callback) can share
+  // the same Path A authority gate as the main catalog poll effect.
+  const amrModelsCatalogPendingRef = useRef(false);
+  const amrModelsCatalogIdentityRef = useRef('');
   const projectOpenWorkspaceWitnessRef = useRef<{
     projectId: string;
     projectWorkspaceId: string;
@@ -2796,19 +2800,33 @@ function AppInner() {
           // this call's return value can carry the scoped catalog as soon as
           // it becomes available — and so we do not race a caller's own
           // restartAmrPolling with a second generation bump.
-          const scoped = await fetchAmrModels(amrModelsCatalogContextRef.current);
-          if (!isCurrentAgentStreamRequest(agentRequestId)) {
-            return mergeAmrModelsIntoAgents(ordered, amrModelsRef.current);
-          }
-          if (scoped && Array.isArray(scoped.models) && scoped.models.length > 0) {
-            amrModelsRef.current = scoped;
-            pathACatalog = scoped;
-          } else {
-            // Prefer a concurrent Path A win over stomping a just-landed catalog.
-            pathACatalog = amrModelsRef.current;
-            if (!pathACatalog || pathACatalog.models.length === 0) {
-              amrModelsRef.current = null;
-              pathACatalog = null;
+          //
+          // Match the main poll effect: never re-probe while catalog authority
+          // is pending (account transition or unresolved bound-project
+          // workspace). The context ref may still hold a retained prior-account
+          // context or null, and committing that catalog would bypass the
+          // pending sentinel. Also discard responses after identity changes
+          // mid-flight (same intent as the poll generation guard).
+          if (!amrModelsCatalogPendingRef.current) {
+            const issuedIdentity = amrModelsCatalogIdentityRef.current;
+            const issuedWorkspaceContext = amrModelsCatalogContextRef.current;
+            const scoped = await fetchAmrModels(issuedWorkspaceContext);
+            if (
+              !isCurrentAgentStreamRequest(agentRequestId)
+              || amrModelsCatalogIdentityRef.current !== issuedIdentity
+            ) {
+              return mergeAmrModelsIntoAgents(ordered, amrModelsRef.current);
+            }
+            if (scoped && Array.isArray(scoped.models) && scoped.models.length > 0) {
+              amrModelsRef.current = scoped;
+              pathACatalog = scoped;
+            } else {
+              // Prefer a concurrent Path A win over stomping a just-landed catalog.
+              pathACatalog = amrModelsRef.current;
+              if (!pathACatalog || pathACatalog.models.length === 0) {
+                amrModelsRef.current = null;
+                pathACatalog = null;
+              }
             }
           }
         }
@@ -4232,6 +4250,8 @@ function AppInner() {
     accountGeneration: workspaceAccountGeneration,
   });
   amrModelsCatalogContextRef.current = amrModelsCatalogContext;
+  amrModelsCatalogPendingRef.current = amrModelsCatalogPending;
+  amrModelsCatalogIdentityRef.current = amrModelsCatalogIdentity;
 
   // Team entitlements are workspace- and account-scoped. Drop the previous
   // catalog as soon as that catalog identity changes so the picker cannot keep
