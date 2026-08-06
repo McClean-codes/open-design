@@ -10,6 +10,7 @@ import {
   packagedAppShellExpression,
   packagedOnboardingCompletedFromProbe,
   packagedOnboardingConfigExpression,
+  runPackagedAppShellPhase,
   type PackagedOnboardingConfigFetch,
   packagedAppShellFailureReason,
   packagedAppShellPolicy,
@@ -519,5 +520,98 @@ describe('packaged app-shell snapshot guards', () => {
     expect(packagedAppShellFailureReason(null, { acceptOnboardingLanding: true })).toContain(
       'no app-shell snapshot',
     );
+  });
+});
+
+// PerishCode's sixth review on #6481: the unit fixtures prove the rule, but the
+// release smoke seeds unconditionally, so `seededObserved` is always true at the
+// only policy call site and the unseeded cases exercise a state the smoke can
+// never enter. These drive the smoke's own transition — read the daemon fact,
+// hold the seeded state across it, derive the policy, settle — with only the
+// I/O faked, for both scenarios the packaged app legitimately has.
+describe('packaged launch scenarios', () => {
+  const virtualClock = () => {
+    let t = 0;
+    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  };
+
+  it('settles a genuine first run on the cloud sign-in landing', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    const result = await runPackagedAppShellPhase({
+      coreProfile: true,
+      now: clock.now,
+      observe: async () => landing,
+      readOnboardingCompleted: async () => false,
+      scenario: 'first-run',
+      sleep: clock.sleep,
+    });
+
+    expect(result).toEqual({ appShell: 'onboarding-landing', onboardingCompleted: false });
+  });
+
+  it('settles a completed user on home', async () => {
+    const clock = virtualClock();
+    const home = probe(renderFixture(HOME_SHELL));
+
+    const result = await runPackagedAppShellPhase({
+      coreProfile: true,
+      now: clock.now,
+      observe: async () => home,
+      readOnboardingCompleted: async () => true,
+      scenario: 'completed-user',
+      sleep: clock.sleep,
+    });
+
+    expect(result).toEqual({ appShell: 'home', onboardingCompleted: true });
+  });
+
+  it('fails a completed user that lands on onboarding instead of home', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    await expect(
+      runPackagedAppShellPhase({
+        coreProfile: true,
+        now: clock.now,
+        observe: async () => landing,
+        readOnboardingCompleted: async () => true,
+        scenario: 'completed-user',
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(/needs home/);
+  });
+
+  it('fails a completed user whose seeded state was lost across the relaunch', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    await expect(
+      runPackagedAppShellPhase({
+        coreProfile: true,
+        now: clock.now,
+        observe: async () => landing,
+        readOnboardingCompleted: async () => false,
+        scenario: 'completed-user',
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(PackagedOnboardingSeedError);
+  });
+
+  it('fails a first run whose renderer never painted either surface', async () => {
+    const clock = virtualClock();
+    const blank = probe(renderFixture([]));
+
+    await expect(
+      runPackagedAppShellPhase({
+        coreProfile: true,
+        now: clock.now,
+        observe: async () => blank,
+        readOnboardingCompleted: async () => false,
+        scenario: 'first-run',
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(/neither the home nav rail nor the onboarding cloud sign-in landing rendered/);
   });
 });

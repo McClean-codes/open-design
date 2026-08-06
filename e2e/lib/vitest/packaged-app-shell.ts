@@ -289,6 +289,50 @@ export function packagedAppShellPolicy(
 }
 
 /**
+ * Polls an observation until the renderer settles on a state the policy allows.
+ *
+ * The clock and sleep are injectable so the transition can be driven without
+ * waiting out a real timeout.
+ */
+export async function settlePackagedAppShell(options: {
+  readonly describeLast?: (value: unknown) => string;
+  readonly now?: () => number;
+  readonly observe: () => Promise<unknown>;
+  readonly policy: { readonly acceptOnboardingLanding: boolean };
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly timeoutMs?: number;
+}): Promise<PackagedAppShellState> {
+  const now = options.now ?? (() => Date.now());
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const timeoutMs = options.timeoutMs ?? 45_000;
+  const startedAt = now();
+  let lastResult: unknown = null;
+  let lastValue: unknown = null;
+
+  while (now() - startedAt < timeoutMs) {
+    try {
+      const observed = await options.observe();
+      lastResult = observed;
+      lastValue = observed;
+      if (packagedAppShellSettled(lastValue, options.policy)) {
+        const state = packagedAppShellState(lastValue);
+        if (state != null) return state;
+      }
+    } catch (error) {
+      lastResult = error;
+    }
+    await sleep(750);
+  }
+
+  throw new Error(
+    [
+      `packaged windows runtime did not reach a usable app shell: ${packagedAppShellFailureReason(lastValue, options.policy)}`,
+      options.describeLast?.(lastResult) ?? String(lastResult),
+    ].join('\n'),
+  );
+}
+
+/**
  * Raised when a run that seeded onboarding completion, and saw the daemon
  * confirm it, later observes it gone.
  */
@@ -319,6 +363,55 @@ export function assertSeededOnboardingRetained(input: {
   throw new PackagedOnboardingSeedError(
     'the relaunched daemon lost the seeded onboarding state — check that the protocol cold launch still resolves the tools-pack runtime data root',
   );
+}
+
+/**
+ * The two launch scenarios the packaged app legitimately has.
+ *
+ * Both are real product behaviour, not a contradiction.
+ * `shouldRouteToFirstRunOnboarding` (apps/web/src/App.tsx) keys purely on
+ * `onboardingCompleted`, and `connectStepRuntimeReady` (EntryShell.tsx) lets
+ * onboarding complete through cloud sign-in *or* a local CLI *or* a verified
+ * BYOK key. So "completed setup, currently signed out -> home" and "never
+ * completed -> cloud sign-in landing" are both correct.
+ */
+export type PackagedLaunchScenario = 'completed-user' | 'first-run';
+
+/**
+ * Walks one launch scenario: read the daemon's onboarding fact, hold the run's
+ * own seeded state across the transition, derive the policy, and settle.
+ *
+ * Returns the reading alongside the state so the caller can record both.
+ */
+export async function runPackagedAppShellPhase(options: {
+  readonly coreProfile: boolean;
+  readonly describeLast?: (value: unknown) => string;
+  readonly now?: () => number;
+  readonly observe: () => Promise<unknown>;
+  readonly readOnboardingCompleted: () => Promise<boolean>;
+  readonly scenario: PackagedLaunchScenario;
+  readonly sleep?: (ms: number) => Promise<void>;
+  readonly timeoutMs?: number;
+}): Promise<{ appShell: PackagedAppShellState; onboardingCompleted: boolean }> {
+  const onboardingCompleted = await options.readOnboardingCompleted();
+  // The smoke seeds completion unconditionally (win.spec.ts), so every phase is
+  // a completed-user phase.
+  const seededOnboardingCompleted = true;
+  assertSeededOnboardingRetained({ daemonOnboardingCompleted: onboardingCompleted, seededOnboardingCompleted });
+  const policy = packagedAppShellPolicy({
+    coreProfile: options.coreProfile,
+    daemonOnboardingCompleted: onboardingCompleted,
+    seededOnboardingCompleted,
+  });
+  const appShell = await settlePackagedAppShell({
+    ...(options.describeLast == null ? {} : { describeLast: options.describeLast }),
+    ...(options.now == null ? {} : { now: options.now }),
+    observe: options.observe,
+    policy,
+    ...(options.sleep == null ? {} : { sleep: options.sleep }),
+    ...(options.timeoutMs == null ? {} : { timeoutMs: options.timeoutMs }),
+  });
+  return { appShell, onboardingCompleted };
 }
 
 /**
