@@ -78,6 +78,34 @@ describe('design-system structured runtime', () => {
       .resolves.toMatchObject({ mode: 'structured' });
   });
 
+  it('uses the supplied workspace root for prompt indexes when user ids collide', async () => {
+    const personalRoot = await mkdtemp(path.join(os.tmpdir(), 'od-ds-runtime-personal-'));
+    const teamRoot = await mkdtemp(path.join(os.tmpdir(), 'od-ds-runtime-team-'));
+    temporaryRoots.push(personalRoot, teamRoot);
+    for (const root of [personalRoot, teamRoot]) {
+      await cp(path.join(fixturesRoot, 'runtime-v3'), path.join(root, 'shared'), { recursive: true });
+      const manifestPath = path.join(root, 'shared', 'manifest.json');
+      const manifest = JSON.parse(await readFile(manifestPath, 'utf8')) as { id: string };
+      manifest.id = 'shared';
+      await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    }
+    const teamIntentPath = path.join(teamRoot, 'shared', 'manifests', 'intent-map.json');
+    const teamIntent = JSON.parse(await readFile(teamIntentPath, 'utf8')) as {
+      mappings: Array<{ variant: string }>;
+    };
+    teamIntent.mappings[0]!.variant = 'secondary';
+    await writeFile(teamIntentPath, `${JSON.stringify(teamIntent, null, 2)}\n`);
+
+    await expect(resolveDesignSystemRuntimePromptContext('user:shared', fixturesRoot, teamRoot))
+      .resolves.toMatchObject({
+        intentIndex: expect.stringContaining('`account.settings.save` → Button.secondary'),
+      });
+    await expect(resolveDesignSystemRuntimePromptContext('user:shared', fixturesRoot, personalRoot))
+      .resolves.toMatchObject({
+        intentIndex: expect.stringContaining('`account.settings.save` → Button.primary'),
+      });
+  });
+
   it('reports dangling intent references instead of silently falling back', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'od-ds-runtime-'));
     temporaryRoots.push(root);
