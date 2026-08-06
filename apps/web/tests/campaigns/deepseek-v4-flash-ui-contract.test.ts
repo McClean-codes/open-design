@@ -10,10 +10,6 @@ const entryLayoutStyles = readFileSync(
   resolve(process.cwd(), 'src/styles/home/entry-layout.css'),
   'utf8',
 );
-const homeHeroStyles = readFileSync(
-  resolve(process.cwd(), 'src/styles/home/home-hero.css'),
-  'utf8',
-);
 const modelSwitcherSource = readFileSync(
   resolve(process.cwd(), 'src/components/InlineModelSwitcher.tsx'),
   'utf8',
@@ -57,16 +53,6 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(badgeRule).not.toContain('background: transparent');
   });
 
-  it('models the unpaid review URL as a signed-in user with existing models', () => {
-    expect(modelSwitcherSource).toContain('DEEPSEEK_CAMPAIGN_REVIEW_MODELS');
-    expect(modelSwitcherSource).toContain('DEEPSEEK_UNPAID_REVIEW_DEFAULT_MODEL_ID');
-    expect(modelSwitcherSource).toContain("campaignAudienceOverride === 'unpaid'");
-    expect(modelSwitcherSource).toContain('!isDeepSeekV4FlashCampaignModel(model.id)');
-    expect(modelSwitcherSource).toContain('data-campaign-review');
-    expect(homeHeroStyles).toContain('.inline-switcher[data-campaign-review]');
-    expect(homeHeroStyles).toContain('max-width: 220px');
-  });
-
   it('carries a campaign-specific attribution id into the model upgrade flow', () => {
     expect(modelSwitcherSource).toContain("'deepseek_model_switcher_upgrade'");
     expect(modelSwitcherSource).toContain('attributedAmrUrl(');
@@ -105,27 +91,23 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(campaignModalSource).toContain("onUseCampaignModel?.('amr', campaign.modelId)");
   });
 
-  it('routes every review-parameter read through the production gate (D7)', () => {
+  it('keeps every campaign surface free of URL-parameter reads (product decision)', () => {
     const campaignLibSource = readFileSync(
       resolve(process.cwd(), 'src/campaigns/deepseek-v4-flash.ts'),
       'utf8',
     );
-    // campaign + campaignAudience overrides live in the campaign lib…
-    expect(campaignLibSource).toContain('export function isCampaignReviewAllowed');
-    expect(campaignLibSource).toMatch(
-      /isDeepSeekV4FlashCampaignReview\([\s\S]*?\)[^{]*\{\s*if \(!isCampaignReviewAllowed\(\)\) return false;/,
-    );
-    expect(campaignLibSource).toMatch(
-      /deepSeekV4FlashCampaignAudienceOverride\([\s\S]*?\)[^{]*\{\s*if \(!isCampaignReviewAllowed\(\)\) return null;/,
-    );
-    // …the modal's direct ?campaign= read and the switcher's campaignUsage
-    // read must consult the same gate.
-    expect(campaignModalSource).toMatch(
-      /function shouldForceCampaignReview\(\): boolean \{\s*if \(!isCampaignReviewAllowed\(\)\) return false;/,
-    );
-    expect(modelSwitcherSource).toMatch(
-      /function deepSeekCampaignUsageRestricted\(\): boolean \{\s*if \(!isCampaignReviewAllowed\(\)\) return false;/,
-    );
+    // The former URL review backdoors (campaign / audience / usage override
+    // parameters) were removed for good. Campaign visibility comes from the
+    // real window and the real audience only; pre-launch review happens by
+    // temporarily overriding the startAt constant, never through a URL.
+    for (const source of [campaignLibSource, campaignModalSource, modelSwitcherSource]) {
+      expect(source).not.toContain('URLSearchParams');
+      expect(source).not.toContain('location.search');
+    }
+    // The reserved presentation branches stay, but without any trigger that
+    // could be driven from a URL.
+    expect(modelSwitcherSource).toContain('const campaignRestricted = false;');
+    expect(modelSwitcherSource).toContain('const campaignNeedsUpgrade = false;');
   });
 
   it('tracks campaign discovery surfaces without replacing model-selection events', () => {

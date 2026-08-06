@@ -639,19 +639,13 @@ export function EntryShell({
     workspaceBillingResponse,
     workspaceContext,
   );
-  const deepSeekCampaignSearch = typeof window === 'undefined'
-    ? null
-    : window.location.search;
-  const deepSeekCampaignVisibility = useDeepSeekV4FlashCampaignVisibility(
-    deepSeekCampaignSearch,
-  );
+  const deepSeekCampaignVisibility = useDeepSeekV4FlashCampaignVisibility();
   const deepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
     // Subscription is the only campaign segmentation axis. In particular,
     // `resolvePlanLabelTier` turns the backend-confirmed unsubscribed state into
     // `free`; wallet balance / historical recharge never upgrades this audience.
     plan: resolvePlanLabelTier({ billing: workspaceBilling, context: workspaceContext }),
     loggedIn: amrLoggedIn,
-    search: deepSeekCampaignSearch,
     now: deepSeekCampaignVisibility.now,
   });
   const workspaceBalanceUsd = workspaceBillingBalanceUsd(

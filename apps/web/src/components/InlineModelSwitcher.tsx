@@ -96,36 +96,9 @@ import {
 } from './providerModelsCache';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
-  deepSeekV4FlashCampaignAudienceOverride,
-  isCampaignReviewAllowed,
   isDeepSeekV4FlashCampaignModel,
 } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
-
-function deepSeekCampaignUsageRestricted(): boolean {
-  if (!isCampaignReviewAllowed()) return false;
-  if (typeof window === 'undefined') return false;
-  const value = new URLSearchParams(window.location.search).get('campaignUsage');
-  return value === 'restricted' || value === 'exhausted';
-}
-
-const DEEPSEEK_CAMPAIGN_REVIEW_MODELS: NonNullable<AgentInfo['models']> = [
-  { id: 'claude-opus-4.8', label: 'Claude Opus 4.8' },
-  { id: 'deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
-  { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-  { id: 'glm-5.1', label: 'GLM 5.1' },
-];
-
-const DEEPSEEK_UNPAID_REVIEW_DEFAULT_MODEL_ID = 'claude-opus-4.8';
-const DEEPSEEK_CAMPAIGN_REVIEW_AGENT: AgentInfo = {
-  id: 'amr',
-  name: 'Open Design',
-  bin: 'amr',
-  available: true,
-  version: null,
-  models: DEEPSEEK_CAMPAIGN_REVIEW_MODELS,
-  modelsSource: 'fallback',
-};
 
 interface Props {
   config: AppConfig;
@@ -217,26 +190,26 @@ export function InlineModelSwitcher({
 }: Props) {
   const t = useT();
   const analytics = useAnalytics();
-  const campaignUsageRestricted = deepSeekCampaignUsageRestricted();
-  const campaignAudienceOverride = typeof window === 'undefined'
-    ? null
-    : deepSeekV4FlashCampaignAudienceOverride(window.location.search);
-  const campaignVisibility = useDeepSeekV4FlashCampaignVisibility(
-    typeof window === 'undefined' ? null : window.location.search,
-  );
-  const campaignReviewActive = compact && campaignAudienceOverride !== null;
-  const campaignNeedsUpgrade = campaignAudienceOverride === 'unpaid';
-  const campaignModelBadge = campaignUsageRestricted
+  // Both flags are reserved presentation branches with no trigger wired yet:
+  // `campaignRestricted` (已暂停 badge) is reserved for the backend
+  // usage-limit signal — no trigger wired yet — and `campaignNeedsUpgrade`
+  // (升级可用 badge) is reserved for a real unpaid-audience signal reaching
+  // this component. Until those land, every campaign badge renders the paid
+  // state.
+  const campaignRestricted = false;
+  const campaignNeedsUpgrade = false;
+  const campaignVisibility = useDeepSeekV4FlashCampaignVisibility();
+  const campaignModelBadge = campaignRestricted
     ? DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.modelBadge
     : campaignNeedsUpgrade
       ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.modelBadge
       : DEEPSEEK_V4_FLASH_CAMPAIGN.paid.modelBadge;
-  const campaignModelTooltip = campaignUsageRestricted
+  const campaignModelTooltip = campaignRestricted
     ? DEEPSEEK_V4_FLASH_CAMPAIGN.restricted.tooltip
     : campaignNeedsUpgrade
       ? DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.tooltip
       : DEEPSEEK_V4_FLASH_CAMPAIGN.ruleSummary;
-  const campaignBadgeStateClass = campaignUsageRestricted
+  const campaignBadgeStateClass = campaignRestricted
     ? ' is-restricted'
     : campaignNeedsUpgrade
       ? ' is-unpaid'
@@ -250,7 +223,6 @@ export function InlineModelSwitcher({
   } = useWorkspaceContext();
   const workspaceBillingResponse = useWorkspaceBillingResponse();
   const [open, setOpen] = useState(false);
-  const [campaignReviewModelId, setCampaignReviewModelId] = useState<string | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const campaignBenefitTrackedForOpenRef = useRef(false);
@@ -728,10 +700,8 @@ export function InlineModelSwitcher({
     [agents],
   );
   const currentAgent = useMemo(
-    () => campaignReviewActive
-      ? agents.find((a) => a.id === 'amr') ?? DEEPSEEK_CAMPAIGN_REVIEW_AGENT
-      : agents.find((a) => a.id === config.agentId) ?? null,
-    [agents, campaignReviewActive, config.agentId],
+    () => agents.find((a) => a.id === config.agentId) ?? null,
+    [agents, config.agentId],
   );
   const amrInstalled = installedAgents.some((a) => a.id === 'amr');
   const shouldOfferAmrReminder =
@@ -746,48 +716,24 @@ export function InlineModelSwitcher({
   const normalizedCurrentModelId = normalizedCurrentChoice?.model ?? null;
   const normalizedCurrentReasoning = normalizedCurrentChoice?.reasoning;
   const normalizedCurrentServiceTier = normalizedCurrentChoice?.serviceTier;
-  const currentAgentModels =
-    compact &&
-    campaignAudienceOverride !== null &&
-    currentAgent?.id === 'amr' &&
-    !currentAgent.models?.length
-      ? DEEPSEEK_CAMPAIGN_REVIEW_MODELS
-      : currentAgent?.models ?? [];
+  const currentAgentModels = currentAgent?.models ?? [];
   const currentAgentModelIds = currentAgentModels.map((m) => m.id);
   const configuredModelId =
     typeof effectiveCurrentChoice.model === 'string' && effectiveCurrentChoice.model
       ? effectiveCurrentChoice.model
       : null;
-  const campaignReviewDefaultModelId = campaignAudienceOverride === 'paid'
-    ? DEEPSEEK_V4_FLASH_CAMPAIGN.modelId
-    : campaignAudienceOverride === 'unpaid'
-      ? DEEPSEEK_UNPAID_REVIEW_DEFAULT_MODEL_ID
-      : null;
   const currentModelId =
-    compact && campaignReviewDefaultModelId && currentAgent?.id === 'amr'
-      ? campaignReviewModelId ?? campaignReviewDefaultModelId
-      : currentAgent?.id === 'amr' &&
-          configuredModelId &&
-          configuredModelId !== 'default' &&
-          !currentAgentModelIds.includes(configuredModelId)
-        ? defaultAgentModelId(currentAgent)
-        : configuredModelId ?? defaultAgentModelId(currentAgent);
+    currentAgent?.id === 'amr' &&
+    configuredModelId &&
+    configuredModelId !== 'default' &&
+    !currentAgentModelIds.includes(configuredModelId)
+      ? defaultAgentModelId(currentAgent)
+      : configuredModelId ?? defaultAgentModelId(currentAgent);
   const currentModelOption =
     currentAgentModels.find((m) => m.id === currentModelId) ?? null;
 
-  // The explicit campaign URLs are product-review fixtures rendered as a pure
-  // UI projection (`currentAgent`/`currentModelId` are projected to AMR +
-  // DeepSeek below). Review must never mutate the user's persisted agent or
-  // model configuration — closing the review URL leaves state untouched.
-  useEffect(() => {
-    setCampaignReviewModelId(null);
-  }, [campaignAudienceOverride]);
-
   useEffect(() => {
     if (!currentAgentId || !normalizedCurrentModelId) return;
-    // While a campaign review URL is active the projected model must not be
-    // persisted; skip write-back entirely instead of writing the projection.
-    if (campaignReviewActive) return;
     const nextChoice: {
       model: string;
       reasoning?: string;
@@ -801,7 +747,6 @@ export function InlineModelSwitcher({
     }
     onAgentModelChange(currentAgentId, nextChoice);
   }, [
-    campaignReviewActive,
     currentAgentId,
     normalizedCurrentModelId,
     normalizedCurrentReasoning,
@@ -829,27 +774,13 @@ export function InlineModelSwitcher({
     (modelId: string, extra?: { serviceTier?: string }) => {
       const agentId = currentAgent?.id;
       if (!agentId) return false;
-      const selectableInPaidReview =
-        compact && campaignAudienceOverride === 'paid' && currentAgent.id === 'amr';
-      const selectableInUnpaidReview =
-        compact &&
-        campaignAudienceOverride === 'unpaid' &&
-        currentAgent.id === 'amr' &&
-        !isDeepSeekV4FlashCampaignModel(modelId);
-      if (
-        !selectableInPaidReview &&
-        !selectableInUnpaidReview &&
-        !agentModelIsSelectable(currentAgent, modelId)
-      ) {
+      if (!agentModelIsSelectable(currentAgent, modelId)) {
         return false;
-      }
-      if (selectableInPaidReview || selectableInUnpaidReview) {
-        setCampaignReviewModelId(modelId);
       }
       onAgentModelChange?.(agentId, { model: modelId, ...extra });
       return true;
     },
-    [campaignAudienceOverride, compact, currentAgent, onAgentModelChange],
+    [currentAgent, onAgentModelChange],
   );
 
   /**
@@ -861,14 +792,9 @@ export function InlineModelSwitcher({
     () =>
       inlineAgentModelOptions.map((model) => ({
         model,
-        selectable:
-          compact && campaignAudienceOverride === 'paid'
-            ? true
-            : compact && campaignAudienceOverride === 'unpaid'
-              ? !isDeepSeekV4FlashCampaignModel(model.id)
-            : agentModelIsSelectable(currentAgent, model.id),
+        selectable: agentModelIsSelectable(currentAgent, model.id),
       })),
-    [campaignAudienceOverride, compact, currentAgent, inlineAgentModelOptions],
+    [currentAgent, inlineAgentModelOptions],
   );
 
   useEffect(() => {
@@ -1183,7 +1109,6 @@ export function InlineModelSwitcher({
       className={`inline-switcher${compact ? ' inline-switcher--compact' : ''}`}
       ref={wrapRef}
       data-testid="inline-model-switcher"
-      data-campaign-review={campaignReviewActive ? campaignAudienceOverride : undefined}
     >
       <button
         ref={chipRef}

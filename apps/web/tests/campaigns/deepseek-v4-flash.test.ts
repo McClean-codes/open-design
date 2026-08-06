@@ -1,12 +1,8 @@
 import { readFileSync } from 'node:fs';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
-  deepSeekV4FlashCampaignAudienceOverride,
   formatDeepSeekV4FlashCampaignCountdown,
-  formatDeepSeekV4FlashCampaignMockRemaining,
-  isCampaignReviewAllowed,
-  isDeepSeekV4FlashCampaignReview,
   isDeepSeekV4FlashCampaignWindowOpen,
   isDeepSeekV4FlashCampaignVisible,
   resolveDeepSeekV4FlashCampaignAudience,
@@ -100,11 +96,6 @@ describe('DeepSeek V4 Flash campaign', () => {
       loggedIn: null,
       now: activeAt,
     })).toBe('unknown');
-    expect(resolveDeepSeekV4FlashCampaignAudience({
-      plan: 'plus',
-      loggedIn: true,
-      search: '?campaignAudience=unpaid',
-    })).toBe('unpaid');
   });
 
   it('keeps the paid modal actions on the final approved interaction', () => {
@@ -135,13 +126,11 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).not.toContain('距开始');
     expect(formatDeepSeekV4FlashCampaignCountdown(start)).toBe('7天 00:00:00');
     expect(formatDeepSeekV4FlashCampaignCountdown(end)).toBe('活动已结束');
-    expect(formatDeepSeekV4FlashCampaignMockRemaining(7 * 24 * 60 * 60 * 1000)).toBe(
-      '7天 00:00:00',
-    );
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-countdown');
     expect(campaignDialogSource).toContain('一周免费用');
-    expect(campaignDialogSource).toContain('REVIEW_COUNTDOWN_DURATION_MS');
-    expect(campaignDialogSource).not.toContain('formatDeepSeekV4FlashCampaignCountdown(countdownNow)');
+    // The dialog counts down against the real window boundary only — there is
+    // no synthetic per-open countdown left in the component.
+    expect(campaignDialogSource).toContain('formatDeepSeekV4FlashCampaignCountdown(countdownNow)');
     expect(campaignDialogSource.indexOf('styles.countdown')).toBeLessThan(
       campaignDialogSource.indexOf('styles.actions'),
     );
@@ -159,39 +148,18 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(campaignDialogSource).toMatch(/\{paid \? \([\s\S]*稍后再说[\s\S]*\) : null\}/);
   });
 
-  describe('production builds disable every review override (D7)', () => {
-    afterEach(() => {
-      vi.unstubAllEnvs();
-    });
-
-    it('turns campaign/campaignAudience URL overrides inert in production', () => {
-      // NODE_ENV is inlined at build time by Next, so the review fixture
-      // compiles away for released clients — 该入口仅用于本地 Demo,不作为
-      // 线上产品规则.
-      vi.stubEnv('NODE_ENV', 'production');
-      const end = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
-
-      expect(isCampaignReviewAllowed()).toBe(false);
-      expect(isDeepSeekV4FlashCampaignReview('?campaign=deepseek-v4-flash')).toBe(false);
-      expect(deepSeekV4FlashCampaignAudienceOverride('?campaignAudience=paid')).toBe(null);
-      expect(deepSeekV4FlashCampaignAudienceOverride('?campaignAudience=unpaid')).toBe(null);
-      expect(isDeepSeekV4FlashCampaignVisible({
-        now: end,
-        search: '?campaign=deepseek-v4-flash',
-      })).toBe(false);
-      expect(resolveDeepSeekV4FlashCampaignAudience({
-        plan: 'plus',
-        loggedIn: true,
-        search: '?campaignAudience=unpaid',
-        now: end,
-      })).toBe('unknown');
-    });
-
-    it('keeps the review overrides working outside production builds', () => {
-      expect(isCampaignReviewAllowed()).toBe(true);
-      expect(isDeepSeekV4FlashCampaignReview('?campaign=deepseek-v4-flash')).toBe(true);
-      expect(deepSeekV4FlashCampaignAudienceOverride('?campaignAudience=paid')).toBe('paid');
-    });
+  it('keeps campaign visibility free of every URL review backdoor (product decision)', () => {
+    const campaignLibSource = readFileSync(
+      new URL('../../src/campaigns/deepseek-v4-flash.ts', import.meta.url),
+      'utf8',
+    );
+    // The former ?campaign= / audience / usage overrides are gone for good:
+    // no campaign module or surface may read URL parameters. Acceptance for
+    // pre-launch review is a temporary startAt override, not a URL.
+    expect(campaignLibSource).not.toContain('URLSearchParams');
+    expect(campaignLibSource).not.toContain('location.search');
+    expect(campaignDialogSource).not.toContain('URLSearchParams');
+    expect(campaignDialogSource).not.toContain('location.search');
   });
 
   it('opens for every paid user only inside the shared half-open window', () => {
@@ -202,18 +170,21 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(isDeepSeekV4FlashCampaignWindowOpen(start)).toBe(true);
     expect(isDeepSeekV4FlashCampaignWindowOpen(end - 1)).toBe(true);
     expect(isDeepSeekV4FlashCampaignWindowOpen(end)).toBe(false);
-    expect(isDeepSeekV4FlashCampaignVisible({ now: start - 1 })).toBe(false);
-    expect(isDeepSeekV4FlashCampaignVisible({ now: start })).toBe(true);
-    expect(isDeepSeekV4FlashCampaignVisible({ now: end })).toBe(false);
-    expect(isDeepSeekV4FlashCampaignVisible({
-      now: end,
-      search: '?campaign=deepseek-v4-flash',
-    })).toBe(true);
+    expect(isDeepSeekV4FlashCampaignVisible(start - 1)).toBe(false);
+    expect(isDeepSeekV4FlashCampaignVisible(start)).toBe(true);
+    expect(isDeepSeekV4FlashCampaignVisible(end)).toBe(false);
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'plus', loggedIn: true, now: start - 1,
     })).toBe('unknown');
     expect(resolveDeepSeekV4FlashCampaignAudience({
       plan: 'plus', loggedIn: true, now: end,
     })).toBe('unknown');
+    // Inside the window the plan decides the audience; outside it nothing does.
+    expect(resolveDeepSeekV4FlashCampaignAudience({
+      plan: 'plus', loggedIn: true, now: start,
+    })).toBe('paid');
+    expect(resolveDeepSeekV4FlashCampaignAudience({
+      plan: 'free', loggedIn: true, now: end - 1,
+    })).toBe('unpaid');
   });
 });

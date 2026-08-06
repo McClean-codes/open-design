@@ -6,11 +6,12 @@ import {
 
 /**
  * Keeps campaign surfaces in sync with the fixed launch window while the app
- * stays open. Review URLs remain visible outside the production window.
+ * stays open. The real time window is the only visibility input.
  */
-export function useDeepSeekV4FlashCampaignVisibility(
-  search: string | null | undefined,
-): { now: number; visible: boolean } {
+export function useDeepSeekV4FlashCampaignVisibility(): {
+  now: number;
+  visible: boolean;
+} {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -23,6 +24,6 @@ export function useDeepSeekV4FlashCampaignVisibility(
 
   return {
     now,
-    visible: isDeepSeekV4FlashCampaignVisible({ now, search }),
+    visible: isDeepSeekV4FlashCampaignVisible(now),
   };
 }

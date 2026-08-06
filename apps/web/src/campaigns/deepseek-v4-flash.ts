@@ -29,27 +29,13 @@ export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
     modelBadge: '升级可用',
     tooltip: '活动窗口内订阅付费套餐后可用，统一于 8 月 13 日结束。',
   },
+  // Reserved for the backend usage-limit signal; no trigger wired yet.
   restricted: {
     modelBadge: '已暂停',
     tooltip: '检测到异常的大规模使用，本活动权益已暂停；如有疑问请联系支持。',
   },
   boundary: '套餐内的无限制模型额度与免费生成次数，仅可通过Open Design使用；无法在MCP/CLI/API及其他场景使用。解释权归官方所有。',
 } as const;
-
-export const DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM = 'deepseek-v4-flash';
-export const DEEPSEEK_V4_FLASH_CAMPAIGN_AUDIENCE_PARAM = 'campaignAudience';
-
-/**
- * Whether the `campaign` / `campaignAudience` / `campaignUsage` URL review
- * fixtures may take effect at all. They exist for local demos and product
- * review only (产品拍板 D7: 该入口仅用于本地 Demo,不作为线上产品规则), so
- * production builds must treat them as inert. `NODE_ENV` is inlined at build
- * time by Next, which compiles the whole review surface away for released
- * clients; tests flip it with `vi.stubEnv`.
- */
-export function isCampaignReviewAllowed(): boolean {
-  return process.env.NODE_ENV !== 'production';
-}
 
 export type DeepSeekV4FlashCampaignAudience = 'paid' | 'unpaid' | 'unknown';
 
@@ -59,22 +45,15 @@ export function isDeepSeekV4FlashCampaignWindowOpen(now: number): boolean {
   return now >= startAt && now < endAtExclusive;
 }
 
-export function isDeepSeekV4FlashCampaignReview(
-  search: string | null | undefined,
-): boolean {
-  if (!isCampaignReviewAllowed()) return false;
-  if (!search) return false;
-  const params = new URLSearchParams(search);
-  return params.get('campaign') === DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM
-    || deepSeekV4FlashCampaignAudienceOverride(search) !== null;
-}
-
-export function isDeepSeekV4FlashCampaignVisible(input: {
-  now: number;
-  search?: string | null;
-}): boolean {
-  return isDeepSeekV4FlashCampaignReview(input.search)
-    || isDeepSeekV4FlashCampaignWindowOpen(input.now);
+/**
+ * Campaign visibility has exactly one input: the real launch window. The
+ * former URL review backdoors (campaign / audience / usage overrides) were
+ * removed by product decision — reviewing the campaign now happens by
+ * temporarily overriding the `window.startAt` constant, never through URL
+ * parameters.
+ */
+export function isDeepSeekV4FlashCampaignVisible(now: number): boolean {
+  return isDeepSeekV4FlashCampaignWindowOpen(now);
 }
 
 export function deepSeekV4FlashCampaignNextBoundary(now: number): number | null {
@@ -94,50 +73,23 @@ function formatCampaignRemaining(remainingMs: number): string {
   return `${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
 }
 
-export function formatDeepSeekV4FlashCampaignMockRemaining(remainingMs: number): string {
-  const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
-  const days = Math.floor(totalSeconds / 86_400);
-  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  return `${days}天 ${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
-}
-
 export function formatDeepSeekV4FlashCampaignCountdown(now: number): string {
   const startAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
   const endAtExclusive = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
   // The surrounding UI already labels this value as “活动倒计时”. Keep the
-  // value itself neutral so the review fixture never exposes a confusing
-  // pre-launch state such as “距开始 X 天”.
+  // value itself neutral so a pre-launch render never exposes a confusing
+  // state such as “距开始 X 天”.
   if (now < startAt) return formatCampaignRemaining(startAt - now);
   if (now < endAtExclusive) return formatCampaignRemaining(endAtExclusive - now);
   return '活动已结束';
 }
 
-export function deepSeekV4FlashCampaignAudienceOverride(
-  search: string | null | undefined,
-): Exclude<DeepSeekV4FlashCampaignAudience, 'unknown'> | null {
-  if (!isCampaignReviewAllowed()) return null;
-  if (!search) return null;
-  const value = new URLSearchParams(search).get(
-    DEEPSEEK_V4_FLASH_CAMPAIGN_AUDIENCE_PARAM,
-  );
-  return value === 'paid' || value === 'unpaid' ? value : null;
-}
-
 export function resolveDeepSeekV4FlashCampaignAudience(input: {
   plan: string | null | undefined;
   loggedIn: boolean | null | undefined;
-  search?: string | null;
   now?: number;
 }): DeepSeekV4FlashCampaignAudience {
-  if (!isDeepSeekV4FlashCampaignVisible({
-    now: input.now ?? Date.now(),
-    search: input.search,
-  })) return 'unknown';
-
-  const override = deepSeekV4FlashCampaignAudienceOverride(input.search);
-  if (override) return override;
+  if (!isDeepSeekV4FlashCampaignVisible(input.now ?? Date.now())) return 'unknown';
 
   // Campaign audience is determined ONLY by the current subscription tier.
   // Wallet balance, historical top-ups, and previous recharges are deliberately

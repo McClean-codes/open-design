@@ -14,7 +14,6 @@ test('home campaign banner keeps only the arrow visible while preserving an acce
   assert.match(source, /home-campaign-banner__badge/);
   assert.match(source, /data-home-campaign-countdown/);
   assert.match(source, /活动剩余/);
-  assert.match(source, /previewEndAt = Date\.now\(\) \+ 7 \* 24 \* 60 \* 60 \* 1000/);
   assert.doesNotMatch(source, /距开始/);
   assert.match(source, /background:\s*#68f22e/);
   assert.match(source, /home-campaign-banner__cta/);
@@ -36,22 +35,19 @@ test('home campaign banner can be dismissed without nesting a button in its link
   assert.doesNotMatch(source, /<a class="home-campaign-banner"/);
 });
 
-test('home campaign banner disables the ?campaign= preview on production builds', () => {
-  // D7: the review parameter is a demo/PR-preview fixture only. The inline
-  // script cannot see build-time constants, so the frontmatter must inject
-  // the verdict as a data attribute (true on staging/PR previews via
-  // __OD_LANDING_NOINDEX__, false in production).
-  assert.match(source, /data-campaign-review-allowed=\{__OD_LANDING_NOINDEX__ \? 'true' : 'false'\}/);
-  assert.match(source, /const reviewAllowed = banner\?\.getAttribute\('data-campaign-review-allowed'\) === 'true'/);
-  assert.match(source, /const preview = reviewAllowed\s*&& new URLSearchParams\(window\.location\.search\)\.get\('campaign'\) === reviewParam/);
-  assert.doesNotMatch(source, /const preview = new URLSearchParams/);
+test('home campaign banner has no URL preview backdoor left', () => {
+  // Product decision: the former ?campaign= preview fixture is fully removed.
+  // Banner visibility is decided by the real activity window only; pre-launch
+  // review happens by temporarily overriding the startAt constant.
+  assert.doesNotMatch(source, /data-campaign-revie[w]/);
+  assert.doesNotMatch(source, /reviewPara[m]|reviewAllowe[d]|previewEndA[t]/);
+  assert.doesNotMatch(source, /get\('campaign'\)/);
 });
 
 test('home campaign banner uses the fixed seven-day activity window', () => {
   assert.match(source, /DEEPSEEK_V4_FLASH_CAMPAIGN\.startAt/);
   assert.match(source, /DEEPSEEK_V4_FLASH_CAMPAIGN\.endAtExclusive/);
   assert.match(source, /now >= startAt && now < endAt/);
-  assert.match(source, /data-campaign-review-param/);
   assert.match(source, /data-home-campaign-banner[^>]*hidden/);
   assert.match(source, /home-campaign-banner-active/);
   assert.match(source, /8 月 6 日—8 月 13 日，一周免费用/);

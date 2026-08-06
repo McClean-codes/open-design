@@ -13,8 +13,7 @@
 // 3. the paid 立即使用 CTA actually moves the workbench onto the campaign
 //    model (agent `amr`, model `deepseek-v4-flash`) instead of only opening
 //    the model picker (产品拍板 D5);
-// 4. the `?campaign=` review fixture is inert in production builds (D7);
-// 5. the unpaid upgrade path carries the telemetry consent + device id the
+// 4. the unpaid upgrade path carries the telemetry consent + device id the
 //    other two campaign touchpoints already forward.
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
@@ -101,30 +100,19 @@ describe('paid 立即使用 switches the workbench onto the campaign model', () 
   });
 });
 
-describe('review URL parameters are production-inert (D7)', () => {
-  it('ignores ?campaign= in production builds even for a seen campaign', () => {
+describe('the modal never re-opens for a seen campaign (no URL override left)', () => {
+  it('stays closed once the campaign was dismissed, whatever the page URL is', () => {
+    // The former ?campaign= review parameter could force a seen campaign
+    // back open. That backdoor is gone: frequency control is the only input.
     window.history.replaceState({}, '', '/?campaign=deepseek-v4-flash');
     window.localStorage.setItem(
       'open-design:campaign-seen:deepseek-v4-flash-unlimited-2026',
       '1',
     );
-    vi.stubEnv('NODE_ENV', 'production');
 
     render(<DeepSeekV4FlashCampaign audience="paid" active />);
 
     expect(screen.queryByTestId(DIALOG)).toBeNull();
-  });
-
-  it('keeps ?campaign= forcing the modal outside production builds', () => {
-    window.history.replaceState({}, '', '/?campaign=deepseek-v4-flash');
-    window.localStorage.setItem(
-      'open-design:campaign-seen:deepseek-v4-flash-unlimited-2026',
-      '1',
-    );
-
-    render(<DeepSeekV4FlashCampaign audience="paid" active />);
-
-    expect(screen.getByTestId(DIALOG)).toBeInTheDocument();
   });
 });
 

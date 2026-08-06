@@ -231,7 +231,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
     <script is:inline type="application/ld+json" set:html={JSON.stringify(homepageGraph)} />
   </head>
   <body>
-    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam} data-campaign-review-allowed={__OD_LANDING_NOINDEX__ ? 'true' : 'false'} hidden>
+    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} hidden>
       <a class="home-campaign-banner__link" href={campaignPricingHref} aria-label={`${campaignCopy.title} · ${campaignCopy.linkLabel}`}>
         <span class="home-campaign-banner__badge" data-home-campaign-countdown>{campaignCopy.badge}</span>
         <span class="home-campaign-banner__divider" aria-hidden="true">|</span>
@@ -346,15 +346,6 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         const isZh = banner?.getAttribute('data-campaign-locale') === 'zh';
         const startAt = Date.parse(banner?.getAttribute('data-campaign-start-at') || '');
         const endAt = Date.parse(banner?.getAttribute('data-campaign-end-at') || '');
-        const reviewParam = banner?.getAttribute('data-campaign-review-param');
-        // D7: the ?campaign= preview is a demo/staging fixture only. This
-        // inline script cannot see build-time constants, so the frontmatter
-        // injects the verdict (__OD_LANDING_NOINDEX__) as a data attribute —
-        // production builds render 'false' and the parameter goes inert.
-        const reviewAllowed = banner?.getAttribute('data-campaign-review-allowed') === 'true';
-        const preview = reviewAllowed
-          && new URLSearchParams(window.location.search).get('campaign') === reviewParam;
-        const previewEndAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
 
         const formatRemaining = (remainingMs) => {
           const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
@@ -376,12 +367,12 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         let impressionTracked = false;
         const updateCampaignVisibility = () => {
           const now = Date.now();
-          const active = preview || (now >= startAt && now < endAt);
+          const active = now >= startAt && now < endAt;
           const visible = active && !dismissed;
           if (banner) banner.hidden = !visible;
           document.documentElement.classList.toggle('home-campaign-banner-active', visible);
           if (!active || !countdown) return active;
-          const remainingMs = (preview ? previewEndAt : endAt) - now;
+          const remainingMs = endAt - now;
           countdown.textContent = `${isZh ? '活动剩余' : 'Ends in'} ${formatRemaining(remainingMs)}`;
           if (visible && !impressionTracked && typeof window.__odTrack === 'function') {
             impressionTracked = true;
@@ -396,11 +387,6 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         updateCampaignVisibility();
         const campaignTimer = window.setInterval(updateCampaignVisibility, 1000);
         window.addEventListener('pagehide', () => window.clearInterval(campaignTimer), { once: true });
-        if (preview && campaignLink) {
-          const previewUrl = new URL(campaignLink.href);
-          previewUrl.searchParams.set('campaign', reviewParam || 'deepseek-v4-flash');
-          campaignLink.href = previewUrl.toString();
-        }
         campaignLink?.addEventListener('click', (event) => {
           const attribution = window.__odRecordCampaignEntry?.('landing_home_banner', 'deepseek_v4_flash');
           window.__odTrack?.('ui_click', {

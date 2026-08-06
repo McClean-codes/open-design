@@ -92,7 +92,6 @@ describe("pricing contract", () => {
     assert.match(page, /windowLabel: '活动倒计时'/);
     assert.match(page, /windowValue: '7天 00:00:00'/);
     assert.match(page, /data-pricing-campaign-countdown/);
-    assert.match(page, /campaignPreviewEndAt = Date\.now\(\) \+ 7 \* 24 \* 60 \* 60 \* 1000/);
     assert.doesNotMatch(page, /距开始/);
     assert.match(page, /FREE all week/);
     assert.match(page, /body: '8月6日—8月13日，一周免费用'/);
@@ -133,17 +132,16 @@ describe("pricing contract", () => {
     assert.doesNotMatch(page, /限时抢购/);
   });
 
-  it("disables the ?campaign= review preview on production builds", async () => {
-    // D7: the review parameter is a demo/PR-preview fixture. The inline
-    // pricing script cannot read build-time constants, so the frontmatter
-    // injects the verdict via data attribute (__OD_LANDING_NOINDEX__ is true
-    // on staging/PR previews, false in production).
+  it("decides campaign visibility by the real window with no URL preview backdoor", async () => {
+    // Product decision: the former ?campaign= preview fixture is fully
+    // removed. The pricing surfaces toggle on the fixed activity window only;
+    // pre-launch review happens by temporarily overriding startAt.
     const page = await readFile(PRICING_PAGE_PATH, "utf8");
 
-    assert.match(page, /data-campaign-review-allowed=\{__OD_LANDING_NOINDEX__ \? 'true' : 'false'\}/);
-    assert.match(page, /const campaignReviewAllowed = campaign\?\.getAttribute\('data-campaign-review-allowed'\) === 'true'/);
-    assert.match(page, /const campaignPreview = campaignReviewAllowed\s*&& new URLSearchParams\(window\.location\.search\)\.get\('campaign'\) === campaignReviewParam/);
-    assert.doesNotMatch(page, /const campaignPreview = new URLSearchParams/);
+    assert.match(page, /campaignActive = now >= campaignStartAt && now < campaignEndAt/);
+    assert.doesNotMatch(page, /data-campaign-revie[w]/);
+    assert.doesNotMatch(page, /campaignPrevie[w]|campaignReviewPara[m]|campaignReviewAllowe[d]/);
+    assert.doesNotMatch(page, /get\('campaign'\)/);
   });
 
   it("stamps campaign attribution on subscribe CTAs only inside the activity window", async () => {

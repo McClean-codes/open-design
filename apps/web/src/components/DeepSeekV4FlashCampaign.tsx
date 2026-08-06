@@ -1,12 +1,9 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Button, Dialog } from '@open-design/components';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN as campaign,
-  DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM,
-  formatDeepSeekV4FlashCampaignMockRemaining,
-  isCampaignReviewAllowed,
-  isDeepSeekV4FlashCampaignReview,
+  formatDeepSeekV4FlashCampaignCountdown,
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
 import { useWorkspaceContext } from '../collab/useWorkspaceContext';
@@ -29,7 +26,6 @@ import { Icon } from './Icon';
 import styles from './DeepSeekV4FlashCampaign.module.css';
 
 const SEEN_KEY = `open-design:campaign-seen:${campaign.id}`;
-const REVIEW_COUNTDOWN_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
 
 interface Props {
   /**
@@ -61,13 +57,6 @@ interface Props {
   metricsConsent?: boolean;
   /** config.installationId — the preferred consent-gated AMR join key. */
   installationId?: string | null;
-}
-
-function shouldForceCampaignReview(): boolean {
-  if (!isCampaignReviewAllowed()) return false;
-  if (typeof window === 'undefined') return false;
-  return new URLSearchParams(window.location.search).get('campaign')
-    === DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM;
 }
 
 function hasSeenCampaign(): boolean {
@@ -117,7 +106,6 @@ export function DeepSeekV4FlashCampaign({
   const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
-  const countdownEndsAtRef = useRef(Date.now() + REVIEW_COUNTDOWN_DURATION_MS);
   const dialogId = useId();
   const titleId = useId();
   const descriptionId = useId();
@@ -131,7 +119,7 @@ export function DeepSeekV4FlashCampaign({
       return;
     }
     if (audience === 'unknown') return;
-    if (shouldForceCampaignReview() || !hasSeenCampaign()) setModalOpen(true);
+    if (!hasSeenCampaign()) setModalOpen(true);
   }, [active, audience]);
 
   useEffect(() => {
@@ -159,12 +147,10 @@ export function DeepSeekV4FlashCampaign({
 
   useEffect(() => {
     if (!modalOpen) return;
-    const openedAt = Date.now();
-    const search = typeof window === 'undefined' ? null : window.location.search;
-    countdownEndsAtRef.current = isDeepSeekV4FlashCampaignReview(search)
-      ? openedAt + REVIEW_COUNTDOWN_DURATION_MS
-      : Date.parse(campaign.window.endAtExclusive);
-    setCountdownNow(openedAt);
+    // The countdown always runs against the real `window.endAtExclusive`
+    // boundary (via formatDeepSeekV4FlashCampaignCountdown) — there is no
+    // synthetic per-open countdown.
+    setCountdownNow(Date.now());
     const countdownTimer = window.setInterval(() => setCountdownNow(Date.now()), 1_000);
     return () => window.clearInterval(countdownTimer);
   }, [modalOpen]);
@@ -271,9 +257,7 @@ export function DeepSeekV4FlashCampaign({
       <div className={styles.countdown} aria-label="活动倒计时">
         <span className={styles.countdownLabel}>活动倒计时</span>
         <strong data-testid="deepseek-v4-flash-campaign-countdown">
-          {formatDeepSeekV4FlashCampaignMockRemaining(
-            countdownEndsAtRef.current - countdownNow,
-          )}
+          {formatDeepSeekV4FlashCampaignCountdown(countdownNow)}
         </strong>
         <small>{campaign.window.label} · 一周免费用</small>
       </div>

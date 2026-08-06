@@ -245,7 +245,7 @@ const jsonLd = [
   </nav>
 
   <article class="info-page pr-page" data-pricing-root data-audience="creator" data-interval="yearly">
-    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign" data-pricing-campaign-surface data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam} data-campaign-review-allowed={__OD_LANDING_NOINDEX__ ? 'true' : 'false'} hidden>
+    <aside class="pr-campaign" aria-label="DeepSeek V4 Flash campaign" data-pricing-campaign-surface data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} hidden>
       <span class="pr-campaign-badge">{deepSeekCampaign.badge}</span>
       <div class="pr-campaign-copy">
         <strong>{deepSeekCampaign.headline}</strong>
@@ -677,14 +677,6 @@ const jsonLd = [
       const campaignIsZh = campaign?.getAttribute('data-campaign-locale') === 'zh';
       const campaignStartAt = Date.parse(campaign?.getAttribute('data-campaign-start-at') || '');
       const campaignEndAt = Date.parse(campaign?.getAttribute('data-campaign-end-at') || '');
-      const campaignReviewParam = campaign?.getAttribute('data-campaign-review-param');
-      // D7: ?campaign= preview is a demo/staging fixture. The verdict is
-      // injected at build time via data attribute (__OD_LANDING_NOINDEX__),
-      // so production builds keep the parameter inert.
-      const campaignReviewAllowed = campaign?.getAttribute('data-campaign-review-allowed') === 'true';
-      const campaignPreview = campaignReviewAllowed
-        && new URLSearchParams(window.location.search).get('campaign') === campaignReviewParam;
-      const campaignPreviewEndAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
       let campaignActive = false;
       const formatCampaignRemaining = (remainingMs) => {
         const totalSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
@@ -696,10 +688,10 @@ const jsonLd = [
       };
       const updateCampaignCountdown = () => {
         const now = Date.now();
-        campaignActive = campaignPreview || (now >= campaignStartAt && now < campaignEndAt);
+        campaignActive = now >= campaignStartAt && now < campaignEndAt;
         campaignSurfaces.forEach((surface) => { surface.hidden = !campaignActive; });
         if (!campaignActive || !campaignCountdown) return campaignActive;
-        const remainingMs = (campaignPreview ? campaignPreviewEndAt : campaignEndAt) - now;
+        const remainingMs = campaignEndAt - now;
         campaignCountdown.textContent = formatCampaignRemaining(remainingMs);
         return campaignActive;
       };
