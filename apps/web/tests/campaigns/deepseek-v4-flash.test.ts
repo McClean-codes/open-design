@@ -1,9 +1,12 @@
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
+  deepSeekV4FlashCampaignAudienceOverride,
   formatDeepSeekV4FlashCampaignCountdown,
   formatDeepSeekV4FlashCampaignMockRemaining,
+  isCampaignReviewAllowed,
+  isDeepSeekV4FlashCampaignReview,
   isDeepSeekV4FlashCampaignWindowOpen,
   isDeepSeekV4FlashCampaignVisible,
   resolveDeepSeekV4FlashCampaignAudience,
@@ -154,6 +157,41 @@ describe('DeepSeek V4 Flash campaign', () => {
     expect(campaignDialogSource).toContain('attributedAmrUrl(plansUrl, attribution, deviceId)');
     expect(campaignDialogSource).toContain('metricsConsent,');
     expect(campaignDialogSource).toMatch(/\{paid \? \([\s\S]*稍后再说[\s\S]*\) : null\}/);
+  });
+
+  describe('production builds disable every review override (D7)', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('turns campaign/campaignAudience URL overrides inert in production', () => {
+      // NODE_ENV is inlined at build time by Next, so the review fixture
+      // compiles away for released clients — 该入口仅用于本地 Demo,不作为
+      // 线上产品规则.
+      vi.stubEnv('NODE_ENV', 'production');
+      const end = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.endAtExclusive);
+
+      expect(isCampaignReviewAllowed()).toBe(false);
+      expect(isDeepSeekV4FlashCampaignReview('?campaign=deepseek-v4-flash')).toBe(false);
+      expect(deepSeekV4FlashCampaignAudienceOverride('?campaignAudience=paid')).toBe(null);
+      expect(deepSeekV4FlashCampaignAudienceOverride('?campaignAudience=unpaid')).toBe(null);
+      expect(isDeepSeekV4FlashCampaignVisible({
+        now: end,
+        search: '?campaign=deepseek-v4-flash',
+      })).toBe(false);
+      expect(resolveDeepSeekV4FlashCampaignAudience({
+        plan: 'plus',
+        loggedIn: true,
+        search: '?campaignAudience=unpaid',
+        now: end,
+      })).toBe('unknown');
+    });
+
+    it('keeps the review overrides working outside production builds', () => {
+      expect(isCampaignReviewAllowed()).toBe(true);
+      expect(isDeepSeekV4FlashCampaignReview('?campaign=deepseek-v4-flash')).toBe(true);
+      expect(deepSeekV4FlashCampaignAudienceOverride('?campaignAudience=paid')).toBe('paid');
+    });
   });
 
   it('opens for every paid user only inside the shared half-open window', () => {

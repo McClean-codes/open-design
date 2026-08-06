@@ -36,6 +36,17 @@ test('home campaign banner can be dismissed without nesting a button in its link
   assert.doesNotMatch(source, /<a class="home-campaign-banner"/);
 });
 
+test('home campaign banner disables the ?campaign= preview on production builds', () => {
+  // D7: the review parameter is a demo/PR-preview fixture only. The inline
+  // script cannot see build-time constants, so the frontmatter must inject
+  // the verdict as a data attribute (true on staging/PR previews via
+  // __OD_LANDING_NOINDEX__, false in production).
+  assert.match(source, /data-campaign-review-allowed=\{__OD_LANDING_NOINDEX__ \? 'true' : 'false'\}/);
+  assert.match(source, /const reviewAllowed = banner\?\.getAttribute\('data-campaign-review-allowed'\) === 'true'/);
+  assert.match(source, /const preview = reviewAllowed\s*&& new URLSearchParams\(window\.location\.search\)\.get\('campaign'\) === reviewParam/);
+  assert.doesNotMatch(source, /const preview = new URLSearchParams/);
+});
+
 test('home campaign banner uses the fixed seven-day activity window', () => {
   assert.match(source, /DEEPSEEK_V4_FLASH_CAMPAIGN\.startAt/);
   assert.match(source, /DEEPSEEK_V4_FLASH_CAMPAIGN\.endAtExclusive/);

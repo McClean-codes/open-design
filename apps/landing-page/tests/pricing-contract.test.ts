@@ -133,6 +133,19 @@ describe("pricing contract", () => {
     assert.doesNotMatch(page, /限时抢购/);
   });
 
+  it("disables the ?campaign= review preview on production builds", async () => {
+    // D7: the review parameter is a demo/PR-preview fixture. The inline
+    // pricing script cannot read build-time constants, so the frontmatter
+    // injects the verdict via data attribute (__OD_LANDING_NOINDEX__ is true
+    // on staging/PR previews, false in production).
+    const page = await readFile(PRICING_PAGE_PATH, "utf8");
+
+    assert.match(page, /data-campaign-review-allowed=\{__OD_LANDING_NOINDEX__ \? 'true' : 'false'\}/);
+    assert.match(page, /const campaignReviewAllowed = campaign\?\.getAttribute\('data-campaign-review-allowed'\) === 'true'/);
+    assert.match(page, /const campaignPreview = campaignReviewAllowed\s*&& new URLSearchParams\(window\.location\.search\)\.get\('campaign'\) === campaignReviewParam/);
+    assert.doesNotMatch(page, /const campaignPreview = new URLSearchParams/);
+  });
+
   it("aligns the highlighted campaign checkmark with the benefit list below", async () => {
     const page = await readFile(PRICING_PAGE_PATH, "utf8");
 

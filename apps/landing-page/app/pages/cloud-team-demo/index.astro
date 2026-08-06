@@ -30,7 +30,7 @@ const teamPlans = [
     <SiteAnalytics />
   </head>
   <body>
-    <main class="cloud-shell" data-campaign-root data-upgrade-url={CLOUD_CONSOLE_URL} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam}>
+    <main class="cloud-shell" data-campaign-root data-upgrade-url={CLOUD_CONSOLE_URL} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam} data-campaign-review-allowed={__OD_LANDING_NOINDEX__ ? 'true' : 'false'}>
       <aside class="sidebar">
         <div class="brand"><span class="brand-mark">OD</span><strong>Open Design</strong></div>
         <nav>
@@ -139,7 +139,11 @@ const teamPlans = [
   const campaignStartAt = Date.parse(campaignRoot?.dataset.campaignStartAt || '');
   const campaignEndAt = Date.parse(campaignRoot?.dataset.campaignEndAt || '');
   const campaignReviewParam = campaignRoot?.dataset.campaignReviewParam;
-  const campaignPreview = new URLSearchParams(window.location.search).get('campaign') === campaignReviewParam;
+  // D7: ?campaign= preview is a demo/staging fixture; the build injects the
+  // verdict (__OD_LANDING_NOINDEX__) so production keeps the parameter inert.
+  const campaignReviewAllowed = campaignRoot?.dataset.campaignReviewAllowed === 'true';
+  const campaignPreview = campaignReviewAllowed
+    && new URLSearchParams(window.location.search).get('campaign') === campaignReviewParam;
   const campaignPreviewEndAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
   let trackedPlanSurface = false;
   let trackedCampaignBenefit = false;

@@ -97,11 +97,13 @@ import {
 import {
   DEEPSEEK_V4_FLASH_CAMPAIGN,
   deepSeekV4FlashCampaignAudienceOverride,
+  isCampaignReviewAllowed,
   isDeepSeekV4FlashCampaignModel,
 } from '../campaigns/deepseek-v4-flash';
 import { useDeepSeekV4FlashCampaignVisibility } from '../campaigns/use-deepseek-v4-flash-campaign';
 
 function deepSeekCampaignUsageRestricted(): boolean {
+  if (!isCampaignReviewAllowed()) return false;
   if (typeof window === 'undefined') return false;
   const value = new URLSearchParams(window.location.search).get('campaignUsage');
   return value === 'restricted' || value === 'exhausted';

@@ -105,6 +105,29 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(campaignModalSource).toContain("onUseCampaignModel?.('amr', campaign.modelId)");
   });
 
+  it('routes every review-parameter read through the production gate (D7)', () => {
+    const campaignLibSource = readFileSync(
+      resolve(process.cwd(), 'src/campaigns/deepseek-v4-flash.ts'),
+      'utf8',
+    );
+    // campaign + campaignAudience overrides live in the campaign lib…
+    expect(campaignLibSource).toContain('export function isCampaignReviewAllowed');
+    expect(campaignLibSource).toMatch(
+      /isDeepSeekV4FlashCampaignReview\([\s\S]*?\)[^{]*\{\s*if \(!isCampaignReviewAllowed\(\)\) return false;/,
+    );
+    expect(campaignLibSource).toMatch(
+      /deepSeekV4FlashCampaignAudienceOverride\([\s\S]*?\)[^{]*\{\s*if \(!isCampaignReviewAllowed\(\)\) return null;/,
+    );
+    // …the modal's direct ?campaign= read and the switcher's campaignUsage
+    // read must consult the same gate.
+    expect(campaignModalSource).toMatch(
+      /function shouldForceCampaignReview\(\): boolean \{\s*if \(!isCampaignReviewAllowed\(\)\) return false;/,
+    );
+    expect(modelSwitcherSource).toMatch(
+      /function deepSeekCampaignUsageRestricted\(\): boolean \{\s*if \(!isCampaignReviewAllowed\(\)\) return false;/,
+    );
+  });
+
   it('tracks campaign discovery surfaces without replacing model-selection events', () => {
     expect(entryShellSource).toContain('trackDeepSeekCampaignBadgeSurfaceView');
     expect(entryShellSource).toContain('trackDeepSeekCampaignBadgeClick');

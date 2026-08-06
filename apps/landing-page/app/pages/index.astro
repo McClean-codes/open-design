@@ -231,7 +231,7 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
     <script is:inline type="application/ld+json" set:html={JSON.stringify(homepageGraph)} />
   </head>
   <body>
-    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam} hidden>
+    <div class="home-campaign-banner" data-home-campaign-banner data-campaign-locale={locale.startsWith('zh') ? 'zh' : 'en'} data-campaign-start-at={DEEPSEEK_V4_FLASH_CAMPAIGN.startAt} data-campaign-end-at={DEEPSEEK_V4_FLASH_CAMPAIGN.endAtExclusive} data-campaign-review-param={DEEPSEEK_V4_FLASH_CAMPAIGN.reviewParam} data-campaign-review-allowed={__OD_LANDING_NOINDEX__ ? 'true' : 'false'} hidden>
       <a class="home-campaign-banner__link" href={campaignPricingHref} aria-label={`${campaignCopy.title} · ${campaignCopy.linkLabel}`}>
         <span class="home-campaign-banner__badge" data-home-campaign-countdown>{campaignCopy.badge}</span>
         <span class="home-campaign-banner__divider" aria-hidden="true">|</span>
@@ -347,7 +347,13 @@ const cobeEnhancerUrl = `/enhancers/cobe.js?v=${
         const startAt = Date.parse(banner?.getAttribute('data-campaign-start-at') || '');
         const endAt = Date.parse(banner?.getAttribute('data-campaign-end-at') || '');
         const reviewParam = banner?.getAttribute('data-campaign-review-param');
-        const preview = new URLSearchParams(window.location.search).get('campaign') === reviewParam;
+        // D7: the ?campaign= preview is a demo/staging fixture only. This
+        // inline script cannot see build-time constants, so the frontmatter
+        // injects the verdict (__OD_LANDING_NOINDEX__) as a data attribute —
+        // production builds render 'false' and the parameter goes inert.
+        const reviewAllowed = banner?.getAttribute('data-campaign-review-allowed') === 'true';
+        const preview = reviewAllowed
+          && new URLSearchParams(window.location.search).get('campaign') === reviewParam;
         const previewEndAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
 
         const formatRemaining = (remainingMs) => {

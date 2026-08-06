@@ -5,6 +5,7 @@ import {
   DEEPSEEK_V4_FLASH_CAMPAIGN as campaign,
   DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM,
   formatDeepSeekV4FlashCampaignMockRemaining,
+  isCampaignReviewAllowed,
   isDeepSeekV4FlashCampaignReview,
   type DeepSeekV4FlashCampaignAudience,
 } from '../campaigns/deepseek-v4-flash';
@@ -63,6 +64,7 @@ interface Props {
 }
 
 function shouldForceCampaignReview(): boolean {
+  if (!isCampaignReviewAllowed()) return false;
   if (typeof window === 'undefined') return false;
   return new URLSearchParams(window.location.search).get('campaign')
     === DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM;

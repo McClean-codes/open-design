@@ -101,6 +101,33 @@ describe('paid 立即使用 switches the workbench onto the campaign model', () 
   });
 });
 
+describe('review URL parameters are production-inert (D7)', () => {
+  it('ignores ?campaign= in production builds even for a seen campaign', () => {
+    window.history.replaceState({}, '', '/?campaign=deepseek-v4-flash');
+    window.localStorage.setItem(
+      'open-design:campaign-seen:deepseek-v4-flash-unlimited-2026',
+      '1',
+    );
+    vi.stubEnv('NODE_ENV', 'production');
+
+    render(<DeepSeekV4FlashCampaign audience="paid" active />);
+
+    expect(screen.queryByTestId(DIALOG)).toBeNull();
+  });
+
+  it('keeps ?campaign= forcing the modal outside production builds', () => {
+    window.history.replaceState({}, '', '/?campaign=deepseek-v4-flash');
+    window.localStorage.setItem(
+      'open-design:campaign-seen:deepseek-v4-flash-unlimited-2026',
+      '1',
+    );
+
+    render(<DeepSeekV4FlashCampaign audience="paid" active />);
+
+    expect(screen.getByTestId(DIALOG)).toBeInTheDocument();
+  });
+});
+
 describe('unpaid upgrade path carries telemetry consent', () => {
   it('forwards metricsConsent and stamps od_device_id on the plans URL', () => {
     // The other two campaign touchpoints (workbench badge, model-switcher

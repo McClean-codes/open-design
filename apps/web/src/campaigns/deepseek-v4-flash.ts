@@ -39,6 +39,18 @@ export const DEEPSEEK_V4_FLASH_CAMPAIGN = {
 export const DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM = 'deepseek-v4-flash';
 export const DEEPSEEK_V4_FLASH_CAMPAIGN_AUDIENCE_PARAM = 'campaignAudience';
 
+/**
+ * Whether the `campaign` / `campaignAudience` / `campaignUsage` URL review
+ * fixtures may take effect at all. They exist for local demos and product
+ * review only (产品拍板 D7: 该入口仅用于本地 Demo,不作为线上产品规则), so
+ * production builds must treat them as inert. `NODE_ENV` is inlined at build
+ * time by Next, which compiles the whole review surface away for released
+ * clients; tests flip it with `vi.stubEnv`.
+ */
+export function isCampaignReviewAllowed(): boolean {
+  return process.env.NODE_ENV !== 'production';
+}
+
 export type DeepSeekV4FlashCampaignAudience = 'paid' | 'unpaid' | 'unknown';
 
 export function isDeepSeekV4FlashCampaignWindowOpen(now: number): boolean {
@@ -50,6 +62,7 @@ export function isDeepSeekV4FlashCampaignWindowOpen(now: number): boolean {
 export function isDeepSeekV4FlashCampaignReview(
   search: string | null | undefined,
 ): boolean {
+  if (!isCampaignReviewAllowed()) return false;
   if (!search) return false;
   const params = new URLSearchParams(search);
   return params.get('campaign') === DEEPSEEK_V4_FLASH_CAMPAIGN_REVIEW_PARAM
@@ -104,6 +117,7 @@ export function formatDeepSeekV4FlashCampaignCountdown(now: number): string {
 export function deepSeekV4FlashCampaignAudienceOverride(
   search: string | null | undefined,
 ): Exclude<DeepSeekV4FlashCampaignAudience, 'unknown'> | null {
+  if (!isCampaignReviewAllowed()) return null;
   if (!search) return null;
   const value = new URLSearchParams(search).get(
     DEEPSEEK_V4_FLASH_CAMPAIGN_AUDIENCE_PARAM,

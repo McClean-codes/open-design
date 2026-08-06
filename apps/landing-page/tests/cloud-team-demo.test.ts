@@ -66,3 +66,13 @@ test('cloud plan demo tracks the team campaign conversion path', () => {
 test('cloud team upgrade demo is review-only and cannot be indexed', () => {
   assert.match(source, /noindex, nofollow/);
 });
+
+test('cloud team upgrade demo disables the ?campaign= preview on production builds', () => {
+  // D7: same review gate as the home banner and pricing page — the verdict
+  // is injected at build time (__OD_LANDING_NOINDEX__: staging/PR previews
+  // true, production false) and consumed from the dataset.
+  assert.match(source, /data-campaign-review-allowed=\{__OD_LANDING_NOINDEX__ \? 'true' : 'false'\}/);
+  assert.match(source, /const campaignReviewAllowed = campaignRoot\?\.dataset\.campaignReviewAllowed === 'true'/);
+  assert.match(source, /const campaignPreview = campaignReviewAllowed\s*&& new URLSearchParams\(window\.location\.search\)\.get\('campaign'\) === campaignReviewParam/);
+  assert.doesNotMatch(source, /const campaignPreview = new URLSearchParams/);
+});
