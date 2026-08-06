@@ -205,7 +205,20 @@ jobs:
             --project-name=open-design-landing
             --branch=main
 
+      # CF Pages deploy does not reliably invalidate custom-domain HTML across
+      # every POP when `_headers` allows edge caching. Purge by hostname so all
+      # locale paths (`/`, `/zh/pricing/`, …) drop together without
+      # purge_everything on the whole zone (keeps download.open-design.ai etc.).
+      # Token needs Zone → Cache Purge. Optional: set vars.CLOUDFLARE_ZONE_ID.
+      - name: Purge open-design.ai edge cache (hosts)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          CLOUDFLARE_PURGE_HOSTS: open-design.ai
+        run: node apps/landing-page/scripts/purge-open-design-edge-cache.mjs
+
   # Post a Feishu card to the landing group once the promotion settles. Runs on
+
   # BOTH success and failure (a failed production deploy is exactly when people
   # need a ping), but only when `deploy` actually ran — a dispatch from a
   # non-main ref skips `deploy`, and we don't want a "deploy failed" card for a

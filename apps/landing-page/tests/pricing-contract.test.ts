@@ -225,6 +225,24 @@ describe("pricing contract", () => {
     assert.match(headers, /^  Content-Type: application\/json; charset=utf-8$/m);
   });
 
+  it("keeps HTML edge TTL short so locale pages cannot drift for an hour after deploy", async () => {
+    // 2026-08 campaign rollout: s-maxage=3600 + stale-while-revalidate=86400 left
+    // /zh/pricing/ (and other paths) on stale edge objects while /pricing/ was
+    // fresh. HTML must stay short-TTL; production also host-purges after deploy.
+    const headers = await readFile(HEADERS_PATH, "utf8");
+    const htmlRule = headers.match(
+      /^\/\n  Cache-Control: (.+)$/m,
+    )?.[1];
+    assert.ok(htmlRule, "expected Cache-Control for `/` HTML");
+    assert.match(htmlRule, /s-maxage=60\b/);
+    assert.doesNotMatch(htmlRule, /s-maxage=3600\b/);
+    assert.doesNotMatch(htmlRule, /stale-while-revalidate=86400\b/);
+    assert.match(
+      headers,
+      /^\/pricing\/plans\.json$\n(?:  .+\n)*?  Cache-Control: public, max-age=0, s-maxage=60, must-revalidate$/m,
+    );
+  });
+
   it("keeps the public contract in sync with the build-time snapshot", async () => {
     const file = await readFile(CONTRACT_PATH, "utf8");
     const contract = JSON.parse(file) as unknown;
