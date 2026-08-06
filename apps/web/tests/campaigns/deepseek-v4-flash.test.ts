@@ -124,7 +124,12 @@ describe('DeepSeek V4 Flash campaign', () => {
 
     expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).toBe('0天 00:00:01');
     expect(formatDeepSeekV4FlashCampaignCountdown(start - 1_000)).not.toContain('距开始');
-    expect(formatDeepSeekV4FlashCampaignCountdown(start)).toBe('7天 00:00:00');
+    // At startAt the countdown equals the full window length. Derived from the
+    // constants (not a literal) so a temporary start-time override for
+    // pre-launch acceptance cannot silently break this suite.
+    const windowSeconds = Math.floor((end - start) / 1000);
+    const windowLabel = `${Math.floor(windowSeconds / 86400)}天 ${String(Math.floor((windowSeconds % 86400) / 3600)).padStart(2, '0')}:${String(Math.floor((windowSeconds % 3600) / 60)).padStart(2, '0')}:${String(windowSeconds % 60).padStart(2, '0')}`;
+    expect(formatDeepSeekV4FlashCampaignCountdown(start)).toBe(windowLabel);
     expect(formatDeepSeekV4FlashCampaignCountdown(end)).toBe('活动已结束');
     expect(campaignDialogSource).toContain('deepseek-v4-flash-campaign-countdown');
     expect(campaignDialogSource).toContain('一周免费用');
