@@ -115,6 +115,7 @@ test('amrCredentialIdentityFromRevision prefers userId then env fingerprint', ()
       authSource: 'file',
       userId: 'user-1',
       credentialFingerprint: 'fp-ignored',
+      configMtimeMs: 1,
     }),
     'user:user-1',
   );
@@ -123,6 +124,7 @@ test('amrCredentialIdentityFromRevision prefers userId then env fingerprint', ()
       authSource: 'env',
       userId: '',
       credentialFingerprint: 'abc123',
+      configMtimeMs: 1,
     }),
     'env:abc123',
   );
@@ -131,9 +133,51 @@ test('amrCredentialIdentityFromRevision prefers userId then env fingerprint', ()
       authSource: 'none',
       userId: '',
       credentialFingerprint: '',
+      configMtimeMs: null,
     }),
     '',
   );
+});
+
+test('amrCredentialIdentityFromRevision partitions file auth by config mtime when user is absent', () => {
+  // Supported file config makes `user` optional. Without mtime in the
+  // identity, every such account collapses to `auth:file` and a later
+  // rewrite under the same profile/workspace can reuse the prior catalog.
+  const beforeRewrite = amrCredentialIdentityFromRevision({
+    authSource: 'file',
+    userId: '',
+    credentialFingerprint: '',
+    configMtimeMs: 100,
+  });
+  const afterRewrite = amrCredentialIdentityFromRevision({
+    authSource: 'file',
+    userId: '',
+    credentialFingerprint: '',
+    configMtimeMs: 200,
+  });
+  const missingMtime = amrCredentialIdentityFromRevision({
+    authSource: 'file',
+    userId: '',
+    credentialFingerprint: '',
+    configMtimeMs: null,
+  });
+
+  assert.equal(beforeRewrite, 'auth:file:mtime=100');
+  assert.equal(afterRewrite, 'auth:file:mtime=200');
+  assert.notEqual(beforeRewrite, afterRewrite);
+  assert.equal(missingMtime, 'auth:file');
+
+  const scopeBefore = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-team',
+    credentialIdentity: beforeRewrite,
+  });
+  const scopeAfter = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-team',
+    credentialIdentity: afterRewrite,
+  });
+  assert.notEqual(scopeBefore, scopeAfter);
 });
 
 test('remembered AMR live models do not fall back across workspaces', () => {

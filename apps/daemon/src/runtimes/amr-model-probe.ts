@@ -112,11 +112,16 @@ export function buildAmrRememberedLiveModelScope(
 /**
  * Compact non-secret identity for remembered-model partitioning.
  * Empty when no account is attached yet (unsigned-in personal).
+ *
+ * File-backed auth may omit `user.id` (config `user` is optional). Without a
+ * stable user/env identity, include `configMtimeMs` so a rewritten
+ * `~/.amr/config.json` under the same profile/workspace cannot reuse the
+ * previous account's remembered catalog after a failed scoped probe.
  */
 export function amrCredentialIdentityFromRevision(
   revision: Pick<
     VelaCredentialRevision,
-    'userId' | 'credentialFingerprint' | 'authSource'
+    'userId' | 'credentialFingerprint' | 'authSource' | 'configMtimeMs'
   > | null | undefined,
 ): string {
   if (!revision) return '';
@@ -127,7 +132,16 @@ export function amrCredentialIdentityFromRevision(
       ? revision.credentialFingerprint.trim()
       : '';
   if (fingerprint) return `env:${fingerprint}`;
-  return revision.authSource === 'none' ? '' : `auth:${revision.authSource}`;
+  if (revision.authSource === 'none') return '';
+  if (revision.authSource === 'file') {
+    const mtime =
+      typeof revision.configMtimeMs === 'number' &&
+      Number.isFinite(revision.configMtimeMs)
+        ? String(revision.configMtimeMs)
+        : '';
+    return mtime ? `auth:file:mtime=${mtime}` : 'auth:file';
+  }
+  return `auth:${revision.authSource}`;
 }
 
 export async function resolveAmrModelProbe({
