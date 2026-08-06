@@ -193,15 +193,38 @@ describe('CLI startup boundaries', () => {
 
         const checkpoint = recoveredState.analyticsRecovery?.completedAt;
         await terminateChild(second);
+        const reconciliationSentinelId = 'run-third-boot-reconciliation-sentinel';
+        const reconciliationSentinelDir = join(dataDir, 'runs', reconciliationSentinelId);
+        const reconciliationSentinelPath = join(reconciliationSentinelDir, 'state.json');
+        await mkdir(reconciliationSentinelDir, { recursive: true });
+        await writeFile(reconciliationSentinelPath, `${JSON.stringify({
+          schemaVersion: 1,
+          id: reconciliationSentinelId,
+          projectId: null,
+          conversationId: null,
+          assistantMessageId: null,
+          agentId: null,
+          status: 'running',
+          createdAt: Date.now() - 1_000,
+          updatedAt: Date.now(),
+          langfuseCompletedAt: Date.now(),
+        })}\n`);
         const third = spawn(process.execPath, args, { cwd: daemonRoot, env });
         try {
-          await waitForStdoutLine(third, /\[od\] listening on (http:\/\/[^\s]+)/u);
-          await waitFor(() => {
-            const replayedState = JSON.parse(readFileSync(statePath, 'utf8')) as {
-              analyticsRecovery?: { completedAt?: number };
-            };
-            return replayedState.analyticsRecovery?.completedAt === checkpoint;
-          });
+          await Promise.all([
+            waitForStdoutLine(third, /\[od\] listening on (http:\/\/[^\s]+)/u),
+            waitForStdoutLine(third, /\[runs\] reconciled interrupted run terminals/u),
+          ]);
+          const replayedState = JSON.parse(await readFile(statePath, 'utf8')) as {
+            status?: string;
+            analyticsRecovery?: { completedAt?: number };
+          };
+          const sentinelState = JSON.parse(await readFile(reconciliationSentinelPath, 'utf8')) as {
+            status?: string;
+          };
+          expect(sentinelState.status).toBe('failed');
+          expect(replayedState.status).toBe('failed');
+          expect(replayedState.analyticsRecovery?.completedAt).toBe(checkpoint);
         } finally {
           await terminateChild(third);
         }
