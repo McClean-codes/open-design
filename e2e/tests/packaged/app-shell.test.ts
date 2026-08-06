@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  assertSeededOnboardingRetained,
   asPackagedAppShellSnapshot,
+  PackagedOnboardingSeedError,
   evaluatePackagedAppShellProbe,
   evaluatePackagedOnboardingConfigProbe,
   PackagedOnboardingConfigError,
@@ -317,6 +319,36 @@ describe('packaged app-shell policy', () => {
     });
 
     expect(packagedAppShellSettled(landing, policy)).toBe(false);
+  });
+
+  it('fails a lost seed with a cause that names the cold launch', () => {
+    expect(() =>
+      assertSeededOnboardingRetained({
+        daemonOnboardingCompleted: false,
+        seededOnboardingCompleted: true,
+      }),
+    ).toThrow(PackagedOnboardingSeedError);
+    expect(() =>
+      assertSeededOnboardingRetained({
+        daemonOnboardingCompleted: false,
+        seededOnboardingCompleted: true,
+      }),
+    ).toThrow(/lost the seeded onboarding state.*tools-pack runtime data root/s);
+  });
+
+  it('passes a retained seed and an honestly unseeded run', () => {
+    expect(() =>
+      assertSeededOnboardingRetained({
+        daemonOnboardingCompleted: true,
+        seededOnboardingCompleted: true,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSeededOnboardingRetained({
+        daemonOnboardingCompleted: false,
+        seededOnboardingCompleted: false,
+      }),
+    ).not.toThrow();
   });
 
   it('lets an unseeded run settle on the landing', () => {

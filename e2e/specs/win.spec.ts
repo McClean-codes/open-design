@@ -13,6 +13,7 @@ import { describe, expect, test } from 'vitest';
 import {
   packagedAppShellExpression,
   packagedAppShellFailureReason,
+  assertSeededOnboardingRetained,
   packagedAppShellPolicy,
   packagedAppShellSettled,
   packagedAppShellState,
@@ -733,12 +734,28 @@ winDescribe('packaged windows runtime smoke', () => {
           async () => readPackagedOnboardingCompleted(),
         );
         onboardingCompleted = daemonOnboardingCompleted;
+        // The seeded observation must exist by now — both blocks share the same
+        // `desktopIpcUnavailable` guard. Assert it rather than coercing
+        // `'skipped'`, which would silently read as "never seeded" and hand the
+        // permissive branch exactly the input it must not get.
+        if (seededOnboardingCompleted === 'skipped') {
+          throw new Error('reached the app-shell check without observing the seeded onboarding state');
+        }
+        // This run seeded completion and saw the daemon confirm it. If the
+        // protocol cold relaunch above lost that state, it is a packaged-runtime
+        // regression — fail with the cause named, never absorb it as a first run.
+        const seededObserved: boolean = seededOnboardingCompleted;
+        assertSeededOnboardingRetained({ daemonOnboardingCompleted, seededOnboardingCompleted: seededObserved });
         // Setup and expectation come from the same fact. A daemon that confirms
-        // onboarding is completed must produce home; only a daemon that reports
-        // a genuine first run may settle on the cloud sign-in landing.
+        // onboarding is completed must produce home; only a run that never
+        // seeded completion may settle on the cloud sign-in landing.
         appShell = await measureSmokeStep(timings, 'ensure packaged app shell', async () =>
           ensurePackagedAppShell(
-            packagedAppShellPolicy({ coreProfile: verifyCoreOnly, daemonOnboardingCompleted }),
+            packagedAppShellPolicy({
+              coreProfile: verifyCoreOnly,
+              daemonOnboardingCompleted,
+              seededOnboardingCompleted: seededObserved,
+            }),
           ),
         );
 

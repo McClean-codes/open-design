@@ -274,12 +274,51 @@ export type PackagedAppShellPolicyInput = {
 export function packagedAppShellPolicy(
   input: PackagedAppShellPolicyInput,
 ): { readonly acceptOnboardingLanding: boolean } {
+  // A run that seeded completion and saw the daemon confirm it may never accept
+  // the landing, whatever a later reading says. Losing the seed across a
+  // relaunch is a regression, not a downgrade to "genuine first run" — see
+  // `assertSeededOnboardingRetained`, which is what turns that loss into a
+  // named failure rather than merely a stricter expectation here.
+  if (input.seededOnboardingCompleted !== false) return { acceptOnboardingLanding: false };
   // Only an explicit `false` — a daemon that positively said "not completed" —
   // buys permission. Testing for truthiness instead would let any non-boolean
   // that leaked past the type fall through to the permissive branch, which is
   // the same shape of defect as coercing the reading in the first place.
   if (input.daemonOnboardingCompleted !== false) return { acceptOnboardingLanding: false };
   return { acceptOnboardingLanding: input.coreProfile === true };
+}
+
+/**
+ * Raised when a run that seeded onboarding completion, and saw the daemon
+ * confirm it, later observes it gone.
+ */
+export class PackagedOnboardingSeedError extends Error {
+  constructor(reason: string) {
+    super(reason);
+    this.name = 'PackagedOnboardingSeedError';
+  }
+}
+
+/**
+ * Holds the run's own seeded state across a process transition.
+ *
+ * Once this run has seeded completion and observed `true`, a later `false` is a
+ * regression in the packaged runtime, never new information about the user. The
+ * core profile stops the app and relaunches it through the OS protocol handler,
+ * which inherits none of this process's environment — so if that cold launch
+ * resolves a different data root, the seeded config disappears. This is the
+ * point where that loss becomes a failure with a cause attached, instead of
+ * being absorbed as a first run.
+ */
+export function assertSeededOnboardingRetained(input: {
+  readonly daemonOnboardingCompleted: boolean;
+  readonly seededOnboardingCompleted: boolean;
+}): void {
+  if (input.seededOnboardingCompleted !== true) return;
+  if (input.daemonOnboardingCompleted === true) return;
+  throw new PackagedOnboardingSeedError(
+    'the relaunched daemon lost the seeded onboarding state — check that the protocol cold launch still resolves the tools-pack runtime data root',
+  );
 }
 
 /**
