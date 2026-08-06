@@ -1075,4 +1075,43 @@ describe('packaged sidecar log rotation', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  /**
+   * Rotation is best-effort, but "best-effort" must never degrade INTO the data
+   * loss it exists to prevent. If the rename fails for anything other than the
+   * first-launch ENOENT — a Windows share-lock on previous.log, a read-only or
+   * exotic filesystem — truncating latest.log destroys the only copy of the
+   * incident-time log while previous.log stays unavailable to diagnostics.
+   *
+   * The rejection is injected with a real filesystem condition rather than a
+   * module mock: renaming a file onto an existing DIRECTORY fails (EISDIR on
+   * POSIX, EPERM/EACCES on Windows), which is a non-ENOENT failure on every
+   * platform this ships to.
+   */
+  it('keeps the prior log instead of truncating it when rotation fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'od-log-rotate-fail-'));
+    const logDir = join(root, 'logs', 'daemon');
+    const logPath = join(logDir, 'latest.log');
+    try {
+      mkdirSync(logDir, { recursive: true });
+      writeFileSync(logPath, 'incident line that must survive\n');
+      // previous.log is a directory, so rename(latest.log -> previous.log) fails
+      // with a non-ENOENT error.
+      mkdirSync(join(logDir, 'previous.log'), { recursive: true });
+
+      const handle = await openLog(logPath);
+      // The prior session survives in place; rotation failing is not a licence
+      // to erase it.
+      expect(readFileSync(logPath, 'utf8')).toContain('incident line that must survive');
+      // ...and the returned handle still works, appending after the kept bytes.
+      await handle.write('post-rotation-failure line\n');
+      await handle.close();
+
+      const merged = readFileSync(logPath, 'utf8');
+      expect(merged).toContain('incident line that must survive');
+      expect(merged).toContain('post-rotation-failure line');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
