@@ -31,6 +31,14 @@ interface Props {
    * subscription (including users who previously recharged their wallet).
    */
   audience: DeepSeekV4FlashCampaignAudience;
+  /**
+   * Whether the home view is the ACTIVE entry view. EntryShell keeps HomeView
+   * permanently mounted behind `display:none` while this dialog portals to
+   * `document.body`, so without this gate the campaign would escape the home
+   * view and interrupt projects/tasks/plugins/... routes. The requirement is
+   * explicit: the modal shows on #/home only.
+   */
+  active?: boolean;
 }
 
 function shouldForceCampaignReview(): boolean {
@@ -66,7 +74,7 @@ function focusModelSwitcher(): void {
   window.setTimeout(() => chip.removeAttribute('data-campaign-highlight'), 1_500);
 }
 
-export function DeepSeekV4FlashCampaign({ audience }: Props) {
+export function DeepSeekV4FlashCampaign({ audience, active = true }: Props) {
   const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
@@ -77,9 +85,16 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
   const descriptionId = useId();
 
   useEffect(() => {
+    if (!active) {
+      // Leaving home is NOT a dismissal: close without marking the campaign
+      // seen, so the next return to home within the window re-opens it.
+      // (Also releases the body scroll lock the open effect installed.)
+      setModalOpen(false);
+      return;
+    }
     if (audience === 'unknown') return;
     if (shouldForceCampaignReview() || !hasSeenCampaign()) setModalOpen(true);
-  }, [audience]);
+  }, [active, audience]);
 
   useEffect(() => {
     if (!modalOpen) return;
@@ -166,7 +181,7 @@ export function DeepSeekV4FlashCampaign({ audience }: Props) {
     );
   };
 
-  if (!modalOpen || audience === 'unknown' || typeof document === 'undefined') {
+  if (!active || !modalOpen || audience === 'unknown' || typeof document === 'undefined') {
     return null;
   }
 

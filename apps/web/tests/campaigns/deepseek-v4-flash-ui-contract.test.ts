@@ -18,6 +18,14 @@ const modelSwitcherSource = readFileSync(
   resolve(process.cwd(), 'src/components/InlineModelSwitcher.tsx'),
   'utf8',
 );
+const homeViewSource = readFileSync(
+  resolve(process.cwd(), 'src/components/HomeView.tsx'),
+  'utf8',
+);
+const campaignModalSource = readFileSync(
+  resolve(process.cwd(), 'src/components/DeepSeekV4FlashCampaign.tsx'),
+  'utf8',
+);
 
 describe('DeepSeek V4 Flash workbench campaign entry', () => {
   it('shows a top-right pricing badge for explicit campaign audiences', () => {
@@ -63,6 +71,28 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     expect(modelSwitcherSource).toContain("'deepseek_model_switcher_upgrade'");
     expect(modelSwitcherSource).toContain('attributedAmrUrl(');
     expect(modelSwitcherSource).toContain('campaignNeedsUpgrade');
+  });
+
+  it('mounts the campaign modal gated on the active home view only', () => {
+    // EntryShell hides inactive entry views with display:none while the
+    // Dialog portals to document.body, so visibility CSS alone cannot stop
+    // the modal from interrupting projects/tasks/... routes. The home-view
+    // activity signal must reach the modal as a prop.
+    expect(entryShellSource).toContain("isActive={view === 'home'}");
+    expect(homeViewSource).toMatch(
+      /<DeepSeekV4FlashCampaign[\s\S]*?active=\{isActive\}/,
+    );
+    expect(campaignModalSource).toMatch(/if \(!active\)/);
+  });
+
+  it('re-arms the unseen modal when the user returns to the home view', () => {
+    // Leaving home closes the dialog WITHOUT marking it seen; the open
+    // effect must therefore re-run on the activity flip, not only on the
+    // audience settling.
+    expect(campaignModalSource).toMatch(/\}, \[active, audience\]\);/);
+    expect(campaignModalSource).toMatch(
+      /if \(!active \|\| !modalOpen \|\| audience === 'unknown'/,
+    );
   });
 
   it('tracks campaign discovery surfaces without replacing model-selection events', () => {

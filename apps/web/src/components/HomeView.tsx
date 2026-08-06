@@ -2514,7 +2514,13 @@ export function HomeView({
       data-testid="home-view"
       ref={homeViewRef}
     >
-      <DeepSeekV4FlashCampaign audience={deepSeekV4FlashCampaignAudience} />
+      {/* `active` gates the portal-escaping campaign dialog to the ACTIVE home
+          view: EntryShell only hides inactive views with display:none, which a
+          document.body portal ignores. */}
+      <DeepSeekV4FlashCampaign
+        audience={deepSeekV4FlashCampaignAudience}
+        active={isActive}
+      />
       {isActive ? <AppWashKineticGrid clipBottomTo=".home-hero" /> : null}
       <HomeHero
         workspaceContext={workspaceContext}
