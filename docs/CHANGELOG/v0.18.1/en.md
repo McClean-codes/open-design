@@ -3,7 +3,7 @@ title: Open Design 0.18.1
 description: DeepSeek V4 Flash is unlimited for every paid plan from August 6 to August 13, and 0.18.1 brings the offer into the app — alongside fixes for the first week of Team Workspace on production.
 ---
 
-🎁 **`24 PRs` · `9 contributors` · `2 days`** — **DeepSeek V4 Flash is unlimited for one week, and 0.18.1 puts it where you actually work.** August 6–13 (Asia/Shanghai): every paid plan gets unlimited DeepSeek V4 Flash on Open Design Cloud — it doesn't eat your plan's quota, doesn't carry over, and there's nothing to claim. 0.18.1 also cleans up the first week of Team Workspace on production: the 502 storm, the file grid that crawled, the BYOK picker that forgot your models. 🚀
+🎁 **`24 PRs` · `9 contributors` · `2 days`** — **DeepSeek V4 Flash is unlimited for one week, and 0.18.1 puts it where you actually work.** August 6 20:00 → August 13 20:00 (Asia/Shanghai): every paid plan gets unlimited DeepSeek V4 Flash on Open Design Cloud — it doesn't eat your plan's quota, doesn't carry over, and there's nothing to claim. 0.18.1 also cleans up the first week of Team Workspace on production: the 502 storm, the file grid that crawled, the BYOK picker that forgot your models. 🚀
 
 ## 🔥 Highlights
 
