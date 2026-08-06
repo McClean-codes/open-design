@@ -102,6 +102,81 @@ function validProductEvents(): JsonRecord[] {
   ];
 }
 
+function validCloudProductEvents(options: { interactiveLogin?: boolean } = {}): JsonRecord[] {
+  const loginEvents = options.interactiveLogin === true
+    ? [
+        completedCall("get_vela_login_status", { pluginWorkflowId: WORKFLOW_ID }, {
+          loggedIn: false,
+          loginInFlight: false,
+        }),
+        completedCall("start_vela_login", { pluginWorkflowId: WORKFLOW_ID }, {
+          status: { loggedIn: false, loginInFlight: true },
+        }),
+        completedCall("get_vela_login_status", { pluginWorkflowId: WORKFLOW_ID }, {
+          loggedIn: true,
+          loginInFlight: false,
+        }),
+      ]
+    : [
+        completedCall("get_vela_login_status", { pluginWorkflowId: WORKFLOW_ID }, {
+          loggedIn: true,
+          loginInFlight: false,
+        }),
+      ];
+  return [
+    { type: "session_meta", payload: { id: SESSION_ID } },
+    completedCall("collect_brief", {
+      artifactType: "website",
+      skip: true,
+    }, {
+      pluginWorkflowId: WORKFLOW_ID,
+    }),
+    completedCall("confirm_brief", {}, {
+      pluginWorkflowId: WORKFLOW_ID,
+    }),
+    ...loginEvents,
+    completedCall("list_projects", { pluginWorkflowId: WORKFLOW_ID }, {
+      projects: [],
+    }),
+    completedCall("list_agents", { pluginWorkflowId: WORKFLOW_ID }, {
+      agents: [{ id: "amr", available: true }],
+    }),
+    completedCall("create_project", { pluginWorkflowId: WORKFLOW_ID }, {
+      project: { id: PROJECT_ID },
+    }),
+    completedCall("start_run", {
+      agent: "amr",
+      pluginWorkflowId: WORKFLOW_ID,
+      project: PROJECT_ID,
+      prompt: "Build the confirmed artifact with Open Design Cloud.",
+      requestId: REQUEST_ID,
+    }, {
+      pluginWorkflowId: WORKFLOW_ID,
+      projectId: PROJECT_ID,
+      requestId: REQUEST_ID,
+      runId: RUN_ID,
+    }),
+    completedCall("get_run", {
+      pluginWorkflowId: WORKFLOW_ID,
+      runId: RUN_ID,
+    }, {
+      id: RUN_ID,
+      projectId: PROJECT_ID,
+      status: "running",
+    }),
+    completedCall("get_run", {
+      pluginWorkflowId: WORKFLOW_ID,
+      runId: RUN_ID,
+    }, {
+      deliverableValid: true,
+      id: RUN_ID,
+      previewUrl: `http://127.0.0.1:61484/api/projects/${PROJECT_ID}/raw/index.html`,
+      projectId: PROJECT_ID,
+      status: "succeeded",
+    }),
+  ];
+}
+
 async function createManagedRollout(events: JsonRecord[]): Promise<ToolCodexPaths> {
   const root = await mkdtemp(join(tmpdir(), "open-design-product-trace-"));
   roots.push(root);
@@ -130,6 +205,7 @@ describe("tools-codex product trace audit", () => {
     const paths = await createManagedRollout(validProductEvents());
 
     const report = await auditToolCodexProductSession({
+      expectedArtifactType: "website",
       mode: "local-codex",
       paths,
       sessionId: SESSION_ID,
@@ -139,6 +215,7 @@ describe("tools-codex product trace audit", () => {
     expect(report.failures).toEqual([]);
     expect(report.calls).toMatchObject({ start_run: 1, get_run: 2 });
     expect(report.lifecycle).toMatchObject({
+      artifactType: "website",
       pluginWorkflowId: WORKFLOW_ID,
       projectId: PROJECT_ID,
       requestId: REQUEST_ID,
@@ -175,6 +252,65 @@ describe("tools-codex product trace audit", () => {
     expect(report.signals.codexAgentAvailable).toBe(true);
   });
 
+  it("accepts a complete Open Design Cloud lifecycle for an existing login", async () => {
+    const paths = await createManagedRollout(validCloudProductEvents());
+
+    const report = await auditToolCodexProductSession({
+      mode: "cloud",
+      paths,
+      sessionId: SESSION_ID,
+    });
+
+    expect(report.status).toBe("PASS");
+    expect(report.failures).toEqual([]);
+    expect(report.signals).toMatchObject({
+      authenticationFlowValid: true,
+      modeBoundaryValid: true,
+      selectedAgentAvailable: true,
+      startRunExactlyOnce: true,
+    });
+    expect(report.signals).not.toHaveProperty("cloudLoginAbsent");
+    expect(report.calls).toMatchObject({
+      get_vela_login_status: 1,
+      start_run: 1,
+    });
+  });
+
+  it("accepts the explicit Cloud browser-login boundary and terminal continuation", async () => {
+    const paths = await createManagedRollout(validCloudProductEvents({ interactiveLogin: true }));
+
+    const report = await auditToolCodexProductSession({
+      mode: "cloud",
+      paths,
+      sessionId: SESSION_ID,
+    });
+
+    expect(report.status).toBe("PASS");
+    expect(report.calls).toMatchObject({
+      get_vela_login_status: 2,
+      start_vela_login: 1,
+    });
+  });
+
+  it("fails closed when Cloud silently starts Local Codex", async () => {
+    const events = validCloudProductEvents();
+    const start = events.find((event) =>
+      (event.payload as JsonRecord | undefined)?.type === "mcp_tool_call_end"
+      && ((event.payload as JsonRecord).invocation as JsonRecord).tool === "start_run"
+    )!;
+    (((start.payload as JsonRecord).invocation as JsonRecord).arguments as JsonRecord).agent = "codex";
+    const paths = await createManagedRollout(events);
+
+    const report = await auditToolCodexProductSession({
+      mode: "cloud",
+      paths,
+      sessionId: SESSION_ID,
+    });
+
+    expect(report.status).toBe("FAIL");
+    expect(report.failures).toContain("startRunExactlyOnce");
+  });
+
   it("fails closed when Local Codex is started more than once", async () => {
     const events = validProductEvents();
     events.push(events.find((event) =>
@@ -191,6 +327,20 @@ describe("tools-codex product trace audit", () => {
 
     expect(report.status).toBe("FAIL");
     expect(report.failures).toContain("startRunExactlyOnce");
+  });
+
+  it("fails closed when the Brief artifact type does not match the QA case", async () => {
+    const paths = await createManagedRollout(validProductEvents());
+
+    const report = await auditToolCodexProductSession({
+      expectedArtifactType: "presentation",
+      mode: "local-codex",
+      paths,
+      sessionId: SESSION_ID,
+    });
+
+    expect(report.status).toBe("FAIL");
+    expect(report.failures).toContain("artifactTypeValid");
   });
 
   it("rejects a non-canonical managed session id", async () => {

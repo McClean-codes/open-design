@@ -26,6 +26,11 @@ Open Design Cloud is the default mode. Use Local Codex only when the user
 explicitly selects it. Preserve the selected mode through brief collection,
 project selection, generation, polling, and delivery.
 
+This closure exposes Open Design Cloud and Local Codex only. Secure BYOK is not
+available through this plugin version. Never ask for or accept a raw API key,
+provider token, or credential in chat or an MCP argument; explain the current
+mode boundary and wait for the user to choose one of the available modes.
+
 Never switch modes after authentication, quota, transport, or generation
 failure. Explain the selected mode's failure and wait for the user to request
 another mode. A mode switch starts a new logical generation.
@@ -61,6 +66,10 @@ Prefer the active project when the user is clearly continuing it. Otherwise
 list projects and resolve an unambiguous named project, or create a concise new
 project. After resolution, use the explicit project id for every call so
 active-context expiry cannot redirect the run.
+
+If a refinement target is ambiguous, ask the user which existing project or
+artifact they mean. Do not create a replacement project, start a run, or mutate
+files until the target is unambiguous.
 
 For refinements, reuse the same project. Never create a duplicate merely
 because a new brief workflow or request id is required. Never delete projects

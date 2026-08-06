@@ -49,12 +49,27 @@ describe("Codex plugin product package", () => {
     expect(skill).toContain("name: open-design-mode");
     expect(skill).toContain("Open Design Cloud is the default mode");
     expect(skill).toContain("Local Codex");
+    expect(skill).toMatch(/Secure BYOK is not\s+available/u);
+    expect(skill).toContain("Never ask for or accept a raw API key");
     expect(skill).toContain("Call `collect_brief` exactly once");
     expect(skill).toContain("Do not send `externalPluginContext`");
     expect(skill).toContain("agent: \"amr\"");
     expect(skill).toContain("agent: \"codex\"");
     expect(skill).toMatch(/new\s+`pluginWorkflowId`/u);
     expect(skill).toContain("reuse the same project");
+    expect(skill).toContain("If a refinement target is ambiguous");
+    for (const artifactType of [
+      "website",
+      "product-prototype",
+      "presentation",
+      "document",
+      "image",
+      "video",
+      "audio",
+      "design-system",
+    ]) {
+      expect(skill).toContain(`\`${artifactType}\``);
+    }
     expect(skill).not.toMatch(/artifact-card-v[0-7]/u);
     expect(skill).not.toContain("git_marketplace");
     expect(skill).not.toContain("list_byok_profiles");

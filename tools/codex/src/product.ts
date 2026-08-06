@@ -30,24 +30,40 @@ type ProductToolCall = {
   tool: string;
 };
 
-export type ToolCodexProductMode = "local-codex";
+export const TOOL_CODEX_ARTIFACT_TYPES = [
+  "website",
+  "product-prototype",
+  "presentation",
+  "document",
+  "image",
+  "video",
+  "audio",
+  "design-system",
+] as const;
+
+export type ToolCodexArtifactType = typeof TOOL_CODEX_ARTIFACT_TYPES[number];
+export type ToolCodexProductMode = "cloud" | "local-codex";
 
 export type ToolCodexProductTraceSignals = {
+  artifactTypeValid: boolean;
+  authenticationFlowValid: boolean;
   briefStartedExactlyOnce: boolean;
   briefResolved: boolean;
-  cloudLoginAbsent: boolean;
-  codexAgentAvailable: boolean;
+  cloudLoginAbsent?: boolean;
+  codexAgentAvailable?: boolean;
   correlationIdsValid: boolean;
   deliverableValid: boolean;
   deliveryUrlPresent: boolean;
   diagnosticToolsAbsent: boolean;
   externalContextCallerAbsent: boolean;
-  localCodexBoundaryPresent: boolean;
+  localCodexBoundaryPresent?: boolean;
+  modeBoundaryValid: boolean;
   onePluginIdentity: boolean;
   oneWorkflow: boolean;
   pollingObserved: boolean;
   projectConsistent: boolean;
   projectResolved: boolean;
+  selectedAgentAvailable: boolean;
   startRunExactlyOnce: boolean;
   terminalSuccess: boolean;
   toolCallsSucceeded: boolean;
@@ -58,6 +74,7 @@ export type ToolCodexProductTraceReport = {
   failures: string[];
   generatedAt: string;
   lifecycle: {
+    artifactType: string | null;
     deliveryUrl: string | null;
     pluginId: string | null;
     pluginWorkflowId: string | null;
@@ -256,7 +273,30 @@ function agentAvailable(result: JsonRecord | null, id: string): boolean {
   );
 }
 
+function cloudAuthenticationValid(calls: ProductToolCall[]): boolean {
+  const statusCalls = calls.flatMap((call, index) =>
+    call.tool === "get_vela_login_status" ? [{ call, index }] : []
+  );
+  const startCalls = calls.flatMap((call, index) =>
+    call.tool === "start_vela_login" ? [{ call, index }] : []
+  );
+  const firstStatus = statusCalls[0];
+  if (firstStatus == null || !firstStatus.call.ok || startCalls.length > 1) return false;
+  if (firstStatus.call.result?.loggedIn === true) return startCalls.length === 0;
+
+  const loginAlreadyInFlight = firstStatus.call.result?.loginInFlight === true;
+  const start = startCalls[0];
+  if (!loginAlreadyInFlight && (start == null || !start.call.ok || start.index <= firstStatus.index)) {
+    return false;
+  }
+  const boundaryIndex = start?.index ?? firstStatus.index;
+  return statusCalls.some(({ call, index }) =>
+    index > boundaryIndex && call.ok && call.result?.loggedIn === true
+  );
+}
+
 export async function auditToolCodexProductSession(options: {
+  expectedArtifactType?: ToolCodexArtifactType;
   mode: ToolCodexProductMode;
   outputPath?: string;
   paths: ToolCodexPaths;
@@ -292,6 +332,7 @@ export async function auditToolCodexProductSession(options: {
     ["succeeded", "failed", "canceled"].includes(String(call.result?.status))
   )?.result ?? null;
   const collectSkipped = collectCalls[0]?.arguments.skip === true;
+  const artifactType = nonEmptyString(collectCalls[0]?.arguments.artifactType);
 
   const workflowValues = valuesForKey(calls, "pluginWorkflowId");
   const requestValues = valuesForKey(startCalls, "requestId");
@@ -320,16 +361,32 @@ export async function auditToolCodexProductSession(options: {
   const pluginId = oneValue(pluginIds);
   const deliveryUrl = findDeliveryUrl(terminalResult);
   const startPrompt = nonEmptyString(startCalls[0]?.arguments.prompt);
+  const selectedAgent = options.mode === "cloud" ? "amr" : "codex";
+  const cloudCallsAbsent = calls.every((call) => !CLOUD_LOGIN_TOOLS.has(call.tool));
+  const localBoundaryPresent = startPrompt?.includes(LOCAL_CODEX_BOUNDARY) === true;
   const allCallsShareWorkflow = pluginWorkflowId != null && calls.every((call) =>
     valuesForKey([call], "pluginWorkflowId").includes(pluginWorkflowId)
   );
 
   const signals: ToolCodexProductTraceSignals = {
+    artifactTypeValid: artifactType != null
+      && TOOL_CODEX_ARTIFACT_TYPES.includes(artifactType as ToolCodexArtifactType)
+      && (options.expectedArtifactType == null || artifactType === options.expectedArtifactType),
+    authenticationFlowValid: options.mode === "cloud"
+      ? cloudAuthenticationValid(calls)
+      : cloudCallsAbsent,
     briefStartedExactlyOnce: collectCalls.length === 1,
     briefResolved: collectCalls.length === 1
       && (collectSkipped ? confirmCalls.length <= 1 : confirmCalls.length === 1),
-    cloudLoginAbsent: calls.every((call) => !CLOUD_LOGIN_TOOLS.has(call.tool)),
-    codexAgentAvailable: listAgentCalls.some((call) => agentAvailable(call.result, "codex")),
+    ...(options.mode === "local-codex"
+      ? {
+          cloudLoginAbsent: cloudCallsAbsent,
+          codexAgentAvailable: listAgentCalls.some((call) =>
+            agentAvailable(call.result, "codex")
+          ),
+          localCodexBoundaryPresent: localBoundaryPresent,
+        }
+      : {}),
     correlationIdsValid: pluginWorkflowId != null
       && requestId != null
       && runId != null
@@ -343,7 +400,9 @@ export async function auditToolCodexProductSession(options: {
     ),
     externalContextCallerAbsent: collectCalls.length === 1
       && collectCalls[0]?.arguments.externalPluginContext === undefined,
-    localCodexBoundaryPresent: startPrompt?.includes(LOCAL_CODEX_BOUNDARY) === true,
+    modeBoundaryValid: options.mode === "cloud"
+      ? !localBoundaryPresent
+      : localBoundaryPresent,
     onePluginIdentity: pluginId != null
       && pluginIds.length === calls.length
       && pluginId.startsWith("open-design@"),
@@ -352,8 +411,11 @@ export async function auditToolCodexProductSession(options: {
     projectConsistent: projectId != null,
     projectResolved: projectId != null
       && (createProjectCalls.length === 1 || byTool("list_projects").length >= 1),
+    selectedAgentAvailable: listAgentCalls.some((call) =>
+      agentAvailable(call.result, selectedAgent)
+    ),
     startRunExactlyOnce: startCalls.length === 1
-      && startCalls[0]?.arguments.agent === "codex",
+      && startCalls[0]?.arguments.agent === selectedAgent,
     terminalSuccess: terminalResult?.status === "succeeded",
     toolCallsSucceeded: calls.every((call) => call.ok),
   };
@@ -365,6 +427,7 @@ export async function auditToolCodexProductSession(options: {
     failures,
     generatedAt: new Date().toISOString(),
     lifecycle: {
+      artifactType,
       deliveryUrl,
       pluginId,
       pluginWorkflowId,

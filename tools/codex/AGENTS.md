@@ -219,6 +219,7 @@ pnpm tools-codex audit-product \
   --namespace desktop-smoke \
   --session-id <codex-session-uuid> \
   --mode local-codex \
+  --artifact-type website \
   --json
 ```
 
@@ -227,6 +228,13 @@ Codex agent, one `start_run`, polling to terminal success, a valid deliverable,
 and a Studio or Preview URL. It rejects Cloud login, distribution diagnostic
 tools, caller-supplied plugin attribution, inconsistent correlation ids,
 recursive Open Design execution, failed tool calls, and duplicate generation.
+Use `--mode cloud` for the corresponding Open Design Cloud contract. It
+requires login-status verification (including a bounded browser-login sequence
+when needed), an available `amr` agent, no Local Codex child-runtime boundary,
+one attributed start, polling, and valid terminal delivery.
+Pass `--artifact-type` for a named QA case so the audited Brief type cannot
+silently differ from the intended website, presentation, prototype, document,
+media, or design-system scenario.
 
 On a supported controlled host:
 

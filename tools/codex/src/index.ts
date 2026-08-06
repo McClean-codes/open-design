@@ -20,7 +20,9 @@ import {
   verifyAndRecordToolCodexRuntimeHandoff,
 } from "./plugin.js";
 import {
+  TOOL_CODEX_ARTIFACT_TYPES,
   auditToolCodexProductSession,
+  type ToolCodexArtifactType,
   type ToolCodexProductMode,
 } from "./product.js";
 import { resolveToolCodexRuntimeBinding } from "./runtime.js";
@@ -56,6 +58,7 @@ type AcceptOptions = PrepareOptions & {
 };
 
 type AuditProductOptions = CommonOptions & {
+  artifactType?: string;
   mode?: string;
   out?: string;
   sessionId?: string;
@@ -194,18 +197,27 @@ common(cli.command("auth-check", "Verify managed Codex auth is independent from 
 common(cli.command("audit-product", "Audit a managed Codex product session rollout"))
   .option("--session-id <uuid>", "Managed Codex session ID to audit")
   .option("--mode <mode>", "Product execution mode", { default: "local-codex" })
+  .option("--artifact-type <type>", "Expected Open Design brief artifact type")
   .option("--out <path>", "Product trace report path under the managed reports directory")
   .action(async (options: AuditProductOptions) => {
     if (options.sessionId == null || options.sessionId.length === 0) {
       throw new ToolCodexError("PRODUCT_SESSION_ID_REQUIRED", "--session-id is required");
     }
-    if (options.mode !== "local-codex") {
+    if (options.mode !== "cloud" && options.mode !== "local-codex") {
       throw new ToolCodexError(
         "PRODUCT_MODE_INVALID",
-        "--mode must be local-codex",
+        "--mode must be cloud or local-codex",
+      );
+    }
+    if (options.artifactType != null
+      && !TOOL_CODEX_ARTIFACT_TYPES.includes(options.artifactType as ToolCodexArtifactType)) {
+      throw new ToolCodexError(
+        "PRODUCT_ARTIFACT_TYPE_INVALID",
+        `--artifact-type must be one of: ${TOOL_CODEX_ARTIFACT_TYPES.join(", ")}`,
       );
     }
     const report = await auditToolCodexProductSession({
+      expectedArtifactType: options.artifactType as ToolCodexArtifactType | undefined,
       mode: options.mode as ToolCodexProductMode,
       outputPath: options.out == null ? undefined : resolve(options.out),
       paths: pathsFor(options),

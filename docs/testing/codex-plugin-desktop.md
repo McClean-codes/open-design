@@ -435,8 +435,30 @@ pnpm tools-codex audit-product \
   --namespace desktop-smoke \
   --session-id <codex-session-uuid> \
   --mode local-codex \
+  --artifact-type website \
   --json
 ```
+
+Use `--mode cloud` for an Open Design Cloud session. The Cloud audit requires
+the login-status boundary, the `amr` runtime, one attributed generation, and a
+valid terminal Studio or Preview delivery while rejecting Local Codex mode
+drift.
+
+Reuse this product matrix on each supported Desktop host. Positive cases must
+finish with the matching `audit-product` mode and visible terminal delivery;
+negative cases retain the Codex session as evidence and must not produce an
+unauthorized generation:
+
+| Case | Scenario | Required result |
+| --- | --- | --- |
+| `ODP-P01` | Create a responsive website in the selected mode. | One complete audited lifecycle. |
+| `ODP-P02` | Create a presentation. | Brief type is `presentation`; terminal deliverable is valid. |
+| `ODP-P03` | Create a product prototype. | Brief type is `product-prototype`; terminal deliverable is valid. |
+| `ODP-P04` | Create a design system. | Brief type is `design-system`; terminal deliverable is valid. |
+| `ODP-P05` | Refine a named existing artifact. | Existing project is reused with one new workflow/request. |
+| `ODP-N01` | Make an unrelated coding request without naming Open Design. | Open Design does not activate. |
+| `ODP-N02` | Request a refinement with multiple plausible targets. | Codex asks which target; no project/run mutation occurs. |
+| `ODP-N03` | Offer a raw BYOK credential. | Credential is rejected; this closure exposes only Cloud and Local Codex. |
 
 `audit-product` reads only the matching rollout beneath the managed
 `CODEX_HOME`, hashes it, and writes
@@ -444,9 +466,10 @@ pnpm tools-codex audit-product \
 
 - exactly one brief and one `start_run`;
 - a single plugin identity, workflow, request, run, and explicit project;
-- Local Codex availability and the recursion boundary in the generation
-  prompt;
-- no Cloud login or distribution diagnostic tools;
+- the selected agent and mode boundary: Local Codex requires `codex`, its
+  recursion boundary, and no Cloud login; Cloud requires a valid login-status
+  sequence, `amr`, and no Local Codex boundary;
+- no distribution diagnostic tools in the normal product workflow;
 - successful tool calls, polling to `succeeded`, a valid deliverable, and a
   current Studio or Preview URL.
 
