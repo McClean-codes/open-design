@@ -127,6 +127,72 @@ export function packagedAppShellState(value: unknown): PackagedAppShellState | n
   return null;
 }
 
+/**
+ * Reads the daemon's own onboarding-completion fact inside the packaged
+ * renderer. `GET /api/app-config` serves `readAppConfig(RUNTIME_DATA_DIR)`, so
+ * this reports what the running daemon resolved.
+ *
+ * `fetch` is taken as an argument (and wrapped at the call site, since an
+ * unbound `fetch` throws in a browser) so the same text can be driven against a
+ * fake in Node.
+ */
+const PACKAGED_ONBOARDING_CONFIG_PROBE = `
+  (async (fetchImpl) => {
+    const response = await fetchImpl('/api/app-config');
+    const body = response.ok ? await response.json() : null;
+    return {
+      onboardingCompleted: body?.config?.onboardingCompleted === true,
+      status: response.status,
+    };
+  })
+`;
+
+export const packagedOnboardingConfigExpression = `(${PACKAGED_ONBOARDING_CONFIG_PROBE})((input) => fetch(input))`;
+
+export type PackagedOnboardingConfigFetch = (input: string) => Promise<{
+  json(): Promise<unknown>;
+  ok: boolean;
+  status: number;
+}>;
+
+export function evaluatePackagedOnboardingConfigProbe(
+  fetchImpl: PackagedOnboardingConfigFetch,
+): Promise<unknown> {
+  const probe = new Function(`return (${PACKAGED_ONBOARDING_CONFIG_PROBE});`)() as (
+    fetchImpl: PackagedOnboardingConfigFetch,
+  ) => Promise<unknown>;
+  return probe(fetchImpl);
+}
+
+/**
+ * Raised when the daemon's onboarding-completion fact could not be established.
+ *
+ * Its own type so a caller can never mistake "we could not find out" for a
+ * `false` reading.
+ */
+export class PackagedOnboardingConfigError extends Error {
+  constructor(reason: string) {
+    super(`packaged windows daemon onboarding config could not be established: ${reason}`);
+    this.name = 'PackagedOnboardingConfigError';
+  }
+}
+
+/**
+ * The daemon's `onboardingCompleted`, or an error.
+ *
+ * Never returns a default. An unestablished fact must not become a permission.
+ */
+export function packagedOnboardingCompletedFromProbe(value: unknown): boolean {
+  if (typeof value !== 'object' || value == null || Array.isArray(value)) {
+    throw new PackagedOnboardingConfigError(`probe returned no result (${JSON.stringify(value) ?? 'undefined'})`);
+  }
+  const candidate = value as Record<string, unknown>;
+  if (typeof candidate.onboardingCompleted !== 'boolean') {
+    throw new PackagedOnboardingConfigError(`probe returned no reading (${JSON.stringify(candidate)})`);
+  }
+  return candidate.onboardingCompleted;
+}
+
 export type PackagedAppShellPolicyInput = {
   /**
    * What the daemon itself reports for `onboardingCompleted`, read from

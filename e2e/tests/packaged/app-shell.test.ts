@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   asPackagedAppShellSnapshot,
   evaluatePackagedAppShellProbe,
+  evaluatePackagedOnboardingConfigProbe,
+  PackagedOnboardingConfigError,
   packagedAppShellExpression,
+  packagedOnboardingCompletedFromProbe,
+  packagedOnboardingConfigExpression,
+  type PackagedOnboardingConfigFetch,
   packagedAppShellFailureReason,
   packagedAppShellPolicy,
   packagedAppShellSettled,
@@ -264,6 +269,116 @@ describe('packaged app-shell policy', () => {
     const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false });
 
     expect(packagedAppShellSettled(probe(renderFixture([])), policy)).toBe(false);
+  });
+});
+
+/**
+ * A fake `/api/app-config`. `throws` models a renderer whose fetch rejects
+ * outright (daemon socket gone); the rest model real HTTP answers.
+ */
+function fakeConfigFetch(options: {
+  body?: unknown;
+  ok?: boolean;
+  status?: number;
+  throws?: boolean;
+}): PackagedOnboardingConfigFetch {
+  return async () => {
+    if (options.throws === true) throw new Error('fetch failed');
+    return {
+      json: async () => options.body,
+      ok: options.ok ?? true,
+      status: options.status ?? 200,
+    };
+  };
+}
+
+// PerishCode's second review on #6481: the probe converted an HTTP failure into
+// `onboardingCompleted: false`, which is the exact branch that permits the
+// onboarding landing. The fact the shell policy depends on could fail to be
+// established and the smoke would pass anyway. An unestablished fact must be an
+// error, never a permission.
+describe('packaged daemon onboarding config probe', () => {
+  it('reads a real completed config', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(
+      fakeConfigFetch({ body: { config: { onboardingCompleted: true } } }),
+    );
+
+    expect(packagedOnboardingCompletedFromProbe(value)).toBe(true);
+  });
+
+  it('reads a real first-run config', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(
+      fakeConfigFetch({ body: { config: { onboardingCompleted: false } } }),
+    );
+
+    expect(packagedOnboardingCompletedFromProbe(value)).toBe(false);
+  });
+
+  it('refuses to answer when the daemon returns a server error', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(
+      fakeConfigFetch({ ok: false, status: 500 }),
+    );
+
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(/500/);
+  });
+
+  it('refuses to answer when the route is missing', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(
+      fakeConfigFetch({ ok: false, status: 404 }),
+    );
+
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+      PackagedOnboardingConfigError,
+    );
+  });
+
+  it('refuses to answer when the daemon is not reachable at all', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ throws: true }));
+
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+      PackagedOnboardingConfigError,
+    );
+  });
+
+  it('refuses to answer when the response carries no config', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ body: {} }));
+
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+      PackagedOnboardingConfigError,
+    );
+  });
+
+  it('names the status so a failure says what could not be established', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(
+      fakeConfigFetch({ ok: false, status: 503 }),
+    );
+
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+      /onboarding config could not be established.*503/s,
+    );
+  });
+
+  // The load-bearing one: a failed probe must never reach the policy at all, so
+  // it can never be the thing that permits the landing.
+  it('never lets a failed probe become permission to accept the landing', async () => {
+    const failures = [
+      fakeConfigFetch({ ok: false, status: 500 }),
+      fakeConfigFetch({ ok: false, status: 404 }),
+      fakeConfigFetch({ throws: true }),
+      fakeConfigFetch({ body: null }),
+    ];
+
+    for (const failure of failures) {
+      const value = await evaluatePackagedOnboardingConfigProbe(failure);
+      expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+        PackagedOnboardingConfigError,
+      );
+    }
+  });
+
+  it('ships an expression that binds fetch for the renderer', () => {
+    expect(packagedOnboardingConfigExpression).toContain("fetch(input)");
+    expect(packagedOnboardingConfigExpression).toContain('/api/app-config');
   });
 });
 
