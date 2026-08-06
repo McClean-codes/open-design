@@ -51,7 +51,7 @@ type FixtureNode = {
  * Enough of `querySelector` for the four selectors the probe uses: class
  * selectors, `[attr="value"]` selectors, and comma-separated groups. Document
  * order is the fixture array order, which is what makes the "second
- * `.onboarding-cloud__secondary` is the BYOK link" reading testable.
+ * `.onboarding-cloud__alt-btn` is the BYOK link" reading testable.
  */
 function matchesSelector(element: FixtureElement, selector: string): boolean {
   return selector
@@ -106,8 +106,8 @@ const CLOUD_SIGN_IN_LANDING: readonly FixtureNode[] = [
   { classes: ['entry-onboarding-modal'] },
   { classes: ['onboarding-view', 'onboarding-view--cloud'] },
   { classes: ['onboarding-cloud__primary'] },
-  { classes: ['onboarding-cloud__secondary'] },
-  { classes: ['onboarding-cloud__secondary'] },
+  { classes: ['onboarding-cloud__alt-btn'] },
+  { classes: ['onboarding-cloud__alt-btn'] },
 ];
 
 describe('packaged app-shell probe', () => {
@@ -216,7 +216,7 @@ describe('packaged app-shell terminal state', () => {
         { classes: ['entry-shell', 'entry-shell--onboarding'] },
         { classes: ['entry-onboarding-modal'] },
         { classes: ['onboarding-cloud__primary'] },
-        { classes: ['onboarding-cloud__secondary'] },
+        { classes: ['onboarding-cloud__alt-btn'] },
       ]),
     );
 
