@@ -64,6 +64,9 @@ export type RegisterDesignSystemToolRoutesDeps = {
   runs?: {
     getRun: (id: string) => { designSystemId?: string | null } | null | undefined;
   };
+  features: {
+    isDesignSystemRuntimeEnabled: () => boolean;
+  };
 };
 
 export function registerDesignSystemToolRoutes(
@@ -130,6 +133,15 @@ export function registerDesignSystemToolRoutes(
     try {
       const grant = authorizeToolRequest(req, res, 'design-systems:resolve-intent');
       if (!grant) return;
+
+      if (!ctx.features.isDesignSystemRuntimeEnabled()) {
+        return sendApiError(
+          res,
+          409,
+          'DESIGN_SYSTEM_RUNTIME_UNAVAILABLE',
+          'structured design-system runtime is disabled',
+        );
+      }
 
       const activeDesignSystemId = activeDesignSystemIdForGrant(ctx, grant);
       if (!activeDesignSystemId) {

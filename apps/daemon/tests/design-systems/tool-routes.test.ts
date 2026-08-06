@@ -62,6 +62,7 @@ async function startRouteServer(options: {
   workspaceId?: string;
   workspaceMemberId?: string;
   scopeAvailable?: boolean | (() => boolean);
+  runtimeEnabled?: boolean | (() => boolean);
   activeDesignSystemId: string | null;
   runDesignSystemId?: string | null;
 }): Promise<string> {
@@ -125,6 +126,11 @@ async function startRouteServer(options: {
       getRun: () => options.runDesignSystemId === undefined
         ? undefined
         : { designSystemId: options.runDesignSystemId },
+    },
+    features: {
+      isDesignSystemRuntimeEnabled: () => typeof options.runtimeEnabled === 'function'
+        ? options.runtimeEnabled()
+        : options.runtimeEnabled !== false,
     },
   });
 
@@ -255,6 +261,29 @@ describe('design-system pull tool route', () => {
     });
     expect(invalidIntent.status).toBe(400);
     expect(invalidIntent.body.error.code).toBe('INVALID_INPUT');
+  });
+
+  it('does not resolve structured intents when the token channel is disabled', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'runtime-v3'),
+      { recursive: true },
+    );
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      runtimeEnabled: false,
+      activeDesignSystemId: 'runtime-v3',
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.error.code).toBe('DESIGN_SYSTEM_RUNTIME_UNAVAILABLE');
   });
 
   it('resolves a team-scoped user runtime instead of a same-id personal runtime', async () => {
