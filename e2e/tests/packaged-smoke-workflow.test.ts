@@ -1221,7 +1221,6 @@ process.stdin.on("end", () => {
       "entry-automations",
       "project-workspace",
       "project-workspace-editor",
-      "project-collab",
       "project-runtime",
       "workspace-restoration",
     ]);
@@ -1240,10 +1239,6 @@ process.stdin.on("end", () => {
         "ui/workspace-team-design-system-picker.test.ts",
       ],
     });
-    expect(uiP0Groups["project-collab"].files).toEqual([
-      "ui/workspace-multi-client-collab.test.ts",
-    ]);
-    expect(uiP0Groups["project-collab"].workers).toBe(1);
     expect(uiP0Groups["critical-extras"]).toEqual({
       grep: "@merge-extra",
       workers: 1,
