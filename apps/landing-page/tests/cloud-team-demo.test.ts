@@ -67,6 +67,16 @@ test('cloud team upgrade demo is review-only and cannot be indexed', () => {
   assert.match(source, /noindex, nofollow/);
 });
 
+test('cloud team upgrade demo stamps campaign attribution only inside the activity window', () => {
+  // Outside the fixed window the upgrade/pricing clicks still record
+  // od_entry_* attribution, but neither the minted entry nor the analytics
+  // props may carry the campaign id (数据正确性:活动外点击不得计入活动).
+  assert.match(source, /__odRecordCampaignEntry\?\.\(source, campaignActive \? 'deepseek_v4_flash' : undefined\)/);
+  assert.doesNotMatch(source, /__odRecordCampaignEntry\?\.\(source, 'deepseek_v4_flash'\)/);
+  assert.match(source, /\.\.\.\(campaignActive \? \{ campaign_id: 'deepseek_v4_flash' as const \} : \{\}\)/);
+  assert.doesNotMatch(source, /page_name: 'cloud_team_demo',\s*area: 'upgrade_modal',\s*campaign_id: 'deepseek_v4_flash',/);
+});
+
 test('cloud team upgrade demo disables the ?campaign= preview on production builds', () => {
   // D7: same review gate as the home banner and pricing page — the verdict
   // is injected at build time (__OD_LANDING_NOINDEX__: staging/PR previews

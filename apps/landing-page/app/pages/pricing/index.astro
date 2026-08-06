@@ -1040,9 +1040,12 @@ const jsonLd = [
         if (!cta) return;
         try {
           const audience = root.getAttribute('data-audience') || 'creator';
+          // Outside the activity window the CTA still records od_entry_*
+          // attribution, but must not stamp the campaign — clicks outside
+          // the window may not count toward it.
           const attribution = window.__odRecordCampaignEntry?.(
             audience === 'team' ? 'landing_pricing_team_plan' : 'landing_pricing_personal_plan',
-            'deepseek_v4_flash',
+            campaignActive ? 'deepseek_v4_flash' : undefined,
           );
           const props = {
             page_name: 'pricing',
@@ -1051,7 +1054,7 @@ const jsonLd = [
             tier: cta.getAttribute('data-tier') || 'unknown',
             interval: root.getAttribute('data-interval') || 'monthly',
             audience,
-            campaign_id: 'deepseek_v4_flash',
+            ...(campaignActive ? { campaign_id: 'deepseek_v4_flash' } : {}),
             user_state: 'unknown',
             ...(attribution || {}),
           };

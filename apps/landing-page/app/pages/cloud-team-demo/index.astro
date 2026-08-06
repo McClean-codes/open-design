@@ -153,7 +153,9 @@ const teamPlans = [
     window.__odTrack?.(name, {
       page_name: 'cloud_team_demo',
       area: 'upgrade_modal',
-      campaign_id: 'deepseek_v4_flash',
+      // Only clicks/impressions inside the activity window may count toward
+      // the campaign; outside it the demo keeps tracking without the stamp.
+      ...(campaignActive ? { campaign_id: 'deepseek_v4_flash' as const } : {}),
       ...props,
     });
   }
@@ -201,7 +203,7 @@ const teamPlans = [
         return;
       }
       const source = 'landing_pricing_team_plan';
-      const attribution = window.__odRecordCampaignEntry?.(source, 'deepseek_v4_flash');
+      const attribution = window.__odRecordCampaignEntry?.(source, campaignActive ? 'deepseek_v4_flash' : undefined);
       track('ui_click', {
         element: 'upgrade',
         plan_audience: 'team',
@@ -216,7 +218,7 @@ const teamPlans = [
     event.preventDefault();
     const link = event.currentTarget as HTMLAnchorElement;
     const source = 'landing_pricing_team_plan';
-    const attribution = window.__odRecordCampaignEntry?.(source, 'deepseek_v4_flash');
+    const attribution = window.__odRecordCampaignEntry?.(source, campaignActive ? 'deepseek_v4_flash' : undefined);
     track('ui_click', {
       area: 'campaign_badge',
       element: 'open_pricing',

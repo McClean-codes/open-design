@@ -146,6 +146,24 @@ describe("pricing contract", () => {
     assert.doesNotMatch(page, /const campaignPreview = new URLSearchParams/);
   });
 
+  it("stamps campaign attribution on subscribe CTAs only inside the activity window", async () => {
+    // Clicks outside the fixed window must not count toward the campaign:
+    // the CTA keeps recording od_entry_* attribution, but the minted entry
+    // and the ui_click props carry the campaign id only while campaignActive
+    // is true.
+    const page = await readFile(PRICING_PAGE_PATH, "utf8");
+
+    assert.match(
+      page,
+      /__odRecordCampaignEntry\?\.\(\s*audience === 'team' \? 'landing_pricing_team_plan' : 'landing_pricing_personal_plan',\s*campaignActive \? 'deepseek_v4_flash' : undefined,\s*\)/,
+    );
+    assert.match(page, /\.\.\.\(campaignActive \? \{ campaign_id: 'deepseek_v4_flash' \} : \{\}\)/);
+    assert.doesNotMatch(
+      page,
+      /element: 'subscribe',[\s\S]{0,300}?\n\s*campaign_id: 'deepseek_v4_flash',/,
+    );
+  });
+
   it("aligns the highlighted campaign checkmark with the benefit list below", async () => {
     const page = await readFile(PRICING_PAGE_PATH, "utf8");
 
