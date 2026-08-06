@@ -34,7 +34,7 @@ const MEMBER = {
 
 test.describe.configure({ timeout: T.xlong * 5 });
 
-test('[P0] two isolated clients converge live content, presence, and owner unshare', async ({
+test('[P1] two isolated clients converge live content, presence, and owner unshare', async ({
   browser,
 }, testInfo) => {
   const hubRoot = testInfo.outputPath('fake-collab-hub');
@@ -334,7 +334,7 @@ test('[P0] two isolated clients converge live content, presence, and owner unsha
   }
 });
 
-test('[P0] two active clients converge when a member gains then loses admin access', async ({
+test('[P1] two active clients converge when a member gains then loses admin access', async ({
   browser,
 }, testInfo) => {
   const hubRoot = testInfo.outputPath('fake-role-change-hub');
