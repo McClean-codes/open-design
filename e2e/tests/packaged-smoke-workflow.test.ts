@@ -433,11 +433,13 @@ describe("packaged smoke workflow", () => {
     expect(rerunScript).toContain("gh run rerun");
     expect(rerunScript).toContain("--failed");
     expect(rerunScript).toContain("DEFAULT_MAX_ATTEMPT = 2");
-    // merge_group freshness is open-PR association, not live merge-queue membership
+    // merge_group freshness: open PR still at the PR head SHA encoded in the
+    // queue branch (pr-N-<sha>), not live queue membership and not open-only.
     // (required-check failure ejects the synthetic head before workflow_run completed).
     expect(rerunScript).toContain("resolve_merge_group_open_pr");
     expect(rerunScript).toContain("parse_merge_group_pr_number");
-    expect(rerunScript).toContain("no open PR associated with merge_group head");
+    expect(rerunScript).toContain("parse_merge_group_pr_head_sha");
+    expect(rerunScript).toContain("no open PR at the merge_group originating head");
     // Mixed ordinary failure + cancelled leaf must refuse --failed rerun.
     expect(rerunScript).toContain("classify_non_success_jobs");
     expect(rerunScript).toContain("ordinary non-infra failures present");

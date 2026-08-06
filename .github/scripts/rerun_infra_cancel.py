@@ -10,9 +10,10 @@ It is intentionally narrow:
   (shutdown/spot markers — not bare `cancelled` alone; no ordinary assertion
   failure / timeout mixed in)
 - only when freshness still holds: live PR head for `pull_request`, or an
-  open PR still associated with the synthetic `merge_group` head (queue
-  membership is not usable — required-check failure ejects the entry before
-  `workflow_run` completed fires)
+  open PR whose live head still matches the PR head SHA encoded in the
+  synthetic `merge_group` branch (`pr-N-<sha>`). Queue membership is not
+  usable — required-check failure ejects the entry before `workflow_run`
+  completed fires — and open-only is not enough (the PR may have advanced)
 
 Skip paths exit 0. Hard API/protocol errors exit non-zero so the atom job is
 visible when the helper itself is broken.
@@ -269,12 +270,18 @@ def decide(
     elif event_name == "merge_group":
         # workflow_run completed fires after required checks fail, so GitHub has
         # normally already ejected the synthetic head from the merge queue.
-        # Freshness is an open PR still associated with this run — not queue
-        # membership (which would skip every infra-cancel merge_group path).
+        # Freshness is an open PR still at the PR head SHA encoded in the
+        # merge-queue branch (pr-N-<sha>) — not queue membership (which would
+        # skip every infra-cancel merge_group path) and not open-only (the PR
+        # may have advanced after ejection).
         if merge_group_has_open_pr is None:
             return False, "skip: could not resolve open PR for merge_group head"
         if not merge_group_has_open_pr:
-            return False, "skip: no open PR associated with merge_group head"
+            return (
+                False,
+                "skip: no open PR at the merge_group originating head "
+                "(closed or advanced)",
+            )
 
     joined = ", ".join(infra_job_names)
     return True, f"rerun: infra-cancel jobs detected ({joined})"
@@ -492,8 +499,9 @@ def resolve_live_pr_head(request: GhRequest, repo: str, head_sha: str, head_bran
 
 # GitHub merge-queue temporary refs look like:
 #   gh-readonly-queue/main/pr-1234-<sha>
-# Capture the PR number so we can re-check open state after ejection.
-_MERGE_GROUP_PR_RE = re.compile(r"(?:^|/)pr-(\d+)(?:-|$)")
+# Capture the PR number and the PR head SHA that entered the queue so we can
+# re-check open state + head freshness after ejection.
+_MERGE_GROUP_PR_RE = re.compile(r"(?:^|/)pr-(\d+)(?:-([0-9a-fA-F]+))?$")
 
 
 def parse_merge_group_pr_number(head_branch: str | None) -> int | None:
@@ -506,27 +514,65 @@ def parse_merge_group_pr_number(head_branch: str | None) -> int | None:
     return int(match.group(1))
 
 
+def parse_merge_group_pr_head_sha(head_branch: str | None) -> str | None:
+    """Parse the PR head SHA encoded in a merge-queue temporary branch, if present.
+
+    The synthetic merge commit SHA on the workflow run is *not* the PR head.
+    Freshness for merge_group reruns compares this encoded PR head with the
+    live open PR head so a later push does not authorize an obsolete retry.
+    """
+    if not head_branch or not isinstance(head_branch, str):
+        return None
+    match = _MERGE_GROUP_PR_RE.search(head_branch.strip())
+    if not match:
+        return None
+    sha = match.group(2)
+    return sha if isinstance(sha, str) and sha else None
+
+
+def _merge_group_pr_still_at_originating_head(
+    pull: dict[str, Any],
+    originating_pr_head: str,
+) -> bool:
+    """True when *pull* is open and its live head still matches the queued SHA."""
+    live = _open_pr_head_sha(pull)
+    if not live:
+        return False
+    return live.lower() == originating_pr_head.lower()
+
+
 def resolve_merge_group_open_pr(
     request: GhRequest,
     repo: str,
     head_sha: str,
     head_branch: str | None,
 ) -> bool | None:
-    """Return whether an open PR is still associated with this merge_group run.
+    """Return whether an open PR still matches this merge_group run's PR head.
 
     ``workflow_run`` on completed ``ci`` fires after required checks fail, so the
     synthetic merge-group head is normally already ejected from the merge queue.
     Queue membership is therefore not a usable freshness signal for infra-cancel
-    retry. Freshness is: an open PR is still associated with this run.
+    retry. Freshness is: an open PR is still associated with this run *and* its
+    live head still equals the PR head SHA encoded in the merge-queue branch
+    (``pr-N-<sha>``). Open-only is not enough — a new commit on the PR must not
+    authorize ``gh run rerun --failed`` for the obsolete synthetic run.
 
     Returns:
-      True  — at least one open PR is associated with this head
-      False — associations resolved but no open PR remains
-      None  — could not determine association (API/protocol miss)
+      True  — open PR still at the originating PR head for this run
+      False — associations resolved but no open PR remains at that head
+              (closed, or open but advanced)
+      None  — could not determine association/freshness (API/protocol miss,
+              or merge-queue branch lacks the originating PR head SHA)
     """
     owner, _, name = repo.partition("/")
     if not owner or not name:
         fail(f"Invalid repository {repo!r}")
+
+    originating_pr_head = parse_merge_group_pr_head_sha(head_branch)
+    if originating_pr_head is None:
+        # Without the PR head from the queue ref we cannot prove the live PR
+        # has not advanced past what this synthetic run covered.
+        return None
 
     saw_association = False
 
@@ -541,7 +587,7 @@ def resolve_merge_group_open_pr(
             if not isinstance(pull, dict):
                 continue
             saw_association = True
-            if _open_pr_head_sha(pull):
+            if _merge_group_pr_still_at_originating_head(pull, originating_pr_head):
                 return True
 
     pr_number = parse_merge_group_pr_number(head_branch)
@@ -549,7 +595,7 @@ def resolve_merge_group_open_pr(
         pull = request("GET", f"/repos/{repo}/pulls/{pr_number}", None, None)
         if isinstance(pull, dict):
             saw_association = True
-            if _open_pr_head_sha(pull):
+            if _merge_group_pr_still_at_originating_head(pull, originating_pr_head):
                 return True
 
     if saw_association:
@@ -572,9 +618,17 @@ def resolve_merge_group_open_pr(
         return None
     if not isinstance(nodes, list):
         return None
-    # Synthetic merge commit rarely equals PR head; this path mainly proves
-    # GraphQL is reachable. Without commit/PR association we cannot authorize.
-    return None
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        head_ref = node.get("headRefOid")
+        if (
+            isinstance(head_ref, str)
+            and head_ref.lower() == originating_pr_head.lower()
+        ):
+            return True
+    # Reachable GraphQL with no matching open head: do not authorize.
+    return False
 
 
 def load_run(request: GhRequest, repo: str, run_id: int) -> dict[str, Any]:
@@ -1203,18 +1257,24 @@ def self_check() -> None:
     )
     assert not ok and "ordinary non-infra" in reason, reason
 
-    # merge_group head_branch PR parsing + open-PR freshness (not queue membership).
+    # merge_group head_branch PR parsing + open PR still at originating head.
+    mg_pr_head = "a" * 40
     assert (
         parse_merge_group_pr_number(
-            "gh-readonly-queue/main/pr-6453-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            f"gh-readonly-queue/main/pr-6453-{mg_pr_head}"
         )
         == 6453
     )
+    assert parse_merge_group_pr_head_sha(f"gh-readonly-queue/main/pr-6453-{mg_pr_head}") == mg_pr_head
     assert parse_merge_group_pr_number("feature/not-a-queue-ref") is None
     assert parse_merge_group_pr_number(None) is None
+    assert parse_merge_group_pr_head_sha("feature/not-a-queue-ref") is None
+    assert parse_merge_group_pr_head_sha(None) is None
+    # Branch without the encoded PR head cannot prove freshness.
+    assert parse_merge_group_pr_head_sha("gh-readonly-queue/main/pr-99") is None
 
-    mg_run_sha = "1" * 40
-    mg_branch = "gh-readonly-queue/main/pr-99-" + mg_run_sha
+    mg_run_sha = "1" * 40  # synthetic merge commit (not the PR head)
+    mg_branch = f"gh-readonly-queue/main/pr-99-{mg_pr_head}"
     mg_paths: list[str] = []
 
     def mg_open_pr_request(
@@ -1231,7 +1291,7 @@ def self_check() -> None:
                 {
                     "state": "open",
                     "number": 99,
-                    "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                    "head": {"sha": mg_pr_head, "ref": "agent/some-pr"},
                     "base": {"ref": "main"},
                 }
             ]
@@ -1239,7 +1299,7 @@ def self_check() -> None:
             return {
                 "state": "open",
                 "number": 99,
-                "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                "head": {"sha": mg_pr_head, "ref": "agent/some-pr"},
                 "base": {"ref": "main"},
             }
         fail(f"unexpected fixture path {path!r}")
@@ -1251,6 +1311,54 @@ def self_check() -> None:
         is True
     )
     assert any("/commits/" in p and p.endswith("/pulls") for p in mg_paths), mg_paths
+
+    # Open PR that advanced after the merge group ran must not authorize retry.
+    mg_advanced_paths: list[str] = []
+
+    def mg_advanced_pr_request(
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> Any:
+        del method, headers, body
+        mg_advanced_paths.append(path)
+        advanced_head = "b" * 40
+        if path.startswith(f"/repos/nexu-io/open-design/commits/{mg_run_sha}/pulls"):
+            return [
+                {
+                    "state": "open",
+                    "number": 99,
+                    "head": {"sha": advanced_head, "ref": "agent/some-pr"},
+                    "base": {"ref": "main"},
+                }
+            ]
+        if path.startswith("/repos/nexu-io/open-design/pulls/99"):
+            return {
+                "state": "open",
+                "number": 99,
+                "head": {"sha": advanced_head, "ref": "agent/some-pr"},
+                "base": {"ref": "main"},
+            }
+        fail(f"unexpected fixture path {path!r}")
+
+    assert (
+        resolve_merge_group_open_pr(
+            mg_advanced_pr_request, "nexu-io/open-design", mg_run_sha, mg_branch
+        )
+        is False
+    )
+
+    # Missing originating PR head SHA on the queue ref → cannot authorize.
+    assert (
+        resolve_merge_group_open_pr(
+            mg_open_pr_request,
+            "nexu-io/open-design",
+            mg_run_sha,
+            "gh-readonly-queue/main/pr-99",
+        )
+        is None
+    )
 
     mg_closed_paths: list[str] = []
 
@@ -1267,7 +1375,7 @@ def self_check() -> None:
                 {
                     "state": "closed",
                     "number": 99,
-                    "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                    "head": {"sha": mg_pr_head, "ref": "agent/some-pr"},
                     "base": {"ref": "main"},
                 }
             ]
@@ -1275,7 +1383,7 @@ def self_check() -> None:
             return {
                 "state": "closed",
                 "number": 99,
-                "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                "head": {"sha": mg_pr_head, "ref": "agent/some-pr"},
                 "base": {"ref": "main"},
             }
         if path.startswith("graphql:"):
