@@ -37,6 +37,7 @@ import {
   velaLiveAccountCacheKey,
 } from '../../src/integrations/vela.js';
 import { registerVelaRoutes } from '../../src/routes/vela.js';
+import { amrModelLoadingCache } from '../../src/runtimes/amr-model-cache.js';
 
 interface StartedServer {
   url: string;
@@ -51,8 +52,11 @@ let server: http.Server;
 let originalHome: string | undefined;
 let tmpHome: string;
 
-async function getJson<T = unknown>(url: string): Promise<{ status: number; body: T }> {
-  const resp = await fetch(url);
+async function getJson<T = unknown>(
+  url: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; body: T }> {
+  const resp = await fetch(url, Object.keys(headers).length > 0 ? { headers } : undefined);
   const parsedBody = (await resp.json()) as T;
   return { status: resp.status, body: parsedBody };
 }
@@ -72,16 +76,22 @@ async function postJson<T = unknown>(
   return { status: resp.status, body: parsedBody };
 }
 
+
+function amrModelLoadingCacheReset(): void {
+  amrModelLoadingCache.resetForTests();
+}
+
 async function waitForAmrModels(
   expectedSource: 'preset' | 'remote',
   timeoutMs = 5_000,
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; body: { source: 'preset' | 'remote'; models: Array<{ id: string }> } }> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const response = await getJson<{
       source: 'preset' | 'remote';
       models: Array<{ id: string }>;
-    }>(`${baseUrl}/api/amr/models`);
+    }>(`${baseUrl}/api/amr/models`, headers);
     if (response.body.source === expectedSource) return response;
     if (Date.now() >= deadline) {
       throw new Error(`timed out waiting for /api/amr/models source=${expectedSource}`);
@@ -261,6 +271,7 @@ afterEach(async () => {
     delete process.env.FAKE_VELA_BILLING_UNKNOWN_COMMAND;
     delete process.env.FAKE_VELA_MODEL_LIST_JSON;
     delete process.env.FAKE_VELA_MODEL_PRESET_JSON;
+    delete process.env.FAKE_VELA_MODEL_LIST_ENV_DUMP;
     delete process.env.FAKE_VELA_ENV_DUMP_PATH;
     delete process.env.FAKE_VELA_LOGIN_INVOCATION_LOG;
     delete process.env.FAKE_VELA_LOGIN_ACTIVATION_AFTER_PARENT_EXIT_MS;
@@ -280,6 +291,29 @@ afterEach(async () => {
       retryDelay: 50,
     });
   }
+});
+
+describe('GET /api/amr/models workspace scope', () => {
+  it('forwards the selected workspace as VELA_WORKSPACE_ID to vela model list', async () => {
+    seedLogin('local');
+    const dumpPath = path.join(tmpHome, 'model-list-env.json');
+    process.env.FAKE_VELA_MODEL_LIST_ENV_DUMP = dumpPath;
+    // Force a remote refresh path by waiting for remote source.
+    amrModelLoadingCacheReset();
+    const response = await waitForAmrModels('remote', 8_000, {
+      'x-od-workspace-id': 'ws-team-pro',
+      'x-od-workspace-member-id': 'member-1',
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.source).toBe('remote');
+    expect(existsSync(dumpPath)).toBe(true);
+    const dump = JSON.parse(readFileSync(dumpPath, 'utf8')) as {
+      VELA_WORKSPACE_ID: string | null;
+      args: string[];
+    };
+    expect(dump.VELA_WORKSPACE_ID).toBe('ws-team-pro');
+    expect(dump.args.slice(0, 2)).toEqual(['model', 'list']);
+  });
 });
 
 describe('GET /api/integrations/vela/wallet', () => {

@@ -12,12 +12,39 @@ export interface ResolveAmrModelProbeDeps {
   dataDir: string;
   env: NodeJS.ProcessEnv;
   readAppConfig: typeof readAppConfig;
+  /**
+   * UI-selected / run-pinned Workspace id for Path A discovery
+   * (`vela model list`). Injected as `VELA_WORKSPACE_ID` so Link evaluates
+   * Team entitlements instead of the personal free allowlist. Omitted only
+   * for legacy unscoped hosts.
+   */
+  workspaceId?: string | null;
 }
 
 export interface BuildAmrModelCacheKeyInput {
   launchPath: string;
   env: NodeJS.ProcessEnv;
   credentialRevision: VelaCredentialRevision;
+}
+
+/**
+ * Apply Path A workspace scope for `vela model list`.
+ *
+ * Precedence mirrors Vela CLI #1372: an explicit host workspace becomes
+ * `VELA_WORKSPACE_ID`. Empty/blank values leave the env unset so Link keeps
+ * its personal-default behavior for legacy callers.
+ */
+export function withVelaModelListWorkspaceScope(
+  env: NodeJS.ProcessEnv,
+  workspaceId?: string | null,
+): NodeJS.ProcessEnv {
+  const scopedWorkspaceId =
+    typeof workspaceId === 'string' ? workspaceId.trim() : '';
+  if (!scopedWorkspaceId) return env;
+  return {
+    ...env,
+    VELA_WORKSPACE_ID: scopedWorkspaceId,
+  };
 }
 
 export function buildAmrModelCacheKey({
@@ -33,6 +60,9 @@ export function buildAmrModelCacheKey({
     velaLinkUrl: env.VELA_LINK_URL ?? '',
     velaRuntimeKey: env.VELA_RUNTIME_KEY ?? '',
     velaOpencodeBin: env.VELA_OPENCODE_BIN ?? '',
+    // Team entitlements are workspace-scoped. Without this key, a personal
+    // free catalog can stick after the UI switches to a paid Team workspace.
+    velaWorkspaceId: env.VELA_WORKSPACE_ID ?? '',
     credentialRevision,
   });
 }
@@ -41,6 +71,7 @@ export async function resolveAmrModelProbe({
   dataDir,
   env: baseEnv,
   readAppConfig,
+  workspaceId,
 }: ResolveAmrModelProbeDeps) {
   const appConfig = await readAppConfig(dataDir);
   const configuredEnv = agentCliEnvForAgent(appConfig.agentCliEnv, 'amr');
@@ -49,17 +80,20 @@ export async function resolveAmrModelProbe({
   const agentLaunch = resolveAgentLaunch(def, configuredEnv);
   const launchPath = agentLaunch.launchPath ?? agentLaunch.selectedPath;
   if (!launchPath) throw new Error('AMR vela binary could not be resolved');
-  const env = applyAgentLaunchEnv(
-    spawnEnvForAgent(
-      def.id,
-      {
-        ...baseEnv,
-        ...(def.env || {}),
-      },
-      configuredEnv,
-      undefined,
+  const env = withVelaModelListWorkspaceScope(
+    applyAgentLaunchEnv(
+      spawnEnvForAgent(
+        def.id,
+        {
+          ...baseEnv,
+          ...(def.env || {}),
+        },
+        configuredEnv,
+        undefined,
+      ),
+      agentLaunch,
     ),
-    agentLaunch,
+    workspaceId,
   );
   const credentialRevision = readVelaCredentialRevision(baseEnv, configuredEnv);
   const cacheKey = buildAmrModelCacheKey({

@@ -9569,7 +9569,12 @@ export async function startServer({
       // same rewrite before spawn; keeping this earlier copy aligned prevents
       // stored concrete session models from comparing against raw `default`.
       try {
-        const resumeProbe = await resolveAmrModelProbe({ dataDir: RUNTIME_DATA_DIR, env: process.env, readAppConfig });
+        const resumeProbe = await resolveAmrModelProbe({
+          dataDir: RUNTIME_DATA_DIR,
+          env: process.env,
+          readAppConfig,
+          workspaceId: run.workspaceScope?.workspaceId ?? null,
+        });
         const resumeCatalog = await amrModelLoadingCache.get(resumeProbe.cacheKey, {
           fetchPreset: () => fetchVelaPresetModels(resumeProbe.launchPath, resumeProbe.env),
           fetchRemote: () => fetchVelaRemoteModelsWithRetry(resumeProbe.launchPath, resumeProbe.env),
@@ -10565,7 +10570,12 @@ export async function startServer({
       // of fail-closing; vela's own `session/set_model` remains the final gate.
       let liveModels = [];
       try {
-        const probe = await resolveAmrModelProbe({ dataDir: RUNTIME_DATA_DIR, env: process.env, readAppConfig });
+        const probe = await resolveAmrModelProbe({
+          dataDir: RUNTIME_DATA_DIR,
+          env: process.env,
+          readAppConfig,
+          workspaceId: run.workspaceScope?.workspaceId ?? null,
+        });
         const catalog = await amrModelLoadingCache.get(probe.cacheKey, {
           fetchPreset: () => fetchVelaPresetModels(probe.launchPath, probe.env),
           fetchRemote: () => fetchVelaRemoteModelsWithRetry(probe.launchPath, probe.env),

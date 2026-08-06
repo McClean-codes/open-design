@@ -1306,6 +1306,14 @@ function AppInner() {
     setAmrPollRestartToken((current) => current + 1);
   }, []);
 
+  // Team entitlements are workspace-scoped. Drop the previous catalog as soon
+  // as the shell identity changes so the picker cannot keep free locks (or a
+  // prior Team unlock map) while the scoped refetch is in flight. The AMR
+  // poll effect already depends on `currentWorkspaceIdentity`.
+  useEffect(() => {
+    amrModelsRef.current = null;
+  }, [currentWorkspaceIdentity]);
+
   // v2 schema removed the standalone `app_launch` event; the initial
   // page_view fires from each top-level page surface (home / projects /
   // automations / plugins / design_systems / integrations) instead.
@@ -1791,9 +1799,13 @@ function AppInner() {
     const pollDelayMs = 1_000;
     const maxPresetPolls = 10;
     let presetPolls = 0;
+    // Capture the workspace identity this poll generation was issued for.
+    // Path A model discovery is workspace-scoped; a later switch must not
+    // commit an older personal/team catalog into the new shell.
+    const issuedWorkspaceContext = workspaceContextRef.current;
 
     const applyAmrModels = async () => {
-      const result = await fetchAmrModels();
+      const result = await fetchAmrModels(issuedWorkspaceContext);
       if (
         cancelled ||
         amrPollGenerationRef.current !== pollGeneration ||
@@ -1822,7 +1834,7 @@ function AppInner() {
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [amrPollRestartToken, daemonLive]);
+  }, [amrPollRestartToken, currentWorkspaceIdentity, daemonLive]);
 
   // App-level AMR sign-in state. Feeds two analytics globals: the
   // `amr` configure_type bucket (deriveConfigureGlobals below) and the
