@@ -11,7 +11,11 @@ import { describe, expect, it } from "vitest";
 
 import { T } from "@/timeouts";
 
-import { uiP0CiMatrix, uiP0Groups } from "../lib/playwright/suites.ts";
+import {
+  uiP0CiMatrix,
+  uiP0Groups,
+  validatePlaywrightSuiteTopology,
+} from "../lib/playwright/suites.ts";
 
 const execFileAsync = promisify(execFile);
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -1322,6 +1326,11 @@ process.stdin.on("end", () => {
   it("[P2] keeps visual ownership and generic full UI sharding explicit", async () => {
     const playwrightConfig = await readFile(playwrightConfigPath, "utf8");
     const benchmarkWorkflow = await readFile(uiExtendedMainWorkflowPath, "utf8");
+    const extendedP0 = sectionBetween(benchmarkWorkflow, "  ui_p0:", "  ui_extended:");
+    const extendedP0Matrix = sectionBetween(extendedP0, "        include:", "\n    steps:");
+    const extendedP0Names = [...extendedP0Matrix.matchAll(/^\s+- name: (.+)$/gm)].map(
+      ([, name]) => name,
+    );
     const fullUi = benchmarkWorkflow.slice(benchmarkWorkflow.indexOf("  ui_full:"));
     const fullUiFiles = [...fullUi.matchAll(/ui\/[a-z0-9-]+\.test\.ts/g)]
       .map(([file]) => file)
@@ -1333,7 +1342,7 @@ process.stdin.on("end", () => {
     expect(benchmarkWorkflow).toContain("run-ui-group critical-extras");
     expect(benchmarkWorkflow).toContain("Preserve project-runtime domain artifact");
     expect(benchmarkWorkflow).toContain("--grep-invert '@merge-extra'");
-    expect(benchmarkWorkflow).toContain("name: project-workspace");
+    expect(extendedP0Names).toEqual(uiP0CiMatrix.map((entry) => entry.name));
     expect(benchmarkWorkflow).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_p0");
     expect(fullUi).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_hot");
     expect(fullUi).toContain("shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]");
@@ -1345,6 +1354,18 @@ process.stdin.on("end", () => {
     expect(fullUi).not.toContain("matrix.files");
     expect(fullUi).not.toContain("--grep");
     expect(fullUiFiles).toEqual([]);
+  });
+
+  it("[P2] rejects duplicate file assignments across UI P0 shards", () => {
+    const files = uiP0Groups["entry-automations"].files as unknown as string[];
+    files.push("ui/app.test.ts");
+    try {
+      expect(validatePlaywrightSuiteTopology()).toContain(
+        "UI P0 CI matrix covers ui/app.test.ts more than once",
+      );
+    } finally {
+      files.pop();
+    }
   });
 
   it("[P2] resolves CI runner profiles by mode", async () => {

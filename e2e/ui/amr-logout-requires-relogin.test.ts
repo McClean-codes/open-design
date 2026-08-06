@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Locator } from '@playwright/test';
+import type { ProjectWorkspaceScopeResponse } from '@open-design/contracts';
 
 import { expect, test } from '@/playwright/suite';
 
@@ -152,7 +153,16 @@ test('[P0] after local Sign out, AMR runs require re-login and Settings keeps AM
   await page.evaluate((next) => {
     window.localStorage.setItem('open-design:config', JSON.stringify(next));
   }, reloginConfig);
+  const projectScopeResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET'
+      && url.pathname === `/api/projects/${projectId}/workspace-scope`;
+  });
   await gotoProject(page, projectId);
+  const scopeResponse = await projectScopeResponse;
+  const scopeBody = (await scopeResponse.json()) as ProjectWorkspaceScopeResponse;
+  expect(scopeResponse.ok(), JSON.stringify(scopeBody)).toBeTruthy();
+  expect(scopeBody.scope).toMatchObject({ kind: 'personal', projectId });
   await sendPrompt(page, 'AMR logout should require relogin');
 
   const balanceGate = page.getByTestId('amr-balance-dialog');
