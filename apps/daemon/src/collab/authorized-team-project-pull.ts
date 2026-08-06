@@ -218,6 +218,8 @@ export interface InspectAuthorizedTeamProjectPullInput {
   expectedVersion: number;
   signal?: AbortSignal;
   run?: RunAuthorizedTeamProjectPull;
+  /** Clock override for receipt freshness, as the real pull accepts. */
+  nowMs?: number;
 }
 
 /**
@@ -274,11 +276,22 @@ export async function inspectAuthorizedTeamProjectPull(
     return { kind: 'uncounted' };
   }
   if (!isRecord(parsed)) return { kind: 'uncounted' };
-  if (
-    parsed.projectId !== input.projectId ||
-    parsed.version !== input.expectedVersion ||
-    parsed.workspaceId !== input.scope.workspaceId
-  ) {
+  // Bind the count to THIS pull with the SAME validation the real pull runs.
+  // projectId + version + workspaceId is not the whole binding: one workspace
+  // holds many principals, so a receipt authorized for another owner or viewer
+  // would otherwise be accepted — and an oversized count there is cached as a
+  // deferral, suppressing background materialization for a scope that was
+  // never inspected. That is the exact inverse of the fail-open promise.
+  // Reusing the pull's validator (rather than re-listing fields here) keeps
+  // the two from drifting apart as the receipt contract evolves.
+  try {
+    validateAuthorizedTeamProjectPullReceipt(parseReceipt(stdout), {
+      projectId: input.projectId,
+      scope: input.scope,
+      expectedVersion: input.expectedVersion,
+      ...(input.nowMs != null ? { nowMs: input.nowMs } : {}),
+    });
+  } catch {
     return { kind: 'uncounted' };
   }
   const entryCount = parsed.manifestEntryCount;

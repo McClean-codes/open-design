@@ -203,25 +203,36 @@ describe('backgroundPullMaxEntriesFromEnv', () => {
 });
 
 describe('inspectAuthorizedTeamProjectPull (authorize-only Vela probe)', () => {
-  const receiptJson = (overrides: Record<string, unknown> = {}) =>
-    JSON.stringify({
+  // One clock read for both stamps: the validator rejects a window wider than
+  // RECEIPT_MAX_AGE_MS, and two independent Date.now() calls straddling a
+  // millisecond boundary would widen it by 1ms at random.
+  const receiptJson = (overrides: Record<string, unknown> = {}) => {
+    const authorizedAtMs = Date.now();
+    return JSON.stringify({
       schemaVersion: 1,
       workspaceId: 'ws-1',
       resourceTeamId: 'team-1',
       viewerMemberId: 'wm-member',
       ownerMemberId: 'wm-owner',
       projectId: 'proj-1',
-      resourceId: 'resource-1',
+      // Derived, not arbitrary: projectResourceIdFor(projectId, {teamId,
+      // memberId}) — the receipt validator recomputes this, so a hand-written
+      // id would (correctly) read as a foreign receipt.
+      resourceId: `project-${Buffer.from(
+        JSON.stringify(['team-1', 'wm-owner', 'proj-1']),
+        'utf8',
+      ).toString('base64url')}`,
       ref: 'published',
       version: 12,
       versionId: 'version-12',
       manifestDigest: `sha256:${'a'.repeat(64)}`,
       lifecycleState: 'active',
-      authorizedAt: new Date().toISOString(),
-      expiresAt: new Date(Date.now() + 2000).toISOString(),
+      authorizedAt: new Date(authorizedAtMs).toISOString(),
+      expiresAt: new Date(authorizedAtMs + 1_500).toISOString(),
       manifestEntryCount: 7442,
       ...overrides,
     });
+  };
 
   it('runs an authorize-only pull and returns the manifest entry count', async () => {
     const run = vi.fn<RunAuthorizedTeamProjectPull>(async () => receiptJson());
@@ -260,6 +271,30 @@ describe('inspectAuthorizedTeamProjectPull (authorize-only Vela probe)', () => {
 
   it('reports uncounted for malformed output instead of blocking the pull', async () => {
     const run = vi.fn(async () => 'Staged proj-1 version 12\n');
+    await expect(inspectAuthorizedTeamProjectPull({
+      projectId: 'proj-1',
+      scope,
+      expectedVersion: 12,
+      run,
+    })).resolves.toEqual({ kind: 'uncounted' });
+  });
+
+  // The probe's answer is only usable if the receipt is bound to THIS pull.
+  // projectId + version + workspaceId are not the whole binding: the same
+  // workspace carries many principals, so a receipt for another owner or
+  // viewer could otherwise be accepted as 'counted' — and an oversized count
+  // there gets cached as a deferral, suppressing background materialization
+  // for a scope that was never actually inspected. That is the opposite of
+  // the fail-open promise, so every scope-binding field must match.
+  it.each([
+    ['resourceTeamId', { resourceTeamId: 'team-other' }],
+    ['viewerMemberId', { viewerMemberId: 'wm-other-viewer' }],
+    ['ownerMemberId', { ownerMemberId: 'wm-other-owner' }],
+    ['resourceId', { resourceId: 'project-not-derived' }],
+    ['ref', { ref: 'draft' }],
+    ['schemaVersion', { schemaVersion: 2 }],
+  ])('reports uncounted when the receipt %s does not match this scope', async (_field, override) => {
+    const run = vi.fn<RunAuthorizedTeamProjectPull>(async () => receiptJson(override));
     await expect(inspectAuthorizedTeamProjectPull({
       projectId: 'proj-1',
       scope,
