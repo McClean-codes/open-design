@@ -448,6 +448,14 @@ interface Props {
   // During a transient Cloud outage it prevents the rail from presenting a
   // still-signed-in user as signed out.
   amrLoggedIn?: boolean | null;
+  /**
+   * vela login-status account/user plan (ACCOUNT-scoped). Used for personal
+   * workspaces so a confirmed free account is not stuck as campaign audience
+   * `unknown` while billing summary leaves `membershipTier` empty.
+   * Must not be applied to team workspaces — team plan comes from workspace
+   * billing/snapshot (see App `resolvedAmrPlan`).
+   */
+  amrAccountPlan?: string | null;
   daemonLive: boolean;
   onModeChange: (mode: ExecMode) => void;
   onAgentChange: (id: string) => void;
@@ -575,6 +583,7 @@ export function EntryShell({
   agents,
   agentsLoading = false,
   amrLoggedIn = null,
+  amrAccountPlan = null,
   daemonLive,
   onModeChange,
   onAgentChange,
@@ -640,11 +649,25 @@ export function EntryShell({
     workspaceContext,
   );
   const deepSeekCampaignVisibility = useDeepSeekV4FlashCampaignVisibility();
+  // Same personal-vs-team accountPlan rule as App's `resolvedAmrPlan`: team
+  // entitlements live on the workspace snapshot, not the login projection.
+  // Without personal `accountPlan: free`, a no-subscription user keeps
+  // plan=null after billing settles (empty membershipTier + context
+  // billingState "active" from lifecycle), audience stays unknown, and the
+  // home campaign modal never opens — matching product unpaid free users.
+  const deepSeekCampaignPlan = resolvePlanLabelTier({
+    billing: workspaceBilling,
+    context: workspaceContext,
+    accountPlan:
+      workspaceLoading || workspaceContext?.workspaceType === 'team'
+        ? null
+        : amrAccountPlan?.trim() || null,
+  });
   const deepSeekV4FlashCampaignAudience = resolveDeepSeekV4FlashCampaignAudience({
     // Subscription is the only campaign segmentation axis. In particular,
     // `resolvePlanLabelTier` turns the backend-confirmed unsubscribed state into
     // `free`; wallet balance / historical recharge never upgrades this audience.
-    plan: resolvePlanLabelTier({ billing: workspaceBilling, context: workspaceContext }),
+    plan: deepSeekCampaignPlan,
     loggedIn: amrLoggedIn,
     now: deepSeekCampaignVisibility.now,
   });

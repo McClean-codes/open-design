@@ -8,6 +8,7 @@ import {
   resolveDeepSeekV4FlashCampaignAudience,
   isDeepSeekV4FlashCampaignModel,
 } from '../../src/campaigns/deepseek-v4-flash';
+import { resolvePlanLabelTier } from '../../src/collab/team-plan';
 
 const entryLayoutStyles = readFileSync(
   new URL('../../src/styles/home/entry-layout.css', import.meta.url),
@@ -96,6 +97,63 @@ describe('DeepSeek V4 Flash campaign', () => {
       loggedIn: null,
       now: activeAt,
     })).toBe('unknown');
+  });
+
+  it('opens the unpaid home modal for personal free via login accountPlan', () => {
+    // Personal workspace: billing summary often has empty membershipTier and
+    // context.billingState is lifecycle "active", not subscription free. Product
+    // still requires the unpaid modal once for no-subscription users; EntryShell
+    // must feed vela login account.plan through resolvePlanLabelTier the same
+    // way App.resolvedAmrPlan does for personal only.
+    const activeAt = Date.parse(DEEPSEEK_V4_FLASH_CAMPAIGN.window.startAt);
+    const plan = resolvePlanLabelTier({
+      billing: {
+        workspaceId: null,
+        membershipTier: '',
+        totalAvailableCredits: 79588,
+        subscriptionCredits: 0,
+        rechargeCredits: 79588,
+        balanceUsd: '7.9588',
+        subscriptionStatus: '',
+        availableActions: ['subscription_checkout'],
+        workspaceBalance: null,
+      },
+      context: {
+        workspaceId: 'ws-personal',
+        workspaceType: 'personal',
+        workspaceMemberId: 'mem-1',
+        role: 'owner',
+        memberStatus: 'active',
+        lifecycleState: 'active',
+        billingState: 'active',
+        planId: null,
+        providerMode: 'platform_credits',
+        seatSummary: {
+          seatLimit: 0,
+          usedSeats: 0,
+          availableSeats: 0,
+          isSeatFull: true,
+        },
+        permissions: {
+          canManageMembers: true,
+          canManageBilling: true,
+          canInviteMembers: true,
+          canManageAutoRecharge: true,
+          canShareProjects: true,
+          canWriteSyncedFiles: true,
+          canViewWorkspaceSettings: true,
+          canManageSharedResources: true,
+        },
+        workspaceName: "user's workspace",
+      },
+      accountPlan: 'free',
+    });
+    expect(plan).toBe('free');
+    expect(resolveDeepSeekV4FlashCampaignAudience({
+      plan,
+      loggedIn: true,
+      now: activeAt,
+    })).toBe('unpaid');
   });
 
   it('keeps the paid modal actions on the final approved interaction', () => {
