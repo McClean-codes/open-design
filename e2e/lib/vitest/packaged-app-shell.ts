@@ -394,9 +394,11 @@ export async function runPackagedAppShellPhase(options: {
   readonly timeoutMs?: number;
 }): Promise<{ appShell: PackagedAppShellState; onboardingCompleted: boolean }> {
   const onboardingCompleted = await options.readOnboardingCompleted();
-  // The smoke seeds completion unconditionally (win.spec.ts), so every phase is
-  // a completed-user phase.
-  const seededOnboardingCompleted = true;
+  // Only a completed-user phase carries a seed to hold across the transition. A
+  // first-run phase deliberately has none, so `false` there is the fact under
+  // test rather than a loss — which is why the scenario has to be declared by
+  // the caller instead of inferred from the reading.
+  const seededOnboardingCompleted = options.scenario === 'completed-user';
   assertSeededOnboardingRetained({ daemonOnboardingCompleted: onboardingCompleted, seededOnboardingCompleted });
   const policy = packagedAppShellPolicy({
     coreProfile: options.coreProfile,

@@ -12,14 +12,10 @@ import { describe, expect, test } from 'vitest';
 
 import {
   packagedAppShellExpression,
-  packagedAppShellFailureReason,
-  assertSeededOnboardingRetained,
-  packagedAppShellPolicy,
-  packagedAppShellSettled,
-  packagedAppShellState,
   PackagedOnboardingConfigError,
   packagedOnboardingCompletedFromProbe,
   packagedOnboardingConfigExpression,
+  runPackagedAppShellPhase,
   type PackagedAppShellState,
 } from '@/vitest/packaged-app-shell';
 import { createPackagedSmokeReport } from '@/vitest/packaged-report';
@@ -536,6 +532,7 @@ winDescribe('packaged windows runtime smoke', () => {
     let passed = false;
     const timings: SmokeTiming[] = [];
     let appShell: PackagedAppShellState | 'skipped' = 'skipped';
+    let firstRunAppShell: PackagedAppShellState | 'skipped' = 'skipped';
     let seededOnboardingCompleted: boolean | 'skipped' = 'skipped';
     let onboardingCompleted: boolean | 'skipped' = 'skipped';
     let intermediatePayloadUpdate: PayloadUpdateSummary | { skipped: true } = { skipped: true };
@@ -589,6 +586,51 @@ winDescribe('packaged windows runtime smoke', () => {
             `top-level payload=${JSON.stringify(install.installPayload.topLevel.slice(0, 8))}`,
           ].join('\n'),
         );
+      }
+
+      // Phase 1 — the genuine first run. A packaged install nobody has signed
+      // into is real product behaviour, not a broken state: since
+      // `shouldRouteToFirstRunOnboarding` keys purely on `onboardingCompleted`,
+      // the cloud sign-in landing is its correct terminal surface, and it is
+      // accepted only when it actually rendered its sign-in CTA and both runtime
+      // links. Core-only on purpose — every release workflow defaults there, and
+      // the full profile needs its controlled updater environment from first
+      // launch, which a plain start before the fixture is wired would bypass.
+      if (verifyCoreOnly) {
+        await resetPackagedRuntimeDataRoot();
+        const firstRunStart = await measureSmokeStep(timings, 'start unseeded first run', async () =>
+          runToolsPackJson<WinStartResult>('start'),
+        );
+        started = true;
+        expect(firstRunStart.source).toBe('installed');
+        const firstRunInspect = await measureSmokeStep(timings, 'wait healthy unseeded first run', async () =>
+          waitForHealthyDesktop(),
+        );
+        expect(firstRunInspect.status?.state).toBe('running');
+        if (!firstRunInspect.desktopIpcUnavailable) {
+          const firstRunPhase = await measureSmokeStep(timings, 'ensure first-run app shell', async () =>
+            runPackagedAppShellPhase({
+              coreProfile: verifyCoreOnly,
+              describeLast: formatUnknown,
+              observe: observePackagedAppShell,
+              readOnboardingCompleted: readPackagedOnboardingCompleted,
+              scenario: 'first-run',
+            }),
+          );
+          expect(firstRunPhase.onboardingCompleted).toBe(false);
+          expect(firstRunPhase.appShell).toBe('onboarding-landing');
+          firstRunAppShell = firstRunPhase.appShell;
+        }
+        const firstRunStop = await measureSmokeStep(timings, 'stop unseeded first run', async () =>
+          runToolsPackJson<WinStopResult>('stop'),
+        );
+        started = false;
+        expect(firstRunStop.status).not.toBe('partial');
+        expect(firstRunStop.remainingPids).toEqual([]);
+        // Clear both the daemon data root and the Electron user-data partition
+        // so phase 2's seed lands on a true clean slate and no localStorage
+        // residue from this phase can ratchet into it.
+        await resetPackagedRuntimeDataRoot();
       }
 
       await seedPackagedOnboardingComplete();
@@ -728,36 +770,24 @@ winDescribe('packaged windows runtime smoke', () => {
         // protocol handler, and that cold start carries none of this process's
         // environment — so it is a different daemon, and only it can say what
         // config the surface being asserted on is actually running under.
-        const daemonOnboardingCompleted = await measureSmokeStep(
-          timings,
-          'read onboarding config for app shell',
-          async () => readPackagedOnboardingCompleted(),
-        );
-        onboardingCompleted = daemonOnboardingCompleted;
-        // The seeded observation must exist by now — both blocks share the same
-        // `desktopIpcUnavailable` guard. Assert it rather than coercing
-        // `'skipped'`, which would silently read as "never seeded" and hand the
-        // permissive branch exactly the input it must not get.
-        if (seededOnboardingCompleted === 'skipped') {
-          throw new Error('reached the app-shell check without observing the seeded onboarding state');
+        // Phase 2 — the completed user. The seed must have been confirmed before
+        // this point; anything else means the run never established the fact
+        // this phase depends on.
+        if (seededOnboardingCompleted !== true) {
+          throw new Error('reached the completed-user app-shell check without a confirmed seeded onboarding state');
         }
-        // This run seeded completion and saw the daemon confirm it. If the
-        // protocol cold relaunch above lost that state, it is a packaged-runtime
-        // regression — fail with the cause named, never absorb it as a first run.
-        const seededObserved: boolean = seededOnboardingCompleted;
-        assertSeededOnboardingRetained({ daemonOnboardingCompleted, seededOnboardingCompleted: seededObserved });
-        // Setup and expectation come from the same fact. A daemon that confirms
-        // onboarding is completed must produce home; only a run that never
-        // seeded completion may settle on the cloud sign-in landing.
-        appShell = await measureSmokeStep(timings, 'ensure packaged app shell', async () =>
-          ensurePackagedAppShell(
-            packagedAppShellPolicy({
-              coreProfile: verifyCoreOnly,
-              daemonOnboardingCompleted,
-              seededOnboardingCompleted: seededObserved,
-            }),
-          ),
+        const completedUser = await measureSmokeStep(timings, 'ensure completed-user app shell', async () =>
+          runPackagedAppShellPhase({
+            coreProfile: verifyCoreOnly,
+            describeLast: formatUnknown,
+            observe: observePackagedAppShell,
+            readOnboardingCompleted: readPackagedOnboardingCompleted,
+            scenario: 'completed-user',
+          }),
         );
+        onboardingCompleted = completedUser.onboardingCompleted;
+        appShell = completedUser.appShell;
+        expect(appShell).toBe('home');
 
         if (verifyUpgradePersistence) {
           const seedInspect = await measureSmokeStep(timings, 'seed pre-update persistence project', async () =>
@@ -942,7 +972,11 @@ winDescribe('packaged windows runtime smoke', () => {
       await assertWindowsInviteProtocolRemoved();
       await report.saveSummary({
         appShell,
-        onboarding: { atAppShell: onboardingCompleted, afterSeed: seededOnboardingCompleted },
+        onboarding: {
+          afterSeed: seededOnboardingCompleted,
+          atAppShell: onboardingCompleted,
+          firstRunAppShell,
+        },
         health: value,
         install: {
           desktopShortcutExists: install.desktopShortcutExists,
@@ -2118,41 +2152,17 @@ async function readPackagedOnboardingCompleted(): Promise<boolean> {
 }
 
 /**
- * Waits until the packaged renderer settles on a surface this smoke can act on,
- * and reports which one it was.
+ * One reading of the packaged renderer's app shell.
  *
- * `acceptOnboardingLanding` is the caller's call, because the answer depends on
- * what the smoke does next rather than on what the app is allowed to show. The
- * rule itself lives in `@/vitest/packaged-app-shell` so a non-Windows machine
- * can hold it — and the DOM probe it reads — to a contract.
+ * Throws on an eval that did not run, so the settle loop records the whole
+ * inspect payload as the failure cause rather than an empty observation.
  */
-async function ensurePackagedAppShell(
-  options: { readonly acceptOnboardingLanding: boolean },
-  timeoutMs = 45_000,
-): Promise<PackagedAppShellState> {
-  const startedAt = Date.now();
-  let lastResult: unknown = null;
-  let lastValue: unknown = null;
-  while (Date.now() - startedAt < timeoutMs) {
-    try {
-      const inspect = await runToolsPackJson<WinInspectResult>('inspect', ['--expr', packagedAppShellExpression]);
-      lastResult = inspect;
-      lastValue = inspect.eval?.value;
-      if (packagedAppShellSettled(lastValue, options)) {
-        const state = packagedAppShellState(lastValue);
-        if (state != null) return state;
-      }
-    } catch (error) {
-      lastResult = error;
-    }
-    await delay(750);
+async function observePackagedAppShell(): Promise<unknown> {
+  const inspect = await runToolsPackJson<WinInspectResult>('inspect', ['--expr', packagedAppShellExpression]);
+  if (inspect.eval?.ok !== true) {
+    throw new Error(`packaged windows renderer could not evaluate the app-shell probe: ${formatUnknown(inspect)}`);
   }
-  throw new Error(
-    [
-      `packaged windows runtime did not reach a usable app shell: ${packagedAppShellFailureReason(lastValue, options)}`,
-      formatUnknown(lastResult),
-    ].join('\n'),
-  );
+  return inspect.eval.value;
 }
 
 async function waitForHealthyDesktopVersion(
