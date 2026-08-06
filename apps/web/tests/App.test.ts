@@ -661,6 +661,20 @@ describe('mergeAmrModelsIntoAgents', () => {
       modelsSource: undefined,
     });
   });
+
+  it('is the catalog refreshAgents must return so Settings retries stay on Path A', () => {
+    // Settings stops its signed-in empty-models retry loop when the returned
+    // AMR agent has models. Returning raw headerless `/api/agents` agents
+    // (non-empty personal fallback) while state was fail-closed empty made
+    // that loop exit early and left the picker loading until an unrelated
+    // focus refresh. refreshAgents must return this same merge result.
+    const headerlessAgents = agents;
+    const returned = mergeAmrModelsIntoAgents(headerlessAgents, null);
+    const amr = returned.find((agent) => agent.id === 'amr');
+    expect(amr?.models ?? []).toEqual([]);
+    // Non-empty fallback would have stopped Settings; empty keeps it retrying.
+    expect((amr?.models?.length ?? 0) > 0).toBe(false);
+  });
 });
 
 describe('resolveAmrModelsCatalogScope', () => {

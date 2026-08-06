@@ -2785,11 +2785,39 @@ function AppInner() {
           },
         });
         const ordered = orderAgentsByRegistry(next);
+        // Settings credential-propagation retries inspect this return value,
+        // not React state. Keep it aligned with the scoped Path A merge
+        // committed to state so headerless `/api/agents` fallback models
+        // cannot stop the loop while the workspace catalog is empty/cleared.
+        let pathACatalog = amrModelsRef.current;
+        if (!pathACatalog || pathACatalog.models.length === 0) {
+          // Path A may have stopped after an empty/error poll during credential
+          // propagation. Re-probe here (do not only bump the poll token) so
+          // this call's return value can carry the scoped catalog as soon as
+          // it becomes available — and so we do not race a caller's own
+          // restartAmrPolling with a second generation bump.
+          const scoped = await fetchAmrModels(amrModelsCatalogContextRef.current);
+          if (!isCurrentAgentStreamRequest(agentRequestId)) {
+            return mergeAmrModelsIntoAgents(ordered, amrModelsRef.current);
+          }
+          if (scoped && Array.isArray(scoped.models) && scoped.models.length > 0) {
+            amrModelsRef.current = scoped;
+            pathACatalog = scoped;
+          } else {
+            // Prefer a concurrent Path A win over stomping a just-landed catalog.
+            pathACatalog = amrModelsRef.current;
+            if (!pathACatalog || pathACatalog.models.length === 0) {
+              amrModelsRef.current = null;
+              pathACatalog = null;
+            }
+          }
+        }
+        const merged = mergeAmrModelsIntoAgents(ordered, pathACatalog);
         if (isCurrentAgentStreamRequest(agentRequestId)) {
-          setAgents(mergeAmrModelsIntoAgents(ordered, amrModelsRef.current));
+          setAgents(merged);
           setAgentsLoading(false);
         }
-        return ordered;
+        return merged;
       } catch (err) {
         if (!isCurrentAgentStreamRequest(agentRequestId)) return [];
         setAgentsLoading(false);
