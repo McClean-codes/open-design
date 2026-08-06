@@ -7,6 +7,7 @@ import {
   velaWorkspaceCommandOptions,
 } from '../integrations/vela-command.js';
 import { projectResourceIdFor } from '../integrations/vela-team-projects.js';
+import { IGNORED_PROJECT_DIR_NAMES } from '../project-ignored-dirs.js';
 import type { ResourcePublishAdapter } from './publish-scheduler.js';
 import {
   emitVelaResourcePullProfile,
@@ -30,6 +31,25 @@ const PROJECT_KIND = 'project';
 // Give the transport a generous 6x envelope for large snapshots, but never
 // let a wedged Vela child hold the per-project materialization lock forever.
 const RESOURCE_PULL_TIMEOUT_MS = 30_000;
+// A push uploads the author's full member-mirror snapshot; on a slow uplink a
+// large project can legitimately take minutes, so this budget exists only to
+// reap a truly wedged child — it must stay far above any honest upload time.
+const RESOURCE_PUSH_TIMEOUT_MS = 600_000;
+// head/shared/remove are metadata round-trips with no bulk transfer.
+const RESOURCE_METADATA_TIMEOUT_MS = 60_000;
+// Wall-clock budget per `vela resource` subcommand. A child that outlives its
+// budget is terminated (confirmed-kill, see `runVelaCommand`) and the command
+// rejects, so a hung CLI surfaces as an ordinary command failure instead of
+// pinning the scheduler's in-flight publish or the per-project
+// materialization lock forever. Subcommands not listed here (snapshot /
+// snapshot-redact) keep their historical unbounded behavior.
+const RESOURCE_COMMAND_TIMEOUTS_MS: Readonly<Record<string, number>> = {
+  pull: RESOURCE_PULL_TIMEOUT_MS,
+  push: RESOURCE_PUSH_TIMEOUT_MS,
+  head: RESOURCE_METADATA_TIMEOUT_MS,
+  shared: RESOURCE_METADATA_TIMEOUT_MS,
+  remove: RESOURCE_METADATA_TIMEOUT_MS,
+};
 const MEMBER_MIRROR_EXCLUDED_ENTRIES = [
   '.file-versions',
   '.live-artifacts',
@@ -54,6 +74,29 @@ const MEMBER_MIRROR_EXCLUDED_ENTRIES = [
   'terraform.tfstate.backup',
 ] as const;
 const MEMBER_MIRROR_EXCLUDED_PREFIXES = ['.env'] as const;
+
+/**
+ * Every entry name a `vela resource push` snapshot skips — the union of two
+ * invariant families:
+ *
+ * - {@link MEMBER_MIRROR_EXCLUDED_ENTRIES}: secret-bearing entries
+ *   (credentials, tool state, Open Design private bookkeeping) that must
+ *   never leave the author's machine, at any depth.
+ * - {@link IGNORED_PROJECT_DIR_NAMES}: generated, installed, or cache trees
+ *   the project file list and watcher already hide from the owner. A member
+ *   mirror without them matches what the owner sees in the UI while keeping
+ *   node_modules-scale payloads out of every publish.
+ *
+ * `--exclude` matches entry names exactly at any depth (directories and
+ * same-named files alike) — the same per-segment semantics the owner-side
+ * ignore list applies.
+ */
+export const MEMBER_MIRROR_PUSH_EXCLUDED_ENTRIES: readonly string[] = [
+  ...new Set<string>([
+    ...MEMBER_MIRROR_EXCLUDED_ENTRIES,
+    ...IGNORED_PROJECT_DIR_NAMES,
+  ]),
+];
 
 /** Run `vela resource <args>` and resolve its stdout. */
 export type RunVelaResource = (
@@ -127,7 +170,7 @@ export function createVelaCliResourceAdapter(
       return gated(principal, async () => {
         const dir = await options.resolveProjectDir(projectId);
         const args = ['push', kind, resourceIdFor(projectId, principal), dir, '--ref', PUBLISHED_REF, '--json'];
-        for (const name of MEMBER_MIRROR_EXCLUDED_ENTRIES) {
+        for (const name of MEMBER_MIRROR_PUSH_EXCLUDED_ENTRIES) {
           args.push('--exclude', name);
         }
         for (const prefix of MEMBER_MIRROR_EXCLUDED_PREFIXES) {
@@ -281,6 +324,7 @@ export const runVelaResourceCommand: RunVelaResource = (args, workspaceId) => {
   const workspaceOptions = velaWorkspaceCommandOptions(workspaceId);
   const profilePull =
     args[0] === 'pull' && sharedProjectPullProfileEnabled(process.env);
+  const timeoutMs = RESOURCE_COMMAND_TIMEOUTS_MS[args[0] ?? ''];
   return runVelaCommand(
     ['resource', ...args],
     {
@@ -289,7 +333,7 @@ export const runVelaResourceCommand: RunVelaResource = (args, workspaceId) => {
         ...workspaceOptions.configuredEnv,
         ...(profilePull ? { VELA_RESOURCE_PULL_PROFILE: '1' } : {}),
       },
-      ...(args[0] === 'pull' ? { timeoutMs: RESOURCE_PULL_TIMEOUT_MS } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
       ...(profilePull
         ? {
             onStderr: (stderr: string) =>
