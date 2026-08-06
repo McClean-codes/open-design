@@ -13,6 +13,7 @@ import { describe, expect, test } from 'vitest';
 import {
   packagedAppShellExpression,
   packagedAppShellFailureReason,
+  packagedAppShellPolicy,
   packagedAppShellSettled,
   packagedAppShellState,
   type PackagedAppShellState,
@@ -238,6 +239,20 @@ const clickUpdaterRailExpression = `
     if (button.getAttribute('aria-disabled') === 'true') return { clicked: false, hostStatus, reason: 'updater-rail-disabled' };
     button.click();
     return { clicked: true, hostStatus };
+  })()
+`;
+// The daemon's own view of onboarding completion, read through the production
+// HTTP path from the packaged renderer. `GET /api/app-config` serves
+// `readAppConfig(RUNTIME_DATA_DIR)`, so this reports what the running daemon
+// resolved — not what the seed hoped it wrote.
+const packagedOnboardingCompletedExpression = `
+  (async () => {
+    const response = await fetch('/api/app-config');
+    const body = response.ok ? await response.json() : null;
+    return {
+      onboardingCompleted: body?.config?.onboardingCompleted === true,
+      status: response.status,
+    };
   })()
 `;
 const packagedOnboardingExpression = `
@@ -531,6 +546,8 @@ winDescribe('packaged windows runtime smoke', () => {
     let passed = false;
     const timings: SmokeTiming[] = [];
     let appShell: PackagedAppShellState | 'skipped' = 'skipped';
+    let seededOnboardingCompleted: boolean | 'skipped' = 'skipped';
+    let onboardingCompleted: boolean | 'skipped' = 'skipped';
     let intermediatePayloadUpdate: PayloadUpdateSummary | { skipped: true } = { skipped: true };
     let payloadUpdate: InstallerFallbackSummary | PayloadUpdateSummary | { skipped: true } = { skipped: true };
     let updaterRecovery: UpdaterRecoverySummary | { skipped: true } = { skipped: true };
@@ -658,6 +675,23 @@ winDescribe('packaged windows runtime smoke', () => {
       assertLauncherPointer(inspect.launcher.active, updateScenario.expectedCurrentVersion, 0, 'initial active');
       assertLauncherPointer(inspect.launcher.lastSuccessful, updateScenario.expectedCurrentVersion, 0, 'initial lastSuccessful');
 
+      // The seed's postcondition, asserted where it must hold: this process was
+      // started by `tools-pack win start`, which points the packaged runtime at
+      // the same data root `seedPackagedOnboardingComplete` wrote. If the daemon
+      // does not see it here, the completed-onboarding boot path is broken —
+      // the #4389-era failure where the seed landed in the AppData fallback and
+      // the daemon never read it. Fail with that named cause instead of letting
+      // it surface later as an unexplained onboarding screen.
+      if (!inspect.desktopIpcUnavailable) {
+        seededOnboardingCompleted = await measureSmokeStep(timings, 'verify seeded onboarding config', async () =>
+          readPackagedOnboardingCompleted(),
+        );
+        expect(
+          seededOnboardingCompleted,
+          'daemon did not read the seeded onboardingCompleted config; check that the packaged data root still resolves to the tools-pack runtime namespace root',
+        ).toBe(true);
+      }
+
       // Runtime registration must preserve the stable installed outer path;
       // pointing at a versioned payload would break the scheme after cleanup.
       await assertWindowsInviteProtocolRegistration(install.installDir);
@@ -699,14 +733,24 @@ winDescribe('packaged windows runtime smoke', () => {
       }
 
       if (!inspect.desktopIpcUnavailable) {
-        // The core profile only screenshots from here, so a first run resting
-        // on the cloud sign-in landing is a legitimate place to stop. The full
-        // profile goes on to click `entry-nav-updater`, which
-        // `clickUpdaterRailExpression` refuses while onboarding is up — so it
-        // keeps demanding home and fails here, with a named cause, rather than
-        // later with a bare `onboarding-visible`.
+        // Re-read rather than reusing the value from the seeded start: the core
+        // profile stopped the app above and relaunched it through the OS
+        // protocol handler, and that cold start carries none of this process's
+        // environment — so it is a different daemon, and only it can say what
+        // config the surface being asserted on is actually running under.
+        const daemonOnboardingCompleted = await measureSmokeStep(
+          timings,
+          'read onboarding config for app shell',
+          async () => readPackagedOnboardingCompleted(),
+        );
+        onboardingCompleted = daemonOnboardingCompleted;
+        // Setup and expectation come from the same fact. A daemon that confirms
+        // onboarding is completed must produce home; only a daemon that reports
+        // a genuine first run may settle on the cloud sign-in landing.
         appShell = await measureSmokeStep(timings, 'ensure packaged app shell', async () =>
-          ensurePackagedAppShell({ acceptOnboardingLanding: verifyCoreOnly }),
+          ensurePackagedAppShell(
+            packagedAppShellPolicy({ coreProfile: verifyCoreOnly, daemonOnboardingCompleted }),
+          ),
         );
 
         if (verifyUpgradePersistence) {
@@ -892,6 +936,7 @@ winDescribe('packaged windows runtime smoke', () => {
       await assertWindowsInviteProtocolRemoved();
       await report.saveSummary({
         appShell,
+        onboarding: { atAppShell: onboardingCompleted, afterSeed: seededOnboardingCompleted },
         health: value,
         install: {
           desktopShortcutExists: install.desktopShortcutExists,
@@ -2036,6 +2081,30 @@ async function fetchPackagedHealth(daemonUrl: string): Promise<HealthEvalValue> 
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/**
+ * What the running daemon reports for `onboardingCompleted`.
+ *
+ * This is the seed's actual postcondition. `seedPackagedOnboardingComplete`
+ * writes `<runtimeNamespaceRoot>/data/app-config.json`, and on a
+ * `tools-pack win start` the daemon resolves the same path — `tools-pack`
+ * rewrites the launch config's `namespaceBaseRoot` to the tools-pack runtime
+ * root (tools/pack/src/win/lifecycle.ts) and `apps/packaged/src/paths.ts`
+ * derives `join(namespaceBaseRoot, namespace, 'data')` from it. So a healthy
+ * seeded start MUST report true, and anything else is a real data-root
+ * regression rather than a test-fixture detail.
+ */
+async function readPackagedOnboardingCompleted(): Promise<boolean> {
+  const inspect = await runToolsPackJson<WinInspectResult>('inspect', [
+    '--expr',
+    packagedOnboardingCompletedExpression,
+  ]);
+  const value = inspect.eval?.value;
+  if (!isRecord(value) || typeof value.onboardingCompleted !== 'boolean') {
+    throw new Error(`packaged windows daemon did not report app config: ${formatUnknown(inspect)}`);
+  }
+  return value.onboardingCompleted;
 }
 
 /**

@@ -141,11 +141,23 @@ export type PackagedAppShellPolicyInput = {
 /**
  * Which terminal states this run may settle on.
  *
- * Currently keyed off the smoke profile alone.
+ * Derived from the daemon's own `onboardingCompleted`, never from the smoke
+ * profile, so a run's setup and its accepted terminal state cannot disagree.
+ * The smoke seeds `onboardingCompleted: true` before start; if the daemon
+ * confirms it, the renderer must honour it and home is the only acceptable
+ * outcome — that is what keeps a broken completed-onboarding boot path
+ * detectable on the core release lane. Only a run whose daemon reports
+ * onboarding as *not* completed is a genuine first run, and only then is the
+ * cloud sign-in landing a legitimate place to stop.
+ *
+ * `coreProfile` still narrows it: the full profile goes on to drive the entry
+ * rail, which `clickUpdaterRailExpression` refuses while onboarding is up, so
+ * it needs home either way.
  */
 export function packagedAppShellPolicy(
   input: PackagedAppShellPolicyInput,
 ): { readonly acceptOnboardingLanding: boolean } {
+  if (input.daemonOnboardingCompleted) return { acceptOnboardingLanding: false };
   return { acceptOnboardingLanding: input.coreProfile };
 }
 
