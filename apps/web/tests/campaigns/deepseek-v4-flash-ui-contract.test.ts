@@ -95,6 +95,16 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     );
   });
 
+  it('wires the paid use_now CTA to the real agent/model switch (D5)', () => {
+    // The modal's callback must reach EntryShell's persistence pair — the
+    // same onAgentChange/onAgentModelChange the InlineModelSwitcher writes
+    // through — so 立即使用 changes the workbench, not just the UI.
+    expect(entryShellSource).toContain('applyDeepSeekCampaignModel');
+    expect(entryShellSource).toContain('onAgentModelChange(agentId, { model: modelId })');
+    expect(homeViewSource).toContain('onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}');
+    expect(campaignModalSource).toContain("onUseCampaignModel?.('amr', campaign.modelId)");
+  });
+
   it('tracks campaign discovery surfaces without replacing model-selection events', () => {
     expect(entryShellSource).toContain('trackDeepSeekCampaignBadgeSurfaceView');
     expect(entryShellSource).toContain('trackDeepSeekCampaignBadgeClick');

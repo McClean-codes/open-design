@@ -56,6 +56,51 @@ afterEach(() => {
   window.history.replaceState({}, '', '/');
 });
 
+describe('paid 立即使用 switches the workbench onto the campaign model', () => {
+  it('applies agent amr + model deepseek-v4-flash and pulses the chip without opening the picker', () => {
+    vi.useFakeTimers();
+    const onUseCampaignModel = vi.fn();
+    // Stand in for the home composer's model-switcher chip.
+    const chip = document.createElement('button');
+    chip.setAttribute('data-testid', 'inline-model-switcher-chip');
+    const chipClick = vi.fn();
+    chip.addEventListener('click', chipClick);
+    document.body.appendChild(chip);
+    try {
+      render(
+        <DeepSeekV4FlashCampaign
+          audience="paid"
+          active
+          onUseCampaignModel={onUseCampaignModel}
+        />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: '立即使用' }));
+
+      // 产品拍板 D5: the CTA performs the real switch, not a picker tour.
+      expect(onUseCampaignModel).toHaveBeenCalledWith(
+        'amr',
+        'deepseek-v4-flash',
+      );
+      // The analytics element stays `use_now`.
+      expect(trackSpy).toHaveBeenCalledWith(
+        'ui_click',
+        expect.objectContaining({ element: 'use_now' }),
+        undefined,
+      );
+
+      vi.advanceTimersByTime(1);
+      // Visual feedback survives as the highlight pulse alone — no
+      // chip.click(), so the model popover stays closed.
+      expect(chipClick).not.toHaveBeenCalled();
+      expect(chip.getAttribute('data-campaign-highlight')).toBe('true');
+      vi.advanceTimersByTime(1_600);
+      expect(chip.hasAttribute('data-campaign-highlight')).toBe(false);
+    } finally {
+      chip.remove();
+    }
+  });
+});
+
 describe('campaign modal only interrupts the active home view', () => {
   it('stays silent on non-home views even when the campaign is unseen', () => {
     render(<DeepSeekV4FlashCampaign audience="paid" active={false} />);

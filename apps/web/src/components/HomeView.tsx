@@ -287,6 +287,10 @@ interface Props {
   executionSwitcher?: ReactNode;
   artifactUpgradeSlot?: ReactNode;
   deepSeekV4FlashCampaignAudience?: DeepSeekV4FlashCampaignAudience;
+  /** Real model switch for the campaign modal's paid 立即使用 CTA (D5).
+   *  EntryShell owns the agent/model persistence callbacks; HomeView only
+   *  threads them through, like the audience above. */
+  onDeepSeekV4FlashCampaignUseNow?: (agentId: string, modelId: string) => void;
 }
 
 const EMPTY_DESIGN_SYSTEMS: DesignSystemSummary[] = [];
@@ -431,6 +435,7 @@ export function HomeView({
   executionSwitcher,
   artifactUpgradeSlot,
   deepSeekV4FlashCampaignAudience = 'unknown',
+  onDeepSeekV4FlashCampaignUseNow,
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -2520,6 +2525,7 @@ export function HomeView({
       <DeepSeekV4FlashCampaign
         audience={deepSeekV4FlashCampaignAudience}
         active={isActive}
+        onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}
       />
       {isActive ? <AppWashKineticGrid clipBottomTo=".home-hero" /> : null}
       <HomeHero

@@ -1138,6 +1138,16 @@ export function EntryShell({
       'noopener,noreferrer',
     );
   }, [analytics.track, config.telemetry?.metrics, deepSeekV4FlashCampaignAudience]);
+  // 产品拍板 D5: the campaign modal's paid 立即使用 performs the REAL switch —
+  // agent to Cloud (amr) + model to DeepSeek V4 Flash — through the same
+  // persistence callbacks the InlineModelSwitcher writes through.
+  const applyDeepSeekCampaignModel = useCallback(
+    (agentId: string, modelId: string) => {
+      onAgentChange(agentId);
+      onAgentModelChange(agentId, { model: modelId });
+    },
+    [onAgentChange, onAgentModelChange],
+  );
   function changeView(next: EntryViewKind) {
     const navElement = navElementForView(next);
     if (navElement) {
@@ -1694,6 +1704,7 @@ export function EntryShell({
                 executionSwitcher={view === 'home' ? homeExecutionSwitcher : undefined}
                 artifactUpgradeSlot={artifactUpgradeSlot}
                 deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
+                onDeepSeekV4FlashCampaignUseNow={applyDeepSeekCampaignModel}
               />
             </div>
             <div data-testid="entry-view-projects" data-active={view === 'projects' ? 'true' : 'false'} {...inactiveViewProps(view === 'projects')}>

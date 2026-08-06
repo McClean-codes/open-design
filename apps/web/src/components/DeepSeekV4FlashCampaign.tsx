@@ -39,6 +39,13 @@ interface Props {
    * explicit: the modal shows on #/home only.
    */
   active?: boolean;
+  /**
+   * Performs the REAL workbench switch for the paid 立即使用 CTA (产品拍板
+   * D5): agent to `amr`, model to the campaign model. EntryShell provides the
+   * same onAgentChange/onAgentModelChange pair the InlineModelSwitcher
+   * persists through.
+   */
+  onUseCampaignModel?: (agentId: string, modelId: string) => void;
 }
 
 function shouldForceCampaignReview(): boolean {
@@ -68,17 +75,26 @@ function markCampaignSeen(): void {
   }
 }
 
-function focusModelSwitcher(): void {
+/**
+ * Visual confirmation of the switch `onUseCampaignModel` already performed:
+ * pulse the composer's model chip. Deliberately no `chip.click()` — the model
+ * is switched for real, so opening the picker would only ask the user to redo
+ * a choice that has already been made.
+ */
+function highlightModelSwitcher(): void {
   const chip = document.querySelector<HTMLButtonElement>(
     '[data-testid="inline-model-switcher-chip"]',
   );
   if (!chip) return;
-  chip.click();
   chip.setAttribute('data-campaign-highlight', 'true');
   window.setTimeout(() => chip.removeAttribute('data-campaign-highlight'), 1_500);
 }
 
-export function DeepSeekV4FlashCampaign({ audience, active = true }: Props) {
+export function DeepSeekV4FlashCampaign({
+  audience,
+  active = true,
+  onUseCampaignModel,
+}: Props) {
   const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
   const [modalOpen, setModalOpen] = useState(false);
@@ -163,7 +179,10 @@ export function DeepSeekV4FlashCampaign({ audience, active = true }: Props) {
     trackModalClick(paid ? 'use_now' : 'upgrade');
     dismissModal();
     if (paid) {
-      window.setTimeout(focusModelSwitcher, 0);
+      // 产品拍板 D5: 立即使用 switches the workbench to the campaign model
+      // for real; the chip pulse is feedback for a switch that happened.
+      onUseCampaignModel?.('amr', campaign.modelId);
+      window.setTimeout(highlightModelSwitcher, 0);
       return;
     }
     const plansUrl =
