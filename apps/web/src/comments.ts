@@ -423,18 +423,20 @@ export function commentsToAttachments(comments: PreviewComment[]): ChatCommentAt
 /**
  * Provisional canvas pin number for a comment that has not been saved yet.
  *
- * Invariant: a new pin gets one past the HIGHEST number currently rendered on
- * the canvas — mirroring the daemon's `MAX(pin_seq)+1` assignment rule
- * (`upsertPreviewComment` in apps/daemon/src/db.ts) — never `count + 1`.
- * Pin numbers are permanent: deleting a comment retires its number instead of
- * recycling it, so after a deletion the open-comment count can sit below the
- * highest surviving number and a count-based guess would collide with a pin
- * that is still on screen.
+ * Invariant: a new pin gets one past the HIGHEST pin number the daemon could
+ * already have handed out for this file — mirroring its `MAX(pin_seq)+1`
+ * assignment rule (`upsertPreviewComment` in apps/daemon/src/db.ts), which
+ * scans every row for the project/file regardless of status — never
+ * `count + 1`. Pin numbers are permanent: deleting a comment retires its
+ * number, and a non-open comment (resolved / attached / applying /
+ * needs_review / failed) keeps its row — and therefore its number — even
+ * though the canvas renders no marker for it. Callers must therefore pass
+ * the file's comments across ALL statuses, not just the open ones on screen.
  *
  * A comment without a server-assigned `pinSeq` yet (legacy row / test
- * fixture) contributes the same creation-order fallback number the canvas
- * renders for it (`index + 1` — callers pass `comments` in creation order,
- * see FileViewer's `creationSortedSideComments`).
+ * fixture) contributes its creation rank (`index + 1` — callers pass
+ * `comments` in creation order), matching the daemon's creation-ordered
+ * `pin_seq` backfill for pre-`pin_seq` rows.
  */
 export function provisionalNextPinNumber(comments: readonly PreviewComment[]): number {
   let highest = 0;
