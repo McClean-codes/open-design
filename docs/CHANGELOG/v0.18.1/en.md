@@ -3,7 +3,7 @@ title: Open Design 0.18.1
 description: DeepSeek V4 Flash is unlimited for every paid plan from August 6 to August 13, and 0.18.1 brings the offer into the app — alongside fixes for the first week of Team Workspace on production.
 ---
 
-🎁 **`23 PRs` · `8 contributors` · `2 days`** — **DeepSeek V4 Flash is unlimited for one week, and 0.18.1 puts it where you actually work.** August 6 20:00 → August 13 20:00 (Asia/Shanghai): every paid plan gets unlimited DeepSeek V4 Flash on Open Design Cloud — it doesn't eat your plan's quota, doesn't carry over, and there's nothing to claim. 0.18.1 also cleans up the first week of Team Workspace on production: the 502 storm, the file grid that crawled, the BYOK picker that forgot your models. 🚀
+🎁 **`24 PRs` · `9 contributors` · `2 days`** — **DeepSeek V4 Flash is unlimited for one week, and 0.18.1 puts it where you actually work.** August 6 20:00 → August 13 20:00 (Asia/Shanghai): every paid plan gets unlimited DeepSeek V4 Flash on Open Design Cloud — it doesn't eat your plan's quota, doesn't carry over, and there's nothing to claim. 0.18.1 also cleans up the first week of Team Workspace on production: the 502 storm, the file grid that crawled, the BYOK picker that forgot your models. 🚀
 
 ## 🔥 Highlights
 
@@ -27,6 +27,8 @@ description: DeepSeek V4 Flash is unlimited for every paid plan from August 6 to
 
 ## ✨ Added
 
+- **Signing in hands you back to the app.** Approve a sign-in in your browser and the desktop app comes back to the front on its own — including when it was minimized, which previously left it sitting in the Dock looking like nothing happened. (#6410) Thanks @elifive555555.
+
 - **Export what a run actually did.** When a run goes sideways, you can now export its execution diagnostics instead of describing the symptom from memory. (#6433) Thanks @bone3deep1962-collab.
 
 ## 🐛 Fixed
@@ -49,4 +51,4 @@ description: DeepSeek V4 Flash is unlimited for every paid plan from August 6 to
 
 ## 🙏 Thanks to everyone who shipped 0.18.1
 
-@AmyShang-alt · @bone3deep1962-collab · @itscheems · @joeylee12629-star · @lefarcen · @mturac · @Siri-Ray · @xne998808-ai
+@AmyShang-alt · @bone3deep1962-collab · @elifive555555 · @itscheems · @joeylee12629-star · @lefarcen · @mturac · @Siri-Ray · @xne998808-ai

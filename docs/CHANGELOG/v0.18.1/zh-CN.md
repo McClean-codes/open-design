@@ -3,7 +3,7 @@ title: Open Design 0.18.1
 description: 8月6日—8月13日，所有付费套餐均可在 Open Design Cloud 上无限使用 DeepSeek V4 Flash，0.18.1 把这个权益带进了产品里；同时修复了 Team Workspace 上线第一周暴露出的问题。
 ---
 
-🎁 **`23 个 PR` · `8 位贡献者` · `2 天`** — **DeepSeek V4 Flash 无限使用一周，0.18.1 把它放到你真正干活的地方。** 8月6日 20:00 → 8月13日 20:00（北京时间）：所有付费套餐都可以在 Open Design Cloud 上无限使用 DeepSeek V4 Flash——不消耗你的套餐额度，不结转，也不需要领取。0.18.1 同时清理了 Team Workspace 上线第一周暴露的问题：502 风暴、卡顿的文件网格、以及会"忘记"你自带模型的选择器。🚀
+🎁 **`24 个 PR` · `9 位贡献者` · `2 天`** — **DeepSeek V4 Flash 无限使用一周，0.18.1 把它放到你真正干活的地方。** 8月6日 20:00 → 8月13日 20:00（北京时间）：所有付费套餐都可以在 Open Design Cloud 上无限使用 DeepSeek V4 Flash——不消耗你的套餐额度，不结转，也不需要领取。0.18.1 同时清理了 Team Workspace 上线第一周暴露的问题：502 风暴、卡顿的文件网格、以及会"忘记"你自带模型的选择器。🚀
 
 ## 🔥 亮点
 
@@ -27,6 +27,8 @@ description: 8月6日—8月13日，所有付费套餐均可在 Open Design Clou
 
 ## ✨ 新增
 
+- **登录完成后自动回到应用。** 在浏览器里确认登录后，桌面端会自己回到最前面——包括窗口处于最小化的情况，此前它会留在 Dock 里，看起来像什么都没发生。 (#6410) 感谢 @elifive555555。
+
 - **导出一次运行到底做了什么。** 运行出问题时，你可以直接导出它的执行诊断信息，而不用凭记忆描述症状。 (#6433) 感谢 @bone3deep1962-collab。
 
 ## 🐛 修复
@@ -49,4 +51,4 @@ description: 8月6日—8月13日，所有付费套餐均可在 Open Design Clou
 
 ## 🙏 感谢每一位参与 0.18.1 的贡献者
 
-@AmyShang-alt · @bone3deep1962-collab · @itscheems · @joeylee12629-star · @lefarcen · @mturac · @Siri-Ray · @xne998808-ai
+@AmyShang-alt · @bone3deep1962-collab · @elifive555555 · @itscheems · @joeylee12629-star · @lefarcen · @mturac · @Siri-Ray · @xne998808-ai
