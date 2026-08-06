@@ -49,6 +49,10 @@ export interface ToolTokenGrant {
   token: string;
   runId: string;
   projectId: string;
+  /** Workspace authority captured when the run token is minted. */
+  workspaceId?: string;
+  /** Member identity paired with workspaceId for personal-resource checks. */
+  workspaceMemberId?: string;
   allowedEndpoints: readonly ToolEndpoint[];
   allowedOperations: readonly ToolOperation[];
   issuedAt: string;
@@ -67,6 +71,8 @@ export interface ToolTokenGrant {
 export interface MintToolTokenOptions {
   runId: string;
   projectId: string;
+  workspaceId?: string;
+  workspaceMemberId?: string;
   allowedEndpoints?: readonly ToolEndpoint[];
   allowedOperations?: readonly ToolOperation[];
   ttlMs?: number;
@@ -152,6 +158,10 @@ export class ToolTokenRegistry {
       tokenHash: hash,
       runId: options.runId,
       projectId: options.projectId,
+      ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+      ...(options.workspaceMemberId
+        ? { workspaceMemberId: options.workspaceMemberId }
+        : {}),
       allowedEndpoints: [...(options.allowedEndpoints ?? CHAT_TOOL_ENDPOINTS)],
       allowedOperations: [...(options.allowedOperations ?? CHAT_TOOL_OPERATIONS)],
       issuedAt: new Date(nowMs).toISOString(),

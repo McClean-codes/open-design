@@ -1,3 +1,8 @@
+import type {
+  ResolveDesignSystemIntentApiResponse,
+  ResolveDesignSystemIntentRequest,
+} from '@open-design/contracts';
+
 type JsonObject = Record<string, unknown>;
 
 interface ToolCliResult {
@@ -9,12 +14,13 @@ interface ParsedOptions {
   path?: string;
   intent?: string;
   designSystemId?: string;
+  json: boolean;
   help: boolean;
 }
 
 const DESIGN_SYSTEMS_USAGE = `Usage:
   od tools design-systems read --path <manifest-declared-path> [--design-system <id>]
-  od tools design-systems resolve --intent <canonical-intent> [--design-system <id>]
+  od tools design-systems resolve --intent <canonical-intent> [--design-system <id>] [--json]
 
 Environment:
   OD_NODE_BIN     Node-compatible runtime for agent wrapper invocations
@@ -40,6 +46,7 @@ function parseOptions(args: string[]): ParsedOptions | { error: string } {
   const [command, ...rest] = args;
   const options: ParsedOptions = {
     command: command === '-h' || command === '--help' ? undefined : command,
+    json: false,
     help: command === '-h' || command === '--help',
   };
 
@@ -57,6 +64,8 @@ function parseOptions(args: string[]): ParsedOptions | { error: string } {
       const value = rest[++index];
       if (!value) return { error: '--design-system requires an id' };
       options.designSystemId = value;
+    } else if (arg === '--json') {
+      options.json = true;
     } else if (arg === '-h' || arg === '--help') {
       options.help = true;
     } else {
@@ -93,7 +102,7 @@ function endpoint(baseUrl: URL, pathname: string): string {
   return url.toString();
 }
 
-async function requestJson(baseUrl: URL, token: string, pathname: string, init: RequestInit = {}): Promise<{ status: number; body: unknown }> {
+async function requestJson<TBody = unknown>(baseUrl: URL, token: string, pathname: string, init: RequestInit = {}): Promise<{ status: number; body: TBody }> {
   const response = await fetch(endpoint(baseUrl, pathname), {
     ...init,
     headers: {
@@ -112,7 +121,7 @@ async function requestJson(baseUrl: URL, token: string, pathname: string, init: 
       body = { message: text };
     }
   }
-  return { status: response.status, body };
+  return { status: response.status, body: body as TBody };
 }
 
 function normalizeCliError(body: unknown): JsonObject {
@@ -154,13 +163,14 @@ export async function runDesignSystemsToolCli(args: string[]): Promise<ToolCliRe
 
   if (options.command === 'resolve') {
     if (!options.intent) return fail('resolve requires --intent <canonical-intent>');
+    const request: ResolveDesignSystemIntentRequest = {
+      intent: options.intent,
+      ...(options.designSystemId ? { designSystemId: options.designSystemId } : {}),
+    };
     return printApiResult(
-      await requestJson(baseUrl, token, '/api/tools/design-systems/resolve-intent', {
+      await requestJson<ResolveDesignSystemIntentApiResponse>(baseUrl, token, '/api/tools/design-systems/resolve-intent', {
         method: 'POST',
-        body: JSON.stringify({
-          intent: options.intent,
-          ...(options.designSystemId ? { designSystemId: options.designSystemId } : {}),
-        }),
+        body: JSON.stringify(request),
       }),
     );
   }
