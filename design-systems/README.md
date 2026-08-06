@@ -132,7 +132,11 @@ The result contains the reusable implementation, selectors, variant,
 properties, required states, and the package lint policy. Missing or ambiguous
 matches execute `rules/fallback.json`; the agent must honor confirmation gates
 and `allowInventComponent` instead of creating a visually similar near-copy.
-If `runtime` is absent, the package keeps the existing `DESIGN.md` prompt path.
+When `runtime` is declared, this resolver is the only component-selection
+authority: `components.manifest.json` and `components.html` remain package
+evidence and authoring checks, but are not injected as a second component
+inventory. If `runtime` is absent, the package keeps the existing prompt-based
+component manifest / fixture path.
 If `runtime` is present but invalid, it is reported as invalid rather than
 silently treated as a legacy package. The production schema versions and shared
 types live in

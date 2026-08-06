@@ -658,6 +658,8 @@ describe('composeSystemPrompt', () => {
       const prompt = composeSystemPrompt({
         designSystemTitle: 'default',
         designSystemBody: '# x\n\nbody',
+        designSystemComponentsManifest: sampleComponentsManifest,
+        designSystemFixtureHtml: sampleFixtureHtml,
         designSystemIntentIndex:
           'Canonical business intents declared by the active design system:\n- `account.settings.save` → Button.primary — Save account changes',
         executionProfile: 'filesystem',
@@ -667,6 +669,12 @@ describe('composeSystemPrompt', () => {
       expect(prompt).toContain('tools design-systems resolve --intent <canonical-intent>');
       expect(prompt).toContain('`account.settings.save` → Button.primary');
       expect(prompt).toContain('include every required state');
+      expect(prompt).toContain('sole component-selection authority');
+      expect(prompt).not.toContain('match component shapes from the reference component manifest');
+      expect(prompt).not.toContain('## Reference component manifest');
+      expect(prompt).not.toContain('## Reference fixture');
+      expect(prompt).not.toContain('components.manifest schema v1');
+      expect(prompt).not.toContain('class="btn btn-primary"');
     });
 
     it('keeps text-artifact runs honest when they cannot call the resolver', () => {
@@ -687,12 +695,19 @@ describe('composeSystemPrompt', () => {
       const prompt = composeSystemPrompt({
         designSystemTitle: 'broken',
         designSystemBody: '# x\n\nbody',
+        designSystemComponentsManifest: sampleComponentsManifest,
+        designSystemFixtureHtml: sampleFixtureHtml,
         designSystemRuntimeIssue: 'manifests/intent-map.json: unknown component MissingButton',
       });
 
       expect(prompt).toContain('## Structured design-system runtime unavailable — broken');
       expect(prompt).toContain('Do not silently treat it as a valid legacy component map');
       expect(prompt).toContain('unknown component MissingButton');
+      expect(prompt).toContain('do not fall back to a legacy manifest or fixture');
+      expect(prompt).not.toContain('## Reference component manifest');
+      expect(prompt).not.toContain('## Reference fixture');
+      expect(prompt).not.toContain('components.manifest schema v1');
+      expect(prompt).not.toContain('class="btn btn-primary"');
     });
 
     it('adds importMode guidance when the manifest declares consumption semantics', () => {

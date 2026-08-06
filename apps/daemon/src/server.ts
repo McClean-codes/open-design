@@ -8468,21 +8468,30 @@ export async function startServer({
           DESIGN_SYSTEMS_DIR,
           scopedUserDesignSystemsRoot,
         );
-        designSystemUsageMd = assets.usageMd;
-        designSystemTokensCss = assets.tokensCss;
-        designSystemComponentsManifest = assets.componentsManifest;
-        designSystemFixtureHtml = assets.fixtureHtml;
-        designSystemPullIndex = assets.pullIndex;
-        designSystemImportMode = assets.importMode;
-        designSystemCraftApplies = Array.isArray(assets.craftApplies) ? assets.craftApplies : [];
-        designSystemCraftExemptions = Array.isArray(assets.craftExemptions) ? assets.craftExemptions : [];
         const runtimePromptContext = await resolveDesignSystemRuntimePromptContext(
           effectiveDesignSystemId,
           DESIGN_SYSTEMS_DIR,
           scopedUserDesignSystemsRoot,
         );
-        designSystemIntentIndex = runtimePromptContext.intentIndex;
-        designSystemRuntimeIssue = runtimePromptContext.issue;
+        designSystemUsageMd = assets.usageMd;
+        designSystemTokensCss = assets.tokensCss;
+        // A package has exactly one component-selection authority. Legacy
+        // packages keep the derived manifest / fixture prompt path. Once a
+        // package declares the structured runtime, valid or not, that legacy
+        // evidence must not compete with the intent resolver or mask a broken
+        // runtime as a usable component map.
+        if (runtimePromptContext.mode === 'legacy') {
+          designSystemComponentsManifest = assets.componentsManifest;
+          designSystemFixtureHtml = assets.fixtureHtml;
+        } else if (runtimePromptContext.mode === 'structured') {
+          designSystemIntentIndex = runtimePromptContext.intentIndex;
+        } else {
+          designSystemRuntimeIssue = runtimePromptContext.issue;
+        }
+        designSystemPullIndex = assets.pullIndex;
+        designSystemImportMode = assets.importMode;
+        designSystemCraftApplies = Array.isArray(assets.craftApplies) ? assets.craftApplies : [];
+        designSystemCraftExemptions = Array.isArray(assets.craftExemptions) ? assets.craftExemptions : [];
         if (typeof designSystemBody === 'string' && designSystemBody.length > 0) {
           activeDesignSystemId = effectiveDesignSystemId;
           designSystemDigest = digestDesignSystemContext({
