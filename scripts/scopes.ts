@@ -74,6 +74,7 @@ export const DAEMON_RUNTIME_DEFINITION_EXACT = [
 const DAEMON_RUNTIME_DEFINITION_MATRIX_NAMES = [
   "entry-settings",
   "project-workspace",
+  "project-collab",
   "project-runtime",
 ] as const;
 

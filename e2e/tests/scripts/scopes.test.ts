@@ -947,7 +947,7 @@ test("merge-queue threshold escalates medium-confidence files to the full radius
   });
 });
 
-test("runtime-definition changes produce only a three-shard UI P0 shadow candidate", async () => {
+test("runtime-definition changes produce only a four-domain UI P0 shadow candidate", async () => {
   const { evaluateUiP0Shadow } = await import("../../../scripts/scopes.ts");
   const decision = evaluateUiP0Shadow([
     "apps/daemon/src/runtimes/defs/atomcode.ts",
@@ -958,7 +958,7 @@ test("runtime-definition changes produce only a three-shard UI P0 shadow candida
   assert.equal(decision.capability, "daemon-runtime-definition");
   assert.deepEqual(
     decision.matrix.map((entry) => entry.name),
-    ["entry-settings", "project-workspace", "project-runtime"],
+    ["entry-settings", "project-workspace", "project-collab", "project-runtime"],
   );
   assert.deepEqual(decision.outsideCapabilityFiles, []);
 });
@@ -979,6 +979,7 @@ test("runtime-definition shadow fails closed for mixed, unknown, empty, and unre
         "entry-settings",
         "project-workspace",
         "project-workspace-editor",
+        "project-collab",
         "project-runtime",
         "workspace-restoration",
       ],
@@ -1031,7 +1032,7 @@ test("plan trace reports the runtime-definition UI P0 shadow without changing th
   assert.equal(result.trace.uiP0Shadow.mode, "candidate");
   assert.deepEqual(
     result.trace.uiP0Shadow.matrix.map((entry) => entry.name),
-    ["entry-settings", "project-workspace", "project-runtime"],
+    ["entry-settings", "project-workspace", "project-collab", "project-runtime"],
   );
 });
 
