@@ -542,7 +542,7 @@ describe('clearAmrLiveModelsFromAgents', () => {
     },
   ];
 
-  it('clears only the AMR live catalog so a workspace switch cannot keep stale locks', () => {
+  it('clears the AMR catalog so a workspace switch cannot keep stale locks', () => {
     const next = clearAmrLiveModelsFromAgents(agents);
     expect(next[0]).toMatchObject({
       id: 'amr',
@@ -552,7 +552,7 @@ describe('clearAmrLiveModelsFromAgents', () => {
     expect(next[1]).toEqual(agents[1]);
   });
 
-  it('leaves non-live AMR agent models untouched', () => {
+  it('also strips headerless /api/agents fallback AMR models', () => {
     const fallbackAgents: AgentInfo[] = [
       {
         id: 'amr',
@@ -563,7 +563,25 @@ describe('clearAmrLiveModelsFromAgents', () => {
         modelsSource: 'fallback',
       },
     ];
-    expect(clearAmrLiveModelsFromAgents(fallbackAgents)).toBe(fallbackAgents);
+    const next = clearAmrLiveModelsFromAgents(fallbackAgents);
+    expect(next[0]).toMatchObject({
+      id: 'amr',
+      models: [],
+      modelsSource: undefined,
+    });
+  });
+
+  it('is a no-op when AMR already has no models', () => {
+    const empty: AgentInfo[] = [
+      {
+        id: 'amr',
+        name: 'AMR',
+        bin: 'vela',
+        available: true,
+        models: [],
+      },
+    ];
+    expect(clearAmrLiveModelsFromAgents(empty)).toBe(empty);
   });
 });
 
@@ -621,13 +639,27 @@ describe('mergeAmrModelsIntoAgents', () => {
     expect(next[0]?.modelsSource).toBe('live');
   });
 
-  it('leaves agents unchanged when Path A returns no models', () => {
-    expect(mergeAmrModelsIntoAgents(agents, null)).toBe(agents);
-    expect(mergeAmrModelsIntoAgents(agents, {
+  it('strips unscoped AMR models when Path A is unresolved or empty', () => {
+    // Concurrent fetchAgentsStream callbacks merge with amrModelsRef=null after
+    // an identity clear; fail closed so personal free/lock shape cannot stick.
+    const clearedNull = mergeAmrModelsIntoAgents(agents, null);
+    expect(clearedNull[0]).toMatchObject({
+      id: 'amr',
+      models: [],
+      modelsSource: undefined,
+    });
+    expect(clearedNull[1]).toEqual(agents[1]);
+
+    const clearedEmpty = mergeAmrModelsIntoAgents(agents, {
       source: 'preset',
       models: [],
       refreshing: true,
-    })).toBe(agents);
+    });
+    expect(clearedEmpty[0]).toMatchObject({
+      id: 'amr',
+      models: [],
+      modelsSource: undefined,
+    });
   });
 });
 

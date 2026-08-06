@@ -462,42 +462,46 @@ export function resolveSettingsCloseConfig(
 }
 
 /**
+ * Drop AMR picker models from the agents list (live Path A or agent fallback).
+ *
+ * Path A is the workspace-scoped entitlement authority. Headerless
+ * `/api/agents` discovery can still emit a personal free/lock shape; those
+ * models must not survive a workspace/account identity change or a failed
+ * scoped refetch, or the picker keeps the wrong locks indefinitely.
+ */
+export function clearAmrLiveModelsFromAgents(agents: AgentInfo[]): AgentInfo[] {
+  let changed = false;
+  const next = agents.map((agent) => {
+    if (agent.id !== 'amr') return agent;
+    const hasModels = Array.isArray(agent.models) && agent.models.length > 0;
+    if (!hasModels && agent.modelsSource === undefined) return agent;
+    changed = true;
+    return { ...agent, models: [], modelsSource: undefined };
+  });
+  return changed ? next : agents;
+}
+
+/**
  * Merge Path A (`GET /api/amr/models`) catalog into the AMR agent for the picker.
  *
  * Invariant: Path A is the workspace-scoped entitlement authority. Prefer its
  * models even when `source === "preset"` (remote refresh still pending or
- * unavailable). Headerless `/api/agents` discovery can return a non-empty
- * personal catalog for AMR; keeping those agent models on preset would let the
- * unscoped free/lock shape win on Team workspaces and undo workspace scoping.
+ * unavailable). When Path A is unresolved, empty, or failed, fail closed:
+ * strip AMR models rather than keeping headerless `/api/agents` discovery,
+ * so concurrent boot/focus agent streams cannot repopulate unscoped locks
+ * after a catalog clear.
  */
 export function mergeAmrModelsIntoAgents(
   agents: AgentInfo[],
   amrModels: AmrModelsResponse | null,
 ): AgentInfo[] {
-  if (!amrModels || amrModels.models.length === 0) return agents;
+  if (!amrModels || amrModels.models.length === 0) {
+    return clearAmrLiveModelsFromAgents(agents);
+  }
   return agents.map((agent) => {
     if (agent.id !== 'amr') return agent;
     return { ...agent, models: amrModels.models, modelsSource: 'live' };
   });
-}
-
-/**
- * Drop the workspace-scoped live AMR catalog from the agents list.
- *
- * Path A models are merged into `agents` for the picker. Clearing only the
- * `amrModelsRef` on workspace switch leaves the prior catalog rendered; if
- * the replacement fetch fails or returns empty, those stale locks stick.
- * Call this before the scoped refetch so the picker never keeps another
- * workspace's entitlement map.
- */
-export function clearAmrLiveModelsFromAgents(agents: AgentInfo[]): AgentInfo[] {
-  let changed = false;
-  const next = agents.map((agent) => {
-    if (agent.id !== 'amr' || agent.modelsSource !== 'live') return agent;
-    changed = true;
-    return { ...agent, models: [], modelsSource: undefined };
-  });
-  return changed ? next : agents;
 }
 
 /**
@@ -4228,13 +4232,19 @@ function AppInner() {
 
     const applyAmrModels = async () => {
       const result = await fetchAmrModels(issuedWorkspaceContext);
+      if (cancelled || amrPollGenerationRef.current !== pollGeneration) {
+        return;
+      }
       if (
-        cancelled ||
-        amrPollGenerationRef.current !== pollGeneration ||
         !result ||
         !Array.isArray(result.models) ||
         result.models.length === 0
       ) {
+        // Fail closed: keep the picker free of unscoped agent models when the
+        // workspace-scoped catalog errors or returns empty (including after a
+        // concurrent fetchAgentsStream upsert while amrModelsRef was null).
+        amrModelsRef.current = null;
+        setAgents((current) => clearAmrLiveModelsFromAgents(current));
         return;
       }
       amrModelsRef.current = result;
