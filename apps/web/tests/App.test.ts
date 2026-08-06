@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   buildPersistedConfig,
+  clearAmrLiveModelsFromAgents,
   isAutosaveDraftOnlyChange,
   hydrateReadyTeamProject,
   mergeAgentModelChoice,
@@ -13,7 +14,7 @@ import {
   shouldRouteToFirstRunOnboarding,
   shouldSyncMediaProvidersOnSave,
 } from '../src/App';
-import type { AppConfig, Project } from '../src/types';
+import type { AgentInfo, AppConfig, Project } from '../src/types';
 import type {
   WorkspaceCollabContext,
   WorkspaceProjectSummary,
@@ -512,5 +513,52 @@ describe('resolveDeepLinkedTeamSharedProject', () => {
     expect(resolution).toEqual({ kind: 'still-materializing' });
     expect(getProject).toHaveBeenCalledTimes(1);
     expect(pullTeamSharedProjectIfAvailable).not.toHaveBeenCalled();
+  });
+});
+
+describe('clearAmrLiveModelsFromAgents', () => {
+  const agents: AgentInfo[] = [
+    {
+      id: 'amr',
+      name: 'AMR',
+      bin: 'vela',
+      available: true,
+      models: [
+        { id: 'locked-model', label: 'locked-model', enabled: false },
+      ],
+      modelsSource: 'live',
+    },
+    {
+      id: 'claude',
+      name: 'Claude',
+      bin: 'claude',
+      available: true,
+      models: [{ id: 'claude-sonnet', label: 'claude-sonnet' }],
+      modelsSource: 'live',
+    },
+  ];
+
+  it('clears only the AMR live catalog so a workspace switch cannot keep stale locks', () => {
+    const next = clearAmrLiveModelsFromAgents(agents);
+    expect(next[0]).toMatchObject({
+      id: 'amr',
+      models: [],
+      modelsSource: undefined,
+    });
+    expect(next[1]).toEqual(agents[1]);
+  });
+
+  it('leaves non-live AMR agent models untouched', () => {
+    const fallbackAgents: AgentInfo[] = [
+      {
+        id: 'amr',
+        name: 'AMR',
+        bin: 'vela',
+        available: true,
+        models: [{ id: 'preset-model', label: 'preset-model' }],
+        modelsSource: 'fallback',
+      },
+    ];
+    expect(clearAmrLiveModelsFromAgents(fallbackAgents)).toBe(fallbackAgents);
   });
 });

@@ -483,7 +483,9 @@ export function registerVelaRoutes(app: Express, deps: RegisterVelaRoutesDeps): 
         inFlightVelaAccountInvalidations.has(accountCacheKey) &&
         (!previousAccount || previousAccount.plan !== account.plan)
       ) {
-        amrModelLoadingCache.invalidate(probe.cacheKey);
+        // Plan changes affect every workspace-scoped catalog for this
+        // credential, not only the unscoped probe used by /status.
+        amrModelLoadingCache.invalidateAll();
       }
       setVelaLiveAccount(accountCacheKey, account);
       return account;
@@ -604,8 +606,10 @@ export function registerVelaRoutes(app: Express, deps: RegisterVelaRoutesDeps): 
       });
       if (refresh) {
         try {
-          const modelProbe = resolveAmrModelProbeForEnv(configuredEnv);
-          amrModelLoadingCache.invalidate(modelProbe.cacheKey);
+          // Wallet refresh is an explicit "entitlements may have changed"
+          // signal. Catalogs are workspace-partitioned, so drop every entry
+          // rather than only the unscoped personal key.
+          amrModelLoadingCache.invalidateAll();
         } catch (err) {
           console.warn('[amr] model cache invalidation after wallet refresh failed', err);
         }

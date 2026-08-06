@@ -477,6 +477,25 @@ function mergeAmrModelsIntoAgents(
   });
 }
 
+/**
+ * Drop the workspace-scoped live AMR catalog from the agents list.
+ *
+ * Path A models are merged into `agents` for the picker. Clearing only the
+ * `amrModelsRef` on workspace switch leaves the prior catalog rendered; if
+ * the replacement fetch fails or returns empty, those stale locks stick.
+ * Call this before the scoped refetch so the picker never keeps another
+ * workspace's entitlement map.
+ */
+export function clearAmrLiveModelsFromAgents(agents: AgentInfo[]): AgentInfo[] {
+  let changed = false;
+  const next = agents.map((agent) => {
+    if (agent.id !== 'amr' || agent.modelsSource !== 'live') return agent;
+    changed = true;
+    return { ...agent, models: [], modelsSource: undefined };
+  });
+  return changed ? next : agents;
+}
+
 const CANONICAL_AGENT_ORDER = [
   'amr',
   'claude',
@@ -1308,10 +1327,12 @@ function AppInner() {
 
   // Team entitlements are workspace-scoped. Drop the previous catalog as soon
   // as the shell identity changes so the picker cannot keep free locks (or a
-  // prior Team unlock map) while the scoped refetch is in flight. The AMR
-  // poll effect already depends on `currentWorkspaceIdentity`.
+  // prior Team unlock map) while the scoped refetch is in flight — including
+  // the live models already merged into `agents`. The AMR poll effect already
+  // depends on `currentWorkspaceIdentity`.
   useEffect(() => {
     amrModelsRef.current = null;
+    setAgents((current) => clearAmrLiveModelsFromAgents(current));
   }, [currentWorkspaceIdentity]);
 
   // v2 schema removed the standalone `app_launch` event; the initial

@@ -432,6 +432,54 @@ describe('GET /api/integrations/vela/wallet', () => {
     }
   });
 
+  it('invalidates workspace-scoped AMR model catalogs on wallet refresh', async () => {
+    const walletApi = await startWalletApi((_req, res) => {
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({
+        balanceUsd: '20.0000',
+        updatedAt: '2026-07-09T07:30:00.000Z',
+      }));
+    });
+    process.env.FAKE_VELA_MODEL_LIST_JSON = JSON.stringify({
+      source: 'remote',
+      data: [
+        { id: 'public_model_deepseek_v4_flash', enabled: false },
+      ],
+    });
+    seedLogin('local', {
+      apiUrl: walletApi.url,
+      controlKey: 'ck-wallet-refresh-ws',
+      runtimeKey: 'rt-wallet-refresh-ws',
+      user: { id: 'wallet-user', email: 'wallet@example.com', plan: 'free' },
+    });
+    const workspaceHeaders = {
+      'x-od-workspace-id': 'ws-team-pro',
+      'x-od-workspace-member-id': 'member-1',
+    };
+    try {
+      const warmed = await waitForAmrModels('remote', 8_000, workspaceHeaders);
+      expect(warmed.body.models).toEqual([
+        { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash', enabled: false },
+      ]);
+
+      const refresh = await getJson<{ status: string }>(
+        `${baseUrl}/api/integrations/vela/wallet?refresh=1`,
+      );
+      expect(refresh.status).toBe(200);
+      expect(refresh.body.status).toBe('available');
+
+      const afterRefresh = await getJson<{
+        source: 'preset' | 'remote';
+        refreshing?: boolean;
+      }>(`${baseUrl}/api/amr/models`, workspaceHeaders);
+      expect(afterRefresh.status).toBe(200);
+      expect(afterRefresh.body.source).toBe('preset');
+      expect(afterRefresh.body.refreshing).toBe(true);
+    } finally {
+      await walletApi.close();
+    }
+  });
+
   it('invalidates the AMR model catalog cache when a forced status refresh observes a plan change', async () => {
     process.env.FAKE_VELA_BILLING_TIER = 'free';
     process.env.FAKE_VELA_BILLING_BALANCE_USD = '1.00';
@@ -470,6 +518,52 @@ describe('GET /api/integrations/vela/wallet', () => {
       refreshing?: boolean;
       models: Array<{ id: string }>;
     }>(`${baseUrl}/api/amr/models`);
+    expect(afterPlanChange.status).toBe(200);
+    expect(afterPlanChange.body.source).toBe('preset');
+    expect(afterPlanChange.body.refreshing).toBe(true);
+  });
+
+  it('invalidates workspace-scoped AMR model catalogs when a status refresh observes a plan change', async () => {
+    process.env.FAKE_VELA_BILLING_TIER = 'free';
+    process.env.FAKE_VELA_BILLING_BALANCE_USD = '1.00';
+    process.env.FAKE_VELA_MODEL_LIST_JSON = JSON.stringify({
+      source: 'remote',
+      data: [
+        { id: 'public_model_deepseek_v4_flash', enabled: false },
+      ],
+    });
+    seedLogin('local', {
+      controlKey: 'ck-status-refresh-ws',
+      runtimeKey: 'rt-status-refresh-ws',
+      user: { id: 'status-user', email: 'status@example.com', plan: 'free' },
+    });
+    const workspaceHeaders = {
+      'x-od-workspace-id': 'ws-team-pro',
+      'x-od-workspace-member-id': 'member-1',
+    };
+
+    const firstStatus = await getJson<{ account?: { plan?: string } }>(
+      `${baseUrl}/api/integrations/vela/status?refresh=1`,
+    );
+    expect(firstStatus.status).toBe(200);
+    expect(firstStatus.body.account?.plan).toBe('free');
+
+    const warmed = await waitForAmrModels('remote', 8_000, workspaceHeaders);
+    expect(warmed.body.models).toEqual([
+      { id: 'deepseek-v4-flash', label: 'deepseek-v4-flash', enabled: false },
+    ]);
+
+    process.env.FAKE_VELA_BILLING_TIER = 'pro';
+    const upgradedStatus = await getJson<{ account?: { plan?: string } }>(
+      `${baseUrl}/api/integrations/vela/status?refresh=1`,
+    );
+    expect(upgradedStatus.status).toBe(200);
+    expect(upgradedStatus.body.account?.plan).toBe('pro');
+
+    const afterPlanChange = await getJson<{
+      source: 'preset' | 'remote';
+      refreshing?: boolean;
+    }>(`${baseUrl}/api/amr/models`, workspaceHeaders);
     expect(afterPlanChange.status).toBe(200);
     expect(afterPlanChange.body.source).toBe('preset');
     expect(afterPlanChange.body.refreshing).toBe(true);
