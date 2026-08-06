@@ -6,6 +6,7 @@ import {
   isAutosaveDraftOnlyChange,
   hydrateReadyTeamProject,
   mergeAgentModelChoice,
+  mergeAmrModelsIntoAgents,
   persistComposioConfigChange,
   projectViewAuthorizationLifetimeKey,
   projectRouteSurfaceState,
@@ -17,6 +18,7 @@ import {
 } from '../src/App';
 import type { AgentInfo, AppConfig, Project } from '../src/types';
 import type {
+  AmrModelsResponse,
   WorkspaceCollabContext,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
@@ -562,6 +564,70 @@ describe('clearAmrLiveModelsFromAgents', () => {
       },
     ];
     expect(clearAmrLiveModelsFromAgents(fallbackAgents)).toBe(fallbackAgents);
+  });
+});
+
+describe('mergeAmrModelsIntoAgents', () => {
+  const unscopedAgentModels = [
+    { id: 'personal-free-model', label: 'personal-free-model', enabled: true },
+    { id: 'team-only-model', label: 'team-only-model', enabled: false },
+  ];
+  const scopedPresetModels = [
+    { id: 'personal-free-model', label: 'personal-free-model', enabled: true },
+    { id: 'team-only-model', label: 'team-only-model', enabled: true },
+  ];
+  const agents: AgentInfo[] = [
+    {
+      id: 'amr',
+      name: 'AMR',
+      bin: 'vela',
+      available: true,
+      // Non-empty models from headerless `/api/agents` discovery (personal shape).
+      models: unscopedAgentModels,
+      modelsSource: 'fallback',
+    },
+    {
+      id: 'claude',
+      name: 'Claude',
+      bin: 'claude',
+      available: true,
+      models: [{ id: 'claude-sonnet', label: 'claude-sonnet' }],
+    },
+  ];
+
+  it('applies a scoped Path A preset over non-empty unscoped agent models', () => {
+    const scopedPreset: AmrModelsResponse = {
+      source: 'preset',
+      models: scopedPresetModels,
+      refreshing: true,
+    };
+    const next = mergeAmrModelsIntoAgents(agents, scopedPreset);
+    expect(next[0]).toMatchObject({
+      id: 'amr',
+      models: scopedPresetModels,
+      modelsSource: 'live',
+    });
+    expect(next[1]).toEqual(agents[1]);
+  });
+
+  it('applies a remote Path A catalog the same way', () => {
+    const remote: AmrModelsResponse = {
+      source: 'remote',
+      models: scopedPresetModels,
+      refreshing: false,
+    };
+    const next = mergeAmrModelsIntoAgents(agents, remote);
+    expect(next[0]?.models).toEqual(scopedPresetModels);
+    expect(next[0]?.modelsSource).toBe('live');
+  });
+
+  it('leaves agents unchanged when Path A returns no models', () => {
+    expect(mergeAmrModelsIntoAgents(agents, null)).toBe(agents);
+    expect(mergeAmrModelsIntoAgents(agents, {
+      source: 'preset',
+      models: [],
+      refreshing: true,
+    })).toBe(agents);
   });
 });
 

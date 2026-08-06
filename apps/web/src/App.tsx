@@ -461,18 +461,22 @@ export function resolveSettingsCloseConfig(
   return base.onboardingCompleted ? base : { ...base, onboardingCompleted: true };
 }
 
-function mergeAmrModelsIntoAgents(
+/**
+ * Merge Path A (`GET /api/amr/models`) catalog into the AMR agent for the picker.
+ *
+ * Invariant: Path A is the workspace-scoped entitlement authority. Prefer its
+ * models even when `source === "preset"` (remote refresh still pending or
+ * unavailable). Headerless `/api/agents` discovery can return a non-empty
+ * personal catalog for AMR; keeping those agent models on preset would let the
+ * unscoped free/lock shape win on Team workspaces and undo workspace scoping.
+ */
+export function mergeAmrModelsIntoAgents(
   agents: AgentInfo[],
   amrModels: AmrModelsResponse | null,
 ): AgentInfo[] {
   if (!amrModels || amrModels.models.length === 0) return agents;
   return agents.map((agent) => {
     if (agent.id !== 'amr') return agent;
-    const shouldPreferAgentModels =
-      amrModels.source === 'preset' &&
-      Array.isArray(agent.models) &&
-      agent.models.length > 0;
-    if (shouldPreferAgentModels) return agent;
     return { ...agent, models: amrModels.models, modelsSource: 'live' };
   });
 }
