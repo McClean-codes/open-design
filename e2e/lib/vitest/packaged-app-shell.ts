@@ -388,12 +388,12 @@ export async function runPackagedAppShellPhase(options: {
   readonly describeLast?: (value: unknown) => string;
   readonly now?: () => number;
   readonly observe: () => Promise<unknown>;
-  readonly readOnboardingCompleted: () => Promise<boolean>;
+  readonly readOnboardingConfig: () => Promise<unknown>;
   readonly scenario: PackagedLaunchScenario;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly timeoutMs?: number;
 }): Promise<{ appShell: PackagedAppShellState; onboardingCompleted: boolean }> {
-  const onboardingCompleted = await options.readOnboardingCompleted();
+  const onboardingCompleted = packagedOnboardingCompletedFromProbe(await options.readOnboardingConfig());
   // Only a completed-user phase carries a seed to hold across the transition. A
   // first-run phase deliberately has none, so `false` there is the fact under
   // test rather than a loss — which is why the scenario has to be declared by

@@ -613,7 +613,7 @@ winDescribe('packaged windows runtime smoke', () => {
               coreProfile: verifyCoreOnly,
               describeLast: formatUnknown,
               observe: observePackagedAppShell,
-              readOnboardingCompleted: readPackagedOnboardingCompleted,
+              readOnboardingConfig: readPackagedOnboardingConfig,
               scenario: 'first-run',
             }),
           );
@@ -716,7 +716,7 @@ winDescribe('packaged windows runtime smoke', () => {
       // it surface later as an unexplained onboarding screen.
       if (!inspect.desktopIpcUnavailable) {
         seededOnboardingCompleted = await measureSmokeStep(timings, 'verify seeded onboarding config', async () =>
-          readPackagedOnboardingCompleted(),
+          packagedOnboardingCompletedFromProbe(await readPackagedOnboardingConfig()),
         );
         expect(
           seededOnboardingCompleted,
@@ -781,7 +781,7 @@ winDescribe('packaged windows runtime smoke', () => {
             coreProfile: verifyCoreOnly,
             describeLast: formatUnknown,
             observe: observePackagedAppShell,
-            readOnboardingCompleted: readPackagedOnboardingCompleted,
+            readOnboardingConfig: readPackagedOnboardingConfig,
             scenario: 'completed-user',
           }),
         );
@@ -2135,7 +2135,7 @@ async function fetchPackagedHealth(daemonUrl: string): Promise<HealthEvalValue> 
  * seeded start MUST report true, and anything else is a real data-root
  * regression rather than a test-fixture detail.
  */
-async function readPackagedOnboardingCompleted(): Promise<boolean> {
+async function readPackagedOnboardingConfig(): Promise<unknown> {
   const inspect = await runToolsPackJson<WinInspectResult>('inspect', [
     '--expr',
     packagedOnboardingConfigExpression,
@@ -2143,12 +2143,10 @@ async function readPackagedOnboardingCompleted(): Promise<boolean> {
   if (inspect.eval?.ok !== true) {
     throw new PackagedOnboardingConfigError(`the renderer could not evaluate the probe: ${formatUnknown(inspect)}`);
   }
-  // Raises rather than defaulting. There is deliberately no fallback and no
-  // retry: `waitForHealthyDesktop` has already proven this daemon answers
-  // `/api/health` with 200 through the same renderer, so a failure here is a
-  // real fault, and the only fallback value available would be the one that
-  // permits the onboarding landing.
-  return packagedOnboardingCompletedFromProbe(inspect.eval.value);
+  // Returns the raw probe outcome. Interpretation belongs to the scenario, not
+  // to the reader: an absent key means different things to a first run and to a
+  // run that seeded completion.
+  return inspect.eval.value;
 }
 
 /**

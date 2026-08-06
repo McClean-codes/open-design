@@ -543,7 +543,7 @@ describe('packaged launch scenarios', () => {
       coreProfile: true,
       now: clock.now,
       observe: async () => landing,
-      readOnboardingCompleted: async () => false,
+      readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: false, status: 200 }),
       scenario: 'first-run',
       sleep: clock.sleep,
     });
@@ -559,7 +559,7 @@ describe('packaged launch scenarios', () => {
       coreProfile: true,
       now: clock.now,
       observe: async () => home,
-      readOnboardingCompleted: async () => true,
+      readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: true, status: 200 }),
       scenario: 'completed-user',
       sleep: clock.sleep,
     });
@@ -576,7 +576,7 @@ describe('packaged launch scenarios', () => {
         coreProfile: true,
         now: clock.now,
         observe: async () => landing,
-        readOnboardingCompleted: async () => true,
+        readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: true, status: 200 }),
         scenario: 'completed-user',
         sleep: clock.sleep,
       }),
@@ -592,7 +592,7 @@ describe('packaged launch scenarios', () => {
         coreProfile: true,
         now: clock.now,
         observe: async () => landing,
-        readOnboardingCompleted: async () => false,
+        readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: false, status: 200 }),
         scenario: 'completed-user',
         sleep: clock.sleep,
       }),
@@ -608,10 +608,98 @@ describe('packaged launch scenarios', () => {
         coreProfile: true,
         now: clock.now,
         observe: async () => blank,
-        readOnboardingCompleted: async () => false,
+        readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: false, status: 200 }),
         scenario: 'first-run',
         sleep: clock.sleep,
       }),
     ).rejects.toThrow(/neither the home nav rail nor the onboarding cloud sign-in landing rendered/);
+  });
+});
+
+// PerishCode's seventh review on #6481. Round 4 made a missing
+// `onboardingCompleted` fail closed; round 6 then added a scenario that
+// produces exactly that, and they collide. `resetPackagedRuntimeDataRoot()`
+// deletes `app-config.json`; `readAppConfig` returns `{}` on ENOENT and adds
+// only telemetry defaults, so a fresh install's `/api/app-config` OMITS the key
+// rather than reporting `false`. **Absent is not malformed.**
+describe('real fresh-install app-config response', () => {
+  // Byte-shaped like the daemon's actual fresh reply: `readAppConfig` ->
+  // `applyTelemetryDefaults({})`.
+  const FRESH_INSTALL_BODY = { config: { telemetry: { content: true, metrics: true } } };
+
+  const virtualClock = () => {
+    let t = 0;
+    return { now: () => t, sleep: async (ms: number) => { t += ms; } };
+  };
+
+  it('settles a first run whose daemon never wrote the key', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    const result = await runPackagedAppShellPhase({
+      coreProfile: true,
+      now: clock.now,
+      observe: async () => landing,
+      readOnboardingConfig: async () =>
+        evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ body: FRESH_INSTALL_BODY })),
+      scenario: 'first-run',
+      sleep: clock.sleep,
+    });
+
+    expect(result).toEqual({ appShell: 'onboarding-landing', onboardingCompleted: false });
+  });
+
+  it('still fails a completed user whose key went missing', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    await expect(
+      runPackagedAppShellPhase({
+        coreProfile: true,
+        now: clock.now,
+        observe: async () => landing,
+        readOnboardingConfig: async () =>
+          evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ body: FRESH_INSTALL_BODY })),
+        scenario: 'completed-user',
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(PackagedOnboardingSeedError);
+  });
+
+  it('keeps a wrong-typed key a fault even for a first run', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    await expect(
+      runPackagedAppShellPhase({
+        coreProfile: true,
+        now: clock.now,
+        observe: async () => landing,
+        readOnboardingConfig: async () =>
+          evaluatePackagedOnboardingConfigProbe(
+            fakeConfigFetch({ body: { config: { onboardingCompleted: 'false' } } }),
+          ),
+        scenario: 'first-run',
+        sleep: clock.sleep,
+      }),
+    ).rejects.toThrow(PackagedOnboardingConfigError);
+  });
+
+  it('keeps transport and HTTP faults closed for a first run', async () => {
+    const clock = virtualClock();
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    for (const failure of [fakeConfigFetch({ ok: false, status: 500 }), fakeConfigFetch({ throws: true })]) {
+      await expect(
+        runPackagedAppShellPhase({
+          coreProfile: true,
+          now: clock.now,
+          observe: async () => landing,
+          readOnboardingConfig: async () => evaluatePackagedOnboardingConfigProbe(failure),
+          scenario: 'first-run',
+          sleep: clock.sleep,
+        }),
+      ).rejects.toThrow(PackagedOnboardingConfigError);
+    }
   });
 });
