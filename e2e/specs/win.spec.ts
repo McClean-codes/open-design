@@ -20,6 +20,7 @@ import {
   type PackagedAppShellState,
 } from '@/vitest/packaged-app-shell';
 import { createPackagedSmokeReport } from '@/vitest/packaged-report';
+import { resolvePackagedSmokeProfile } from '@/vitest/packaged-smoke-profile';
 import {
   assertPackagedPtySmokeResult,
   packagedPtySmokeExpression,
@@ -40,7 +41,11 @@ const toolsPackDir = resolveFromWorkspace(process.env.OD_PACKAGED_E2E_TOOLS_PACK
 const namespace = resolvePackagedSmokeNamespace('win');
 const toolsPackBin = join(workspaceRoot, 'tools', 'pack', 'bin', 'tools-pack.mjs');
 const maxInstallDurationMs = Number.parseInt(process.env.OD_PACKAGED_E2E_WIN_MAX_INSTALL_MS ?? '120000', 10);
-const smokeProfile = process.env.OD_PACKAGED_E2E_WIN_SMOKE_PROFILE ?? 'core';
+// `??` would keep an EMPTY value, and the release workflows can hand one down
+// — see `resolvePackagedSmokeProfile` for why all three layers have to agree
+// that empty means unset. An empty value surviving here reads as "not core"
+// and silently selects the updater path.
+const smokeProfile = resolvePackagedSmokeProfile(process.env.OD_PACKAGED_E2E_WIN_SMOKE_PROFILE);
 const verifyCoreOnly = smokeProfile === 'core';
 const verifyReinstallWhileRunning = !verifyCoreOnly && process.env.OD_PACKAGED_E2E_WIN_VERIFY_REINSTALL !== '0';
 const verifyUpgradePersistence =
