@@ -91,7 +91,8 @@ const EXTERNAL_PLUGIN_RUN_HINT_KEYS = new Set([
 ]);
 const EXTERNAL_PLUGIN_RUN_RESERVED_KEY =
   /^(?:entrySurface|hostProduct|externalPlugin|distributionMechanism|publisherClass|attributionQuality|pluginWorkflow|logicalRequest|generationSlo)/u;
-const VERSION_PATTERN = /^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z.-]+)?$/u;
+const PLUGIN_VERSION_PATTERN =
+  /^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/u;
 const WORKFLOW_ID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26})$/iu;
 
@@ -99,6 +100,12 @@ export function pluginContractError(message: string): Error {
   const error = new Error(`PLUGIN_CONTRACT_REJECTED: ${message}`);
   Object.assign(error, { code: 'PLUGIN_CONTRACT_REJECTED' });
   return error;
+}
+
+export function isBoundedPluginVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= 64
+    && PLUGIN_VERSION_PATTERN.test(value);
 }
 
 export function validateExternalPluginContext(
@@ -118,9 +125,7 @@ export function validateExternalPluginContext(
     );
   }
   if (
-    typeof input.version !== 'string'
-    || !VERSION_PATTERN.test(input.version)
-    || input.version.length > 64
+    !isBoundedPluginVersion(input.version)
   ) {
     throw pluginContractError('version must be a bounded semver string');
   }

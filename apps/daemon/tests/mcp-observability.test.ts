@@ -34,6 +34,12 @@ describe('local MCP plugin observability contract', () => {
 
   it('accepts the bounded Open Design context and rejects extra or secret fields', () => {
     expect(validateExternalPluginContext(pluginContext)).toEqual(pluginContext);
+    expect(validateExternalPluginContext({
+      ...pluginContext,
+      version: '0.1.0-beta.5+codex.local-20260806-045500',
+    })).toMatchObject({
+      version: '0.1.0-beta.5+codex.local-20260806-045500',
+    });
 
     expect(() => validateExternalPluginContext({
       ...pluginContext,
@@ -53,6 +59,11 @@ describe('local MCP plugin observability contract', () => {
         telemetrySchemaVersion: 2,
       }),
     ).toThrow(/PLUGIN_CONTRACT_REJECTED/u);
+
+    expect(() => validateExternalPluginContext({
+      ...pluginContext,
+      version: '0.1.0+codex.local+invalid',
+    })).toThrow(/PLUGIN_CONTRACT_REJECTED/u);
   });
 
   it('issues plugin workflow ids server-side and rejects caller-created ids', () => {

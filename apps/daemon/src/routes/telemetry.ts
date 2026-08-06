@@ -17,6 +17,7 @@ import { readCurrentAppVersionInfo } from '../app-version.js';
 import { reportRunFeedbackFromDaemon } from '../langfuse-bridge.js';
 import { observePendingInstallerApplyAttempts } from '../migration/index.js';
 import {
+  isBoundedPluginVersion,
   OPEN_DESIGN_PLUGIN_ID,
 } from '../mcp-observability.js';
 
@@ -384,7 +385,6 @@ const UUID_OR_ULID_PATTERN =
   /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26})$/iu;
 const BOUNDED_TOKEN_PATTERN = /^[A-Za-z0-9_.:-]{1,128}$/u;
 const ERROR_CODE_PATTERN = /^[A-Z0-9_]{1,64}$/u;
-const SEMVER_PATTERN = /^[0-9]+(?:\.[0-9]+){2}(?:-[0-9A-Za-z.-]+)?$/u;
 const DIGEST_PATTERN = /^[0-9a-f]{64}$/u;
 
 function invalidMcpAnalytics(message: string): never {
@@ -468,11 +468,9 @@ export function validateMcpAnalyticsEventProperties(
       invalidMcpAnalytics('external_plugin_id is invalid');
     }
     if (properties.external_plugin_version !== undefined) {
-      requireMcpString(
-        properties,
-        'external_plugin_version',
-        SEMVER_PATTERN,
-      );
+      if (!isBoundedPluginVersion(properties.external_plugin_version)) {
+        invalidMcpAnalytics('external_plugin_version is invalid');
+      }
     }
     requireMcpEnum(
       properties,

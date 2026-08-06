@@ -119,6 +119,9 @@ describe('local MCP telemetry privacy boundary', () => {
     expect(validateMcpAnalyticsEventProperties('mcp_tool_finished', {
       mcp_session_id: '018f6f2e-1111-7111-8111-111111111111',
       host_product: 'codex_unknown',
+      attribution_quality: 'session_correlated',
+      external_plugin_id: 'open-design',
+      external_plugin_version: '0.1.0+codex.local-20260806-045500',
       tool_name: 'start_run',
       tool_attempt_id: '018f6f2e-2222-7222-8222-222222222222',
       attempt_number: 1,
@@ -133,6 +136,7 @@ describe('local MCP telemetry privacy boundary', () => {
     })).toMatchObject({
       result: 'failed',
       duration_ms: 123,
+      external_plugin_version: '0.1.0+codex.local-20260806-045500',
     });
 
     expect(() => validateMcpAnalyticsEventProperties('mcp_tool_finished', {
