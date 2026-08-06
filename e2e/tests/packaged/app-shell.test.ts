@@ -258,6 +258,37 @@ describe('packaged app-shell policy', () => {
     expect(packagedAppShellFailureReason(landing, policy)).toContain('needs home');
   });
 
+  // Swept alongside the probe fix: both of these read their input for
+  // truthiness, so anything that is not a real boolean falls through to the
+  // permissive branch. TypeScript forbids it today and the sole producer is
+  // validated, but the closed direction should be structural rather than
+  // dependent on a caller staying honest — only an explicit `false` may buy
+  // permission.
+  it('requires home for any onboarding reading that is not an explicit false', () => {
+    for (const daemonOnboardingCompleted of [undefined, null, '', 0, NaN, 'false']) {
+      expect(
+        packagedAppShellPolicy({
+          coreProfile: true,
+          daemonOnboardingCompleted: daemonOnboardingCompleted as unknown as boolean,
+        }),
+        `reading ${JSON.stringify(daemonOnboardingCompleted)}`,
+      ).toEqual({ acceptOnboardingLanding: false });
+    }
+  });
+
+  it('requires an explicit permission before accepting the landing', () => {
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+
+    for (const acceptOnboardingLanding of [undefined, null, 1, 'yes']) {
+      expect(
+        packagedAppShellSettled(landing, {
+          acceptOnboardingLanding: acceptOnboardingLanding as unknown as boolean,
+        }),
+        `permission ${JSON.stringify(acceptOnboardingLanding)}`,
+      ).toBe(false);
+    }
+  });
+
   it('lets an unseeded run settle on the landing', () => {
     const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
     const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false });

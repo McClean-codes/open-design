@@ -144,10 +144,24 @@ const PACKAGED_ONBOARDING_CONFIG_PROBE = `
       if (!response.ok) return { error: 'daemon returned HTTP ' + status, ok: false, status };
       const body = await response.json();
       const config = body == null ? null : body.config;
-      if (config == null || typeof config !== 'object') {
+      if (config == null || typeof config !== 'object' || Array.isArray(config)) {
         return { error: 'daemon response carried no config object', ok: false, status };
       }
-      return { ok: true, onboardingCompleted: config.onboardingCompleted === true, status };
+      // Require the type before reading it. Coercing here (\`x === true\`) would
+      // manufacture a boolean out of a missing key, a null, or the string
+      // "false" — and the manufactured value is \`false\`, which is exactly the
+      // reading that permits the onboarding landing. "The daemon did not tell
+      // me" must never arrive as "the daemon told me false".
+      if (typeof config.onboardingCompleted !== 'boolean') {
+        return {
+          error: 'daemon config carried no boolean onboardingCompleted (got '
+            + (config.onboardingCompleted === undefined ? 'undefined' : typeof config.onboardingCompleted)
+            + ')',
+          ok: false,
+          status,
+        };
+      }
+      return { ok: true, onboardingCompleted: config.onboardingCompleted, status };
     } catch (error) {
       return {
         error: error instanceof Error ? error.message : String(error),
@@ -254,8 +268,12 @@ export type PackagedAppShellPolicyInput = {
 export function packagedAppShellPolicy(
   input: PackagedAppShellPolicyInput,
 ): { readonly acceptOnboardingLanding: boolean } {
-  if (input.daemonOnboardingCompleted) return { acceptOnboardingLanding: false };
-  return { acceptOnboardingLanding: input.coreProfile };
+  // Only an explicit `false` — a daemon that positively said "not completed" —
+  // buys permission. Testing for truthiness instead would let any non-boolean
+  // that leaked past the type fall through to the permissive branch, which is
+  // the same shape of defect as coercing the reading in the first place.
+  if (input.daemonOnboardingCompleted !== false) return { acceptOnboardingLanding: false };
+  return { acceptOnboardingLanding: input.coreProfile === true };
 }
 
 /**
@@ -270,7 +288,8 @@ export function packagedAppShellSettled(
 ): boolean {
   const state = packagedAppShellState(value);
   if (state === 'home') return true;
-  return state === 'onboarding-landing' && options.acceptOnboardingLanding;
+  // Explicit permission only, for the same reason as `packagedAppShellPolicy`.
+  return state === 'onboarding-landing' && options.acceptOnboardingLanding === true;
 }
 
 /**
