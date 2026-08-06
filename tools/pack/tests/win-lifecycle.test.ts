@@ -14,7 +14,9 @@ const listProcessSnapshots = vi.hoisted(() =>
 const matchesStampedProcess = vi.hoisted(() =>
   vi.fn<typeof import("@open-design/platform").matchesStampedProcess>(() => false),
 );
-const spawnBackgroundProcess = vi.hoisted(() => vi.fn(async () => ({ pid: 12345 })));
+const spawnBackgroundProcess = vi.hoisted(() =>
+  vi.fn(async (_request: { env?: NodeJS.ProcessEnv }) => ({ pid: 12345 })),
+);
 const stopProcesses = vi.hoisted(() => vi.fn(async () => undefined));
 const invokeNsis = vi.hoisted(() => vi.fn<typeof import("../src/win/nsis.js").invokeNsis>());
 const queryWinRegistryEntries = vi.hoisted(() =>
