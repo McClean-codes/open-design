@@ -698,7 +698,6 @@ describe('resolveAmrModelsCatalogScope', () => {
       projectId: 'proj-a',
       activeProject: { id: 'proj-a', workspaceId: 'ws-a' },
       activeProjectWorkspaceContext: workspaceA,
-      projectRouteLoading: false,
       ambientWorkspaceContext: workspaceB,
       identityChangePending: false,
       accountGeneration: 3,
@@ -717,7 +716,6 @@ describe('resolveAmrModelsCatalogScope', () => {
       routeKind: 'home',
       activeProject: null,
       activeProjectWorkspaceContext: null,
-      projectRouteLoading: false,
       ambientWorkspaceContext: workspaceB,
       identityChangePending: false,
       accountGeneration: 1,
@@ -731,7 +729,6 @@ describe('resolveAmrModelsCatalogScope', () => {
       routeKind: 'home',
       activeProject: null,
       activeProjectWorkspaceContext: null,
-      projectRouteLoading: false,
       ambientWorkspaceContext: workspaceA,
       identityChangePending: true,
       accountGeneration: 4,
@@ -746,13 +743,12 @@ describe('resolveAmrModelsCatalogScope', () => {
     ]));
   });
 
-  it('stays pending while a project-bound workspace authority is still loading', () => {
+  it('stays pending while a project-bound workspace authority is still unresolved', () => {
     const scope = resolveAmrModelsCatalogScope({
       routeKind: 'project',
       projectId: 'proj-a',
       activeProject: { id: 'proj-a', workspaceId: 'ws-a' },
       activeProjectWorkspaceContext: null,
-      projectRouteLoading: true,
       ambientWorkspaceContext: workspaceB,
       identityChangePending: false,
       accountGeneration: 2,
@@ -765,5 +761,35 @@ describe('resolveAmrModelsCatalogScope', () => {
       'proj-a',
       'ws-a',
     ]));
+  });
+
+  it('stays pending when a bound project workspace lookup settles without exact context', () => {
+    // forbidden / unavailable leave context null after loading finishes.
+    // Catalog must not fall through to a headerless personal fetch.
+    const scope = resolveAmrModelsCatalogScope({
+      routeKind: 'project',
+      projectId: 'proj-a',
+      activeProject: { id: 'proj-a', workspaceId: 'ws-a' },
+      activeProjectWorkspaceContext: null,
+      ambientWorkspaceContext: workspaceB,
+      identityChangePending: false,
+      accountGeneration: 2,
+    });
+    expect(scope.pending).toBe(true);
+    expect(scope.context).toBeNull();
+  });
+
+  it('allows unscoped personal catalog for projects without a pinned workspace', () => {
+    const scope = resolveAmrModelsCatalogScope({
+      routeKind: 'project',
+      projectId: 'proj-personal',
+      activeProject: { id: 'proj-personal', workspaceId: null },
+      activeProjectWorkspaceContext: null,
+      ambientWorkspaceContext: workspaceB,
+      identityChangePending: false,
+      accountGeneration: 1,
+    });
+    expect(scope.pending).toBe(false);
+    expect(scope.context).toBeNull();
   });
 });

@@ -314,6 +314,19 @@ describe('GET /api/amr/models workspace scope', () => {
     expect(dump.VELA_WORKSPACE_ID).toBe('ws-team-pro');
     expect(dump.args.slice(0, 2)).toEqual(['model', 'list']);
   });
+
+  it('rejects malformed x-od-workspace-id before probing or caching', async () => {
+    seedLogin('local');
+    amrModelLoadingCacheReset();
+    const dumpPath = path.join(tmpHome, 'model-list-invalid-env.json');
+    process.env.FAKE_VELA_MODEL_LIST_ENV_DUMP = dumpPath;
+    const response = await getJson<{ error: string }>(`${baseUrl}/api/amr/models`, {
+      'x-od-workspace-id': '../not a workspace!',
+    });
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'invalid_workspace_id' });
+    expect(existsSync(dumpPath)).toBe(false);
+  });
 });
 
 describe('GET /api/integrations/vela/wallet', () => {

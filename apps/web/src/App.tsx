@@ -519,7 +519,6 @@ export function resolveAmrModelsCatalogScope(input: {
   projectId?: string | null;
   activeProject: { id: string; workspaceId?: string | null } | null;
   activeProjectWorkspaceContext: WorkspaceCollabContext | null;
-  projectRouteLoading: boolean;
   ambientWorkspaceContext: WorkspaceCollabContext | null;
   identityChangePending: boolean;
   accountGeneration: number;
@@ -532,6 +531,11 @@ export function resolveAmrModelsCatalogScope(input: {
   const context = onProjectRoute
     ? input.activeProjectWorkspaceContext
     : input.ambientWorkspaceContext;
+  // Fail closed for workspace-bound projects: a null exact context is always
+  // unresolved (still loading, forbidden, or unavailable). Never fall through
+  // to a headerless personal-catalog fetch while the pinned workspace is
+  // unknown — that would let Settings show/persist models the project cannot
+  // use once authority recovers.
   const pending =
     input.identityChangePending
     || (onProjectRoute && input.activeProject == null)
@@ -539,7 +543,6 @@ export function resolveAmrModelsCatalogScope(input: {
       onProjectRoute
       && Boolean(input.activeProject?.workspaceId?.trim())
       && input.activeProjectWorkspaceContext == null
-      && input.projectRouteLoading
     );
   const identity = JSON.stringify(
     pending
@@ -4196,7 +4199,6 @@ function AppInner() {
     projectId: route.kind === 'project' ? route.projectId : null,
     activeProject,
     activeProjectWorkspaceContext,
-    projectRouteLoading: projectRouteWorkspaceContext.loading,
     ambientWorkspaceContext: workspaceContext,
     identityChangePending: workspaceContextState.identityChangePending === true,
     accountGeneration: workspaceAccountGeneration,

@@ -511,6 +511,14 @@ export function registerVelaRoutes(app: Express, deps: RegisterVelaRoutesDeps): 
       // other workspace surface uses. Fall back to no scope only for legacy
       // headerless callers; that keeps personal-default Link behavior.
       const workspaceId = headerValue(req, 'x-od-workspace-id');
+      // Reject malformed workspace ids before they enter AmrModelLoadingCache
+      // or spawn `vela model list`. Per-key cache states have no age eviction;
+      // unbounded header values would otherwise create persistent entries and
+      // subprocess work. Same pattern as the AMR API proxy boundary above.
+      if (workspaceId !== null && !VELA_WORKSPACE_ID_PATTERN.test(workspaceId)) {
+        res.status(400).json({ error: 'invalid_workspace_id' });
+        return;
+      }
       const probe = await resolveAmrModelProbe(workspaceId);
       const response = await amrModelLoadingCache.get(probe.cacheKey, {
         fetchPreset: () => fetchVelaPresetModels(probe.launchPath, probe.env),
