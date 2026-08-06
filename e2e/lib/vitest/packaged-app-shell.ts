@@ -138,12 +138,23 @@ export function packagedAppShellState(value: unknown): PackagedAppShellState | n
  */
 const PACKAGED_ONBOARDING_CONFIG_PROBE = `
   (async (fetchImpl) => {
-    const response = await fetchImpl('/api/app-config');
-    const body = response.ok ? await response.json() : null;
-    return {
-      onboardingCompleted: body?.config?.onboardingCompleted === true,
-      status: response.status,
-    };
+    try {
+      const response = await fetchImpl('/api/app-config');
+      const status = typeof response.status === 'number' ? response.status : null;
+      if (!response.ok) return { error: 'daemon returned HTTP ' + status, ok: false, status };
+      const body = await response.json();
+      const config = body == null ? null : body.config;
+      if (config == null || typeof config !== 'object') {
+        return { error: 'daemon response carried no config object', ok: false, status };
+      }
+      return { ok: true, onboardingCompleted: config.onboardingCompleted === true, status };
+    } catch (error) {
+      return {
+        error: error instanceof Error ? error.message : String(error),
+        ok: false,
+        status: null,
+      };
+    }
   })
 `;
 
@@ -184,11 +195,31 @@ export class PackagedOnboardingConfigError extends Error {
  */
 export function packagedOnboardingCompletedFromProbe(value: unknown): boolean {
   if (typeof value !== 'object' || value == null || Array.isArray(value)) {
-    throw new PackagedOnboardingConfigError(`probe returned no result (${JSON.stringify(value) ?? 'undefined'})`);
+    throw new PackagedOnboardingConfigError(
+      `the probe returned no result (${JSON.stringify(value) ?? 'undefined'})`,
+    );
   }
   const candidate = value as Record<string, unknown>;
+  const status = typeof candidate.status === 'number' ? candidate.status : null;
+  const reason = typeof candidate.error === 'string' ? candidate.error : null;
+
+  // `status` is load-bearing, not decorative: only a 200 that actually carried a
+  // config object may produce a reading. Everything else — a transport failure,
+  // a non-2xx, a body without `config` — is an unestablished fact and must
+  // raise, because the only alternative reading (`false`) is precisely the one
+  // that would permit the onboarding landing.
+  if (candidate.ok !== true) {
+    throw new PackagedOnboardingConfigError(
+      `${reason ?? 'the probe reported failure'} (status=${status ?? 'none'})`,
+    );
+  }
+  if (status !== 200) {
+    throw new PackagedOnboardingConfigError(`the daemon answered with status=${status ?? 'none'}`);
+  }
   if (typeof candidate.onboardingCompleted !== 'boolean') {
-    throw new PackagedOnboardingConfigError(`probe returned no reading (${JSON.stringify(candidate)})`);
+    throw new PackagedOnboardingConfigError(
+      `the daemon answered 200 without a usable reading (${JSON.stringify(candidate)})`,
+    );
   }
   return candidate.onboardingCompleted;
 }

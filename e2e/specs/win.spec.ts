@@ -16,6 +16,9 @@ import {
   packagedAppShellPolicy,
   packagedAppShellSettled,
   packagedAppShellState,
+  PackagedOnboardingConfigError,
+  packagedOnboardingCompletedFromProbe,
+  packagedOnboardingConfigExpression,
   type PackagedAppShellState,
 } from '@/vitest/packaged-app-shell';
 import { createPackagedSmokeReport } from '@/vitest/packaged-report';
@@ -239,20 +242,6 @@ const clickUpdaterRailExpression = `
     if (button.getAttribute('aria-disabled') === 'true') return { clicked: false, hostStatus, reason: 'updater-rail-disabled' };
     button.click();
     return { clicked: true, hostStatus };
-  })()
-`;
-// The daemon's own view of onboarding completion, read through the production
-// HTTP path from the packaged renderer. `GET /api/app-config` serves
-// `readAppConfig(RUNTIME_DATA_DIR)`, so this reports what the running daemon
-// resolved — not what the seed hoped it wrote.
-const packagedOnboardingCompletedExpression = `
-  (async () => {
-    const response = await fetch('/api/app-config');
-    const body = response.ok ? await response.json() : null;
-    return {
-      onboardingCompleted: body?.config?.onboardingCompleted === true,
-      status: response.status,
-    };
   })()
 `;
 const packagedOnboardingExpression = `
@@ -2098,13 +2087,17 @@ async function fetchPackagedHealth(daemonUrl: string): Promise<HealthEvalValue> 
 async function readPackagedOnboardingCompleted(): Promise<boolean> {
   const inspect = await runToolsPackJson<WinInspectResult>('inspect', [
     '--expr',
-    packagedOnboardingCompletedExpression,
+    packagedOnboardingConfigExpression,
   ]);
-  const value = inspect.eval?.value;
-  if (!isRecord(value) || typeof value.onboardingCompleted !== 'boolean') {
-    throw new Error(`packaged windows daemon did not report app config: ${formatUnknown(inspect)}`);
+  if (inspect.eval?.ok !== true) {
+    throw new PackagedOnboardingConfigError(`the renderer could not evaluate the probe: ${formatUnknown(inspect)}`);
   }
-  return value.onboardingCompleted;
+  // Raises rather than defaulting. There is deliberately no fallback and no
+  // retry: `waitForHealthyDesktop` has already proven this daemon answers
+  // `/api/health` with 200 through the same renderer, so a failure here is a
+  // real fault, and the only fallback value available would be the one that
+  // permits the onboarding landing.
+  return packagedOnboardingCompletedFromProbe(inspect.eval.value);
 }
 
 /**
