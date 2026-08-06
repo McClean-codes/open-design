@@ -47,15 +47,21 @@ const NEWLINE_BYTE = 0x0a;
  *
  * `data` must start ONE byte before the intended cut (the guard byte): when
  * that byte is a newline the cut already begins a fresh line and only the
- * guard byte is dropped, so an aligned cut never loses a complete line. When
- * the window contains no newline at all (one pathological giant line), the
- * raw cut is kept — half a line beats an empty file.
+ * guard byte is dropped, so an aligned cut never loses a complete line.
+ *
+ * Returns null when NO complete line fits in the window — a single record
+ * longer than the whole tail budget, so there is nothing to align to. The
+ * bytes there are the interior of one record; exporting them would put a
+ * fragment on line 1, which is precisely the breakage this alignment exists
+ * to prevent. The caller surfaces that as an unreadable source instead, so
+ * the bundle explains the omission rather than shipping half a JSON object
+ * that dies in the consumer's parser.
  */
-function alignTailToLineStart(data: Buffer): Buffer {
+function alignTailToLineStart(data: Buffer): Buffer | null {
   if (data.length === 0) return data;
   if (data[0] === NEWLINE_BYTE) return data.subarray(1);
   const firstNewline = data.indexOf(NEWLINE_BYTE);
-  if (firstNewline === -1 || firstNewline + 1 >= data.length) return data.subarray(1);
+  if (firstNewline === -1 || firstNewline + 1 >= data.length) return null;
   return data.subarray(firstNewline + 1);
 }
 
@@ -80,6 +86,13 @@ async function readMaybeTail(absolutePath: string, tailBytes: number | undefined
     const buffer = Buffer.alloc(tailBytes + 1);
     const { bytesRead } = await fd.read(buffer, 0, tailBytes + 1, start);
     const aligned = alignTailToLineStart(buffer.subarray(0, bytesRead));
+    if (aligned === null) {
+      throw new Error(
+        `no complete line fits the ${tailBytes}-byte tail window (the trailing ` +
+          `record is larger than the cap); omitted rather than exporting a ` +
+          `partial record`,
+      );
+    }
     return { text: aligned.toString("utf8"), bytes: aligned.byteLength };
   } finally {
     await fd.close();

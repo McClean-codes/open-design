@@ -105,12 +105,25 @@ export const STANDALONE_LAUNCH_WARNING =
   "file-based logs are not captured. Re-run via `pnpm tools-dev` or the packaged " +
   "desktop app to include daemon/web/desktop log files in the bundle.";
 
-async function pathExists(path: string): Promise<boolean> {
+/**
+ * Whether an optional log source should be listed at all.
+ *
+ * ENOENT is the ordinary "this launcher never produced one" answer and must
+ * drop the entry silently — tools-dev appends to latest.log and never rotates,
+ * so listing a phantom would stamp a placeholder into every dev bundle.
+ *
+ * Any OTHER access failure means the file is THERE but unreachable (EACCES on
+ * the log directory, EIO, ENOTDIR). Treating that as absence would make the
+ * one log that explains an incident vanish without a word, so the source stays
+ * listed and `collectLogSource` records the real error — a bundle that says
+ * "unreadable, here is why" beats a bundle that quietly says nothing.
+ */
+async function shouldListOptionalSource(path: string): Promise<boolean> {
   try {
     await access(path);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | null)?.code !== "ENOENT";
   }
 }
 
@@ -151,7 +164,7 @@ async function buildSidecarLogSources(
     // noise into every dev bundle — the same reason renderer.log stays
     // desktop-only above.
     const previousLogPath = `${dirname(absolutePath)}/previous.log`;
-    if (await pathExists(previousLogPath)) {
+    if (await shouldListOptionalSource(previousLogPath)) {
       sources.push({
         name: `logs/${app}/previous.log`,
         absolutePath: previousLogPath,

@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -229,6 +229,61 @@ describe('diagnostics export handler — packaged (runtime) layout', () => {
     }
   });
 
+  // "Absent" and "unreadable" are different answers and the bundle must not
+  // conflate them. A rotated log that EXISTS but cannot be accessed (EACCES on
+  // the log directory, an I/O error) previously fell into the same silent
+  // omission as first-launch ENOENT, so the one file that would explain an
+  // incident vanished with no warning. The collector already models unreadable
+  // sources; only a genuine ENOENT may drop the entry.
+  // Permission bits do not deny root and do not translate on Windows.
+  const skipPermissionTest =
+    process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0);
+  it.skipIf(skipPermissionTest)(
+    'records an unreadable rotated log as an error instead of silently dropping it',
+    async () => {
+      const root = join(tmpdir(), `od-diag-prevdenied-${randomUUID()}`);
+      const namespaceRoot = join(root, 'namespaces', 'release-stable');
+      const daemonLogDir = join(namespaceRoot, 'logs', APP_KEYS.DAEMON);
+      try {
+        await mkdir(daemonLogDir, { recursive: true });
+        await writeFile(join(daemonLogDir, 'latest.log'), 'fresh session line\n', 'utf8');
+        await writeFile(join(daemonLogDir, 'previous.log'), 'pre-restart incident\n', 'utf8');
+        // Deny directory traversal: previous.log still EXISTS, but access() and
+        // any read of it now fail with EACCES rather than ENOENT.
+        await chmod(daemonLogDir, 0o000);
+
+        const runtime: SidecarRuntimeContext<SidecarStamp> = {
+          app: APP_KEYS.DAEMON,
+          base: join(namespaceRoot, 'runtime'),
+          ipc: '/tmp/od-diag-prevdenied.sock',
+          mode: SIDECAR_MODES.RUNTIME,
+          namespace: 'release-stable',
+          source: SIDECAR_SOURCES.PACKAGED,
+        };
+
+        const handler = createDiagnosticsExportHandler({ runtime, projectRoot: '/tmp/test-project' });
+        const res = mockResponse();
+        await handler({} as never, res as never, () => undefined);
+
+        expect(res.capturedStatus).toBe(200);
+        const zip = await JSZip.loadAsync(res.capturedPayload!);
+        const manifest = JSON.parse(await zip.file('summary/manifest.json')!.async('string')) as {
+          files: { name: string; error?: string }[];
+          warnings: string[];
+        };
+        const previousFile = manifest.files.find((f) => f.name === 'logs/daemon/previous.log');
+        expect(previousFile).toBeDefined();
+        expect(previousFile?.error).toBeTruthy();
+        expect(
+          manifest.warnings.some((w) => w.startsWith('logs/daemon/previous.log:')),
+        ).toBe(true);
+      } finally {
+        await chmod(daemonLogDir, 0o700).catch(() => undefined);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it('reports missing packaged log files under logical log paths without duplicating runtime segments', async () => {
     const root = join(tmpdir(), `od-diag-missing-${randomUUID()}`);
     const namespaceRoot = join(root, 'namespaces', 'release-beta');
@@ -453,6 +508,53 @@ describe('diagnostics export handler — run event logs', () => {
       expect(() => JSON.parse(firstLine)).not.toThrow();
       const parsed = JSON.parse(firstLine) as { seq: string };
       expect(Number(parsed.seq)).toBeGreaterThan(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // The pathological end of the same contract: ONE event larger than the whole
+  // 2 MiB tail budget. No complete line fits in the window at all, so there is
+  // nothing to align to — and shipping the middle of that record would put a
+  // JSON fragment on line 1, exactly the breakage line alignment exists to
+  // prevent. The bundle must say the file was omitted instead of quietly
+  // exporting half an object.
+  it('omits an event record larger than the tail cap instead of exporting a fragment', async () => {
+    const root = join(tmpdir(), `od-diag-giant-${randomUUID()}`);
+    const runsDir = join(root, 'runs');
+    const runLogPath = join(runsDir, 'run-giant', 'events.jsonl');
+    try {
+      await mkdir(dirname(runLogPath), { recursive: true });
+      // A single record comfortably past the 2 MiB cap, so the tail window
+      // holds only the interior of this one line.
+      const giant = `{"seq":"000000","pad":"${'a'.repeat(2 * 1024 * 1024 + 64)}"}\n`;
+      await writeFile(runLogPath, giant, 'utf8');
+
+      const handler = createDiagnosticsExportHandler({
+        runtime: null,
+        projectRoot: '/tmp/test-project',
+        runsDir,
+      });
+      const res = mockResponse();
+      await handler({} as never, res as never, () => undefined);
+
+      expect(res.capturedStatus).toBe(200);
+      const zip = await JSZip.loadAsync(res.capturedPayload!);
+      const runEntry = zip.file('runs/run-giant/events.jsonl');
+      expect(runEntry).not.toBeNull();
+      const content = await runEntry!.async('string');
+
+      // Never a bare fragment of the record.
+      expect(content.startsWith('; file unavailable: ')).toBe(true);
+      expect(content).not.toContain('"pad":"aaa');
+
+      // ...and the bundle explains itself rather than losing the file silently.
+      const manifest = JSON.parse(await zip.file('summary/manifest.json')!.async('string')) as {
+        warnings: string[];
+      };
+      expect(
+        manifest.warnings.some((w) => w.startsWith('runs/run-giant/events.jsonl:')),
+      ).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
