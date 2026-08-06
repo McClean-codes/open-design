@@ -79,5 +79,13 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     console.log("share_click", JSON.stringify(record));
   }
 
-  return Response.redirect(destination, 302);
+  // Pages Functions do not receive custom `_headers` rules, so no-store must
+  // be set on the response itself or a POP can cache the 302.
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: destination,
+      "Cache-Control": "no-store",
+    },
+  });
 };

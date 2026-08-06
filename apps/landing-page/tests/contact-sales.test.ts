@@ -106,6 +106,23 @@ const ENTERPRISE_OK = {
 // so it submits the identical contract — only `source` differs.
 const PRICING_TEAM_OK = { ...ENTERPRISE_OK, source: "pricing_team" };
 
+describe("contact-sales response headers", () => {
+  it("sets Cache-Control: no-store on JSON responses (Pages Functions ignore _headers)", async () => {
+    const request = new Request("https://open-design.ai/contact-sales", {
+      method: "GET",
+      headers: { origin: "https://open-design.ai" },
+    });
+    const response = await onRequest({
+      request,
+      env: {},
+      waitUntil() {},
+    } as unknown as Parameters<typeof onRequest>[0]);
+
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  });
+});
+
 describe("contact-sales validation", () => {
   it("rejects a missing or invalid email on every source", async () => {
     assert.equal((await call({ ...ENTERPRISE_OK, email: "" })).body.error, "invalid_email");

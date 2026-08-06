@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { __newsletterSubscribeTest } from "../functions/subscribe.ts";
+import { __newsletterSubscribeTest, onRequest } from "../functions/subscribe.ts";
 
 type TestKv = {
   put(key: string, value: string): Promise<void>;
@@ -65,6 +65,22 @@ function createEnv(kv: TestKv) {
     RESEND_NEWSLETTER_SEGMENT_ID: "segment-id",
   };
 }
+
+describe("newsletter subscribe response headers", () => {
+  it("sets Cache-Control: no-store on JSON responses (Pages Functions ignore _headers)", async () => {
+    const response = await onRequest({
+      request: new Request("https://open-design.ai/subscribe", {
+        method: "GET",
+        headers: { origin: "https://open-design.ai" },
+      }),
+      env: {},
+      waitUntil() {},
+    });
+
+    assert.equal(response.status, 405);
+    assert.equal(response.headers.get("Cache-Control"), "no-store");
+  });
+});
 
 describe("newsletter subscribe welcome email", () => {
   it("allows packaged desktop app requests from the od protocol", () => {

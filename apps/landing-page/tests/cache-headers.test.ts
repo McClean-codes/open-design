@@ -88,10 +88,13 @@ describe('landing-page Cloudflare Pages cache headers', () => {
     }
   });
 
-  it('keeps hashed assets immutable and mutating functions uncached', async () => {
+  it('keeps hashed assets immutable and machine-readable static files short-TTL', async () => {
     const source = await readFile(HEADERS_PATH, 'utf8');
     const rules = parseHeadersFile(source);
 
+    // This file only governs static Pages responses. Pages Functions generate
+    // their own headers; do not assert Function paths here (CF does not apply
+    // custom `_headers` rules to Function responses).
     assert.equal(
       cacheControl(rules.get('/_astro/*') ?? []),
       'public, max-age=31536000, immutable',
@@ -100,14 +103,6 @@ describe('landing-page Cloudflare Pages cache headers', () => {
       cacheControl(rules.get('/enhancers/*') ?? []),
       'public, max-age=31536000, immutable',
     );
-
-    for (const path of ['/share/*', '/subscribe', '/contact-sales']) {
-      assert.equal(
-        cacheControl(rules.get(path) ?? []),
-        'no-store',
-        `${path} must never be cached`,
-      );
-    }
 
     const plans = rules.get('/pricing/plans.json') ?? [];
     assert.ok(
