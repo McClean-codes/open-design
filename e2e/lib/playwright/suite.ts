@@ -7,8 +7,8 @@ import {
   PLAYWRIGHT_TOOLS_DEV_FIXTURE_TIMEOUT_MS,
   warmPlaywrightWebRuntime,
 } from './runtime-lifecycle.ts';
+import { routeUnavailableVelaStatus } from './mock-factory.ts';
 import { resolvePlaywrightSlotNamespace } from './runtime-identity.ts';
-import { routeSignedInVela } from './mock-factory.ts';
 import { createToolsDevSuite, e2eWorkspaceRoot } from '../tools-dev/runtime.ts';
 import type { ToolsDevSuite } from '../tools-dev/types.ts';
 
@@ -17,7 +17,7 @@ type PlaywrightToolsDevSuite = ToolsDevSuite & {
 };
 
 type TestFixtures = {
-  _defaultCloudIdentity: void;
+  _defaultCloudStatus: void;
   _toolsDevFailureTracker: void;
 };
 
@@ -72,13 +72,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   },
 
   // Most UI specs exercise Home or Workspace behavior, not authentication.
-  // Give them a deterministic signed-in identity so the Cloud-first entry
-  // gate cannot redirect unrelated tests. Auth/onboarding specs register their
-  // own status route in beforeEach/test setup, which Playwright gives priority
-  // because it was registered later.
-  _defaultCloudIdentity: [
+  // Model a transient Cloud-status outage so the Cloud-first entry gate cannot
+  // redirect them and no fake account changes local APIs to Workspace scope.
+  // Auth/onboarding specs register a later route with their intended state.
+  _defaultCloudStatus: [
     async ({ page }, use) => {
-      await routeSignedInVela(page);
+      await routeUnavailableVelaStatus(page);
       await use();
     },
     { auto: true },

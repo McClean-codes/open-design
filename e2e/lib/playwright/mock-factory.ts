@@ -65,33 +65,29 @@ export async function applyStandardMocks(page: Page): Promise<void> {
   // Keep this explicit even though the shared suite fixture also installs the
   // route: callers use applyStandardMocks for extra pages/contexts that are
   // created outside the built-in Playwright `page` fixture.
-  await routeSignedInVela(page);
+  await routeUnavailableVelaStatus(page);
   await suppressWhatsNew(page);
 }
 
 /**
- * Give non-authentication UI specs a deterministic Cloud identity.
+ * Keep non-authentication UI specs independent from Cloud account state.
  *
  * Cloud-first onboarding makes a completed local app config and the Cloud
- * session two separate boot gates. Standard Home/Workspace specs are not
- * authentication coverage, so they must satisfy both explicitly instead of
- * inheriting whichever Vela state happens to be present in the worker daemon.
- * Authentication specs should keep routing this endpoint themselves.
+ * session two separate boot gates. A fake signed-in account changes project
+ * and conversation APIs to Workspace-scoped behavior, so unrelated local UI
+ * specs instead model a valid transient status outage: the app keeps the
+ * account state unresolved and does not redirect. Authentication specs route
+ * this endpoint themselves with explicit signed-in/signed-out responses.
  */
-export async function routeSignedInVela(page: Page): Promise<void> {
+export async function routeUnavailableVelaStatus(page: Page): Promise<void> {
   await page.route('**/api/integrations/vela/status', async (route) => {
     if (route.request().method() !== 'GET') {
       await route.continue();
       return;
     }
     await route.fulfill({
-      json: {
-        loggedIn: true,
-        loginInFlight: false,
-        profile: 'e2e',
-        user: { id: 'e2e-user', email: 'e2e@example.com' },
-        configPath: '/tmp/.amr/config.json',
-      },
+      status: 503,
+      json: { error: 'Vela status unavailable in this spec' },
     });
   });
 }
