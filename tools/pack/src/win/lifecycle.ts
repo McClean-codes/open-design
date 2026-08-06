@@ -187,6 +187,14 @@ export async function installPackedWinApp(config: ToolPackConfig): Promise<WinIn
     await invokeNsis(paths, paths.setupPath, installArgs(config, paths), "install");
   }));
   if (!(await pathExists(paths.installedExePath))) throw new Error(`installer completed but executable is missing at ${paths.installedExePath}`);
+  // Portable shipping builds omit namespaceBaseRoot (end users fall back to
+  // Electron userData). tools-pack installs must pin the tools-pack runtime
+  // root into the installed config so OS protocol cold launches — which
+  // inherit none of tools-pack's OD_PACKAGED_CONFIG_PATH env — still resolve
+  // the same data root the smoke seeds and tools-pack start uses.
+  await measureLifecycleStep(lifecycleTimings, "pin installed packaged namespace", async () => {
+    await pinInstalledPackagedConfigNamespace(config, paths.installedExePath);
+  });
   const registryEntries = await measureLifecycleStep(lifecycleTimings, "query registry", async () => queryWinRegistryEntries(paths, config));
   const installPayload = await measureLifecycleStep(lifecycleTimings, "collect payload report", async () => collectInstallPayloadReport(paths));
   await measureLifecycleStep(lifecycleTimings, "write install marker", async () => writeJsonMarker(paths.installMarkerPath, {
@@ -214,16 +222,47 @@ export async function installPackedWinApp(config: ToolPackConfig): Promise<WinIn
   };
 }
 
-async function writeInstalledLaunchPackagedConfig(config: ToolPackConfig, executablePath: string): Promise<string> {
+/**
+ * Pin the tools-pack runtime namespace into the installed app's packaged config
+ * and write the launch override used by `tools-pack win start`.
+ *
+ * Portable release builds deliberately omit `namespaceBaseRoot` from the
+ * shipping `resources/open-design-config.json` so real users resolve under
+ * Electron userData. tools-pack installs/starts run under an isolated runtime
+ * root instead. `tools-pack win start` already injects that root via
+ * `OD_PACKAGED_CONFIG_PATH`, but Windows protocol cold launches (`opendesign://`
+ * via the registry) start the bare installed EXE with no process env — so the
+ * installed config itself must carry `namespaceBaseRoot`, otherwise the
+ * relaunched daemon reads a different data root and loses seeds such as
+ * `onboardingCompleted` (PackagedOnboardingSeedError on prerelease smoke).
+ */
+async function pinInstalledPackagedConfigNamespace(
+  config: ToolPackConfig,
+  executablePath: string,
+): Promise<{ installedConfigPath: string; launchConfigPath: string }> {
   const installedConfigPath = join(dirname(executablePath), "resources", "open-design-config.json");
+  if (!(await pathExists(installedConfigPath))) {
+    throw new Error(`installed packaged config missing at ${installedConfigPath}`);
+  }
   const raw = JSON.parse(await readFile(installedConfigPath, "utf8")) as Record<string, unknown>;
+  if (typeof raw !== "object" || raw == null || Array.isArray(raw)) {
+    throw new Error(`installed packaged config must be a JSON object: ${installedConfigPath}`);
+  }
+  const pinned = {
+    ...raw,
+    namespace: config.namespace,
+    namespaceBaseRoot: config.roots.runtime.namespaceBaseRoot,
+  };
+  const body = `${JSON.stringify(pinned, null, 2)}\n`;
+  await writeFile(installedConfigPath, body, "utf8");
   const launchConfigPath = join(config.roots.runtime.namespaceRoot, "runtime", "launch-open-design-config.json");
   await mkdir(dirname(launchConfigPath), { recursive: true });
-  await writeFile(
-    launchConfigPath,
-    `${JSON.stringify({ ...raw, namespaceBaseRoot: config.roots.runtime.namespaceBaseRoot }, null, 2)}\n`,
-    "utf8",
-  );
+  await writeFile(launchConfigPath, body, "utf8");
+  return { installedConfigPath, launchConfigPath };
+}
+
+async function writeInstalledLaunchPackagedConfig(config: ToolPackConfig, executablePath: string): Promise<string> {
+  const { launchConfigPath } = await pinInstalledPackagedConfigNamespace(config, executablePath);
   return launchConfigPath;
 }
 

@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -60,12 +60,11 @@ vi.mock("../src/win/registry.js", async () => {
   };
 });
 
-const { diagnosePackedWinIpc, inspectPackedWinApp, installPackedWinApp, stopPackedWinApp } = await import(
-  "../src/win/lifecycle.js"
-);
+const { diagnosePackedWinIpc, inspectPackedWinApp, installPackedWinApp, startPackedWinApp, stopPackedWinApp } =
+  await import("../src/win/lifecycle.js");
 const { resolveWinPaths } = await import("../src/win/paths.js");
 
-function createConfig(root: string): ToolPackConfig {
+function createConfig(root: string, overrides: Partial<ToolPackConfig> = {}): ToolPackConfig {
   return {
     appVersion: "0.10.0-beta.1",
     containerized: false,
@@ -100,6 +99,7 @@ function createConfig(root: string): ToolPackConfig {
     to: "dir",
     webOutputMode: "standalone",
     workspaceRoot: root,
+    ...overrides,
   };
 }
 
@@ -107,6 +107,25 @@ async function writeFakeUnpackedExe(config: ToolPackConfig): Promise<void> {
   const paths = resolveWinPaths(config);
   await mkdir(dirname(paths.unpackedExePath), { recursive: true });
   await writeFile(paths.unpackedExePath, "", "utf8");
+}
+
+async function writePortableInstalledApp(config: ToolPackConfig): Promise<string> {
+  const paths = resolveWinPaths(config);
+  const installedConfigPath = join(dirname(paths.installedExePath), "resources", "open-design-config.json");
+  await mkdir(dirname(paths.installedExePath), { recursive: true });
+  await mkdir(dirname(installedConfigPath), { recursive: true });
+  await writeFile(paths.installedExePath, "", "utf8");
+  // Portable shipping shape: no namespaceBaseRoot (falls back to Electron userData).
+  await writeFile(
+    installedConfigPath,
+    `${JSON.stringify({
+      appVersion: "0.18.1-prerelease.1",
+      namespace: "release-prerelease-win",
+      webOutputMode: "standalone",
+    }, null, 2)}\n`,
+    "utf8",
+  );
+  return installedConfigPath;
 }
 
 describe("installPackedWinApp", () => {
@@ -121,7 +140,7 @@ describe("installPackedWinApp", () => {
       invokeNsis.mockReset();
       invokeNsis.mockImplementation(async () => {
         await expect(access(paths.installDir)).resolves.toBeUndefined();
-        await writeFile(paths.installedExePath, "", "utf8");
+        await writePortableInstalledApp(config);
       });
 
       const result = await installPackedWinApp(config);
@@ -129,6 +148,81 @@ describe("installPackedWinApp", () => {
       expect(result.installDir).toBe(paths.installDir);
       expect(result.lifecycleTimings.map(({ step }) => step)).toContain("ensure install directory");
       expect(invokeNsis).toHaveBeenCalledOnce();
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("pins tools-pack namespaceBaseRoot into the installed portable config so protocol cold launches share the smoke data root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-win-lifecycle-"));
+    const config = createConfig(root, { portable: true, namespace: "release-prerelease-win" });
+    const paths = resolveWinPaths(config);
+
+    try {
+      await mkdir(dirname(paths.setupPath), { recursive: true });
+      await writeFile(paths.setupPath, "", "utf8");
+      invokeNsis.mockReset();
+      invokeNsis.mockImplementation(async () => {
+        await writePortableInstalledApp(config);
+      });
+
+      const result = await installPackedWinApp(config);
+      const installedConfigPath = join(dirname(paths.installedExePath), "resources", "open-design-config.json");
+      const installed = JSON.parse(await readFile(installedConfigPath, "utf8")) as {
+        namespace?: string;
+        namespaceBaseRoot?: string;
+      };
+      const launchConfigPath = join(config.roots.runtime.namespaceRoot, "runtime", "launch-open-design-config.json");
+      const launch = JSON.parse(await readFile(launchConfigPath, "utf8")) as {
+        namespace?: string;
+        namespaceBaseRoot?: string;
+      };
+
+      expect(result.lifecycleTimings.map(({ step }) => step)).toContain("pin installed packaged namespace");
+      expect(installed.namespace).toBe("release-prerelease-win");
+      expect(installed.namespaceBaseRoot).toBe(config.roots.runtime.namespaceBaseRoot);
+      expect(launch.namespaceBaseRoot).toBe(config.roots.runtime.namespaceBaseRoot);
+      expect(launch.namespace).toBe("release-prerelease-win");
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+});
+
+describe("startPackedWinApp", () => {
+  it("re-pins installed portable config before spawn so a later protocol cold launch keeps the tools-pack data root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-win-lifecycle-"));
+    const config = createConfig(root, { portable: true, namespace: "release-prerelease-win" });
+    const paths = resolveWinPaths(config);
+
+    try {
+      const installedConfigPath = await writePortableInstalledApp(config);
+      // Simulate a pre-pin state after a plain NSIS extract (no tools-pack install).
+      await writeFile(
+        installedConfigPath,
+        `${JSON.stringify({
+          appVersion: "0.18.1-prerelease.1",
+          namespace: "release-prerelease-win",
+          webOutputMode: "standalone",
+        }, null, 2)}\n`,
+        "utf8",
+      );
+      spawnBackgroundProcess.mockClear();
+
+      const result = await startPackedWinApp(config, { waitForStatus: false });
+      const installed = JSON.parse(await readFile(installedConfigPath, "utf8")) as {
+        namespaceBaseRoot?: string;
+      };
+      const launchEnv = spawnBackgroundProcess.mock.calls[0]?.[0]?.env as NodeJS.ProcessEnv | undefined;
+      const launchConfigPath = join(config.roots.runtime.namespaceRoot, "runtime", "launch-open-design-config.json");
+
+      expect(result.source).toBe("installed");
+      expect(result.executablePath).toBe(paths.installedExePath);
+      expect(installed.namespaceBaseRoot).toBe(config.roots.runtime.namespaceBaseRoot);
+      expect(launchEnv?.OD_PACKAGED_CONFIG_PATH).toBe(launchConfigPath);
+      await expect(readFile(launchConfigPath, "utf8")).resolves.toContain(
+        `"namespaceBaseRoot": ${JSON.stringify(config.roots.runtime.namespaceBaseRoot)}`,
+      );
     } finally {
       await rm(root, { force: true, recursive: true });
     }
