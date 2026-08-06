@@ -15,6 +15,7 @@ import {
   PackagedOnboardingConfigError,
   packagedOnboardingCompletedFromProbe,
   packagedOnboardingConfigExpression,
+  packagedOnboardingRuntimeSelector,
   runPackagedAppShellPhase,
   type PackagedAppShellState,
 } from '@/vitest/packaged-app-shell';
@@ -249,7 +250,7 @@ const packagedOnboardingExpression = `
     // secondary runtime links) replaces the old selectable runtime cards.
     const cloudSignIn = document.querySelector('.onboarding-cloud__primary');
     const secondaryLinks = Array.from(
-      document.querySelectorAll('.onboarding-cloud__secondary'),
+      document.querySelectorAll('${packagedOnboardingRuntimeSelector}'),
     );
     const localLink = secondaryLinks[0] ?? null;
     const byokLink = secondaryLinks[1] ?? null;
@@ -2613,7 +2614,7 @@ function clickPackagedOnboardingRuntimeExpression(runtime: OnboardingRuntime): s
   const index = runtime === 'local' ? 0 : 1;
   return `
     (async () => {
-      const links = Array.from(document.querySelectorAll('.onboarding-cloud__secondary'));
+      const links = Array.from(document.querySelectorAll('${packagedOnboardingRuntimeSelector}'));
       const target = links[${index}] ?? null;
       if (!(target instanceof HTMLElement)) {
         return { clicked: false, reason: 'missing-runtime-link', runtime: ${JSON.stringify(runtime)} };

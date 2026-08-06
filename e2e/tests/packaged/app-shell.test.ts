@@ -121,14 +121,18 @@ describe('packaged app-shell probe', () => {
   });
 
   it('tracks the runtime alternatives rendered by the current onboarding shell', async () => {
-    const entryShellSource = await readFile(
-      new URL('../../../apps/web/src/components/EntryShell.tsx', import.meta.url),
-      'utf8',
-    );
+    const [entryShellSource, macSpecSource, winSpecSource] = await Promise.all([
+      readFile(new URL('../../../apps/web/src/components/EntryShell.tsx', import.meta.url), 'utf8'),
+      readFile(new URL('../../specs/mac.spec.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../../specs/win.spec.ts', import.meta.url), 'utf8'),
+    ]);
     const runtimeClassName = packagedOnboardingRuntimeSelector.slice(1);
+    const runtimeProbe = "querySelectorAll('${packagedOnboardingRuntimeSelector}')";
 
     expect(packagedAppShellExpression).toContain(packagedOnboardingRuntimeSelector);
     expect(entryShellSource.split(`className="${runtimeClassName}"`)).toHaveLength(3);
+    expect(macSpecSource.split(runtimeProbe)).toHaveLength(3);
+    expect(winSpecSource.split(runtimeProbe)).toHaveLength(3);
   });
 
   it('reports home for the main shell', () => {
