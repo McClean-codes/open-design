@@ -228,6 +228,7 @@ import {
   liveSnapshotForComment,
   overlayBoundsFromSnapshot,
   planLostAnchorWriteBacks,
+  provisionalNextPinNumber,
   resolveCommentAnchor,
   selectionKindLabel,
   targetFromSnapshot,
@@ -5822,10 +5823,11 @@ function CommentPreviewOverlays({
   const activeSavedComment = activeSavedIndex >= 0 ? comments[activeSavedIndex] : undefined;
   const activePinNumber = activeSavedComment
     ? (typeof activeSavedComment.pinSeq === 'number' ? activeSavedComment.pinSeq : activeSavedIndex + 1)
-    // A brand-new, not-yet-saved comment: `comments.length + 1` is a
-    // provisional guess at what the daemon will assign — matches the
-    // "provisional local pin_seq" the server itself computes on create.
-    : comments.length + 1;
+    // A brand-new, not-yet-saved comment: provisional guess at what the
+    // daemon will assign on create — `MAX(pin_seq)+1`, never `count+1`
+    // (pin numbers are permanent; a deletion retires its number, so a
+    // count-based guess would collide with a surviving pin).
+    : provisionalNextPinNumber(comments);
   const targetOverlay = activeTarget ?? hoveredTarget;
   return (
     <div className="comment-overlay-layer" aria-hidden={false}>

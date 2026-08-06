@@ -420,6 +420,31 @@ export function commentsToAttachments(comments: PreviewComment[]): ChatCommentAt
   return comments.map((comment, index) => commentToAttachment(comment, index + 1));
 }
 
+/**
+ * Provisional canvas pin number for a comment that has not been saved yet.
+ *
+ * Invariant: a new pin gets one past the HIGHEST number currently rendered on
+ * the canvas — mirroring the daemon's `MAX(pin_seq)+1` assignment rule
+ * (`upsertPreviewComment` in apps/daemon/src/db.ts) — never `count + 1`.
+ * Pin numbers are permanent: deleting a comment retires its number instead of
+ * recycling it, so after a deletion the open-comment count can sit below the
+ * highest surviving number and a count-based guess would collide with a pin
+ * that is still on screen.
+ *
+ * A comment without a server-assigned `pinSeq` yet (legacy row / test
+ * fixture) contributes the same creation-order fallback number the canvas
+ * renders for it (`index + 1` — callers pass `comments` in creation order,
+ * see FileViewer's `creationSortedSideComments`).
+ */
+export function provisionalNextPinNumber(comments: readonly PreviewComment[]): number {
+  let highest = 0;
+  comments.forEach((comment, index) => {
+    const rendered = typeof comment.pinSeq === 'number' ? comment.pinSeq : index + 1;
+    if (rendered > highest) highest = rendered;
+  });
+  return highest + 1;
+}
+
 export function buildBoardCommentAttachments(input: {
   target: PreviewCommentTarget;
   notes: string[];

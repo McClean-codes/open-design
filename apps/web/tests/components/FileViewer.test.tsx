@@ -8699,6 +8699,80 @@ describe('FileViewer tweaks toolbar', () => {
     expect(screen.getByTestId('comment-active-pin').textContent).toBe('1');
   });
 
+  it('does not reuse a surviving pin number for a new comment after a deletion', async () => {
+    // One comment left whose server-assigned pinSeq is 2 (pin 1 was deleted).
+    // Pin numbers are permanent — the daemon assigns MAX(pin_seq)+1, never
+    // count+1 — so the provisional pin for a brand-new comment must read 3,
+    // not collide with the surviving marker 2.
+    const survivingComment: PreviewComment = {
+      id: 'comment-surviving',
+      projectId: 'project-1',
+      conversationId: 'conversation-1',
+      filePath: 'preview.html',
+      elementId: 'hero',
+      selector: '[data-od-id="hero"]',
+      label: 'Hero',
+      text: 'Hero',
+      htmlHint: '<main data-od-id="hero">Hero</main>',
+      position: { x: 8, y: 12, width: 120, height: 48 },
+      note: 'Surviving note',
+      status: 'open',
+      createdAt: 10,
+      updatedAt: 10,
+      pinSeq: 2,
+    };
+
+    render(
+      <FileViewer
+        projectId="project-1"
+        projectKind="prototype"
+        file={htmlPreviewFile()}
+        liveHtml='<html><body><main data-od-id="hero">Hero</main><button data-od-id="mood">Mood</button></body></html>'
+        previewComments={[survivingComment]}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('comment-panel-toggle'));
+
+    const frame = screen.getByTestId('artifact-preview-frame') as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent('message', {
+      source: frame.contentWindow,
+      data: {
+        type: 'od:comment-targets',
+        targets: [{
+          elementId: 'hero',
+          selector: '[data-od-id="hero"]',
+          label: 'Hero',
+          text: 'Hero',
+          position: { x: 8, y: 12, width: 120, height: 48 },
+          htmlHint: '<main data-od-id="hero">Hero</main>',
+        }],
+      },
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('comment-saved-marker-hero').textContent).toBe('2');
+    });
+
+    window.dispatchEvent(new MessageEvent('message', {
+      source: frame.contentWindow,
+      data: {
+        type: 'od:comment-target',
+        elementId: 'mood',
+        selector: '[data-od-id="mood"]',
+        label: 'Mood',
+        text: 'Mood',
+        position: { x: 8, y: 80, width: 90, height: 32 },
+        hoverPoint: { x: 12, y: 84 },
+        htmlHint: '<button data-od-id="mood">Mood</button>',
+      },
+    }));
+
+    expect((await screen.findByTestId('comment-active-pin')).textContent).toBe('3');
+    // The surviving marker keeps its permanent number.
+    expect(screen.getByTestId('comment-saved-marker-hero').textContent).toBe('2');
+  });
+
   it('keeps comment marker numbers global across deck slides', async () => {
     const slideOneComment: PreviewComment = {
       id: 'comment-slide-one',
