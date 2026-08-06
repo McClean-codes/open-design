@@ -348,6 +348,42 @@ describe('packaged daemon onboarding config probe', () => {
     );
   });
 
+  // Round 3 fixed the transport half but left the payload half coerced:
+  // `config.onboardingCompleted === true` turns a missing key, a null, or the
+  // string "false" into a well-formed `false`, which the reader then accepts as
+  // a real reading. "The daemon did not tell me" must never arrive as "the
+  // daemon told me false".
+  it('refuses to answer when a 200 carries no onboardingCompleted field', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ body: { config: {} } }));
+
+    expect(value).toMatchObject({ ok: false });
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+      PackagedOnboardingConfigError,
+    );
+  });
+
+  it('refuses to answer when onboardingCompleted is the wrong type', async () => {
+    for (const onboardingCompleted of ['false', 'true', 0, 1, null, {}, []]) {
+      const value = await evaluatePackagedOnboardingConfigProbe(
+        fakeConfigFetch({ body: { config: { onboardingCompleted } } }),
+      );
+
+      expect(value, `payload ${JSON.stringify(onboardingCompleted)}`).toMatchObject({ ok: false });
+      expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+        PackagedOnboardingConfigError,
+      );
+    }
+  });
+
+  it('refuses to answer when config is an array rather than an object', async () => {
+    const value = await evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ body: { config: [] } }));
+
+    expect(value).toMatchObject({ ok: false });
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
+      PackagedOnboardingConfigError,
+    );
+  });
+
   it('names the status so a failure says what could not be established', async () => {
     const value = await evaluatePackagedOnboardingConfigProbe(
       fakeConfigFetch({ ok: false, status: 503 }),
