@@ -28,7 +28,6 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "design-system-body",
       "design-system-import-mode",
       "design-system-tokens",
-      "design-system-components-manifest",
       "design-system-intent-routing",
       "design-system-pull-index",
       "active-skill",
@@ -37,7 +36,7 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "clarifying-questions",
       "role-marker-guard",
     ],
-    "totalChars": 18711,
+    "totalChars": 18452,
   },
   "codex-imagegen": {
     "sections": [
@@ -61,7 +60,6 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "design-system-body",
       "design-system-import-mode",
       "design-system-tokens",
-      "design-system-components-manifest",
       "design-system-intent-routing",
       "design-system-pull-index",
       "active-skill",
@@ -72,7 +70,7 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "clarifying-questions",
       "role-marker-guard",
     ],
-    "totalChars": 57646,
+    "totalChars": 57387,
   },
   "deck-kind-no-skill": {
     "sections": [
@@ -114,7 +112,6 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "design-system-import-mode",
       "design-system-tokens",
       "design-system-fixture",
-      "design-system-intent-routing",
       "design-system-pull-index",
       "deck-framework",
       "maybe-deck-framework",
@@ -124,7 +121,7 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "clarifying-questions",
       "role-marker-guard",
     ],
-    "totalChars": 80228,
+    "totalChars": 79593,
   },
   "design-ds-invalid-runtime": {
     "sections": [
@@ -135,7 +132,6 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "design-system-body",
       "design-system-import-mode",
       "design-system-tokens",
-      "design-system-components-manifest",
       "design-system-runtime-unavailable",
       "design-system-pull-index",
       "deck-framework",
@@ -146,7 +142,28 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "clarifying-questions",
       "role-marker-guard",
     ],
-    "totalChars": 80041,
+    "totalChars": 79625,
+  },
+  "design-ds-manifest-legacy": {
+    "sections": [
+      "injection-resistance",
+      "discovery-and-philosophy",
+      "identity-charter",
+      "design-system-usage",
+      "design-system-body",
+      "design-system-import-mode",
+      "design-system-tokens",
+      "design-system-components-manifest",
+      "design-system-pull-index",
+      "deck-framework",
+      "maybe-deck-framework",
+      "media-dispatch-hint",
+      "active-ds-visual-direction-override",
+      "filesystem-handoff-override",
+      "clarifying-questions",
+      "role-marker-guard",
+    ],
+    "totalChars": 79591,
   },
   "design-full-stack": {
     "sections": [
@@ -165,7 +182,6 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "design-system-body",
       "design-system-import-mode",
       "design-system-tokens",
-      "design-system-components-manifest",
       "design-system-intent-routing",
       "design-system-pull-index",
       "craft-references",
@@ -177,7 +193,7 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "clarifying-questions",
       "role-marker-guard",
     ],
-    "totalChars": 66983,
+    "totalChars": 66724,
   },
   "design-minimal": {
     "sections": [
@@ -347,7 +363,6 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "design-system-body",
       "design-system-import-mode",
       "design-system-tokens",
-      "design-system-components-manifest",
       "design-system-intent-routing",
       "design-system-pull-index",
       "craft-references",
@@ -356,7 +371,7 @@ exports[`composeSystemPrompt — scenario × section golden matrix > keeps the s
       "media-dispatch-hint",
       "role-marker-guard",
     ],
-    "totalChars": 39840,
+    "totalChars": 39581,
   },
   "slim-freeform-no-deck-signal": {
     "sections": [

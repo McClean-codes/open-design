@@ -581,10 +581,10 @@ export async function resolveDesignSystemRuntime(
   return readDesignSystemRuntime(userInstalledRoot, designSystemId);
 }
 
-export type DesignSystemRuntimePromptContext = {
-  intentIndex?: string;
-  issue?: string;
-};
+export type DesignSystemRuntimePromptContext =
+  | { mode: 'legacy' }
+  | { mode: 'structured'; intentIndex: string }
+  | { mode: 'invalid'; issue: string };
 
 export async function resolveDesignSystemRuntimePromptContext(
   designSystemId: string,
@@ -597,10 +597,15 @@ export async function resolveDesignSystemRuntimePromptContext(
     userInstalledRoot,
   );
   if (runtime.mode === 'structured') {
-    return { intentIndex: summarizeDesignSystemIntentMapForPrompt(runtime.bundle) };
+    return {
+      mode: 'structured',
+      intentIndex: summarizeDesignSystemIntentMapForPrompt(runtime.bundle),
+    };
   }
-  if (runtime.mode === 'invalid') return { issue: runtime.errors.join('\n') };
-  return {};
+  if (runtime.mode === 'invalid') {
+    return { mode: 'invalid', issue: runtime.errors.join('\n') };
+  }
+  return { mode: 'legacy' };
 }
 
 async function listAvailableDesignSystemPackageFiles(

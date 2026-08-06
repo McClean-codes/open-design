@@ -51,12 +51,18 @@ describe('design-system structured runtime', () => {
       fixturesRoot,
       path.join(fixturesRoot, 'missing-user-root'),
     )).resolves.toEqual({
+      mode: 'structured',
       intentIndex: expect.stringContaining('`account.settings.save` → Button.primary'),
     });
   });
 
   it('keeps manifest-free packages on the legacy path', async () => {
     await expect(readDesignSystemRuntime(fixturesRoot, 'legacy')).resolves.toEqual({ mode: 'legacy' });
+    await expect(resolveDesignSystemRuntimePromptContext(
+      'legacy',
+      fixturesRoot,
+      path.join(fixturesRoot, 'missing-user-root'),
+    )).resolves.toEqual({ mode: 'legacy' });
   });
 
   it('resolves built-in packages first and user-prefixed packages from the installed root', async () => {
@@ -98,10 +104,12 @@ describe('design-system structured runtime', () => {
 
     await expect(resolveDesignSystemRuntimePromptContext('user:shared', fixturesRoot, teamRoot))
       .resolves.toMatchObject({
+        mode: 'structured',
         intentIndex: expect.stringContaining('`account.settings.save` → Button.secondary'),
       });
     await expect(resolveDesignSystemRuntimePromptContext('user:shared', fixturesRoot, personalRoot))
       .resolves.toMatchObject({
+        mode: 'structured',
         intentIndex: expect.stringContaining('`account.settings.save` → Button.primary'),
       });
   });
@@ -130,6 +138,7 @@ describe('design-system structured runtime', () => {
       root,
       path.join(root, 'missing-user-root'),
     )).resolves.toEqual({
+      mode: 'invalid',
       issue: expect.stringContaining('unknown component MissingButton'),
     });
   });

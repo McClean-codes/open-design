@@ -131,7 +131,14 @@ variant, properties, required states, and lint policy. It also applies
 ambiguous or missing mappings can require human confirmation instead of letting
 the agent invent a near-copy.
 
-Omitting `runtime` preserves the legacy prompt-based path.
+A package has one component-selection authority. When `runtime` is declared,
+the prompt does not also inject `components.manifest.json` or `components.html`
+as an alternate inventory: selection goes through the intent index and resolver.
+The fixture and its derived manifest remain package evidence, preview inputs,
+and authoring checks, but they do not compete with the runtime mapping.
+
+Omitting `runtime` preserves the legacy prompt-based component manifest / fixture
+path.
 Declaring only part of the graph, using unsafe paths, or leaving dangling
 references fails validation and is surfaced to the agent rather than silently
 downgraded to the legacy component path. Text-artifact runtimes that cannot call

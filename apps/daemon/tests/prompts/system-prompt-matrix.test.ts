@@ -168,6 +168,15 @@ const SCENARIOS: ReadonlyArray<[name: string, input: ComposeInput]> = [
       ...designSystemInputs,
       designSystemComponentsManifest: undefined,
       designSystemFixtureHtml: '<button class="primary">Buy</button>',
+      designSystemIntentIndex: undefined,
+      executionProfile: 'filesystem',
+    },
+  ],
+  [
+    'design-ds-manifest-legacy',
+    {
+      ...designSystemInputs,
+      designSystemIntentIndex: undefined,
       executionProfile: 'filesystem',
     },
   ],
