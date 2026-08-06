@@ -326,7 +326,11 @@ test('[P0] UI-created Personal project recovers preview and write authority afte
   await mockWritablePersonalProjectScope(page);
   await stubCatalogsEmpty(page);
 
-  await page.goto('/');
+  // Start on the destination route. Driving the client router while the
+  // dynamic App tree is still mounting can be overwritten by its initial `/`
+  // snapshot, leaving openNewProjectModal waiting on a navigation that the
+  // booting app just reverted.
+  await page.goto('/projects', { waitUntil: 'domcontentloaded' });
   await openNewProjectModal(page);
   await page.getByTestId('new-project-tab-prototype').click();
   await page.getByTestId('new-project-name').fill('Reloaded Personal authority');
@@ -395,8 +399,19 @@ test('[P0] UI-created Personal project recovers preview and write authority afte
   // back to `.viewer-loading`. That skeleton is only reachable in the sub-100ms
   // window before `/api/workspace/context` answers, which makes it a race, not
   // a contract. Reads stay open; only writes fail closed.
+  // The scope request is deliberately held above, so the route bootstrap
+  // cannot mount ProjectView by itself. Wait for the independent project-list
+  // read that supplies the persisted row instead of racing it with the
+  // locator's default timeout on a cold CI worker.
+  const projectListLoaded = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === 'GET'
+      && url.pathname === '/api/projects'
+      && response.ok();
+  }, { timeout: T.long });
   await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.getByTestId('file-workspace')).toBeVisible();
+  await projectListLoaded;
+  await expect(page.getByTestId('file-workspace')).toBeVisible({ timeout: T.long });
   await expect(page.getByTestId('chat-composer-input')).toHaveAttribute('aria-readonly', 'true');
 
   releaseScope();
