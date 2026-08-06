@@ -85,8 +85,15 @@ describe('DeepSeek V4 Flash workbench campaign entry', () => {
     // The modal's callback must reach EntryShell's persistence pair — the
     // same onAgentChange/onAgentModelChange the InlineModelSwitcher writes
     // through — so 立即使用 changes the workbench, not just the UI.
+    // Mode must flip to daemon first: a paid BYOK user (mode === 'api')
+    // would otherwise keep the BYOK provider after agent/model ids change.
     expect(entryShellSource).toContain('applyDeepSeekCampaignModel');
-    expect(entryShellSource).toContain('onAgentModelChange(agentId, { model: modelId })');
+    expect(entryShellSource).toMatch(
+      /onModeChange\('daemon'\);\s*onAgentChange\(agentId\);\s*onAgentModelChange\(agentId, \{ model: modelId \}\)/,
+    );
+    expect(entryShellSource).toMatch(
+      /\[onAgentChange, onAgentModelChange, onModeChange\]/,
+    );
     expect(homeViewSource).toContain('onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}');
     expect(campaignModalSource).toContain("onUseCampaignModel?.('amr', campaign.modelId)");
   });

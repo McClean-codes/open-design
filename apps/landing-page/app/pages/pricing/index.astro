@@ -723,7 +723,18 @@ const jsonLd = [
       const scopedBillingPlanUrl = () => {
         const target = new URL(billingPlanUrl);
         if (inboundWorkspaceId) target.searchParams.set('workspaceId', inboundWorkspaceId);
-        for (const key of ['od_origin', 'od_entry_id', 'od_entry_source', 'od_entry_at', 'od_conversion_source', 'od_campaign_id']) {
+        // od_campaign_id is intentionally NOT forwarded from the inbound URL:
+        // campaign membership is re-decided by campaignActive on this click and
+        // written only through __odAttributedUrl so a closed window cannot
+        // inherit a desktop-badge campaign id into Cloud checkout.
+        for (const key of [
+          'od_origin',
+          'od_entry_id',
+          'od_entry_source',
+          'od_entry_at',
+          'od_conversion_source',
+          'od_device_id',
+        ]) {
           const value = inboundParams.get(key);
           if (value) target.searchParams.set(key, value);
         }

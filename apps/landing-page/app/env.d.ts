@@ -26,6 +26,7 @@ interface Window {
     entry_occurred_at: string;
     conversion_source: string;
     campaign_id?: string;
+    device_id?: string;
   };
   __odAttributedUrl?: (
     href: string,

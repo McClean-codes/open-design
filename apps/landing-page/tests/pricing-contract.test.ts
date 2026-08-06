@@ -113,7 +113,10 @@ describe("pricing contract", () => {
     assert.match(page, /window\.__odRecordCampaignEntry\?\./);
     assert.match(page, /'landing_pricing_team_plan'\s*:\s*'landing_pricing_personal_plan'/);
     assert.match(page, /'deepseek_v4_flash'/);
-    assert.match(page, /'od_conversion_source', 'od_campaign_id'/);
+    // First-touch envelope + device id survive Pricing → Cloud. Campaign id is
+    // re-decided by campaignActive and written only via __odAttributedUrl.
+    assert.match(page, /'od_conversion_source',\s*'od_device_id'/);
+    assert.match(page, /od_campaign_id is intentionally NOT forwarded/);
     assert.match(page, /window\.__odTrack\('ui_click', props\)/);
     assert.doesNotMatch(page, /pricing_subscribe_click/);
     const disclaimerRule = page.match(

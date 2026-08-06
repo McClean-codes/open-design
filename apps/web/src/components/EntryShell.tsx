@@ -1114,14 +1114,17 @@ export function EntryShell({
     deepSeekV4FlashCampaignAudience,
   ]);
   // 产品拍板 D5: the campaign modal's paid 立即使用 performs the REAL switch —
-  // agent to Cloud (amr) + model to DeepSeek V4 Flash — through the same
-  // persistence callbacks the InlineModelSwitcher writes through.
+  // daemon execution mode + Cloud agent (amr) + DeepSeek V4 Flash — through
+  // the same persistence callbacks the InlineModelSwitcher writes through.
+  // Mode must flip first: a paid user still on BYOK (`mode === 'api'`) would
+  // otherwise keep the BYOK provider even after agent/model ids change.
   const applyDeepSeekCampaignModel = useCallback(
     (agentId: string, modelId: string) => {
+      onModeChange('daemon');
       onAgentChange(agentId);
       onAgentModelChange(agentId, { model: modelId });
     },
-    [onAgentChange, onAgentModelChange],
+    [onAgentChange, onAgentModelChange, onModeChange],
   );
   function changeView(next: EntryViewKind) {
     const navElement = navElementForView(next);

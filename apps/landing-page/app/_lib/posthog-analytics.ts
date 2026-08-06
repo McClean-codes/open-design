@@ -48,6 +48,9 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
       var inboundEntryId = inbound && inbound.get('od_entry_id');
       var inboundEntrySource = inbound && inbound.get('od_entry_source');
       var inboundEntryAt = inbound && inbound.get('od_entry_at');
+      // Consent-gated device id survives desktop → Pricing → Cloud. Only the
+      // inbound query is a source of truth here; callers never mint a device id.
+      var inboundDeviceId = inbound && inbound.get('od_device_id');
       var random = '';
       try {
         random = window.crypto && typeof window.crypto.randomUUID === 'function'
@@ -60,7 +63,10 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
         source_detail: inboundEntrySource || String(sourceDetail || 'unknown'),
         entry_occurred_at: inboundEntryAt || new Date().toISOString(),
         conversion_source: String(sourceDetail || 'unknown'),
-        campaign_id: campaignId || (inbound && inbound.get('od_campaign_id')) || undefined,
+        // Explicit only: do not inherit a stale inbound od_campaign_id. Pricing
+        // passes undefined once the window closes so post-window CTAs stay clean.
+        campaign_id: campaignId || undefined,
+        device_id: inboundDeviceId || undefined,
       };
     };
 
@@ -74,6 +80,7 @@ function buildTrackerScript(pageName: string, downloadAttributionUrl: string): s
           target.searchParams.set('od_entry_at', attribution.entry_occurred_at || new Date().toISOString());
           target.searchParams.set('od_conversion_source', attribution.conversion_source || attribution.source_detail || 'unknown');
           if (attribution.campaign_id) target.searchParams.set('od_campaign_id', attribution.campaign_id);
+          if (attribution.device_id) target.searchParams.set('od_device_id', attribution.device_id);
         }
         return target.toString();
       } catch (e) { return href; }
