@@ -433,10 +433,16 @@ describe("packaged smoke workflow", () => {
     expect(rerunScript).toContain("gh run rerun");
     expect(rerunScript).toContain("--failed");
     expect(rerunScript).toContain("DEFAULT_MAX_ATTEMPT = 2");
-    expect(rerunScript).toContain("mergeQueue");
+    // merge_group freshness is open-PR association, not live merge-queue membership
+    // (required-check failure ejects the synthetic head before workflow_run completed).
+    expect(rerunScript).toContain("resolve_merge_group_open_pr");
+    expect(rerunScript).toContain("parse_merge_group_pr_number");
+    expect(rerunScript).toContain("no open PR associated with merge_group head");
     // Mixed ordinary failure + cancelled leaf must refuse --failed rerun.
     expect(rerunScript).toContain("classify_non_success_jobs");
     expect(rerunScript).toContain("ordinary non-infra failures present");
+    // Warning-level annotations (e.g. scopes.ts full-plan fallback) are not ordinary failures.
+    expect(rerunScript).toContain('level in {"notice", "warning"}');
     expect(ciWorkflow).not.toContain("gh run rerun");
     expect(ciWorkflow).toContain("actions: read");
     expect(ciWorkflow).not.toContain("actions: write");

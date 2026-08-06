@@ -9,8 +9,10 @@ It is intentionally narrow:
 - only when every non-success leaf job carries a trusted infra fingerprint
   (shutdown/spot markers — not bare `cancelled` alone; no ordinary assertion
   failure / timeout mixed in)
-- only when the run's head SHA is still the live PR head or still sitting in
-  the main merge queue
+- only when freshness still holds: live PR head for `pull_request`, or an
+  open PR still associated with the synthetic `merge_group` head (queue
+  membership is not usable — required-check failure ejects the entry before
+  `workflow_run` completed fires)
 
 Skip paths exit 0. Hard API/protocol errors exit non-zero so the atom job is
 visible when the helper itself is broken.
@@ -120,22 +122,26 @@ def annotation_text(item: dict[str, Any]) -> str:
 
 
 def annotation_indicates_ordinary_failure(item: dict[str, Any]) -> bool:
-    """True when an annotation is a non-infra failure/warning signal.
+    """True when an annotation is a non-infra failure signal.
 
-    Notice-level annotations without markers are setup noise and must not
-    reclassify a pure runner-shutdown job as ordinary. Failure/warning
-    annotations (or untyped fixtures without ``annotation_level``) that lack
-    an infra marker are ordinary signals — including when a later shutdown
-    annotation is also present on the same job.
+    Notice- and warning-level annotations without markers are setup / policy
+    noise and must not reclassify a pure runner-shutdown job as ordinary.
+    Concrete repository path: ``scripts/scopes.ts`` emits ``::warning::`` when
+    changed-file resolution falls back to the full plan; that warning must not
+    suppress infra-cancel retry when a later shutdown marker is also present.
+
+    Only failure-level annotations (or untyped fixtures without
+    ``annotation_level``) that lack an infra marker are ordinary signals —
+    including when a later shutdown annotation is also present on the same job.
     """
     text = annotation_text(item)
     if not text or has_infra_marker(text):
         return False
     level = item.get("annotation_level")
-    if level == "notice":
+    if level in {"notice", "warning"}:
         return False
-    # Missing level (fixtures / sparse payloads) and failure/warning count.
-    return level is None or level in {"failure", "warning"}
+    # Missing level (fixtures / sparse payloads) and explicit failure count.
+    return level is None or level == "failure"
 
 
 def job_looks_like_infra_cancel(job: dict[str, Any], annotations: list[dict[str, Any]]) -> bool:
@@ -228,7 +234,7 @@ def decide(
     head_sha: str,
     infra_job_names: list[str],
     live_pr_head_sha: str | None,
-    merge_queue_head_shas: set[str] | None,
+    merge_group_has_open_pr: bool | None = None,
     ordinary_job_names: list[str] | None = None,
 ) -> tuple[bool, str]:
     """Pure eligibility gate. Returns (should_rerun, reason)."""
@@ -261,10 +267,14 @@ def decide(
                 f"(run={head_sha[:12]} live={live_pr_head_sha[:12]})",
             )
     elif event_name == "merge_group":
-        if merge_queue_head_shas is None:
-            return False, "skip: could not resolve main merge queue"
-        if head_sha.lower() not in {sha.lower() for sha in merge_queue_head_shas}:
-            return False, "skip: merge_group head is no longer in the main merge queue"
+        # workflow_run completed fires after required checks fail, so GitHub has
+        # normally already ejected the synthetic head from the merge queue.
+        # Freshness is an open PR still associated with this run — not queue
+        # membership (which would skip every infra-cancel merge_group path).
+        if merge_group_has_open_pr is None:
+            return False, "skip: could not resolve open PR for merge_group head"
+        if not merge_group_has_open_pr:
+            return False, "skip: no open PR associated with merge_group head"
 
     joined = ", ".join(infra_job_names)
     return True, f"rerun: infra-cancel jobs detected ({joined})"
@@ -480,36 +490,91 @@ def resolve_live_pr_head(request: GhRequest, repo: str, head_sha: str, head_bran
     return None
 
 
-def resolve_merge_queue_head_shas(request: GhRequest, repo: str) -> set[str] | None:
+# GitHub merge-queue temporary refs look like:
+#   gh-readonly-queue/main/pr-1234-<sha>
+# Capture the PR number so we can re-check open state after ejection.
+_MERGE_GROUP_PR_RE = re.compile(r"(?:^|/)pr-(\d+)(?:-|$)")
+
+
+def parse_merge_group_pr_number(head_branch: str | None) -> int | None:
+    """Parse the PR number from a merge-queue temporary head branch, if present."""
+    if not head_branch or not isinstance(head_branch, str):
+        return None
+    match = _MERGE_GROUP_PR_RE.search(head_branch.strip())
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def resolve_merge_group_open_pr(
+    request: GhRequest,
+    repo: str,
+    head_sha: str,
+    head_branch: str | None,
+) -> bool | None:
+    """Return whether an open PR is still associated with this merge_group run.
+
+    ``workflow_run`` on completed ``ci`` fires after required checks fail, so the
+    synthetic merge-group head is normally already ejected from the merge queue.
+    Queue membership is therefore not a usable freshness signal for infra-cancel
+    retry. Freshness is: an open PR is still associated with this run.
+
+    Returns:
+      True  — at least one open PR is associated with this head
+      False — associations resolved but no open PR remains
+      None  — could not determine association (API/protocol miss)
+    """
     owner, _, name = repo.partition("/")
     if not owner or not name:
         fail(f"Invalid repository {repo!r}")
+
+    saw_association = False
+
+    pulls = request(
+        "GET",
+        f"/repos/{repo}/commits/{head_sha}/pulls",
+        {"Accept": "application/vnd.github.groot-preview+json"},
+        None,
+    )
+    if isinstance(pulls, list):
+        for pull in pulls:
+            if not isinstance(pull, dict):
+                continue
+            saw_association = True
+            if _open_pr_head_sha(pull):
+                return True
+
+    pr_number = parse_merge_group_pr_number(head_branch)
+    if pr_number is not None:
+        pull = request("GET", f"/repos/{repo}/pulls/{pr_number}", None, None)
+        if isinstance(pull, dict):
+            saw_association = True
+            if _open_pr_head_sha(pull):
+                return True
+
+    if saw_association:
+        return False
+
+    # GraphQL fallback: recent open PRs whose head matches are rare for
+    # synthetic merge commits, but a miss here should not hard-fail — return
+    # None so decide() skips cleanly when association cannot be proven.
     query = (
         "query {"
         f'repository(owner: "{owner}", name: "{name}") {{'
-        'mergeQueue(branch: "main") {'
-        "entries(first: 50) { nodes { headCommit { oid } } }"
+        "pullRequests(first: 20, states: OPEN, orderBy: {field: UPDATED_AT, direction: DESC}) {"
+        "nodes { number headRefOid }"
         "}}}"
     )
     payload = request("POST", f"graphql:{query}", None, None)
     try:
-        nodes = payload["data"]["repository"]["mergeQueue"]["entries"]["nodes"]
+        nodes = payload["data"]["repository"]["pullRequests"]["nodes"]
     except (TypeError, KeyError):
         return None
-    if nodes is None:
-        return set()
     if not isinstance(nodes, list):
         return None
-    shas: set[str] = set()
-    for node in nodes:
-        if not isinstance(node, dict):
-            continue
-        head = node.get("headCommit") or {}
-        if isinstance(head, dict):
-            oid = head.get("oid")
-            if isinstance(oid, str) and oid:
-                shas.add(oid)
-    return shas
+    # Synthetic merge commit rarely equals PR head; this path mainly proves
+    # GraphQL is reachable. Without commit/PR association we cannot authorize.
+    return None
 
 
 def load_run(request: GhRequest, repo: str, run_id: int) -> dict[str, Any]:
@@ -554,11 +619,13 @@ def run_decision_from_github(
     infra_names, ordinary_names = classify_non_success_jobs(jobs, annotations_by_job_id)
 
     live_pr_head_sha: str | None = None
-    merge_queue_head_shas: set[str] | None = None
+    merge_group_has_open_pr: bool | None = None
     if event_name == "pull_request":
         live_pr_head_sha = resolve_live_pr_head(request, repo, head_sha, head_branch)
     elif event_name == "merge_group":
-        merge_queue_head_shas = resolve_merge_queue_head_shas(request, repo)
+        merge_group_has_open_pr = resolve_merge_group_open_pr(
+            request, repo, head_sha, head_branch
+        )
 
     should, reason = decide(
         event_name=event_name,
@@ -569,7 +636,7 @@ def run_decision_from_github(
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha=live_pr_head_sha,
-        merge_queue_head_shas=merge_queue_head_shas,
+        merge_group_has_open_pr=merge_group_has_open_pr,
     )
     return should, reason, infra_names
 
@@ -585,7 +652,7 @@ def self_check() -> None:
         infra_job_names=["UI P0 (entry-settings)"],
         ordinary_job_names=[],
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert ok and reason.startswith("rerun:"), reason
 
@@ -598,7 +665,7 @@ def self_check() -> None:
         infra_job_names=[],
         ordinary_job_names=[],
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "no infra-cancel" in reason, reason
 
@@ -611,7 +678,7 @@ def self_check() -> None:
         infra_job_names=["UI P0 (entry-settings)"],
         ordinary_job_names=[],
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "run_attempt" in reason, reason
 
@@ -624,7 +691,7 @@ def self_check() -> None:
         infra_job_names=["UI P0 (entry-settings)"],
         ordinary_job_names=[],
         live_pr_head_sha="b" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "stale" in reason, reason
 
@@ -637,7 +704,9 @@ def self_check() -> None:
         infra_job_names=["Playwright visual (settings-workspace)"],
         ordinary_job_names=[],
         live_pr_head_sha=None,
-        merge_queue_head_shas={"a" * 40},
+        # Open PR still associated — allow even when the synthetic head has
+        # already been ejected from the merge queue (normal after completed ci).
+        merge_group_has_open_pr=True,
     )
     assert ok and reason.startswith("rerun:"), reason
 
@@ -650,9 +719,22 @@ def self_check() -> None:
         infra_job_names=["Playwright visual (settings-workspace)"],
         ordinary_job_names=[],
         live_pr_head_sha=None,
-        merge_queue_head_shas={"c" * 40},
+        merge_group_has_open_pr=False,
     )
-    assert not ok and "merge queue" in reason, reason
+    assert not ok and "no open PR" in reason, reason
+
+    ok, reason = decide(
+        event_name="merge_group",
+        conclusion="cancelled",
+        run_attempt=1,
+        max_attempt=2,
+        head_sha="a" * 40,
+        infra_job_names=["Playwright visual (settings-workspace)"],
+        ordinary_job_names=[],
+        live_pr_head_sha=None,
+        merge_group_has_open_pr=None,
+    )
+    assert not ok and "could not resolve open PR" in reason, reason
 
     shutdown_annotation = {
         "message": (
@@ -715,6 +797,27 @@ def self_check() -> None:
             shutdown_annotation,
         ],
     )
+    # Warning-level policy noise (e.g. scopes.ts full-plan fallback ::warning::)
+    # must not reclassify pure shutdown as ordinary either.
+    assert job_looks_like_infra_cancel(
+        job_shutdown,
+        [
+            {
+                "annotation_level": "warning",
+                "message": (
+                    "Changed-file resolution fell back to the full plan; "
+                    "scope confidence degraded."
+                ),
+            },
+            shutdown_annotation,
+        ],
+    )
+    assert not annotation_indicates_ordinary_failure(
+        {
+            "annotation_level": "warning",
+            "message": "Changed-file resolution fell back to the full plan",
+        }
+    )
     # classify: mixed-annotation job lands in ordinary_names, not infra_names.
     mixed_one_jobs = [mixed_annotation_job]
     mixed_one_ann = {5: mixed_annotations_one_job}
@@ -730,7 +833,7 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "ordinary non-infra" in reason, reason
 
@@ -761,7 +864,7 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "ordinary non-infra" in reason, reason
 
@@ -792,7 +895,7 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok, reason
     assert "ordinary non-infra" in reason or "no infra-cancel" in reason, reason
@@ -829,7 +932,7 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert ok and reason.startswith("rerun:"), reason
 
@@ -869,7 +972,7 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert ok and reason.startswith("rerun:"), reason
 
@@ -907,7 +1010,7 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "ordinary non-infra" in reason, reason
 
@@ -983,7 +1086,7 @@ def self_check() -> None:
         infra_job_names=["UI P0 (entry-settings)"],
         ordinary_job_names=[],
         live_pr_head_sha=live,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "could not resolve live pull request head" in reason, reason
 
@@ -1096,9 +1199,95 @@ def self_check() -> None:
         infra_job_names=infra_names,
         ordinary_job_names=ordinary_names,
         live_pr_head_sha="a" * 40,
-        merge_queue_head_shas=None,
+        merge_group_has_open_pr=None,
     )
     assert not ok and "ordinary non-infra" in reason, reason
+
+    # merge_group head_branch PR parsing + open-PR freshness (not queue membership).
+    assert (
+        parse_merge_group_pr_number(
+            "gh-readonly-queue/main/pr-6453-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        )
+        == 6453
+    )
+    assert parse_merge_group_pr_number("feature/not-a-queue-ref") is None
+    assert parse_merge_group_pr_number(None) is None
+
+    mg_run_sha = "1" * 40
+    mg_branch = "gh-readonly-queue/main/pr-99-" + mg_run_sha
+    mg_paths: list[str] = []
+
+    def mg_open_pr_request(
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> Any:
+        del method, headers, body
+        mg_paths.append(path)
+        if path.startswith(f"/repos/nexu-io/open-design/commits/{mg_run_sha}/pulls"):
+            # Synthetic merge commit is usually still associated after ejection.
+            return [
+                {
+                    "state": "open",
+                    "number": 99,
+                    "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                    "base": {"ref": "main"},
+                }
+            ]
+        if path.startswith("/repos/nexu-io/open-design/pulls/99"):
+            return {
+                "state": "open",
+                "number": 99,
+                "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                "base": {"ref": "main"},
+            }
+        fail(f"unexpected fixture path {path!r}")
+
+    assert (
+        resolve_merge_group_open_pr(
+            mg_open_pr_request, "nexu-io/open-design", mg_run_sha, mg_branch
+        )
+        is True
+    )
+    assert any("/commits/" in p and p.endswith("/pulls") for p in mg_paths), mg_paths
+
+    mg_closed_paths: list[str] = []
+
+    def mg_closed_pr_request(
+        method: str,
+        path: str,
+        headers: dict[str, str] | None = None,
+        body: str | None = None,
+    ) -> Any:
+        del method, headers, body
+        mg_closed_paths.append(path)
+        if path.startswith(f"/repos/nexu-io/open-design/commits/{mg_run_sha}/pulls"):
+            return [
+                {
+                    "state": "closed",
+                    "number": 99,
+                    "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                    "base": {"ref": "main"},
+                }
+            ]
+        if path.startswith("/repos/nexu-io/open-design/pulls/99"):
+            return {
+                "state": "closed",
+                "number": 99,
+                "head": {"sha": "2" * 40, "ref": "agent/some-pr"},
+                "base": {"ref": "main"},
+            }
+        if path.startswith("graphql:"):
+            return {"data": {"repository": {"pullRequests": {"nodes": []}}}}
+        fail(f"unexpected fixture path {path!r}")
+
+    assert (
+        resolve_merge_group_open_pr(
+            mg_closed_pr_request, "nexu-io/open-design", mg_run_sha, mg_branch
+        )
+        is False
+    )
 
     emit("rerun_infra_cancel self-check OK")
 
