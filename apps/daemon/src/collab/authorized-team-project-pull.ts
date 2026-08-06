@@ -192,6 +192,102 @@ export function isAuthorizedTeamProjectPullUnavailable(
     /unknown flag:\s*--(?:expected-version|live-dir|ref|json)\b/iu.test(message);
 }
 
+/** The packaged CLI predates `team-projects pull --authorize-only` (or lacks
+ *  `team-projects pull` entirely). Callers must fail OPEN — pull as before —
+ *  never block materialization on a missing probe. */
+export function isAuthorizedTeamProjectPullInspectUnavailable(
+  error: unknown,
+): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /unknown flag:\s*--authorize-only\b/iu.test(message) ||
+    isAuthorizedTeamProjectPullUnavailable(error);
+}
+
+/** Outcome of the authorize-only size probe. 'uncounted' means the CLI ran
+ *  but could not report a count (old server output shape, malformed or
+ *  mismatched JSON); 'unavailable' means the CLI lacks the probe itself. Both
+ *  must degrade to the ordinary pull. */
+export type AuthorizedTeamProjectPullInspection =
+  | { kind: 'counted'; entryCount: number }
+  | { kind: 'uncounted' }
+  | { kind: 'unavailable' };
+
+export interface InspectAuthorizedTeamProjectPullInput {
+  projectId: string;
+  scope: TeamMirrorPullScope;
+  expectedVersion: number;
+  signal?: AbortSignal;
+  run?: RunAuthorizedTeamProjectPull;
+}
+
+/**
+ * Authorize-only manifest probe: `vela team-projects pull <projectId>
+ * --authorize-only` authorizes the exact published version and reports its
+ * `manifestEntryCount` WITHOUT downloading a single blob (authorization
+ * happens before any content transfer on the Vela side). Used by the
+ * background pull size guard; the real pull re-runs full authorization and
+ * receipt validation, so this probe performs only sanity binding checks and
+ * degrades every anomaly to 'uncounted' (fail open).
+ *
+ * Throws only on transport-level failures (timeout, abort, non-capability CLI
+ * errors) so the caller can fail open without caching a transient answer.
+ */
+export async function inspectAuthorizedTeamProjectPull(
+  input: InspectAuthorizedTeamProjectPullInput,
+): Promise<AuthorizedTeamProjectPullInspection> {
+  if (
+    !input.projectId.trim() ||
+    !Number.isSafeInteger(input.expectedVersion) ||
+    input.expectedVersion < 0
+  ) {
+    return { kind: 'uncounted' };
+  }
+  let stdout: string;
+  try {
+    stdout = await (input.run ?? defaultRun)(
+      [
+        'pull',
+        input.projectId,
+        '--authorize-only',
+        '--ref',
+        'published',
+        '--expected-version',
+        String(input.expectedVersion),
+        '--json',
+      ],
+      input.scope.workspaceId,
+      {
+        timeoutMs: AUTHORIZED_PULL_TIMEOUT_MS,
+        ...(input.signal ? { signal: input.signal } : {}),
+      },
+    );
+  } catch (error) {
+    if (isAuthorizedTeamProjectPullInspectUnavailable(error)) {
+      return { kind: 'unavailable' };
+    }
+    throw error;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.trim());
+  } catch {
+    return { kind: 'uncounted' };
+  }
+  if (!isRecord(parsed)) return { kind: 'uncounted' };
+  if (
+    parsed.projectId !== input.projectId ||
+    parsed.version !== input.expectedVersion ||
+    parsed.workspaceId !== input.scope.workspaceId
+  ) {
+    return { kind: 'uncounted' };
+  }
+  const entryCount = parsed.manifestEntryCount;
+  if (!Number.isSafeInteger(entryCount) || Number(entryCount) < 0) {
+    return { kind: 'uncounted' };
+  }
+  return { kind: 'counted', entryCount: Number(entryCount) };
+}
+
 function fileIdentity(
   value: Awaited<ReturnType<typeof lstat>>,
 ): AuthorizedTeamProjectStageIdentity {
