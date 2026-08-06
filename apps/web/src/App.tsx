@@ -496,6 +496,62 @@ export function clearAmrLiveModelsFromAgents(agents: AgentInfo[]): AgentInfo[] {
   return changed ? next : agents;
 }
 
+/**
+ * Choose the Path A AMR model-catalog scope for the shell picker.
+ *
+ * Invariant: catalog scope must match the authority that owns the next run.
+ * On project routes that is the open project's resolved workspace context, not
+ * the ambient navigation-rail selection (which may diverge while the project
+ * stays open). During account transitions the ambient context is intentionally
+ * retained with identityChangePending; treat that as pending and refuse to
+ * scope a fetch from the retained prior-account context.
+ */
+export function resolveAmrModelsCatalogScope(input: {
+  routeKind: string;
+  projectId?: string | null;
+  activeProject: { id: string; workspaceId?: string | null } | null;
+  activeProjectWorkspaceContext: WorkspaceCollabContext | null;
+  projectRouteLoading: boolean;
+  ambientWorkspaceContext: WorkspaceCollabContext | null;
+  identityChangePending: boolean;
+  accountGeneration: number;
+}): {
+  context: WorkspaceCollabContext | null;
+  pending: boolean;
+  identity: string;
+} {
+  const onProjectRoute = input.routeKind === 'project';
+  const context = onProjectRoute
+    ? input.activeProjectWorkspaceContext
+    : input.ambientWorkspaceContext;
+  const pending =
+    input.identityChangePending
+    || (onProjectRoute && input.activeProject == null)
+    || (
+      onProjectRoute
+      && Boolean(input.activeProject?.workspaceId?.trim())
+      && input.activeProjectWorkspaceContext == null
+      && input.projectRouteLoading
+    );
+  const identity = JSON.stringify(
+    pending
+      ? [
+          input.identityChangePending
+            ? 'pending-account'
+            : 'pending-project-workspace',
+          input.accountGeneration,
+          onProjectRoute ? input.projectId ?? null : null,
+          onProjectRoute ? input.activeProject?.workspaceId ?? null : null,
+        ]
+      : [
+          'workspace-account',
+          input.accountGeneration,
+          workspaceIdentityCacheKey(context),
+        ],
+  );
+  return { context, pending, identity };
+}
+
 const CANONICAL_AGENT_ORDER = [
   'amr',
   'claude',
@@ -840,6 +896,7 @@ function AppInner() {
   const workspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
   const workspaceContextStateRef = useRef(workspaceContextState);
   const projectRouteWorkspaceContextRef = useRef<WorkspaceCollabContext | null>(null);
+  const amrModelsCatalogContextRef = useRef<WorkspaceCollabContext | null>(null);
   const projectOpenWorkspaceWitnessRef = useRef<{
     projectId: string;
     projectWorkspaceId: string;
@@ -1325,15 +1382,10 @@ function AppInner() {
     setAmrPollRestartToken((current) => current + 1);
   }, []);
 
-  // Team entitlements are workspace-scoped. Drop the previous catalog as soon
-  // as the shell identity changes so the picker cannot keep free locks (or a
-  // prior Team unlock map) while the scoped refetch is in flight — including
-  // the live models already merged into `agents`. The AMR poll effect already
-  // depends on `currentWorkspaceIdentity`.
-  useEffect(() => {
-    amrModelsRef.current = null;
-    setAgents((current) => clearAmrLiveModelsFromAgents(current));
-  }, [currentWorkspaceIdentity]);
+  // AMR model catalog clear/poll lives after `activeProjectWorkspaceContext`
+  // so Path A discovery can follow the open project's workspace authority
+  // (not only the ambient navigation-rail selection) and the account-generation
+  // pending sentinel.
 
   // v2 schema removed the standalone `app_launch` event; the initial
   // page_view fires from each top-level page surface (home / projects /
@@ -1810,52 +1862,6 @@ function AppInner() {
       // Daemon down or transient network — not worth surfacing.
     });
   }, [activeProjectId, activeFileName]);
-
-  useEffect(() => {
-    if (!daemonLive) return;
-    let cancelled = false;
-    let timer: number | null = null;
-    const pollGeneration = amrPollGenerationRef.current + 1;
-    amrPollGenerationRef.current = pollGeneration;
-    const pollDelayMs = 1_000;
-    const maxPresetPolls = 10;
-    let presetPolls = 0;
-    // Capture the workspace identity this poll generation was issued for.
-    // Path A model discovery is workspace-scoped; a later switch must not
-    // commit an older personal/team catalog into the new shell.
-    const issuedWorkspaceContext = workspaceContextRef.current;
-
-    const applyAmrModels = async () => {
-      const result = await fetchAmrModels(issuedWorkspaceContext);
-      if (
-        cancelled ||
-        amrPollGenerationRef.current !== pollGeneration ||
-        !result ||
-        !Array.isArray(result.models) ||
-        result.models.length === 0
-      ) {
-        return;
-      }
-      amrModelsRef.current = result;
-      setAgents((current) => mergeAmrModelsIntoAgents(current, result));
-      const shouldPollPreset =
-        result.source === 'preset' &&
-        !result.remoteError &&
-        presetPolls < maxPresetPolls;
-      if (shouldPollPreset) {
-        presetPolls += 1;
-        timer = window.setTimeout(() => {
-          void applyAmrModels();
-        }, pollDelayMs);
-      }
-    };
-
-    void applyAmrModels();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [amrPollRestartToken, currentWorkspaceIdentity, daemonLive]);
 
   // App-level AMR sign-in state. Feeds two analytics globals: the
   // `amr` configure_type bucket (deriveConfigureGlobals below) and the
@@ -4172,6 +4178,87 @@ function AppInner() {
     ? projectRouteWorkspaceContext.context
     : null;
   projectRouteWorkspaceContextRef.current = activeProjectWorkspaceContext;
+
+  const {
+    context: amrModelsCatalogContext,
+    pending: amrModelsCatalogPending,
+    identity: amrModelsCatalogIdentity,
+  } = resolveAmrModelsCatalogScope({
+    routeKind: route.kind,
+    projectId: route.kind === 'project' ? route.projectId : null,
+    activeProject,
+    activeProjectWorkspaceContext,
+    projectRouteLoading: projectRouteWorkspaceContext.loading,
+    ambientWorkspaceContext: workspaceContext,
+    identityChangePending: workspaceContextState.identityChangePending === true,
+    accountGeneration: workspaceAccountGeneration,
+  });
+  amrModelsCatalogContextRef.current = amrModelsCatalogContext;
+
+  // Team entitlements are workspace- and account-scoped. Drop the previous
+  // catalog as soon as that catalog identity changes so the picker cannot keep
+  // free locks (or a prior Team unlock map) while the scoped refetch is in
+  // flight — including the live models already merged into `agents`.
+  useEffect(() => {
+    amrModelsRef.current = null;
+    setAgents((current) => clearAmrLiveModelsFromAgents(current));
+  }, [amrModelsCatalogIdentity]);
+
+  useEffect(() => {
+    if (!daemonLive) return;
+    // Do not issue a scoped fetch from a retained ambient context during an
+    // account transition, or from ambient B while a project-A route is still
+    // resolving its own workspace authority.
+    if (amrModelsCatalogPending) return;
+    let cancelled = false;
+    let timer: number | null = null;
+    const pollGeneration = amrPollGenerationRef.current + 1;
+    amrPollGenerationRef.current = pollGeneration;
+    const pollDelayMs = 1_000;
+    const maxPresetPolls = 10;
+    let presetPolls = 0;
+    // Capture the workspace identity this poll generation was issued for.
+    // Path A model discovery is workspace-scoped; a later switch must not
+    // commit an older personal/team catalog into the new shell.
+    const issuedWorkspaceContext = amrModelsCatalogContextRef.current;
+
+    const applyAmrModels = async () => {
+      const result = await fetchAmrModels(issuedWorkspaceContext);
+      if (
+        cancelled ||
+        amrPollGenerationRef.current !== pollGeneration ||
+        !result ||
+        !Array.isArray(result.models) ||
+        result.models.length === 0
+      ) {
+        return;
+      }
+      amrModelsRef.current = result;
+      setAgents((current) => mergeAmrModelsIntoAgents(current, result));
+      const shouldPollPreset =
+        result.source === 'preset' &&
+        !result.remoteError &&
+        presetPolls < maxPresetPolls;
+      if (shouldPollPreset) {
+        presetPolls += 1;
+        timer = window.setTimeout(() => {
+          void applyAmrModels();
+        }, pollDelayMs);
+      }
+    };
+
+    void applyAmrModels();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [
+    amrModelsCatalogIdentity,
+    amrModelsCatalogPending,
+    amrPollRestartToken,
+    daemonLive,
+  ]);
+
   useEffect(() => {
     const pending = amrAuthRetryContinuationRef.current;
     if (!pending) return;

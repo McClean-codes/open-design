@@ -9,6 +9,7 @@ import {
   persistComposioConfigChange,
   projectViewAuthorizationLifetimeKey,
   projectRouteSurfaceState,
+  resolveAmrModelsCatalogScope,
   resolveDeepLinkedTeamSharedProject,
   resolveSettingsCloseConfig,
   shouldRouteToFirstRunOnboarding,
@@ -19,6 +20,7 @@ import type {
   WorkspaceCollabContext,
   WorkspaceProjectSummary,
 } from '@open-design/contracts';
+import { workspaceIdentityCacheKey } from '../src/collab/workspace-identity';
 
 describe('projectRouteSurfaceState', () => {
   it('only shows an unbounded loader while the initial project list is loading', () => {
@@ -560,5 +562,110 @@ describe('clearAmrLiveModelsFromAgents', () => {
       },
     ];
     expect(clearAmrLiveModelsFromAgents(fallbackAgents)).toBe(fallbackAgents);
+  });
+});
+
+describe('resolveAmrModelsCatalogScope', () => {
+  const workspaceA: WorkspaceCollabContext = {
+    workspaceId: 'ws-a',
+    workspaceType: 'team',
+    workspaceMemberId: 'member-a',
+    role: 'member',
+    memberStatus: 'active',
+    lifecycleState: 'active',
+    billingState: 'active',
+    planId: 'team_pro',
+    providerMode: 'platform_credits',
+    seatSummary: { seatLimit: 5, usedSeats: 1, availableSeats: 4, isSeatFull: false },
+    permissions: {
+      canManageMembers: false,
+      canManageBilling: false,
+      canInviteMembers: false,
+      canManageAutoRecharge: false,
+      canShareProjects: true,
+      canWriteSyncedFiles: true,
+      canViewWorkspaceSettings: false,
+      canManageSharedResources: false,
+    },
+  };
+  const workspaceB: WorkspaceCollabContext = {
+    ...workspaceA,
+    workspaceId: 'ws-b',
+    workspaceMemberId: 'member-b',
+  };
+
+  it('uses the open project workspace on project routes even when ambient rail is B', () => {
+    const scope = resolveAmrModelsCatalogScope({
+      routeKind: 'project',
+      projectId: 'proj-a',
+      activeProject: { id: 'proj-a', workspaceId: 'ws-a' },
+      activeProjectWorkspaceContext: workspaceA,
+      projectRouteLoading: false,
+      ambientWorkspaceContext: workspaceB,
+      identityChangePending: false,
+      accountGeneration: 3,
+    });
+    expect(scope.pending).toBe(false);
+    expect(scope.context).toBe(workspaceA);
+    expect(scope.identity).toBe(JSON.stringify([
+      'workspace-account',
+      3,
+      workspaceIdentityCacheKey(workspaceA),
+    ]));
+  });
+
+  it('falls back to ambient workspace context off project routes', () => {
+    const scope = resolveAmrModelsCatalogScope({
+      routeKind: 'home',
+      activeProject: null,
+      activeProjectWorkspaceContext: null,
+      projectRouteLoading: false,
+      ambientWorkspaceContext: workspaceB,
+      identityChangePending: false,
+      accountGeneration: 1,
+    });
+    expect(scope.pending).toBe(false);
+    expect(scope.context).toBe(workspaceB);
+  });
+
+  it('marks account transitions pending so retained ambient context is not fetched', () => {
+    const scope = resolveAmrModelsCatalogScope({
+      routeKind: 'home',
+      activeProject: null,
+      activeProjectWorkspaceContext: null,
+      projectRouteLoading: false,
+      ambientWorkspaceContext: workspaceA,
+      identityChangePending: true,
+      accountGeneration: 4,
+    });
+    expect(scope.pending).toBe(true);
+    expect(scope.context).toBe(workspaceA);
+    expect(scope.identity).toBe(JSON.stringify([
+      'pending-account',
+      4,
+      null,
+      null,
+    ]));
+  });
+
+  it('stays pending while a project-bound workspace authority is still loading', () => {
+    const scope = resolveAmrModelsCatalogScope({
+      routeKind: 'project',
+      projectId: 'proj-a',
+      activeProject: { id: 'proj-a', workspaceId: 'ws-a' },
+      activeProjectWorkspaceContext: null,
+      projectRouteLoading: true,
+      ambientWorkspaceContext: workspaceB,
+      identityChangePending: false,
+      accountGeneration: 2,
+    });
+    expect(scope.pending).toBe(true);
+    expect(scope.context).toBeNull();
+    expect(scope.identity).toBe(JSON.stringify([
+      'pending-project-workspace',
+      2,
+      'proj-a',
+      'ws-a',
+    ]));
   });
 });
