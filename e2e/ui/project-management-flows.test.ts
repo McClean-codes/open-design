@@ -384,9 +384,20 @@ test('[P0] UI-created Personal project recovers preview and write authority afte
   // both authority reads unresolved long enough to observe the fail-closed
   // state, then release them independently. The persisted Personal binding —
   // not that ephemeral witness — must reconnect the already-ready artifact.
+  //
+  // The fail-closed state to observe here is the WRITE gate, not a viewer
+  // skeleton. `runWorkspaceIdentity` deliberately lends the exact caller whose
+  // workspace matches the project's persisted binding while the first scope
+  // read is pending (see its docblock in
+  // `apps/web/src/collab/useProjectWorkspaceScope.ts`), so a Personal-bound
+  // project keeps `projectResourceAuthority === 'workspace'` throughout the
+  // stall and the already-ready artifact stays on screen instead of falling
+  // back to `.viewer-loading`. That skeleton is only reachable in the sub-100ms
+  // window before `/api/workspace/context` answers, which makes it a race, not
+  // a contract. Reads stay open; only writes fail closed.
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('file-workspace')).toBeVisible();
-  await expect(page.locator('.viewer-loading')).toBeVisible();
+  await expect(page.getByTestId('chat-composer-input')).toHaveAttribute('aria-readonly', 'true');
 
   releaseScope();
   await expect(artifactPreviewFrame(page).getByRole('heading', {
