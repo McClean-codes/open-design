@@ -15,12 +15,14 @@
  * fixture document (see `evaluatePackagedAppShellProbe`); in the renderer both
  * arguments are the ordinary globals.
  */
+export const packagedOnboardingRuntimeSelector = '.onboarding-cloud__alt-btn';
+
 const PACKAGED_APP_SHELL_PROBE = `
   (doc, ElementCtor) => {
     const home = doc.querySelector('[data-testid="entry-nav-home"]');
     const onboardingShell = doc.querySelector('.entry-shell--onboarding, .entry-onboarding-modal');
     const cloudSignIn = doc.querySelector('.onboarding-cloud__primary');
-    const secondaryLinks = Array.from(doc.querySelectorAll('.onboarding-cloud__alt-btn'));
+    const secondaryLinks = Array.from(doc.querySelectorAll('${packagedOnboardingRuntimeSelector}'));
     return {
       byokLinkVisible: secondaryLinks[1] instanceof ElementCtor,
       cloudSignInVisible: cloudSignIn instanceof ElementCtor,
