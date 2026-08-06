@@ -1306,6 +1306,12 @@ describe('POST /api/integrations/vela/login', () => {
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+    await waitForVelaLoginSupervisorSettled();
+    status = await getJson<{
+      authRoute?: string;
+      fallbackUsed?: boolean;
+      authStages?: Array<{ stage: string; result: string; route: string }>;
+    }>(`${baseUrl}/api/integrations/vela/status`);
     expect(status.body).toMatchObject({
       authRoute: 'direct',
       fallbackUsed: false,
