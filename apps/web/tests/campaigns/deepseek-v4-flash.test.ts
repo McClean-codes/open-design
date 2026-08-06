@@ -149,7 +149,10 @@ describe('DeepSeek V4 Flash campaign', () => {
   it('keeps the unpaid action on the upgrade flow without showing the paid secondary action', () => {
     expect(DEEPSEEK_V4_FLASH_CAMPAIGN.unpaid.cta).toBe('升级套餐，立即使用');
     expect(campaignDialogSource).toContain("'deepseek_unpaid_modal'");
-    expect(campaignDialogSource).toContain('attributedAmrUrl(plansUrl, attribution)');
+    // The upgrade URL carries the consent-gated device id like the other two
+    // campaign touchpoints (workbench badge, model-switcher upgrade).
+    expect(campaignDialogSource).toContain('attributedAmrUrl(plansUrl, attribution, deviceId)');
+    expect(campaignDialogSource).toContain('metricsConsent,');
     expect(campaignDialogSource).toMatch(/\{paid \? \([\s\S]*稍后再说[\s\S]*\) : null\}/);
   });
 

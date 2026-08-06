@@ -101,6 +101,53 @@ describe('paid 立即使用 switches the workbench onto the campaign model', () 
   });
 });
 
+describe('unpaid upgrade path carries telemetry consent', () => {
+  it('forwards metricsConsent and stamps od_device_id on the plans URL', () => {
+    // The other two campaign touchpoints (workbench badge, model-switcher
+    // upgrade) already record the AMR entry with metricsConsent and attach
+    // the consent-gated device id; the modal must match.
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    render(
+      <DeepSeekV4FlashCampaign
+        audience="unpaid"
+        active
+        metricsConsent
+        installationId="install-abc123"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '升级套餐，立即使用' }));
+
+    expect(open).toHaveBeenCalledTimes(1);
+    const url = new URL(open.mock.calls[0][0] as string);
+    expect(url.searchParams.get('od_campaign_id')).toBe('deepseek_v4_flash');
+    expect(url.searchParams.get('od_conversion_source')).toBe('deepseek_unpaid_modal');
+    expect(url.searchParams.get('od_device_id')).toBe('install-abc123');
+  });
+
+  it('omits od_device_id without metrics consent', () => {
+    const open = vi.fn();
+    vi.stubGlobal('open', open);
+    render(
+      <DeepSeekV4FlashCampaign
+        audience="unpaid"
+        active
+        metricsConsent={false}
+        installationId="install-abc123"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: '升级套餐，立即使用' }));
+
+    expect(open).toHaveBeenCalledTimes(1);
+    const url = new URL(open.mock.calls[0][0] as string);
+    expect(url.searchParams.get('od_device_id')).toBeNull();
+    // Attribution itself is consent-independent.
+    expect(url.searchParams.get('od_campaign_id')).toBe('deepseek_v4_flash');
+  });
+});
+
 describe('campaign modal only interrupts the active home view', () => {
   it('stays silent on non-home views even when the campaign is unseen', () => {
     render(<DeepSeekV4FlashCampaign audience="paid" active={false} />);

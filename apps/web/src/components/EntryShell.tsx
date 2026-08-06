@@ -1705,6 +1705,8 @@ export function EntryShell({
                 artifactUpgradeSlot={artifactUpgradeSlot}
                 deepSeekV4FlashCampaignAudience={deepSeekV4FlashCampaignAudience}
                 onDeepSeekV4FlashCampaignUseNow={applyDeepSeekCampaignModel}
+                deepSeekV4FlashCampaignMetricsConsent={config.telemetry?.metrics === true}
+                deepSeekV4FlashCampaignInstallationId={config.installationId ?? null}
               />
             </div>
             <div data-testid="entry-view-projects" data-active={view === 'projects' ? 'true' : 'false'} {...inactiveViewProps(view === 'projects')}>

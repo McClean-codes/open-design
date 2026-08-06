@@ -291,6 +291,10 @@ interface Props {
    *  EntryShell owns the agent/model persistence callbacks; HomeView only
    *  threads them through, like the audience above. */
   onDeepSeekV4FlashCampaignUseNow?: (agentId: string, modelId: string) => void;
+  /** Telemetry opt-in + install id for the modal's consent-gated AMR
+   *  attribution — EntryShell reads them off config, HomeView threads. */
+  deepSeekV4FlashCampaignMetricsConsent?: boolean;
+  deepSeekV4FlashCampaignInstallationId?: string | null;
 }
 
 const EMPTY_DESIGN_SYSTEMS: DesignSystemSummary[] = [];
@@ -436,6 +440,8 @@ export function HomeView({
   artifactUpgradeSlot,
   deepSeekV4FlashCampaignAudience = 'unknown',
   onDeepSeekV4FlashCampaignUseNow,
+  deepSeekV4FlashCampaignMetricsConsent = false,
+  deepSeekV4FlashCampaignInstallationId = null,
 }: Props) {
   const { locale, t } = useI18n();
   const analytics = useAnalytics();
@@ -2526,6 +2532,8 @@ export function HomeView({
         audience={deepSeekV4FlashCampaignAudience}
         active={isActive}
         onUseCampaignModel={onDeepSeekV4FlashCampaignUseNow}
+        metricsConsent={deepSeekV4FlashCampaignMetricsConsent}
+        installationId={deepSeekV4FlashCampaignInstallationId}
       />
       {isActive ? <AppWashKineticGrid clipBottomTo=".home-hero" /> : null}
       <HomeHero

@@ -14,7 +14,12 @@ import {
   amrPlansUrlForWorkspace,
 } from '../runtime/amr-guidance';
 import { useAnalytics } from '../analytics/provider';
-import { attributedAmrUrl, recordAmrEntry } from '../analytics/amr-attribution';
+import { getResolvedDeviceId } from '../analytics/client';
+import {
+  amrHandoffDeviceId,
+  attributedAmrUrl,
+  recordAmrEntry,
+} from '../analytics/amr-attribution';
 import {
   trackDeepSeekCampaignModalClick,
   trackDeepSeekCampaignModalSurfaceView,
@@ -46,6 +51,15 @@ interface Props {
    * persists through.
    */
   onUseCampaignModel?: (agentId: string, modelId: string) => void;
+  /**
+   * Telemetry opt-in (config.telemetry.metrics). Gates the AMR analytics
+   * mirror of the recorded entry AND the od_device_id on the plans URL —
+   * the same treatment the workbench badge and the model-switcher upgrade
+   * already apply to this campaign's other touchpoints.
+   */
+  metricsConsent?: boolean;
+  /** config.installationId — the preferred consent-gated AMR join key. */
+  installationId?: string | null;
 }
 
 function shouldForceCampaignReview(): boolean {
@@ -94,6 +108,8 @@ export function DeepSeekV4FlashCampaign({
   audience,
   active = true,
   onUseCampaignModel,
+  metricsConsent = false,
+  installationId = null,
 }: Props) {
   const analytics = useAnalytics();
   const { context: workspaceContext } = useWorkspaceContext();
@@ -193,12 +209,18 @@ export function DeepSeekV4FlashCampaign({
       'deepseek_unpaid_modal',
       new Date(),
       {
+        metricsConsent,
         campaignId: 'deepseek_v4_flash',
         conversionSource: 'deepseek_unpaid_modal',
       },
     );
+    const deviceId = amrHandoffDeviceId({
+      metricsConsent,
+      resolvedDeviceId: getResolvedDeviceId(),
+      installationId,
+    });
     window.open(
-      attributedAmrUrl(plansUrl, attribution),
+      attributedAmrUrl(plansUrl, attribution, deviceId),
       '_blank',
       'noopener,noreferrer',
     );
