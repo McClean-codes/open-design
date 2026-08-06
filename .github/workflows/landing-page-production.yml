@@ -17,6 +17,13 @@ on:
       reason:
         description: 'Why promote now? (recorded in the run log)'
         required: false
+      mode:
+        description: 'deploy = full promote; purge-only = host-purge open-design.ai without rebuild'
+        type: choice
+        options:
+          - deploy
+          - purge-only
+        default: deploy
 
 permissions:
   contents: read
@@ -35,7 +42,12 @@ jobs:
     # the main ref so a dispatch from a feature branch/tag is skipped outright
     # (no deploy) instead of recording a non-main production run — which would
     # also dodge blog-indexing's `workflow_run` `branches: [main]` filter.
-    if: github.repository == 'nexu-io/open-design' && github.ref == 'refs/heads/main'
+    # purge-only skips this job and runs the host-purge job alone (token check /
+    # incident recovery without a full rebuild).
+    if: >
+      github.repository == 'nexu-io/open-design'
+      && github.ref == 'refs/heads/main'
+      && github.event.inputs.mode != 'purge-only'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment:
@@ -205,11 +217,27 @@ jobs:
             --project-name=open-design-landing
             --branch=main
 
-      # CF Pages deploy does not reliably invalidate custom-domain HTML across
-      # every POP when `_headers` allows edge caching. Purge by hostname so all
-      # locale paths (`/`, `/zh/pricing/`, …) drop together without
-      # purge_everything on the whole zone (keeps download.open-design.ai etc.).
-      # Token needs Zone → Cache Purge. Optional: set vars.CLOUDFLARE_ZONE_ID.
+  # CF Pages deploy does not reliably invalidate custom-domain HTML across every
+  # POP when `_headers` allows edge caching. Purge by hostname so all locale
+  # paths (`/`, `/zh/pricing/`, …) drop together without purge_everything on
+  # the whole zone (keeps download.open-design.ai etc.).
+  # Token needs Zone → Cache Purge. Optional: set vars.CLOUDFLARE_ZONE_ID.
+  purge:
+    name: Purge open-design.ai edge cache (hosts)
+    needs: deploy
+    if: >
+      always()
+      && github.repository == 'nexu-io/open-design'
+      && (
+        github.event.inputs.mode == 'purge-only'
+        || needs.deploy.result == 'success'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
       - name: Purge open-design.ai edge cache (hosts)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -218,7 +246,6 @@ jobs:
         run: node apps/landing-page/scripts/purge-open-design-edge-cache.mjs
 
   # Post a Feishu card to the landing group once the promotion settles. Runs on
-
   # BOTH success and failure (a failed production deploy is exactly when people
   # need a ping), but only when `deploy` actually ran — a dispatch from a
   # non-main ref skips `deploy`, and we don't want a "deploy failed" card for a
