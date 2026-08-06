@@ -141,30 +141,39 @@ const PACKAGED_ONBOARDING_CONFIG_PROBE = `
     try {
       const response = await fetchImpl('/api/app-config');
       const status = typeof response.status === 'number' ? response.status : null;
-      if (!response.ok) return { error: 'daemon returned HTTP ' + status, ok: false, status };
+      if (!response.ok) return { error: 'daemon returned HTTP ' + status, kind: 'http-error', ok: false, status };
       const body = await response.json();
       const config = body == null ? null : body.config;
       if (config == null || typeof config !== 'object' || Array.isArray(config)) {
-        return { error: 'daemon response carried no config object', ok: false, status };
+        return { error: 'daemon response carried no config object', kind: 'no-config', ok: false, status };
+      }
+      // Absent is not malformed. A daemon whose app-config.json does not exist
+      // returns {} plus telemetry defaults, so the key is simply missing — a
+      // legitimate reading of a fresh install. A key present with the wrong type
+      // is corruption. They get different outcomes because different scenarios
+      // may accept them.
+      if (!('onboardingCompleted' in config)) {
+        return { kind: 'absent', ok: false, status };
       }
       // Require the type before reading it. Coercing here (\`x === true\`) would
-      // manufacture a boolean out of a missing key, a null, or the string
-      // "false" — and the manufactured value is \`false\`, which is exactly the
-      // reading that permits the onboarding landing. "The daemon did not tell
-      // me" must never arrive as "the daemon told me false".
+      // manufacture a boolean out of a null or the string "false" — and the
+      // manufactured value is \`false\`, which is exactly the reading that
+      // permits the onboarding landing.
       if (typeof config.onboardingCompleted !== 'boolean') {
         return {
-          error: 'daemon config carried no boolean onboardingCompleted (got '
-            + (config.onboardingCompleted === undefined ? 'undefined' : typeof config.onboardingCompleted)
+          error: 'daemon config carried a non-boolean onboardingCompleted (got '
+            + (config.onboardingCompleted === null ? 'null' : typeof config.onboardingCompleted)
             + ')',
+          kind: 'malformed',
           ok: false,
           status,
         };
       }
-      return { ok: true, onboardingCompleted: config.onboardingCompleted, status };
+      return { kind: 'reading', ok: true, onboardingCompleted: config.onboardingCompleted, status };
     } catch (error) {
       return {
         error: error instanceof Error ? error.message : String(error),
+        kind: 'transport-failure',
         ok: false,
         status: null,
       };
@@ -207,35 +216,115 @@ export class PackagedOnboardingConfigError extends Error {
  *
  * Never returns a default. An unestablished fact must not become a permission.
  */
-export function packagedOnboardingCompletedFromProbe(value: unknown): boolean {
+/**
+ * The complete set of distinct outcomes this probe can produce, and which
+ * scenario may accept each. Seven review rounds on #6481 each found a defect of
+ * one family: a *fault* and an *absence* sharing a representation. This table is
+ * the fix for the family rather than for any one instance.
+ *
+ * | outcome            | meaning                                    | first-run | completed-user |
+ * |--------------------|--------------------------------------------|-----------|----------------|
+ * | `transport-failure`| fetch rejected; daemon unreachable         | reject    | reject         |
+ * | `http-error`       | non-2xx from `/api/app-config`             | reject    | reject         |
+ * | `no-config`        | 200 whose body carried no `config` object  | reject    | reject         |
+ * | `absent`           | 200, `config` present, key never written   | **accept**| reject         |
+ * | `malformed`        | key present but not a boolean              | reject    | reject         |
+ * | `reading`          | key present and boolean                    | accept    | accept if true |
+ *
+ * `absent` is the only asymmetric row, and it is asymmetric for a reason: a key
+ * that was never written is the honest state of a fresh install, whereas in a
+ * run that seeded completion its disappearance means the seed vanished.
+ */
+export type PackagedOnboardingConfigOutcomeKind =
+  | 'absent'
+  | 'http-error'
+  | 'malformed'
+  | 'no-config'
+  | 'reading'
+  | 'transport-failure';
+
+export type PackagedOnboardingConfigOutcome = {
+  readonly error: string | null;
+  readonly kind: PackagedOnboardingConfigOutcomeKind;
+  readonly onboardingCompleted: boolean | null;
+  readonly status: number | null;
+};
+
+const PACKAGED_ONBOARDING_OUTCOME_KINDS: readonly PackagedOnboardingConfigOutcomeKind[] = [
+  'absent',
+  'http-error',
+  'malformed',
+  'no-config',
+  'reading',
+  'transport-failure',
+];
+
+/**
+ * Classifies a probe result. Raises only when the probe itself produced
+ * something unusable — never to express a daemon-side fault, which is a value.
+ */
+export function packagedOnboardingOutcomeFromProbe(value: unknown): PackagedOnboardingConfigOutcome {
   if (typeof value !== 'object' || value == null || Array.isArray(value)) {
     throw new PackagedOnboardingConfigError(
       `the probe returned no result (${JSON.stringify(value) ?? 'undefined'})`,
     );
   }
   const candidate = value as Record<string, unknown>;
+  const kind = candidate.kind;
+  if (typeof kind !== 'string' || !PACKAGED_ONBOARDING_OUTCOME_KINDS.includes(kind as PackagedOnboardingConfigOutcomeKind)) {
+    throw new PackagedOnboardingConfigError(`the probe returned no recognisable outcome (${JSON.stringify(candidate)})`);
+  }
   const status = typeof candidate.status === 'number' ? candidate.status : null;
-  const reason = typeof candidate.error === 'string' ? candidate.error : null;
+  if (kind === 'reading') {
+    if (status !== 200 || typeof candidate.onboardingCompleted !== 'boolean') {
+      throw new PackagedOnboardingConfigError(
+        `the probe claimed a reading without one (${JSON.stringify(candidate)})`,
+      );
+    }
+    return { error: null, kind, onboardingCompleted: candidate.onboardingCompleted, status };
+  }
+  return {
+    error: typeof candidate.error === 'string' ? candidate.error : null,
+    kind: kind as PackagedOnboardingConfigOutcomeKind,
+    onboardingCompleted: null,
+    status,
+  };
+}
 
-  // `status` is load-bearing, not decorative: only a 200 that actually carried a
-  // config object may produce a reading. Everything else — a transport failure,
-  // a non-2xx, a body without `config` — is an unestablished fact and must
-  // raise, because the only alternative reading (`false`) is precisely the one
-  // that would permit the onboarding landing.
-  if (candidate.ok !== true) {
-    throw new PackagedOnboardingConfigError(
-      `${reason ?? 'the probe reported failure'} (status=${status ?? 'none'})`,
+/**
+ * Applies the table above: the daemon's onboarding fact for this scenario, or an
+ * error naming what could not be established.
+ */
+export function packagedOnboardingCompletedForScenario(
+  outcome: PackagedOnboardingConfigOutcome,
+  scenario: PackagedLaunchScenario,
+): boolean {
+  if (outcome.kind === 'reading') {
+    if (outcome.onboardingCompleted == null) {
+      throw new PackagedOnboardingConfigError('the reading carried no value');
+    }
+    return outcome.onboardingCompleted;
+  }
+  if (outcome.kind === 'absent') {
+    // A fresh install has never written the key; that IS "not completed".
+    if (scenario === 'first-run') return false;
+    // In a seeded run the key must exist. Its absence means the seed vanished,
+    // which is the round-5 regression, so raise that cause rather than this one.
+    throw new PackagedOnboardingSeedError(
+      'the relaunched daemon has no onboardingCompleted at all, so the seeded state is gone — check that the protocol cold launch still resolves the tools-pack runtime data root',
     );
   }
-  if (status !== 200) {
-    throw new PackagedOnboardingConfigError(`the daemon answered with status=${status ?? 'none'}`);
-  }
-  if (typeof candidate.onboardingCompleted !== 'boolean') {
-    throw new PackagedOnboardingConfigError(
-      `the daemon answered 200 without a usable reading (${JSON.stringify(candidate)})`,
-    );
-  }
-  return candidate.onboardingCompleted;
+  throw new PackagedOnboardingConfigError(
+    `${outcome.error ?? outcome.kind} (status=${outcome.status ?? 'none'})`,
+  );
+}
+
+/**
+ * Back-compat reader for call sites that already know they are in a seeded
+ * (completed-user) run, where every non-reading outcome is a fault.
+ */
+export function packagedOnboardingCompletedFromProbe(value: unknown): boolean {
+  return packagedOnboardingCompletedForScenario(packagedOnboardingOutcomeFromProbe(value), 'completed-user');
 }
 
 export type PackagedAppShellPolicyInput = {
@@ -393,7 +482,10 @@ export async function runPackagedAppShellPhase(options: {
   readonly sleep?: (ms: number) => Promise<void>;
   readonly timeoutMs?: number;
 }): Promise<{ appShell: PackagedAppShellState; onboardingCompleted: boolean }> {
-  const onboardingCompleted = packagedOnboardingCompletedFromProbe(await options.readOnboardingConfig());
+  const onboardingCompleted = packagedOnboardingCompletedForScenario(
+    packagedOnboardingOutcomeFromProbe(await options.readOnboardingConfig()),
+    options.scenario,
+  );
   // Only a completed-user phase carries a seed to hold across the transition. A
   // first-run phase deliberately has none, so `false` there is the fact under
   // test rather than a loss — which is why the scenario has to be declared by

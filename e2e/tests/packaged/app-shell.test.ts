@@ -9,7 +9,9 @@ import {
   PackagedOnboardingConfigError,
   packagedAppShellExpression,
   packagedOnboardingCompletedFromProbe,
+  packagedOnboardingCompletedForScenario,
   packagedOnboardingConfigExpression,
+  packagedOnboardingOutcomeFromProbe,
   runPackagedAppShellPhase,
   type PackagedOnboardingConfigFetch,
   packagedAppShellFailureReason,
@@ -447,13 +449,15 @@ describe('packaged daemon onboarding config probe', () => {
   // string "false" into a well-formed `false`, which the reader then accepts as
   // a real reading. "The daemon did not tell me" must never arrive as "the
   // daemon told me false".
-  it('refuses to answer when a 200 carries no onboardingCompleted field', async () => {
+  // Absent, not malformed: the daemon never wrote the key. A seeded run must
+  // still reject it — there the absence means the seed vanished — but it is the
+  // one outcome a declared first run legitimately accepts.
+  it('classifies a 200 with no onboardingCompleted field as absent', async () => {
     const value = await evaluatePackagedOnboardingConfigProbe(fakeConfigFetch({ body: { config: {} } }));
 
-    expect(value).toMatchObject({ ok: false });
-    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(
-      PackagedOnboardingConfigError,
-    );
+    expect(packagedOnboardingOutcomeFromProbe(value).kind).toBe('absent');
+    expect(packagedOnboardingCompletedForScenario(packagedOnboardingOutcomeFromProbe(value), 'first-run')).toBe(false);
+    expect(() => packagedOnboardingCompletedFromProbe(value)).toThrow(PackagedOnboardingSeedError);
   });
 
   it('refuses to answer when onboardingCompleted is the wrong type', async () => {
@@ -543,7 +547,7 @@ describe('packaged launch scenarios', () => {
       coreProfile: true,
       now: clock.now,
       observe: async () => landing,
-      readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: false, status: 200 }),
+      readOnboardingConfig: async () => ({ kind: 'reading', ok: true, onboardingCompleted: false, status: 200 }),
       scenario: 'first-run',
       sleep: clock.sleep,
     });
@@ -559,7 +563,7 @@ describe('packaged launch scenarios', () => {
       coreProfile: true,
       now: clock.now,
       observe: async () => home,
-      readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: true, status: 200 }),
+      readOnboardingConfig: async () => ({ kind: 'reading', ok: true, onboardingCompleted: true, status: 200 }),
       scenario: 'completed-user',
       sleep: clock.sleep,
     });
@@ -576,7 +580,7 @@ describe('packaged launch scenarios', () => {
         coreProfile: true,
         now: clock.now,
         observe: async () => landing,
-        readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: true, status: 200 }),
+        readOnboardingConfig: async () => ({ kind: 'reading', ok: true, onboardingCompleted: true, status: 200 }),
         scenario: 'completed-user',
         sleep: clock.sleep,
       }),
@@ -592,7 +596,7 @@ describe('packaged launch scenarios', () => {
         coreProfile: true,
         now: clock.now,
         observe: async () => landing,
-        readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: false, status: 200 }),
+        readOnboardingConfig: async () => ({ kind: 'reading', ok: true, onboardingCompleted: false, status: 200 }),
         scenario: 'completed-user',
         sleep: clock.sleep,
       }),
@@ -608,7 +612,7 @@ describe('packaged launch scenarios', () => {
         coreProfile: true,
         now: clock.now,
         observe: async () => blank,
-        readOnboardingConfig: async () => ({ ok: true, onboardingCompleted: false, status: 200 }),
+        readOnboardingConfig: async () => ({ kind: 'reading', ok: true, onboardingCompleted: false, status: 200 }),
         scenario: 'first-run',
         sleep: clock.sleep,
       }),
