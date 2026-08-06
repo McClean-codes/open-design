@@ -62,7 +62,38 @@ export async function applyStandardMocks(page: Page): Promise<void> {
   await applyStorageConfig(page);
   await routeMockAgents(page);
   await routeAppConfig(page);
+  // Keep this explicit even though the shared suite fixture also installs the
+  // route: callers use applyStandardMocks for extra pages/contexts that are
+  // created outside the built-in Playwright `page` fixture.
+  await routeSignedInVela(page);
   await suppressWhatsNew(page);
+}
+
+/**
+ * Give non-authentication UI specs a deterministic Cloud identity.
+ *
+ * Cloud-first onboarding makes a completed local app config and the Cloud
+ * session two separate boot gates. Standard Home/Workspace specs are not
+ * authentication coverage, so they must satisfy both explicitly instead of
+ * inheriting whichever Vela state happens to be present in the worker daemon.
+ * Authentication specs should keep routing this endpoint themselves.
+ */
+export async function routeSignedInVela(page: Page): Promise<void> {
+  await page.route('**/api/integrations/vela/status', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      json: {
+        loggedIn: true,
+        loginInFlight: false,
+        profile: 'e2e',
+        user: { id: 'e2e-user', email: 'e2e@example.com' },
+        configPath: '/tmp/.amr/config.json',
+      },
+    });
+  });
 }
 
 /** Keep unrelated release announcements from covering the surface under test. */
