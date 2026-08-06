@@ -294,6 +294,7 @@ export function createDesignSystemServerServices({
     workspaceId?: string | null;
     workspaceMemberId?: string | null;
     exactTeam?: boolean;
+    exactPersonal?: boolean;
   } = {}) {
     const builtIn = (await designSystems.listDesignSystems(paths.DESIGN_SYSTEMS_DIR)).map((s) => ({
       ...s,
@@ -314,7 +315,7 @@ export function createDesignSystemServerServices({
       // User directory may not exist yet or be unreadable.
     }
     const workspaceId = options.workspaceId?.trim();
-    if (workspaceId) {
+    if (workspaceId && !options.exactPersonal) {
       try {
         const team = await designSystems.listDesignSystems(
           teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
@@ -382,10 +383,19 @@ export function createDesignSystemServerServices({
 
   async function readAvailableDesignSystem(
     id: string,
-    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
+    options: {
+      workspaceId?: string | null;
+      exactTeam?: boolean;
+      exactPersonal?: boolean;
+    } = {},
   ) {
     const workspaceId = options.workspaceId?.trim();
-    if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
+    if (
+      workspaceId
+      && !options.exactPersonal
+      && typeof id === 'string'
+      && id.startsWith('user:')
+    ) {
       const scoped = await designSystems.readDesignSystem(
         teamResourceWorkspaceRoot(paths.USER_DESIGN_SYSTEMS_DIR, workspaceId),
         id,

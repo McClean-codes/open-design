@@ -345,6 +345,18 @@ describe('design-system pull tool route', () => {
         designSystemId: 'user:shared-brand',
       },
     });
+
+    const readResponse = await jsonFetch(`${baseUrl}/api/tools/design-systems/read`, {
+      path: 'manifests/components.json',
+    });
+    expect(readResponse.status).toBe(404);
+    expect(readResponse.body.error).toMatchObject({
+      code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE',
+      details: {
+        workspaceId: 'workspace-team',
+        designSystemId: 'user:shared-brand',
+      },
+    });
   });
 
   it('reports legacy and malformed runtime packages without downgrading them', async () => {

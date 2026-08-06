@@ -107,6 +107,7 @@ import type { RunEventForFailureClassification } from '../run-failure-classifica
 import { classifyRunFailure } from '../run-failure-classification.js';
 import { deriveRunErrorCode, runResultFromStatus } from '../run-result.js';
 import type { RunStatusForAnalytics } from '../run-result.js';
+import type { PinnedRunDesignSystemScope } from '../design-systems/run-scope.js';
 import {
   parseRunToolBundleForRequest,
   validateRunToolBundleForAgent,
@@ -291,6 +292,7 @@ interface ChatRun {
   requestFingerprint?: string | null;
   agentId: string | null;
   workspaceScope?: PinnedRunWorkspaceScope | null;
+  designSystemScope?: PinnedRunDesignSystemScope | null;
   model?: string | null;
   status: ChatRunStatus;
   createdAt: number;
@@ -377,6 +379,7 @@ interface RunCreateMeta extends JsonRecord {
   currentPrompt?: string;
   projectMetadata?: ProjectMetadata;
   workspaceScope?: PinnedRunWorkspaceScope | null;
+  designSystemScope?: PinnedRunDesignSystemScope | null;
 }
 
 interface RunListFilters {

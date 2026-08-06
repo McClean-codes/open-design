@@ -12,6 +12,7 @@ import type {
 } from '@open-design/contracts';
 
 import type { ToolTokenGrant } from '../tool-tokens.js';
+import type { PinnedRunDesignSystemScope } from '../design-systems/run-scope.js';
 import {
   readDesignSystemPullFile,
   resolveDesignSystemRuntime,
@@ -62,7 +63,10 @@ export type RegisterDesignSystemToolRoutesDeps = {
     getProject: (id: string) => ProjectRecord | null | undefined;
   };
   runs?: {
-    getRun: (id: string) => { designSystemId?: string | null } | null | undefined;
+    getRun: (id: string) => {
+      designSystemId?: string | null;
+      designSystemScope?: PinnedRunDesignSystemScope | null;
+    } | null | undefined;
   };
   features: {
     isDesignSystemRuntimeEnabled: () => boolean;

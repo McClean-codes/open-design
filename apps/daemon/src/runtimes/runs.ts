@@ -533,6 +533,9 @@ function durableRunState(run) {
       : {}),
     ...(typeof run.clientType === 'string' ? { clientType: run.clientType } : {}),
     ...(run.workspaceScope !== undefined ? { workspaceScope: run.workspaceScope } : {}),
+    ...(run.designSystemScope !== undefined
+      ? { designSystemScope: run.designSystemScope }
+      : {}),
     ...(run.analyticsTelemetry ? { analyticsTelemetry: run.analyticsTelemetry } : {}),
     ...(run.promptTelemetry ? { promptTelemetry: run.promptTelemetry } : {}),
     ...(run.promptCache ? { promptCache: run.promptCache } : {}),
@@ -865,6 +868,9 @@ export function createChatRunService({
     };
     if (Object.prototype.hasOwnProperty.call(meta, 'workspaceScope')) {
       run.workspaceScope = meta.workspaceScope ?? null;
+    }
+    if (Object.prototype.hasOwnProperty.call(meta, 'designSystemScope')) {
+      run.designSystemScope = meta.designSystemScope ?? null;
     }
     runs.set(run.id, run);
     if (run.clientRequestId) runIdsByClientRequestId.set(run.clientRequestId, run.id);
