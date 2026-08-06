@@ -20,7 +20,7 @@ const PACKAGED_APP_SHELL_PROBE = `
     const home = doc.querySelector('[data-testid="entry-nav-home"]');
     const onboardingShell = doc.querySelector('.entry-shell--onboarding, .entry-onboarding-modal');
     const cloudSignIn = doc.querySelector('.onboarding-cloud__primary');
-    const secondaryLinks = Array.from(doc.querySelectorAll('.onboarding-cloud__secondary'));
+    const secondaryLinks = Array.from(doc.querySelectorAll('.onboarding-cloud__alt-btn'));
     return {
       byokLinkVisible: secondaryLinks[1] instanceof ElementCtor,
       cloudSignInVisible: cloudSignIn instanceof ElementCtor,
