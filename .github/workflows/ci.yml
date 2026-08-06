@@ -366,11 +366,15 @@ jobs:
         run: pnpm --filter @open-design/tools-pack exec vitest run tests/launcher-payload.test.ts
 
   web_workspace_tests:
-    name: Web workspace tests
+    name: Web workspace tests (${{ matrix.shard }}/2)
     needs: [scopes, runners]
     if: ${{ needs.scopes.outputs.run_web_workspace_tests == 'true' }}
     runs-on: ${{ fromJSON(needs.runners.outputs.runs_on).js_hot }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
 
     steps:
       - name: Checkout
@@ -388,7 +392,7 @@ jobs:
         run: pnpm --filter @open-design/web build:sidecar
 
       - name: Web workspace tests
-        run: pnpm --filter @open-design/web test
+        run: pnpm --filter @open-design/web exec vitest run -c vitest.config.ts --maxWorkers=2 --shard=${{ matrix.shard }}/2
 
   e2e_vitest:
     name: E2E Vitest
@@ -614,6 +618,7 @@ jobs:
           name: visual-pr-capture-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ matrix.name }}
           path: |
             e2e/ui/reports/visual-screenshots
+            e2e/ui/reports/visual-test-results
             e2e/ui/reports/visual-results.json
             e2e/ui/reports/visual-report/manifest.json
           if-no-files-found: ignore
@@ -626,6 +631,7 @@ jobs:
           name: visual-ci-${{ github.run_id }}-${{ matrix.name }}
           path: |
             e2e/ui/reports/visual-screenshots
+            e2e/ui/reports/visual-test-results
             e2e/ui/reports/visual-results.json
           if-no-files-found: ignore
           retention-days: 7

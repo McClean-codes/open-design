@@ -80,15 +80,32 @@ export async function applyStandardMocks(page: Page): Promise<void> {
  * this endpoint themselves with explicit signed-in/signed-out responses.
  */
 export async function routeUnavailableVelaStatus(page: Page): Promise<void> {
-  await page.route('**/api/integrations/vela/status', async (route) => {
+  await page.route('**/api/integrations/vela/status*', async (route) => {
     if (route.request().method() !== 'GET') {
-      await route.continue();
+      await route.fallback();
       return;
     }
     await route.fulfill({
       status: 503,
       json: { error: 'Vela status unavailable in this spec' },
     });
+  });
+}
+
+/**
+ * Keep local-agent scenarios independent from a developer machine's Vela
+ * session. Workspace-aware project creation treats a signed-in account as
+ * requiring an exact Workspace authority, so leaking the host login here can
+ * reject a mocked local-agent create before POST /api/projects is dispatched.
+ * AMR scenarios register their own status route after this standard fallback.
+ */
+export async function routeSignedOutVelaStatus(page: Page): Promise<void> {
+  await page.route('**/api/integrations/vela/status*', async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({ json: { loggedIn: false } });
   });
 }
 

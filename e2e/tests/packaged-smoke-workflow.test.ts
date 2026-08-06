@@ -25,10 +25,13 @@ const configureCiParallelismActionPath = join(
   "action.yml",
 );
 const uiExtendedMainWorkflowPath = join(workspaceRoot, ".github", "workflows", "ui-extended-main.yml");
+const visualBaselineWorkflowPath = join(workspaceRoot, ".github", "workflows", "visual-baseline.yml");
 const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
 const autofixWorkflowPath = join(workspaceRoot, ".github", "workflows", "autofix.atom.yml");
 const reportWorkflowPath = join(workspaceRoot, ".github", "workflows", "report.atom.yml");
+const rerunWorkflowPath = join(workspaceRoot, ".github", "workflows", "rerun.atom.yml");
+const rerunInfraCancelScriptPath = join(workspaceRoot, ".github", "scripts", "rerun_infra_cancel.py");
 const bakePluginPreviewsWorkflowPath = join(workspaceRoot, ".github", "workflows", "bake-plugin-previews.yml");
 const bakePluginPreviewsPrWorkflowPath = join(workspaceRoot, ".github", "workflows", "bake-plugin-previews-pr.yml");
 const dockerImageWorkflowPath = join(workspaceRoot, ".github", "workflows", "docker-image.yml");
@@ -396,6 +399,56 @@ describe("packaged smoke workflow", () => {
     expect(reportWorkflow).toContain("workflows: [ci]");
     expect(reportWorkflow).toContain("github.event.workflow_run.event == 'pull_request'");
     expect(reportWorkflow).not.toContain("merge_group");
+  });
+
+  it("[P2] gates infra-cancel auto-rerun as a trusted workflow_run consumer", async () => {
+    const [rerunWorkflow, rerunScript, ciWorkflow] = await Promise.all([
+      readFile(rerunWorkflowPath, "utf8"),
+      readFile(rerunInfraCancelScriptPath, "utf8"),
+      readFile(ciWorkflowPath, "utf8"),
+    ]);
+
+    // Triggered only by completed `ci` runs; never a business-layer write inside ci.yml.
+    expect(rerunWorkflow).toContain("workflows: [ci]");
+    expect(rerunWorkflow).toContain("types: [completed]");
+    expect(rerunWorkflow).toContain("actions: write");
+    // Annotations + commit→pulls need explicit read scopes when permissions: is set.
+    expect(rerunWorkflow).toContain("checks: read");
+    expect(rerunWorkflow).toContain("pull-requests: read");
+    expect(rerunWorkflow).toContain("group: rerun-${{ github.event.workflow_run.id }}");
+    expect(rerunWorkflow).toContain("cancel-in-progress: false");
+    expect(rerunWorkflow).toContain("github.event.repository.default_branch");
+    expect(rerunWorkflow).toContain("python3 .github/scripts/rerun_infra_cancel.py self-check");
+    expect(rerunWorkflow).toContain("python3 .github/scripts/rerun_infra_cancel.py run");
+
+    // pull_request + merge_group only, one automatic retry, skip green/skipped conclusions.
+    expect(rerunWorkflow).toContain("github.event.workflow_run.event == 'pull_request'");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.event == 'merge_group'");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.run_attempt < 2");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.conclusion != 'success'");
+    expect(rerunWorkflow).toContain("github.event.workflow_run.conclusion != 'skipped'");
+    expect(rerunWorkflow).not.toContain("workflow_dispatch");
+
+    // Decision stays in the helper; ci.yml itself must not gain actions:write or gh run rerun.
+    expect(rerunScript).toContain("The runner has received a shutdown signal");
+    expect(rerunScript).toContain("gh run rerun");
+    expect(rerunScript).toContain("--failed");
+    expect(rerunScript).toContain("DEFAULT_MAX_ATTEMPT = 2");
+    // merge_group freshness: open PR still at the PR head SHA encoded in the
+    // queue branch (pr-N-<sha>), not live queue membership and not open-only.
+    // (required-check failure ejects the synthetic head before workflow_run completed).
+    expect(rerunScript).toContain("resolve_merge_group_open_pr");
+    expect(rerunScript).toContain("parse_merge_group_pr_number");
+    expect(rerunScript).toContain("parse_merge_group_pr_head_sha");
+    expect(rerunScript).toContain("no open PR at the merge_group originating head");
+    // Mixed ordinary failure + cancelled leaf must refuse --failed rerun.
+    expect(rerunScript).toContain("classify_non_success_jobs");
+    expect(rerunScript).toContain("ordinary non-infra failures present");
+    // Warning-level annotations (e.g. scopes.ts full-plan fallback) are not ordinary failures.
+    expect(rerunScript).toContain('level in {"notice", "warning"}');
+    expect(ciWorkflow).not.toContain("gh run rerun");
+    expect(ciWorkflow).toContain("actions: read");
+    expect(ciWorkflow).not.toContain("actions: write");
   });
 
   it("[P2] surfaces a merge-queue needs-validation ejection as a PR comment handoff", async () => {
@@ -1148,6 +1201,13 @@ process.stdin.on("end", () => {
     expect(webWorkspaceTests).toContain("fromJSON(needs.runners.outputs.runs_on).js_hot");
     expect(webWorkspaceTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).js_hot)");
     expect(webWorkspaceTests).not.toContain('"od-persistent-ci"');
+    // Pin two-way vitest sharding so a later YAML edit cannot collapse the split or restore the
+    // monolithic `pnpm --filter @open-design/web test` command while this suite still passes.
+    expect(webWorkspaceTests).toContain("fail-fast: false");
+    expect(webWorkspaceTests).toContain("shard: [1, 2]");
+    expect(webWorkspaceTests).toContain(
+      "pnpm --filter @open-design/web exec vitest run -c vitest.config.ts --maxWorkers=2 --shard=${{ matrix.shard }}/2",
+    );
     expect(e2eVitest).toContain("fromJSON(needs.runners.outputs.runs_on).js_hot");
     expect(e2eVitest).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).js_hot)");
     expect(e2eVitest).not.toContain('"od-persistent-ci"');
@@ -1158,22 +1218,30 @@ process.stdin.on("end", () => {
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
+      "entry-automations",
       "project-workspace",
+      "project-workspace-editor",
       "project-collab",
       "project-runtime",
       "workspace-restoration",
     ]);
     expect(uiP0Groups["project-workspace"].files).toEqual([
       "ui/app.test.ts",
-      "ui/app-design-files.test.ts",
-      "ui/app-manual-edit.test.ts",
       "ui/project-management-flows.test.ts",
-      "ui/workspace-team-design-system-picker.test.ts",
+      "ui/workspace-keyboard-flows.test.ts",
     ]);
     expect(uiP0Groups["project-workspace"].workers).toBe(1);
+    expect(uiP0Groups["project-workspace-editor"]).toEqual({
+      grep: String.raw`\[P0\]`,
+      workers: 1,
+      files: [
+        "ui/app-design-files.test.ts",
+        "ui/app-manual-edit.test.ts",
+        "ui/workspace-team-design-system-picker.test.ts",
+      ],
+    });
     expect(uiP0Groups["project-collab"].files).toEqual([
       "ui/workspace-multi-client-collab.test.ts",
-      "ui/workspace-keyboard-flows.test.ts",
     ]);
     expect(uiP0Groups["project-collab"].workers).toBe(1);
     expect(uiP0Groups["critical-extras"]).toEqual({
@@ -1191,6 +1259,25 @@ process.stdin.on("end", () => {
     expect(uiP0).toContain("Preserve project-runtime domain artifact");
     expect(visual).toContain("fromJSON(needs.runners.outputs.runs_on).visual_hot");
     expect(visual).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).visual_hot)");
+    // visual-pr-capture-* is consumed by report.atom.yml; pin retain-on-failure traces so a
+    // later YAML edit cannot drop e2e/ui/reports/visual-test-results while the suite still passes.
+    expect(visual).toContain(
+      "name: visual-pr-capture-${{ github.event.pull_request.number }}-${{ github.run_id }}-${{ matrix.name }}",
+    );
+    expect(visual).toContain("name: visual-ci-${{ github.run_id }}-${{ matrix.name }}");
+    expect(visual).toContain("e2e/ui/reports/visual-test-results");
+    // Both PR and manual upload path lists include retain-on-failure diagnostics.
+    expect(visual.match(/e2e\/ui\/reports\/visual-test-results/g)?.length).toBe(2);
+    // visual-baseline.yml shares playwright.visual.config.ts; pin its debug artifact so baseline
+    // failures keep the same retain-on-failure path that ci.yml already uploads.
+    const visualBaseline = await readFile(visualBaselineWorkflowPath, "utf8");
+    const baselineDebugArtifact = sectionBetween(
+      visualBaseline,
+      "      - name: Upload baseline debug artifact",
+      "          retention-days: 7",
+    );
+    expect(baselineDebugArtifact).toContain("if: ${{ always() }}");
+    expect(baselineDebugArtifact).toContain("e2e/ui/reports/visual-test-results");
     expect(workflow).not.toContain("needs.runners.outputs.contabo_control");
     expect(workflow).not.toContain("needs.runners.outputs.hosted_or_blacksmith");
     expect(workflow).not.toContain("needs.runners.outputs.blacksmith_default");
@@ -1315,6 +1402,14 @@ process.stdin.on("end", () => {
       expect(runnerDecision(fallbackProfiles)).toEqual({ schema_version: 1, mode: "default" });
       expect(runnerRunsOn(fallbackProfiles).control).toEqual(["nexu-runners-small"]);
     }
+  });
+
+  it("[P1] keeps infra-cancel rerun eligibility gates unit-tested", async () => {
+    const { stdout, stderr } = await execFileAsync("python3", [rerunInfraCancelScriptPath, "self-check"], {
+      cwd: workspaceRoot,
+    });
+    expect(stderr).toBe("");
+    expect(stdout).toContain("rerun_infra_cancel self-check OK");
   });
 
   it("[P2] routes CI follow-ons through generic handoff workflows", async () => {

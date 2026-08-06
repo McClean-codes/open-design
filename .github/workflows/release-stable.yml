@@ -1261,7 +1261,15 @@ jobs:
           name: open-design-release-mac-e2e-report
           path: ${{ runner.temp }}/release-report/mac
 
+      # The windows smoke uploads this artifact with `if-no-files-found: warn`,
+      # so a skipped smoke leaves an empty report directory and publishes no
+      # artifact at all. Downloading it unconditionally then fails finalize —
+      # after all three platforms have already built, signed and notarized —
+      # which makes `win_x64_smoke_mode: skip` unusable on the stable lane even
+      # though the input offers it. Guard it the way the linux report is guarded
+      # by its own build result.
       - name: Download windows e2e spec report
+        if: ${{ inputs.win_x64_smoke_mode != 'skip' }}
         uses: actions/download-artifact@v8
         with:
           name: open-design-release-win-e2e-report
