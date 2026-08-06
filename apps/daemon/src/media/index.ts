@@ -80,6 +80,7 @@ import {
   fetchImageGenerationWithResponseRetry,
   type ImageGenerationRequestSummary,
 } from './image-generation-retry.js';
+import { renderVelaImage, renderVelaVideo } from './vela.js';
 import { codexNeedsDangerFullAccessSandbox } from '../runtimes/defs/codex.js';
 import {
   ensureProject,
@@ -144,6 +145,7 @@ type MediaContext = {
   /** Additional reference images for multi-image i2v / style reference flows. */
   imageRefs: ImageRef[];
   projectRoot: string;
+  workspaceId: string | undefined;
   onProviderRequestSettled:
     | ((summary: ImageGenerationRequestSummary & { providerId: string }) => void)
     | undefined;
@@ -326,6 +328,7 @@ export async function generateMedia(args: {
   prompt?: string; output?: string; aspect?: string; length?: number; duration?: number; voice?: string;
   audioKind?: AudioKind; language?: string; loop?: boolean; promptInfluence?: number;
   compositionDir?: string; image?: string; images?: string[]; onProgress?: ProgressFn; requestInit?: MediaRequestInit;
+  workspaceId?: string;
   onProviderRequestSettled?: (summary: ImageGenerationRequestSummary & { providerId: string }) => void;
 }) {
   const {
@@ -347,6 +350,7 @@ export async function generateMedia(args: {
     compositionDir,
     image,
     requestInit,
+    workspaceId,
     onProviderRequestSettled,
   } = args;
 
@@ -431,7 +435,15 @@ export async function generateMedia(args: {
   // when stubs are swapped for paid integrations.
   const lengthClamp =
     surface === 'video'
-      ? clampWithWarning(length, VIDEO_LENGTHS_SEC, 'length')
+      ? def.provider === 'vela'
+        ? {
+            value:
+              typeof length === 'number' && Number.isFinite(length)
+                ? length
+                : undefined,
+            warning: null,
+          }
+        : clampWithWarning(length, VIDEO_LENGTHS_SEC, 'length')
       : { value: undefined, warning: null };
   const usesProviderSpecificAudioDuration =
     def.provider === 'elevenlabs'
@@ -510,6 +522,7 @@ export async function generateMedia(args: {
     requestInit: requestInit || {},
     imageRefs,
     projectRoot,
+    workspaceId,
     onProviderRequestSettled,
   };
 
@@ -568,6 +581,19 @@ export async function generateMedia(args: {
         wireModel: codexSubscriptionModel.id,
         modelDef: codexSubscriptionModel,
         provider: findProvider('codex'),
+      });
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
+    } else if (def.provider === 'vela' && surface === 'image') {
+      const result = await renderVelaImage(ctx);
+      bytes = result.bytes;
+      providerNote = result.providerNote;
+      suggestedExt = result.suggestedExt;
+    } else if (def.provider === 'vela' && surface === 'video') {
+      const result = await renderVelaVideo({
+        ...ctx,
+        onProgress: args.onProgress,
       });
       bytes = result.bytes;
       providerNote = result.providerNote;
@@ -765,7 +791,7 @@ export async function generateMedia(args: {
     // HyperFrames is a local render, not a remote provider. Falling back
     // to a stub here hides actionable composition/preflight failures and
     // can make the agent retry or narrate a fake MP4 as success.
-    if (def.provider === 'hyperframes') {
+    if (def.provider === 'hyperframes' || def.provider === 'vela') {
       throw err;
     }
     // A real provider failed (network blip, 4xx, missing key, …). We
