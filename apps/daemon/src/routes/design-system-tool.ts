@@ -34,6 +34,8 @@ export type RegisterDesignSystemToolRoutesDeps = {
   paths: {
     DESIGN_SYSTEMS_DIR: string;
     USER_DESIGN_SYSTEMS_DIR: string;
+    /** Resolve the user root for the token's project/workspace scope. */
+    resolveUserDesignSystemsRoot?: (projectId: string, designSystemId: string) => string;
   };
   projects: {
     getProject: (id: string) => ProjectRecord | null | undefined;
@@ -76,7 +78,7 @@ export function registerDesignSystemToolRoutes(
 
       const file = await readActiveDesignSystemPullFile(
         ctx.paths.DESIGN_SYSTEMS_DIR,
-        ctx.paths.USER_DESIGN_SYSTEMS_DIR,
+        userDesignSystemsRootForGrant(ctx, grant, activeDesignSystemId),
         activeDesignSystemId,
         requestedPath,
       );
@@ -124,7 +126,7 @@ export function registerDesignSystemToolRoutes(
       const runtime = await resolveDesignSystemRuntime(
         activeDesignSystemId,
         ctx.paths.DESIGN_SYSTEMS_DIR,
-        ctx.paths.USER_DESIGN_SYSTEMS_DIR,
+        userDesignSystemsRootForGrant(ctx, grant, activeDesignSystemId),
       );
       if (runtime.mode === 'legacy') {
         return sendApiError(
@@ -154,6 +156,15 @@ export function registerDesignSystemToolRoutes(
       sendApiError(res, 500, 'INTERNAL_ERROR', error instanceof Error ? error.message : String(error));
     }
   });
+}
+
+function userDesignSystemsRootForGrant(
+  ctx: RegisterDesignSystemToolRoutesDeps,
+  grant: ToolTokenGrant,
+  designSystemId: string,
+): string {
+  return ctx.paths.resolveUserDesignSystemsRoot?.(grant.projectId, designSystemId)
+    ?? ctx.paths.USER_DESIGN_SYSTEMS_DIR;
 }
 
 function activeDesignSystemIdForGrant(

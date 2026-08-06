@@ -58,6 +58,7 @@ function writeHybridDesignSystem(root: string, id: string): string {
 async function startRouteServer(options: {
   builtInRoot: string;
   userRoot: string;
+  scopedUserRoot?: string;
   activeDesignSystemId: string | null;
   runDesignSystemId?: string | null;
 }): Promise<string> {
@@ -89,6 +90,7 @@ async function startRouteServer(options: {
     paths: {
       DESIGN_SYSTEMS_DIR: options.builtInRoot,
       USER_DESIGN_SYSTEMS_DIR: options.userRoot,
+      resolveUserDesignSystemsRoot: () => options.scopedUserRoot ?? options.userRoot,
     },
     projects: {
       getProject: () => ({
@@ -108,6 +110,25 @@ async function startRouteServer(options: {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('unexpected listen address');
   return `http://127.0.0.1:${address.port}`;
+}
+
+function copyRuntimeFixture(root: string, id: string, label: string): void {
+  const target = path.join(root, id);
+  cpSync(
+    path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+    target,
+    { recursive: true },
+  );
+  const manifestPath = path.join(target, 'manifest.json');
+  const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Record<string, unknown>;
+  manifest.id = id;
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  const intentPath = path.join(target, 'manifests', 'intent-map.json');
+  const intent = JSON.parse(readFileSync(intentPath, 'utf8')) as {
+    mappings: Array<{ properties: { label: string } }>;
+  };
+  intent.mappings[0]!.properties.label = label;
+  writeFileSync(intentPath, `${JSON.stringify(intent, null, 2)}\n`);
 }
 
 async function jsonFetch(url: string, body: Record<string, unknown>): Promise<JsonFetchResult> {
@@ -211,6 +232,26 @@ describe('design-system pull tool route', () => {
     });
     expect(invalidIntent.status).toBe(400);
     expect(invalidIntent.body.error.code).toBe('INVALID_INPUT');
+  });
+
+  it('resolves a team-scoped user runtime instead of a same-id personal runtime', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    const teamRoot = fresh();
+    copyRuntimeFixture(userRoot, 'shared-brand', 'Personal save');
+    copyRuntimeFixture(teamRoot, 'shared-brand', 'Team save');
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      scopedUserRoot: teamRoot,
+      activeDesignSystemId: 'user:shared-brand',
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.resolution.matches[0].properties.label).toBe('Team save');
   });
 
   it('reports legacy and malformed runtime packages without downgrading them', async () => {
