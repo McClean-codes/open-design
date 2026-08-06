@@ -11,6 +11,7 @@ import {
   resolveDesignSystemRuntimePromptContext,
 } from '../../src/design-systems/index.js';
 import { summarizeDesignSystemIntentMapForPrompt } from '../../src/design-systems/runtime.js';
+import { composeSystemPrompt } from '../../src/prompts/system.js';
 
 const fixturesRoot = path.resolve(import.meta.dirname, '../fixtures/design-systems');
 const temporaryRoots: string[] = [];
@@ -63,6 +64,25 @@ describe('design-system structured runtime', () => {
       fixturesRoot,
       path.join(fixturesRoot, 'missing-user-root'),
     )).resolves.toEqual({ mode: 'legacy' });
+  });
+
+  it('keeps structured prompt context on the legacy path when the token channel is disabled', async () => {
+    const context = await resolveDesignSystemRuntimePromptContext(
+      'runtime-v3',
+      fixturesRoot,
+      path.join(fixturesRoot, 'missing-user-root'),
+      { OD_DESIGN_TOKEN_CHANNEL: '0' },
+    );
+
+    expect(context).toEqual({ mode: 'legacy' });
+    const prompt = composeSystemPrompt({
+      designSystemTitle: 'runtime-v3',
+      designSystemBody: '# Runtime v3',
+      designSystemIntentIndex: context.mode === 'structured' ? context.intentIndex : undefined,
+      designSystemRuntimeIssue: context.mode === 'invalid' ? context.issue : undefined,
+    });
+    expect(prompt).not.toContain('## Structured component intent routing');
+    expect(prompt).not.toContain('## Structured design-system runtime unavailable');
   });
 
   it('resolves built-in packages first and user-prefixed packages from the installed root', async () => {

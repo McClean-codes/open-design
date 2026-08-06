@@ -312,6 +312,7 @@ import {
   createUserDesignSystem,
   deleteUserDesignSystem,
   digestDesignSystemContext,
+  isDesignTokenChannelEnabled,
   isTeamSyncedUserDesignSystem,
   LEGACY_DESIGN_SYSTEM_ARTIFACTS,
   linkUserDesignSystemProject,
@@ -7457,6 +7458,9 @@ export async function startServer({
     },
     projects: { getProject: (id: string) => getProject(db, id) },
     runs: { getRun: (id: string) => design.runs.get(id) },
+    features: {
+      isDesignSystemRuntimeEnabled: () => isDesignTokenChannelEnabled(process.env),
+    },
   });
   app.use('/artifacts', express.static(ARTIFACTS_DIR));
   app.use(

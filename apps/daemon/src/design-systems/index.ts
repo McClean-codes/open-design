@@ -590,7 +590,10 @@ export async function resolveDesignSystemRuntimePromptContext(
   designSystemId: string,
   builtInRoot: string,
   userInstalledRoot: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<DesignSystemRuntimePromptContext> {
+  if (!isDesignTokenChannelEnabled(env)) return { mode: 'legacy' };
+
   const runtime = await resolveDesignSystemRuntime(
     designSystemId,
     builtInRoot,
