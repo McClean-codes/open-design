@@ -88,6 +88,9 @@ describe("pricing contract", () => {
     const page = await readFile(PRICING_PAGE_PATH, "utf8");
 
     assert.match(page, /DeepSeek V4 Flash 无限使用/);
+    assert.match(page, /Stop rationing\. Use DeepSeek V4 Flash without limits\./);
+    assert.match(page, /badge: 'Unlimited'/);
+    assert.match(page, /modelBenefit: 'Unlimited DeepSeek V4 Flash'/);
     assert.match(page, /badge: '无限使用'/);
     assert.match(page, /windowLabel: '活动倒计时'/);
     assert.match(page, /windowValue: '7天 00:00:00'/);

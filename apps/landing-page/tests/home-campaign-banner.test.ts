@@ -51,6 +51,9 @@ test('home campaign banner uses the fixed seven-day activity window', () => {
   assert.match(source, /data-home-campaign-banner[^>]*hidden/);
   assert.match(source, /home-campaign-banner-active/);
   assert.match(source, /8 月 6 日—8 月 13 日，一周免费用/);
+  assert.match(source, /Stop rationing\. Use DeepSeek V4 Flash without limits\./);
+  assert.match(source, /linkLabel: 'View campaign benefits'/);
+  assert.match(source, /badge: 'Campaign countdown'/);
   assert.match(source, /FREE all week/);
   assert.doesNotMatch(source, /home-campaign-banner__disclaimer/);
   assert.doesNotMatch(source, /套餐内的<strong>无限制模型额度<\/strong>与<strong>免费生成次数<\/strong>/);
