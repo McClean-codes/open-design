@@ -7412,7 +7412,24 @@ export async function startServer({
   registerDesignSystemToolRoutes(app, {
     auth: authDeps,
     http: httpDeps,
-    paths: pathDeps,
+    paths: {
+      ...pathDeps,
+      resolveUserDesignSystemsRoot: (projectId, designSystemId) => {
+        const projectBinding = getWorkspaceProjectByProjectId(db, projectId);
+        const workspaceId = projectBinding?.workspaceId?.trim();
+        if (!workspaceId) return USER_DESIGN_SYSTEMS_DIR;
+        const teamBinding = getWorkspaceResource(
+          db,
+          'design_system',
+          workspaceId,
+          workspaceTeamDesignSystemBindingResourceId(workspaceId, designSystemId),
+        ) ?? getWorkspaceResource(db, 'design_system', workspaceId, designSystemId);
+        return teamBinding?.visibility === 'team'
+          && teamBinding.resourceState !== 'deleted'
+          ? teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, workspaceId)
+          : USER_DESIGN_SYSTEMS_DIR;
+      },
+    },
     projects: { getProject: (id: string) => getProject(db, id) },
     runs: { getRun: (id: string) => design.runs.get(id) },
   });
@@ -8462,7 +8479,7 @@ export async function startServer({
         const runtimePromptContext = await resolveDesignSystemRuntimePromptContext(
           effectiveDesignSystemId,
           DESIGN_SYSTEMS_DIR,
-          USER_DESIGN_SYSTEMS_DIR,
+          scopedUserDesignSystemsRoot,
         );
         designSystemIntentIndex = runtimePromptContext.intentIndex;
         designSystemRuntimeIssue = runtimePromptContext.issue;
