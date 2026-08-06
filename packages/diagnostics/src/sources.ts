@@ -33,6 +33,32 @@ export interface CollectedFile {
   error?: string;
 }
 
+const NEWLINE_BYTE = 0x0a;
+
+/**
+ * Drop the leading partial line of a tail window read from mid-file.
+ *
+ * INVARIANT: every line in a truncated text source is a COMPLETE line. The
+ * sources this matters most for are jsonl event logs (`runs/<id>/events.jsonl`)
+ * — a byte-exact cut almost always lands mid-object, so the bundle's first
+ * line was half a JSON value and any consumer streaming the file through a
+ * jsonl parser fell over on line 1. Ordinary line-oriented logs get the same
+ * benefit: no half-line noise at the top of the captured tail.
+ *
+ * `data` must start ONE byte before the intended cut (the guard byte): when
+ * that byte is a newline the cut already begins a fresh line and only the
+ * guard byte is dropped, so an aligned cut never loses a complete line. When
+ * the window contains no newline at all (one pathological giant line), the
+ * raw cut is kept — half a line beats an empty file.
+ */
+function alignTailToLineStart(data: Buffer): Buffer {
+  if (data.length === 0) return data;
+  if (data[0] === NEWLINE_BYTE) return data.subarray(1);
+  const firstNewline = data.indexOf(NEWLINE_BYTE);
+  if (firstNewline === -1 || firstNewline + 1 >= data.length) return data.subarray(1);
+  return data.subarray(firstNewline + 1);
+}
+
 async function readMaybeTail(absolutePath: string, tailBytes: number | undefined): Promise<{ text: string; bytes: number }> {
   if (tailBytes == null || tailBytes <= 0) {
     const buf = await readFile(absolutePath);
@@ -48,10 +74,13 @@ async function readMaybeTail(absolutePath: string, tailBytes: number | undefined
   // directly. Long-running daemon logs can be multi-GB.
   const fd = await open(absolutePath, "r");
   try {
-    const start = info.size - tailBytes;
-    const buffer = Buffer.alloc(tailBytes);
-    const { bytesRead } = await fd.read(buffer, 0, tailBytes, start);
-    return { text: buffer.subarray(0, bytesRead).toString("utf8"), bytes: bytesRead };
+    // Read one extra guard byte before the cut so alignTailToLineStart can
+    // tell an already line-aligned cut apart from a mid-line one.
+    const start = info.size - tailBytes - 1;
+    const buffer = Buffer.alloc(tailBytes + 1);
+    const { bytesRead } = await fd.read(buffer, 0, tailBytes + 1, start);
+    const aligned = alignTailToLineStart(buffer.subarray(0, bytesRead));
+    return { text: aligned.toString("utf8"), bytes: aligned.byteLength };
   } finally {
     await fd.close();
   }

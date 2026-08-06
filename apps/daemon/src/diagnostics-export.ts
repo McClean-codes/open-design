@@ -1,3 +1,4 @@
+import { access } from 'node:fs/promises';
 import { homedir, userInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -104,7 +105,18 @@ export const STANDALONE_LAUNCH_WARNING =
   "file-based logs are not captured. Re-run via `pnpm tools-dev` or the packaged " +
   "desktop app to include daemon/web/desktop log files in the bundle.";
 
-function buildSidecarLogSources(runtime: SidecarRuntimeContext<SidecarStamp> | null): LogSource[] {
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function buildSidecarLogSources(
+  runtime: SidecarRuntimeContext<SidecarStamp> | null,
+): Promise<LogSource[]> {
   if (runtime == null) return [];
   // In packaged builds `runtime.base` is `<namespaceRoot>/runtime`, so the log
   // tree lives a level UP at `<namespaceRoot>/logs`; `resolveRuntimeNamespaceRoot`
@@ -129,6 +141,24 @@ function buildSidecarLogSources(runtime: SidecarRuntimeContext<SidecarStamp> | n
       kind: 'text',
       tailBytes: TAIL_BYTES_PER_LOG,
     });
+    // The packaged launcher truncates latest.log on every start and rotates
+    // the prior session's file aside as previous.log (apps/packaged/src/
+    // sidecars.ts openLog). After an incident-triggered relaunch that rotated
+    // file IS the incident-time log, so bundle it whenever it exists. The
+    // entry is existence-conditional because non-rotating launchers
+    // (tools-dev appends to latest.log) never produce one, and listing it
+    // unconditionally would stamp missing-file placeholders and manifest
+    // noise into every dev bundle — the same reason renderer.log stays
+    // desktop-only above.
+    const previousLogPath = `${dirname(absolutePath)}/previous.log`;
+    if (await pathExists(previousLogPath)) {
+      sources.push({
+        name: `logs/${app}/previous.log`,
+        absolutePath: previousLogPath,
+        kind: 'text',
+        tailBytes: TAIL_BYTES_PER_LOG,
+      });
+    }
     // Only desktop runs an Electron renderer that writes `renderer.log`
     // (see apps/desktop/src/main/runtime.ts). daemon and web are pure Node
     // services with no renderer process, so listing the file there only
@@ -181,7 +211,7 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
       const browserUse = collectBrowserUseDiscoveryFacts();
       const runEventSources = await buildRunEventLogSources(options.runsDir);
       const sources = [
-        ...buildSidecarLogSources(options.runtime),
+        ...(await buildSidecarLogSources(options.runtime)),
         ...runEventSources,
         ...(await buildAgentCliLogSources({
           homeDir: home,
