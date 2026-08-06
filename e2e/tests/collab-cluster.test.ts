@@ -26,6 +26,7 @@ type RuntimeMock = ToolsDevSuite & {
 };
 
 type ContextMock = BrowserContext & {
+  addInitScript: ReturnType<typeof vi.fn>;
   close: ReturnType<typeof vi.fn>;
   newPage: ReturnType<typeof vi.fn>;
 };
@@ -113,6 +114,14 @@ describe('createCollabCluster acquisition cleanup', () => {
     expect(secondSpec.root).toContain(runtimeMocks.workspaceRoot);
     expect(firstSpec.dataDir).toBe(join(firstSpec.root, 'scratch', 'data'));
     expect(secondSpec.dataDir).toBe(join(secondSpec.root, 'scratch', 'data'));
+    expect(firstContext.addInitScript).toHaveBeenCalledTimes(1);
+    expect(secondContext.addInitScript).toHaveBeenCalledTimes(1);
+    expect(firstContext.addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
+      firstContext.newPage.mock.invocationCallOrder[0]!,
+    );
+    expect(secondContext.addInitScript.mock.invocationCallOrder[0]).toBeLessThan(
+      secondContext.newPage.mock.invocationCallOrder[0]!,
+    );
 
     await cluster.close();
     await cluster.close();
@@ -189,6 +198,7 @@ function runtime(id: string): RuntimeMock {
 
 function contextWithPage(error?: Error): ContextMock {
   return {
+    addInitScript: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
     newPage: error
       ? vi.fn().mockRejectedValue(error)
