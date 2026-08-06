@@ -34,6 +34,30 @@ describe('run-scoped tool tokens', () => {
     registry.clear();
   });
 
+  it('snapshots the workspace scope for the lifetime of a run token', () => {
+    const registry = new ToolTokenRegistry();
+    const grant = registry.mint({
+      runId: 'run-team',
+      projectId: 'project-team',
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      nowMs: 1_000,
+    });
+
+    expect(grant).toMatchObject({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+    });
+    expect(registry.validate(grant.token, { nowMs: 1_001 })).toMatchObject({
+      ok: true,
+      grant: {
+        workspaceId: 'workspace-a',
+        workspaceMemberId: 'member-a',
+      },
+    });
+    registry.clear();
+  });
+
   it('binds tokens to endpoint and operation allowlists', () => {
     const registry = new ToolTokenRegistry();
     const grant = registry.mint({

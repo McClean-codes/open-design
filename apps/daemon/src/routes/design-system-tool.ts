@@ -4,6 +4,12 @@ import {
   DesignSystemIntentIdSchema,
   resolveDesignSystemIntentForGeneration,
 } from '@open-design/contracts';
+import type {
+  ResolveDesignSystemIntentErrorCode,
+  ResolveDesignSystemIntentErrorDetails,
+  ResolveDesignSystemIntentRequest,
+  ResolveDesignSystemIntentResponse,
+} from '@open-design/contracts';
 
 import type { ToolTokenGrant } from '../tool-tokens.js';
 import {
@@ -24,6 +30,18 @@ type SendApiError = (
   extras?: Record<string, unknown>,
 ) => void;
 
+export type DesignSystemUserRootResolution =
+  | { ok: true; root: string }
+  | {
+      ok: false;
+      code: Extract<ResolveDesignSystemIntentErrorCode, 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE'>;
+      message: string;
+      details: Extract<
+        ResolveDesignSystemIntentErrorDetails,
+        { workspaceId: string; designSystemId: string }
+      >;
+    };
+
 export type RegisterDesignSystemToolRoutesDeps = {
   auth: {
     authorizeToolRequest: (req: Request, res: Response, operation: string) => ToolTokenGrant | null;
@@ -34,8 +52,11 @@ export type RegisterDesignSystemToolRoutesDeps = {
   paths: {
     DESIGN_SYSTEMS_DIR: string;
     USER_DESIGN_SYSTEMS_DIR: string;
-    /** Resolve the user root for the token's project/workspace scope. */
-    resolveUserDesignSystemsRoot?: (projectId: string, designSystemId: string) => string;
+    /** Resolve the user root from the immutable scope captured in the run token. */
+    resolveUserDesignSystemsRoot?: (
+      grant: ToolTokenGrant,
+      designSystemId: string,
+    ) => DesignSystemUserRootResolution;
   };
   projects: {
     getProject: (id: string) => ProjectRecord | null | undefined;
@@ -76,9 +97,16 @@ export function registerDesignSystemToolRoutes(
         return sendApiError(res, 400, 'INVALID_INPUT', 'path is required');
       }
 
+      const userRoot = userDesignSystemsRootForGrant(ctx, grant, activeDesignSystemId);
+      if (!userRoot.ok) {
+        return sendApiError(res, 404, userRoot.code, userRoot.message, {
+          details: userRoot.details,
+        });
+      }
+
       const file = await readActiveDesignSystemPullFile(
         ctx.paths.DESIGN_SYSTEMS_DIR,
-        userDesignSystemsRootForGrant(ctx, grant, activeDesignSystemId),
+        userRoot.root,
         activeDesignSystemId,
         requestedPath,
       );
@@ -108,8 +136,9 @@ export function registerDesignSystemToolRoutes(
         return sendApiError(res, 404, 'DESIGN_SYSTEM_NOT_FOUND', 'run or project has no active design system');
       }
 
-      const requestedDesignSystemId = typeof req.body?.designSystemId === 'string'
-        ? req.body.designSystemId
+      const body = (req.body ?? {}) as Partial<ResolveDesignSystemIntentRequest>;
+      const requestedDesignSystemId = typeof body.designSystemId === 'string'
+        ? body.designSystemId
         : undefined;
       if (requestedDesignSystemId !== undefined && requestedDesignSystemId !== activeDesignSystemId) {
         return sendApiError(res, 403, 'DESIGN_SYSTEM_DENIED', 'designSystemId is derived from the active tool-token run or project', {
@@ -117,16 +146,23 @@ export function registerDesignSystemToolRoutes(
         });
       }
 
-      const parsedIntent = DesignSystemIntentIdSchema.safeParse(req.body?.intent);
+      const parsedIntent = DesignSystemIntentIdSchema.safeParse(body.intent);
       if (!parsedIntent.success) {
         return sendApiError(res, 400, 'INVALID_INPUT', 'intent must be a canonical design-system intent id');
       }
       const intent = parsedIntent.data;
 
+      const userRoot = userDesignSystemsRootForGrant(ctx, grant, activeDesignSystemId);
+      if (!userRoot.ok) {
+        return sendApiError(res, 404, userRoot.code, userRoot.message, {
+          details: userRoot.details,
+        });
+      }
+
       const runtime = await resolveDesignSystemRuntime(
         activeDesignSystemId,
         ctx.paths.DESIGN_SYSTEMS_DIR,
-        userDesignSystemsRootForGrant(ctx, grant, activeDesignSystemId),
+        userRoot.root,
       );
       if (runtime.mode === 'legacy') {
         return sendApiError(
@@ -146,12 +182,13 @@ export function registerDesignSystemToolRoutes(
         );
       }
 
-      res.json({
+      const response: ResolveDesignSystemIntentResponse = {
         designSystemId: activeDesignSystemId,
         runtime: 'structured',
         resolution: resolveDesignSystemIntentForGeneration(runtime.bundle, intent),
         lint: runtime.bundle.lint,
-      });
+      };
+      res.json(response);
     } catch (error) {
       sendApiError(res, 500, 'INTERNAL_ERROR', error instanceof Error ? error.message : String(error));
     }
@@ -162,9 +199,9 @@ function userDesignSystemsRootForGrant(
   ctx: RegisterDesignSystemToolRoutesDeps,
   grant: ToolTokenGrant,
   designSystemId: string,
-): string {
-  return ctx.paths.resolveUserDesignSystemsRoot?.(grant.projectId, designSystemId)
-    ?? ctx.paths.USER_DESIGN_SYSTEMS_DIR;
+): DesignSystemUserRootResolution {
+  return ctx.paths.resolveUserDesignSystemsRoot?.(grant, designSystemId)
+    ?? { ok: true, root: ctx.paths.USER_DESIGN_SYSTEMS_DIR };
 }
 
 function activeDesignSystemIdForGrant(

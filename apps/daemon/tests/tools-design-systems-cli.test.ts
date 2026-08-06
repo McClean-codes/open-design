@@ -75,6 +75,23 @@ describe('design-system tool CLI', () => {
     expect(stderrOutput.join('')).toBe('');
   });
 
+  it('accepts the standard --json flag for intent resolution', async () => {
+    const result = await runDesignSystemsToolCli([
+      'resolve',
+      '--intent',
+      'account.settings.save',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(0);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(JSON.parse(stdoutOutput.join(''))).toMatchObject({
+      ok: true,
+      designSystemId: 'runtime-v3',
+      resolution: { status: 'matched' },
+    });
+  });
+
   it('rejects a missing intent before sending a request', async () => {
     const result = await runDesignSystemsToolCli(['resolve']);
 

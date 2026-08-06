@@ -7414,20 +7414,45 @@ export async function startServer({
     http: httpDeps,
     paths: {
       ...pathDeps,
-      resolveUserDesignSystemsRoot: (projectId, designSystemId) => {
-        const projectBinding = getWorkspaceProjectByProjectId(db, projectId);
-        const workspaceId = projectBinding?.workspaceId?.trim();
-        if (!workspaceId) return USER_DESIGN_SYSTEMS_DIR;
+      resolveUserDesignSystemsRoot: (grant, designSystemId) => {
+        const workspaceId = grant.workspaceId?.trim();
+        if (!workspaceId || !designSystemId.startsWith('user:')) {
+          return { ok: true, root: USER_DESIGN_SYSTEMS_DIR };
+        }
         const teamBinding = getWorkspaceResource(
           db,
           'design_system',
           workspaceId,
           workspaceTeamDesignSystemBindingResourceId(workspaceId, designSystemId),
         ) ?? getWorkspaceResource(db, 'design_system', workspaceId, designSystemId);
-        return teamBinding?.visibility === 'team'
-          && teamBinding.resourceState !== 'deleted'
-          ? teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, workspaceId)
-          : USER_DESIGN_SYSTEMS_DIR;
+        if (!teamBinding || teamBinding.resourceState === 'deleted') {
+          return {
+            ok: false,
+            code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE' as const,
+            message: 'active design system is no longer available in the run workspace',
+            details: { workspaceId, designSystemId },
+          };
+        }
+        if (teamBinding.visibility === 'team') {
+          return {
+            ok: true,
+            root: teamResourceWorkspaceRoot(USER_DESIGN_SYSTEMS_DIR, workspaceId),
+          };
+        }
+        const workspaceMemberId = grant.workspaceMemberId?.trim();
+        if (
+          teamBinding.visibility === 'personal'
+          && workspaceMemberId
+          && teamBinding.createdByWorkspaceMemberId?.trim() === workspaceMemberId
+        ) {
+          return { ok: true, root: USER_DESIGN_SYSTEMS_DIR };
+        }
+        return {
+          ok: false,
+          code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE' as const,
+          message: 'active design system is not authorized for the run workspace',
+          details: { workspaceId, designSystemId },
+        };
       },
     },
     projects: { getProject: (id: string) => getProject(db, id) },
@@ -9135,10 +9160,24 @@ export async function startServer({
         };
       }
     }
+    const toolWorkspaceBinding = typeof projectId === 'string' && projectId
+      ? getWorkspaceProjectByProjectId(db, projectId)
+      : null;
+    const toolWorkspaceId = typeof toolWorkspaceBinding?.workspaceId === 'string'
+      ? toolWorkspaceBinding.workspaceId.trim()
+      : '';
+    const toolWorkspaceMemberId =
+      typeof toolWorkspaceBinding?.createdByWorkspaceMemberId === 'string'
+        ? toolWorkspaceBinding.createdByWorkspaceMemberId.trim()
+        : '';
     const toolTokenGrant = cwd && typeof projectId === 'string' && projectId
       ? toolTokenRegistry.mint({
           runId,
           projectId,
+          ...(toolWorkspaceId ? { workspaceId: toolWorkspaceId } : {}),
+          ...(toolWorkspaceMemberId
+            ? { workspaceMemberId: toolWorkspaceMemberId }
+            : {}),
           allowedEndpoints: CHAT_TOOL_ENDPOINTS,
           allowedOperations: CHAT_TOOL_OPERATIONS,
           ...(pluginGrantContext ?? {}),

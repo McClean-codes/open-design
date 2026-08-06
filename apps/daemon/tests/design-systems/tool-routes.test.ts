@@ -59,6 +59,9 @@ async function startRouteServer(options: {
   builtInRoot: string;
   userRoot: string;
   scopedUserRoot?: string;
+  workspaceId?: string;
+  workspaceMemberId?: string;
+  scopeAvailable?: boolean | (() => boolean);
   activeDesignSystemId: string | null;
   runDesignSystemId?: string | null;
 }): Promise<string> {
@@ -72,6 +75,10 @@ async function startRouteServer(options: {
           token: 'token',
           runId: 'run-1',
           projectId: 'project-1',
+          ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+          ...(options.workspaceMemberId
+            ? { workspaceMemberId: options.workspaceMemberId }
+            : {}),
           allowedEndpoints: [
             '/api/tools/design-systems/read',
             '/api/tools/design-systems/resolve-intent',
@@ -90,7 +97,23 @@ async function startRouteServer(options: {
     paths: {
       DESIGN_SYSTEMS_DIR: options.builtInRoot,
       USER_DESIGN_SYSTEMS_DIR: options.userRoot,
-      resolveUserDesignSystemsRoot: () => options.scopedUserRoot ?? options.userRoot,
+      resolveUserDesignSystemsRoot: (grant, designSystemId) => {
+        const scopeAvailable = typeof options.scopeAvailable === 'function'
+          ? options.scopeAvailable()
+          : options.scopeAvailable;
+        if (scopeAvailable === false) {
+          return {
+            ok: false,
+            code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE',
+            message: 'active design system is no longer available in the run workspace',
+            details: {
+              workspaceId: grant.workspaceId ?? '',
+              designSystemId,
+            },
+          };
+        }
+        return { ok: true, root: options.scopedUserRoot ?? options.userRoot };
+      },
     },
     projects: {
       getProject: () => ({
@@ -244,6 +267,8 @@ describe('design-system pull tool route', () => {
       builtInRoot,
       userRoot,
       scopedUserRoot: teamRoot,
+      workspaceId: 'workspace-team',
+      workspaceMemberId: 'member-team',
       activeDesignSystemId: 'user:shared-brand',
     });
 
@@ -252,6 +277,45 @@ describe('design-system pull tool route', () => {
     });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body.resolution.matches[0].properties.label).toBe('Team save');
+  });
+
+  it('fails closed when a team runtime binding is revoked during an active run', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    const teamRoot = fresh();
+    copyRuntimeFixture(userRoot, 'shared-brand', 'Personal save');
+    copyRuntimeFixture(teamRoot, 'shared-brand', 'Team save');
+    let scopeAvailable = true;
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      scopedUserRoot: teamRoot,
+      workspaceId: 'workspace-team',
+      workspaceMemberId: 'member-team',
+      scopeAvailable: () => scopeAvailable,
+      activeDesignSystemId: 'user:shared-brand',
+      runDesignSystemId: 'user:shared-brand',
+    });
+
+    const beforeRevoke = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+    expect(beforeRevoke.status).toBe(200);
+    expect(beforeRevoke.body.resolution.matches[0].properties.label).toBe('Team save');
+
+    scopeAvailable = false;
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
+      intent: 'account.settings.save',
+    });
+
+    expect(response.status).toBe(404);
+    expect(response.body.error).toMatchObject({
+      code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE',
+      details: {
+        workspaceId: 'workspace-team',
+        designSystemId: 'user:shared-brand',
+      },
+    });
   });
 
   it('reports legacy and malformed runtime packages without downgrading them', async () => {
