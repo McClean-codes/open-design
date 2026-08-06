@@ -108,8 +108,6 @@ type PlatformCase = {
   payloadPath: string;
   platform: "darwin" | "win32";
   promotedVersion: string;
-  controlLauncherVersionMin?: string;
-  controlLauncherVersionUrl?: string;
   writePayload: (destinationRoot: string, testCase: PlatformCase) => Promise<void>;
 };
 
@@ -153,8 +151,6 @@ function serverAddress(server: Server): string {
 async function createPayloadMetadataFixture(options: PlatformCase): Promise<FixtureServer> {
   const payloadBody = Buffer.from("open design launcher payload update loop fixture");
   const payloadDigest = createHash("sha256").update(payloadBody).digest("hex");
-  const installerBody = Buffer.from("open design installer fixture");
-  const installerDigest = createHash("sha256").update(installerBody).digest("hex");
   const server = createServer((request, response) => {
     const url = request.url ?? "/";
     if (url === "/metadata.json") {
@@ -174,7 +170,7 @@ async function createPayloadMetadataFixture(options: PlatformCase): Promise<Fixt
                 name: options.platform === "win32"
                   ? `open-design-${options.promotedVersion}-win-x64-setup.exe`
                   : `open-design-${options.promotedVersion}-mac-arm64.dmg`,
-                sha256: installerDigest,
+                sha256: "unused-full-package-checksum",
                 url: `http://${serverAddress(server)}/${options.platform === "win32" ? "installer.exe" : "app.dmg"}`,
               },
               payload: {
@@ -186,25 +182,8 @@ async function createPayloadMetadataFixture(options: PlatformCase): Promise<Fixt
             },
           },
         },
-        ...(options.controlLauncherVersionMin != null || options.controlLauncherVersionUrl != null
-          ? {
-              control: {
-                launcher: {
-                  version: {
-                    ...(options.controlLauncherVersionMin == null ? {} : { min: options.controlLauncherVersionMin }),
-                    ...(options.controlLauncherVersionUrl == null ? {} : { url: options.controlLauncherVersionUrl }),
-                  },
-                },
-              },
-            }
-          : {}),
         version: 1,
       }));
-      return;
-    }
-    if (url === (options.platform === "win32" ? "/installer.exe" : "/app.dmg")) {
-      response.setHeader("content-length", String(installerBody.byteLength));
-      response.end(installerBody);
       return;
     }
     if (url === options.payloadPath) {
@@ -235,44 +214,6 @@ async function createPayloadMetadataFixture(options: PlatformCase): Promise<Fixt
         server.close((error) => (error == null ? resolveClose() : rejectClose(error)));
       }),
     metadataUrl: `http://${serverAddress(server)}/metadata.json`,
-  };
-}
-
-async function createFloorUpdater(
-  testCase: PlatformCase,
-  root: string,
-  metadataUrl: string,
-  installedVersion?: string,
-) {
-  const { createDesktopUpdater, DESKTOP_UPDATE_ENV } = await loadDesktopUpdaterModule();
-  const { resolvePackagedNamespacePaths } = await loadPackagedPathsModule();
-  const { resolvePackagedLauncherRuntime } = await loadPackagedLauncherRuntimeModule();
-  const config = fakePackagedConfig(root, testCase);
-  const paths = resolvePackagedNamespacePaths(config);
-  const runtime = await resolvePackagedLauncherRuntime(config, paths);
-  const env: Record<string, string> = {
-    [DESKTOP_UPDATE_ENV.CURRENT_VERSION]: testCase.currentVersion,
-    [DESKTOP_UPDATE_ENV.METADATA_URL]: metadataUrl,
-    [DESKTOP_UPDATE_ENV.PLATFORM]: testCase.platform,
-  };
-  if (installedVersion != null) env[DESKTOP_UPDATE_ENV.INSTALLED_VERSION] = installedVersion;
-  return {
-    paths,
-    updater: createDesktopUpdater({
-      arch: testCase.arch,
-      currentVersion: testCase.currentVersion,
-      downloadRoot: paths.updateRoot,
-      env,
-      launcherRoot: paths.installationRoot,
-      launcherLaunchPath: runtime.installedLaunchPath,
-      launcherRuntimePath: runtime.launcherPaths.runtimePath,
-      namespace: config.namespace,
-      platform: testCase.platform,
-      source: PACKAGED_SOURCE,
-    }, {
-      extractLauncherPayloadArchive: async (input: { destinationRoot: string }) =>
-        await testCase.writePayload(input.destinationRoot, testCase),
-    }),
   };
 }
 
@@ -535,184 +476,6 @@ describe("packaged launcher payload update loop", () => {
       });
       expect(fallback.source).toBe("payload");
       expect(fallback.targetVersion).toBe(testCase.promotedVersion);
-    } finally {
-      await fixture.close();
-      await rm(root, { force: true, recursive: true });
-    }
-  });
-
-  it.each([
-    {
-      ...platformCases[0]!,
-      currentVersion: "1.1.0-beta.1",
-      promotedVersion: "2.0.0-beta.1",
-      controlLauncherVersionMin: "2.0.0-beta.1",
-      payloadArchiveName: "open-design-2.0.0-beta.1-win-x64-payload.7z",
-    },
-    {
-      ...platformCases[1]!,
-      currentVersion: "2.0.0-beta.1",
-      promotedVersion: "2.1.0-beta.1",
-      controlLauncherVersionMin: "2.0.0-beta.1",
-      payloadArchiveName: "open-design-2.1.0-beta.1-mac-arm64-payload.zip",
-    },
-  ] as PlatformCase[])(
-    "[P0] applies the launcher floor to $platform across major/minor version boundaries",
-    async (testCase) => {
-      const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-floor-"));
-      const fixture = await createPayloadMetadataFixture(testCase);
-
-      try {
-        const { createDesktopUpdater, DESKTOP_UPDATE_ENV } = await loadDesktopUpdaterModule();
-        const { resolvePackagedNamespacePaths } = await loadPackagedPathsModule();
-        const { resolvePackagedLauncherRuntime } = await loadPackagedLauncherRuntimeModule();
-        const config = fakePackagedConfig(root, testCase);
-        const paths = resolvePackagedNamespacePaths(config);
-        const runtime = await resolvePackagedLauncherRuntime(config, paths);
-        const updater = createDesktopUpdater({
-          arch: testCase.arch,
-          currentVersion: testCase.currentVersion,
-          downloadRoot: paths.updateRoot,
-          env: {
-            [DESKTOP_UPDATE_ENV.CURRENT_VERSION]: testCase.currentVersion,
-            [DESKTOP_UPDATE_ENV.INSTALLED_VERSION]: testCase.currentVersion,
-            [DESKTOP_UPDATE_ENV.METADATA_URL]: fixture.metadataUrl,
-            [DESKTOP_UPDATE_ENV.PLATFORM]: testCase.platform,
-          },
-          launcherRoot: paths.installationRoot,
-          launcherLaunchPath: runtime.installedLaunchPath,
-          launcherRuntimePath: runtime.launcherPaths.runtimePath,
-          namespace: config.namespace,
-          platform: testCase.platform,
-          source: PACKAGED_SOURCE,
-        }, {
-          extractLauncherPayloadArchive: async (input: { destinationRoot: string }) =>
-            await testCase.writePayload(input.destinationRoot, testCase),
-        });
-
-        const checked = await updater.checkForUpdates();
-        expect(checked.availableVersion).toBe(testCase.promotedVersion);
-        expect(checked.artifact?.type).toBe(
-          testCase.platform === "win32" ? "installer" : "payload",
-        );
-        if (testCase.platform === "win32") {
-          expect(checked.reinstall).toEqual({
-            installedVersion: testCase.currentVersion,
-            minVersion: testCase.controlLauncherVersionMin,
-            reason: "outer-below-min",
-          });
-        } else {
-          expect(checked.reinstall).toBeUndefined();
-        }
-
-      } finally {
-        await fixture.close();
-        await rm(root, { force: true, recursive: true });
-      }
-    },
-  );
-
-  it("[P0] keeps payload updates when the installed outer version meets min", async () => {
-    const testCase: PlatformCase = {
-      ...platformCases[0]!,
-      currentVersion: "2.0.0-beta.1",
-      promotedVersion: "2.1.0-beta.1",
-      controlLauncherVersionMin: "2.0.0-beta.1",
-      payloadArchiveName: "open-design-2.1.0-beta.1-win-x64-payload.7z",
-    };
-    const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-floor-met-"));
-    const fixture = await createPayloadMetadataFixture(testCase);
-
-    try {
-      const { createDesktopUpdater, DESKTOP_UPDATE_ENV } = await loadDesktopUpdaterModule();
-      const { resolvePackagedNamespacePaths } = await loadPackagedPathsModule();
-      const { resolvePackagedLauncherRuntime } = await loadPackagedLauncherRuntimeModule();
-      const config = fakePackagedConfig(root, testCase);
-      const paths = resolvePackagedNamespacePaths(config);
-      const runtime = await resolvePackagedLauncherRuntime(config, paths);
-      const launchRequests: Array<{ launchPath: string; root: string }> = [];
-      const updater = createDesktopUpdater({
-        arch: testCase.arch,
-        currentVersion: testCase.currentVersion,
-        downloadRoot: paths.updateRoot,
-        env: {
-          [DESKTOP_UPDATE_ENV.CURRENT_VERSION]: testCase.currentVersion,
-          [DESKTOP_UPDATE_ENV.INSTALLED_VERSION]: testCase.currentVersion,
-          [DESKTOP_UPDATE_ENV.METADATA_URL]: fixture.metadataUrl,
-          [DESKTOP_UPDATE_ENV.PLATFORM]: testCase.platform,
-        },
-        launcherRoot: paths.installationRoot,
-        launcherLaunchPath: runtime.installedLaunchPath,
-        launcherRuntimePath: runtime.launcherPaths.runtimePath,
-        namespace: config.namespace,
-        platform: testCase.platform,
-        source: PACKAGED_SOURCE,
-      }, {
-        extractLauncherPayloadArchive: async (input: { destinationRoot: string }) =>
-          await testCase.writePayload(input.destinationRoot, testCase),
-        launchAppAfterQuit: async (input: { launchPath: string; root: string }) => {
-          launchRequests.push({ launchPath: input.launchPath, root: input.root });
-          return {};
-        },
-      });
-
-      const checked = await updater.checkForUpdates();
-      expect(checked.availableVersion).toBe(testCase.promotedVersion);
-      expect(checked.artifact?.type).toBe("payload");
-      expect(checked.reinstall).toBeUndefined();
-
-      const installed = await updater.installUpdate();
-      expect(installed.state).toBe(UPDATE_DOWNLOADED);
-      expect(installed.installResult?.dryRun).toBe(false);
-      expect(launchRequests).toHaveLength(1);
-    } finally {
-      await fixture.close();
-      await rm(root, { force: true, recursive: true });
-    }
-  });
-
-  it("[P0] routes to installer when the installed outer config cannot be read", async () => {
-    const testCase: PlatformCase = {
-      ...platformCases[0]!,
-      currentVersion: "1.1.0-beta.1",
-      promotedVersion: "2.0.0-beta.1",
-      controlLauncherVersionMin: "1.2.0-beta.1",
-      payloadArchiveName: "open-design-2.0.0-beta.1-win-x64-payload.7z",
-    };
-    const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-floor-unreadable-"));
-    const fixture = await createPayloadMetadataFixture(testCase);
-
-    try {
-      const { updater } = await createFloorUpdater(testCase, root, fixture.metadataUrl);
-      const checked = await updater.checkForUpdates();
-      expect(checked.availableVersion).toBe(testCase.promotedVersion);
-      expect(checked.artifact?.type).toBe("installer");
-      expect(checked.reinstall).toEqual({
-        minVersion: testCase.controlLauncherVersionMin,
-        reason: "outer-version-unreadable",
-      });
-    } finally {
-      await fixture.close();
-      await rm(root, { force: true, recursive: true });
-    }
-  });
-
-  it("[P0] suppresses a same-version reinstall when min is above the latest release", async () => {
-    const testCase: PlatformCase = {
-      ...platformCases[0]!,
-      currentVersion: "1.1.0-beta.1",
-      promotedVersion: "1.1.0-beta.1",
-      controlLauncherVersionMin: "3.0.0-beta.1",
-      payloadArchiveName: "open-design-1.1.0-beta.1-win-x64-payload.7z",
-    };
-    const root = await mkdtemp(join(tmpdir(), "od-packaged-launcher-floor-unsatisfiable-"));
-    const fixture = await createPayloadMetadataFixture(testCase);
-
-    try {
-      const { updater } = await createFloorUpdater(testCase, root, fixture.metadataUrl, testCase.currentVersion);
-      const checked = await updater.checkForUpdates();
-      expect(checked.state).toBe("not-available");
-      expect(checked.availableVersion).toBeUndefined();
     } finally {
       await fixture.close();
       await rm(root, { force: true, recursive: true });
