@@ -237,22 +237,22 @@ describe('packaged app-shell terminal state', () => {
 describe('packaged app-shell policy', () => {
   it('requires home once the daemon confirms onboarding is completed', () => {
     expect(
-      packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: true }),
+      packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: true, seededOnboardingCompleted: false }),
     ).toEqual({ acceptOnboardingLanding: false });
     expect(
-      packagedAppShellPolicy({ coreProfile: false, daemonOnboardingCompleted: true }),
+      packagedAppShellPolicy({ coreProfile: false, daemonOnboardingCompleted: true, seededOnboardingCompleted: false }),
     ).toEqual({ acceptOnboardingLanding: false });
   });
 
   it('accepts the landing only when the daemon reports onboarding is not completed', () => {
     expect(
-      packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false }),
+      packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false, seededOnboardingCompleted: false }),
     ).toEqual({ acceptOnboardingLanding: true });
   });
 
   it('keeps a seeded run failing when the app ignores completed onboarding', () => {
     const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
-    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: true });
+    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: true, seededOnboardingCompleted: false });
 
     expect(packagedAppShellSettled(landing, policy)).toBe(false);
     expect(packagedAppShellFailureReason(landing, policy)).toContain('needs home');
@@ -270,6 +270,7 @@ describe('packaged app-shell policy', () => {
         packagedAppShellPolicy({
           coreProfile: true,
           daemonOnboardingCompleted: daemonOnboardingCompleted as unknown as boolean,
+          seededOnboardingCompleted: false,
         }),
         `reading ${JSON.stringify(daemonOnboardingCompleted)}`,
       ).toEqual({ acceptOnboardingLanding: false });
@@ -289,15 +290,44 @@ describe('packaged app-shell policy', () => {
     }
   });
 
+  // PerishCode's fifth review on #6481, the same family one level out: at the
+  // level of the scenario rather than a single expression. This run seeds
+  // `onboardingCompleted: true` and observes the daemon confirm it, then stops
+  // the app and relaunches it through the OS protocol handler — which inherits
+  // none of the test process's environment. If that cold launch resolves a
+  // different data root, the seeded config is gone, the fresh reading is
+  // `false`, and "we lost the seed" is absorbed as "genuine first run". The
+  // smoke would then pass while blind to the regression it exists to catch.
+  it('never downgrades a lost seed to a genuine first run', () => {
+    expect(
+      packagedAppShellPolicy({
+        coreProfile: true,
+        daemonOnboardingCompleted: false,
+        seededOnboardingCompleted: true,
+      }),
+    ).toEqual({ acceptOnboardingLanding: false });
+  });
+
+  it('keeps a lost seed failing at the shell check', () => {
+    const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
+    const policy = packagedAppShellPolicy({
+      coreProfile: true,
+      daemonOnboardingCompleted: false,
+      seededOnboardingCompleted: true,
+    });
+
+    expect(packagedAppShellSettled(landing, policy)).toBe(false);
+  });
+
   it('lets an unseeded run settle on the landing', () => {
     const landing = probe(renderFixture(CLOUD_SIGN_IN_LANDING));
-    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false });
+    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false, seededOnboardingCompleted: false });
 
     expect(packagedAppShellSettled(landing, policy)).toBe(true);
   });
 
   it('still requires a real surface when onboarding is not completed', () => {
-    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false });
+    const policy = packagedAppShellPolicy({ coreProfile: true, daemonOnboardingCompleted: false, seededOnboardingCompleted: false });
 
     expect(packagedAppShellSettled(probe(renderFixture([])), policy)).toBe(false);
   });

@@ -247,7 +247,13 @@ export type PackagedAppShellPolicyInput = {
   readonly daemonOnboardingCompleted: boolean;
   /** Whether the run is the core smoke profile. */
   readonly coreProfile: boolean;
+  /**
+   * Whether this run seeded onboarding completion and observed the daemon
+   * confirm it earlier, before any relaunch.
+   */
+  readonly seededOnboardingCompleted: boolean;
 };
+
 
 /**
  * Which terminal states this run may settle on.
