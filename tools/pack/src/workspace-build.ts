@@ -21,6 +21,7 @@ const WORKSPACE_BUILD_PACKAGES = [
   { directory: "packages/agui-adapter", name: "@open-design/agui-adapter" },
   { directory: "packages/plugin-runtime", name: "@open-design/plugin-runtime" },
   { directory: "packages/diagnostics", name: "@open-design/diagnostics" },
+  { directory: "packages/headless-runtime", name: "@open-design/headless-runtime" },
   { directory: "apps/daemon", name: "@open-design/daemon" },
   { directory: "apps/web", name: "@open-design/web" },
   { directory: "apps/desktop", name: "@open-design/desktop" },
@@ -100,7 +101,7 @@ async function createWorkspaceBuildCacheKey(config: ToolPackConfig): Promise<str
     packageManager: await readPackageManager(config.workspaceRoot),
     platform: config.platform,
     pnpmLock: await hashPath(join(config.workspaceRoot, "pnpm-lock.yaml")),
-    schemaVersion: 8,
+    schemaVersion: 9,
     webOutputMode: config.webOutputMode,
   });
 }
@@ -137,6 +138,8 @@ function workspaceBuildOutputFiles(config: ToolPackConfig): string[] {
     "packages/plugin-runtime/dist/index.d.ts",
     "packages/diagnostics/dist/index.mjs",
     "packages/diagnostics/dist/index.d.ts",
+    "packages/headless-runtime/dist/index.mjs",
+    "packages/headless-runtime/dist/index.d.ts",
     "apps/daemon/dist/cli.js",
     "apps/daemon/dist/cli.d.ts",
     "apps/daemon/dist/sidecar/index.js",
@@ -165,6 +168,7 @@ function workspaceBuildArtifacts(config: ToolPackConfig): WorkspaceBuildArtifact
     "packages/agui-adapter/dist",
     "packages/plugin-runtime/dist",
     "packages/diagnostics/dist",
+    "packages/headless-runtime/dist",
     "apps/daemon/dist",
     "apps/web/dist",
     "apps/desktop/dist",
