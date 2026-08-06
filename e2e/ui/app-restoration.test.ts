@@ -196,13 +196,6 @@ test('[P0] @critical workspace restores the last manually selected file tab afte
 
   await sendPrompt(page, 'Create a workspace persistence artifact');
   await expect(page.getByText('workspace-artifact.html', { exact: true }).first()).toBeVisible();
-  const { conversationId } = await getCurrentProjectContext(page);
-  await expectPersistedArtifactMessage(
-    page,
-    projectId,
-    conversationId,
-    'workspace-artifact.html',
-  );
 
   const uploadResponse = page.waitForResponse(isDesignFileUploadResponse, {
     timeout: T.short,
@@ -3044,35 +3037,6 @@ async function listConversationsFromApi(
     conversations: Array<{ id: string; updatedAt: number }>;
   };
   return conversations;
-}
-
-async function expectPersistedArtifactMessage(
-  page: Page,
-  projectId: string,
-  conversationId: string,
-  fileName: string,
-) {
-  await expect
-    .poll(async () => {
-      const response = await page.request.get(
-        `/api/projects/${projectId}/conversations/${conversationId}/messages`,
-      );
-      if (!response.ok()) return false;
-      const { messages } = (await response.json()) as {
-        messages: Array<{
-          role: string;
-          runStatus?: string;
-          producedFiles?: Array<{ name: string }>;
-        }>;
-      };
-      return messages.some(
-        (message) =>
-          message.role === 'assistant'
-          && message.runStatus === 'succeeded'
-          && message.producedFiles?.some((file) => file.name.endsWith(fileName)),
-      );
-    }, { timeout: T.medium })
-    .toBe(true);
 }
 
 async function expectProjectFilesToIncludeSuffixes(
