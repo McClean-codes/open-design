@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -8,6 +10,7 @@ import {
   evaluatePackagedOnboardingConfigProbe,
   PackagedOnboardingConfigError,
   packagedAppShellExpression,
+  packagedOnboardingRuntimeSelector,
   packagedOnboardingCompletedFromProbe,
   packagedOnboardingCompletedForScenario,
   packagedOnboardingConfigExpression,
@@ -115,6 +118,17 @@ describe('packaged app-shell probe', () => {
     expect(packagedAppShellExpression).toContain('(document, HTMLElement)');
     expect(packagedAppShellExpression).toContain('[data-testid="entry-nav-home"]');
     expect(packagedAppShellExpression).toContain('.onboarding-cloud__primary');
+  });
+
+  it('tracks the runtime alternatives rendered by the current onboarding shell', async () => {
+    const entryShellSource = await readFile(
+      new URL('../../../apps/web/src/components/EntryShell.tsx', import.meta.url),
+      'utf8',
+    );
+    const runtimeClassName = packagedOnboardingRuntimeSelector.slice(1);
+
+    expect(packagedAppShellExpression).toContain(packagedOnboardingRuntimeSelector);
+    expect(entryShellSource.split(`className="${runtimeClassName}"`)).toHaveLength(3);
   });
 
   it('reports home for the main shell', () => {
