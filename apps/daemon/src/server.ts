@@ -230,6 +230,7 @@ import {
   plainStdoutFromRunEvents,
 } from './runtimes/plain-stream.js';
 import {
+  readVelaCredentialRevision,
   readVelaLoginStatus,
   resolveAmrProfile,
 } from './integrations/vela.js';
@@ -887,7 +888,11 @@ import {
   bindProjectToPersistedAutomationWorkspace,
   normalizePersistedAutomationWorkspaceScope,
 } from './automations/workspace-scope.js';
-import { resolveAmrModelProbe } from './runtimes/amr-model-probe.js';
+import {
+  amrCredentialIdentityFromRevision,
+  buildAmrRememberedLiveModelScope,
+  resolveAmrModelProbe,
+} from './runtimes/amr-model-probe.js';
 import { createPluginInstallationHelpers, normalizeProjectPluginFolderPath, resolveProjectChildDirectory } from './services/plugin-installation.js';
 import { createPluginShareTaskStore } from './services/plugin-share-tasks.js';
 import { getRouteRegistrationInventory, installRouteRegistrationGuard } from './route-registration-guard.js';
@@ -9515,11 +9520,20 @@ export async function startServer({
     } catch {
       configuredAgentEnv = {};
     }
+    // AMR remembered-model validation must partition by workspace + credential,
+    // not only the Vela profile. Otherwise a failed workspace-scoped probe can
+    // reuse another workspace's last catalog under the same profile.
     const requestedLiveModelScope = def.id === 'amr'
-      ? resolveAmrProfile({
-          ...process.env,
-          ...(def.env || {}),
-          ...configuredAgentEnv,
+      ? buildAmrRememberedLiveModelScope({
+          profile: resolveAmrProfile({
+            ...process.env,
+            ...(def.env || {}),
+            ...configuredAgentEnv,
+          }),
+          workspaceId: run.workspaceScope?.workspaceId ?? null,
+          credentialIdentity: amrCredentialIdentityFromRevision(
+            readVelaCredentialRevision(process.env, configuredAgentEnv),
+          ),
         })
       : null;
     const configuredModel =
@@ -10551,7 +10565,16 @@ export async function startServer({
             agentLaunch,
           )
         : null;
-      const amrModelScope = resolveAmrProfile(modelProbeEnv ?? process.env);
+      const amrModelScope = buildAmrRememberedLiveModelScope({
+        profile: resolveAmrProfile(modelProbeEnv ?? process.env),
+        workspaceId: run.workspaceScope?.workspaceId ?? null,
+        credentialIdentity: amrCredentialIdentityFromRevision(
+          readVelaCredentialRevision(
+            modelProbeEnv ?? process.env,
+            configuredAgentEnv,
+          ),
+        ),
+      });
       // Resolve the AMR model catalog through the SAME shared cache the UI's
       // `/api/amr/models` endpoint serves (AmrModelLoadingCache): a cached
       // authoritative `vela model list` when it is hot, otherwise the offline

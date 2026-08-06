@@ -3,9 +3,16 @@ import { test } from 'vitest';
 
 import type { VelaCredentialRevision } from '../../src/integrations/vela.js';
 import {
+  amrCredentialIdentityFromRevision,
   buildAmrModelCacheKey,
+  buildAmrRememberedLiveModelScope,
   withVelaModelListWorkspaceScope,
 } from '../../src/runtimes/amr-model-probe.js';
+import {
+  getRememberedLiveModels,
+  preferFreshLiveModels,
+  rememberLiveModels,
+} from '../../src/runtimes/models.js';
 
 const CREDENTIAL_REVISION: VelaCredentialRevision = {
   authSource: 'file',
@@ -63,4 +70,110 @@ test('buildAmrModelCacheKey partitions catalogs by workspace id', () => {
   assert.notEqual(personal, team);
   assert.equal(team, teamAgain);
   assert.match(team, /ws-team-pro/);
+});
+
+test('buildAmrRememberedLiveModelScope partitions by workspace and credential', () => {
+  const personal = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: null,
+    credentialIdentity: 'user:alice',
+  });
+  const teamA = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-team-a',
+    credentialIdentity: 'user:alice',
+  });
+  const teamB = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-team-b',
+    credentialIdentity: 'user:alice',
+  });
+  const teamAOtherUser = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-team-a',
+    credentialIdentity: 'user:bob',
+  });
+
+  assert.notEqual(personal, teamA);
+  assert.notEqual(teamA, teamB);
+  assert.notEqual(teamA, teamAOtherUser);
+  assert.match(teamA, /ws=ws-team-a/);
+  assert.match(teamA, /cred=user:alice/);
+  assert.equal(
+    buildAmrRememberedLiveModelScope({
+      profile: 'prod',
+      workspaceId: '  ws-team-a  ',
+      credentialIdentity: ' user:alice ',
+    }),
+    teamA,
+  );
+});
+
+test('amrCredentialIdentityFromRevision prefers userId then env fingerprint', () => {
+  assert.equal(
+    amrCredentialIdentityFromRevision({
+      authSource: 'file',
+      userId: 'user-1',
+      credentialFingerprint: 'fp-ignored',
+    }),
+    'user:user-1',
+  );
+  assert.equal(
+    amrCredentialIdentityFromRevision({
+      authSource: 'env',
+      userId: '',
+      credentialFingerprint: 'abc123',
+    }),
+    'env:abc123',
+  );
+  assert.equal(
+    amrCredentialIdentityFromRevision({
+      authSource: 'none',
+      userId: '',
+      credentialFingerprint: '',
+    }),
+    '',
+  );
+});
+
+test('remembered AMR live models do not fall back across workspaces', () => {
+  const scopeA = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-a',
+    credentialIdentity: 'user:alice',
+  });
+  const scopeB = buildAmrRememberedLiveModelScope({
+    profile: 'prod',
+    workspaceId: 'ws-b',
+    credentialIdentity: 'user:alice',
+  });
+
+  rememberLiveModels('amr', [
+    { id: 'model-from-a', label: 'A default', enabled: true, default: true },
+  ], scopeA);
+  rememberLiveModels('amr', [
+    { id: 'model-from-b', label: 'B default', enabled: true, default: true },
+  ], scopeB);
+
+  // Probe failure path: empty fresh catalog must only reuse the same-workspace
+  // remembered list, never the sibling workspace under the same profile.
+  assert.deepEqual(
+    preferFreshLiveModels([], getRememberedLiveModels('amr', scopeA)),
+    [{ id: 'model-from-a', label: 'A default', enabled: true, default: true }],
+  );
+  assert.deepEqual(
+    preferFreshLiveModels([], getRememberedLiveModels('amr', scopeB)),
+    [{ id: 'model-from-b', label: 'B default', enabled: true, default: true }],
+  );
+  assert.deepEqual(
+    getRememberedLiveModels(
+      'amr',
+      buildAmrRememberedLiveModelScope({
+        profile: 'prod',
+        workspaceId: 'ws-c',
+        credentialIdentity: 'user:alice',
+      }),
+    ),
+    [],
+  );
 });

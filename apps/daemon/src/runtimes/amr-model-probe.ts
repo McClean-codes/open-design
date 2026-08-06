@@ -67,6 +67,69 @@ export function buildAmrModelCacheKey({
   });
 }
 
+export interface BuildAmrRememberedLiveModelScopeInput {
+  /** Resolved Vela / OPEN_DESIGN_AMR profile (e.g. prod, local, test). */
+  profile: string;
+  /**
+   * Run-pinned or UI-selected workspace id. Empty/null means the personal
+   * (unscoped) catalog partition — never shared with Team workspaces.
+   */
+  workspaceId?: string | null;
+  /**
+   * Optional credential identity so account switches under the same profile
+   * do not reuse another user's remembered catalog. Prefer
+   * `userId` (file auth) or `credentialFingerprint` (env auth).
+   */
+  credentialIdentity?: string | null;
+}
+
+/**
+ * Scope key for `rememberLiveModels` / `getRememberedLiveModels` on AMR runs.
+ *
+ * Path A probes are workspace-scoped; the remembered-catalog fallback used
+ * when those probes fail must partition the same way. Profile-only keys let a
+ * workspace-A run rewrite an omitted/default model request to workspace B's
+ * last default under the same Vela profile.
+ */
+export function buildAmrRememberedLiveModelScope(
+  input: BuildAmrRememberedLiveModelScopeInput,
+): string {
+  const profile = (typeof input.profile === 'string' ? input.profile.trim() : '') || 'prod';
+  const workspaceId =
+    typeof input.workspaceId === 'string' ? input.workspaceId.trim() : '';
+  const credentialIdentity =
+    typeof input.credentialIdentity === 'string'
+      ? input.credentialIdentity.trim()
+      : '';
+  // Always emit the workspace segment (even when empty) so personal and Team
+  // partitions never collide, and so profile-only legacy keys cannot be
+  // mistaken for an intentional unscoped remember from this helper.
+  const parts = [profile, `ws=${workspaceId}`];
+  if (credentialIdentity) parts.push(`cred=${credentialIdentity}`);
+  return parts.join('|');
+}
+
+/**
+ * Compact non-secret identity for remembered-model partitioning.
+ * Empty when no account is attached yet (unsigned-in personal).
+ */
+export function amrCredentialIdentityFromRevision(
+  revision: Pick<
+    VelaCredentialRevision,
+    'userId' | 'credentialFingerprint' | 'authSource'
+  > | null | undefined,
+): string {
+  if (!revision) return '';
+  const userId = typeof revision.userId === 'string' ? revision.userId.trim() : '';
+  if (userId) return `user:${userId}`;
+  const fingerprint =
+    typeof revision.credentialFingerprint === 'string'
+      ? revision.credentialFingerprint.trim()
+      : '';
+  if (fingerprint) return `env:${fingerprint}`;
+  return revision.authSource === 'none' ? '' : `auth:${revision.authSource}`;
+}
+
 export async function resolveAmrModelProbe({
   dataDir,
   env: baseEnv,
