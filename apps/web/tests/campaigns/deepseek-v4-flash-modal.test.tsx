@@ -74,6 +74,25 @@ describe('campaign modal only interrupts the active home view', () => {
     expect(screen.getByTestId(DIALOG)).toBeInTheDocument();
   });
 
+  it('fails closed when frequency-control storage is unreadable', () => {
+    // Private mode / disabled localStorage: `hasSeenCampaign` cannot know
+    // whether the user already saw the modal. Guessing "unseen" would show
+    // it on EVERY mount — the campaign promise is 活动期内出现一次, so an
+    // unreadable store must count as seen.
+    const getItem = vi
+      .spyOn(Storage.prototype, 'getItem')
+      .mockImplementation(() => {
+        throw new Error('localStorage disabled');
+      });
+    try {
+      render(<DeepSeekV4FlashCampaign audience="paid" active />);
+
+      expect(screen.queryByTestId(DIALOG)).toBeNull();
+    } finally {
+      getItem.mockRestore();
+    }
+  });
+
   it('re-arms when the user leaves home without dismissing and comes back', () => {
     const { rerender } = render(
       <DeepSeekV4FlashCampaign audience="paid" active />,

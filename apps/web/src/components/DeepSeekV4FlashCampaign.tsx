@@ -52,7 +52,11 @@ function hasSeenCampaign(): boolean {
   try {
     return window.localStorage.getItem(SEEN_KEY) === '1';
   } catch {
-    return false;
+    // Fail closed: when the store is unreadable (private mode, disabled
+    // localStorage) `markCampaignSeen` cannot persist either, so answering
+    // "unseen" would re-open the modal on every mount. The campaign promise
+    // is one appearance per window — suppress instead of spamming.
+    return true;
   }
 }
 
