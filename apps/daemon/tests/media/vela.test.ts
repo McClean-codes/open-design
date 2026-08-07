@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -224,12 +224,64 @@ describe('Vela media provider', () => {
     // Edits carry their own published envelope, distinct from generations.
     expect(valueAfter(args, '--aspect-ratio')).toBe('1:1');
     expect(valueAfter(args, '--resolution')).toBe('2K');
-    expect(allValuesAfter(args, '--image')).toEqual(
-      refs.slice(0, 5).map((name) => path.join(projectDir, name)),
-    );
+    const inputPaths = allValuesAfter(args, '--image');
+    expect(inputPaths).toHaveLength(5);
+    expect(inputPaths.every((inputPath) => !inputPath.startsWith(projectDir))).toBe(true);
+    expect(new Set(inputPaths.map((inputPath) => path.dirname(inputPath)))).toHaveLength(1);
     expect(options.configuredEnv).toEqual({
       VELA_INVOCATION_SOURCE: 'open-design',
     });
+  });
+
+  it.each(['nano-banana', 'nano-banana-2'])(
+    'routes the unqualified %s alias through the Vela image editor',
+    async (model) => {
+      mockReadyImage('image/png');
+
+      await generateMedia({
+        ...baseArgs(),
+        surface: 'image',
+        model,
+        image: refs[0]!,
+        aspect: '16:9',
+        output: 'aliased-edit.png',
+      });
+
+      const [args] = imageCall();
+      expect(args.slice(0, 2)).toEqual(['image', 'edit']);
+      expect(valueAfter(args, '--model')).toBe('nano-banana-2');
+      expect(valueAfter(args, '--aspect-ratio')).toBe('16:9');
+      expect(valueAfter(args, '--resolution')).toBe('2K');
+    },
+  );
+
+  it('protects the project reference image when the CLI resizes its input in place', async () => {
+    const sourcePath = path.join(projectDir, refs[0]!);
+    const original = await readFile(sourcePath);
+    mockVelaCommand(async (args: string[]) => {
+      const cliInputPath = valueAfter(args, '--image');
+      expect(cliInputPath).not.toBe(sourcePath);
+      await writeFile(cliInputPath, Buffer.from('cli-resized-copy'));
+      const output = valueAfter(args, '--output');
+      tempOutputDirs.push(path.dirname(output));
+      await writeFile(output, IMAGE_BYTES);
+      return JSON.stringify({
+        asset_id: 'ma_copy',
+        status: 'ready',
+        kind: 'image',
+        mime_type: 'image/png',
+      });
+    });
+
+    await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/nano-banana-2',
+      image: refs[0]!,
+      output: 'copy-safe.png',
+    });
+
+    expect(await readFile(sourcePath)).toEqual(original);
   });
 
   it('rejects six images before spawning Vela', async () => {
@@ -398,10 +450,12 @@ describe('Vela media provider', () => {
     expect(valueAfter(submit, '--model')).toBe('doubao-seedance-2-0-260128');
     expect(valueAfter(submit, '--ratio')).toBe('9:16');
     expect(valueAfter(submit, '--duration')).toBe('10');
-    expect(valueAfter(submit, '--first-frame')).toBe(path.join(projectDir, refs[0]!));
-    expect(allValuesAfter(submit, '--ref')).toEqual(
-      refs.slice(1, 5).map((name) => path.join(projectDir, name)),
-    );
+    const firstFrame = valueAfter(submit, '--first-frame');
+    const referencePaths = allValuesAfter(submit, '--ref');
+    expect(firstFrame).not.toBe(path.join(projectDir, refs[0]!));
+    expect(referencePaths).toHaveLength(4);
+    expect(new Set([firstFrame, ...referencePaths].map((inputPath) => path.dirname(inputPath))))
+      .toHaveLength(1);
     expect(valueAfter(submit, '--resolution')).toBe('720p');
     expect(submit).not.toContain('--generate-audio');
 

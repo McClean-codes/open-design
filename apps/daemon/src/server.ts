@@ -9389,6 +9389,15 @@ export async function startServer({
             projectRoot: artifactBaseline.cwd,
             diff,
           };
+          run.artifactPaths = diff.touchedPaths
+            .map((filePath) => path.relative(artifactBaseline.cwd, filePath))
+            .map((filePath) => filePath.replaceAll('\\', '/'))
+            .filter((filePath) =>
+              filePath.length > 0 &&
+              filePath !== '..' &&
+              !filePath.startsWith('../') &&
+              !path.isAbsolute(filePath),
+            );
         } catch {
           outcome = fallbackOutcome();
         }

@@ -227,6 +227,19 @@ export const MEDIA_ASPECTS = ['1:1', '16:9', '9:16', '4:3', '3:4'];
 export const VIDEO_LENGTHS_SEC = [3, 5, 8, 10, 15, 30];
 export const AUDIO_DURATIONS_SEC = [5, 10, 15, 30, 60, 120];
 
+const MEDIA_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  // Product-facing shorthand. Keep the local Google model on its explicit
+  // registry id (`gemini-3.1-flash-image-preview`) so this unqualified name
+  // cannot silently leave the managed Cloud route.
+  'nano-banana': 'vela/nano-banana-2',
+  'nano-banana-2': 'vela/nano-banana-2',
+  'nano-banana-2-lite': 'vela/nano-banana-2-lite',
+};
+
+export function canonicalMediaModelId(id: string): string {
+  return MEDIA_MODEL_ALIASES[id] ?? id;
+}
+
 export function findMediaModel(id: string): MediaModel | null {
   const all = [
     ...IMAGE_MODELS,
@@ -235,7 +248,8 @@ export function findMediaModel(id: string): MediaModel | null {
     ...AUDIO_MODELS_BY_KIND.speech,
     ...AUDIO_MODELS_BY_KIND.sfx,
   ];
-  return all.find((m) => m.id === id) || null;
+  const canonicalId = canonicalMediaModelId(id);
+  return all.find((m) => m.id === canonicalId) || null;
 }
 
 export function findProvider(id: string): MediaProvider | null {

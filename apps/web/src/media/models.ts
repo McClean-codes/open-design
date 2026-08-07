@@ -706,6 +706,16 @@ export const DEFAULT_AUDIO_MODEL: Record<AudioKind, string> = {
  * agent passes an unknown model — the dispatcher rejects with a clear
  * error so the agent re-plans instead of silently falling back.
  */
+const MEDIA_MODEL_ALIASES: Readonly<Record<string, string>> = {
+  'nano-banana': 'vela/nano-banana-2',
+  'nano-banana-2': 'vela/nano-banana-2',
+  'nano-banana-2-lite': 'vela/nano-banana-2-lite',
+};
+
+export function canonicalMediaModelId(id: string): string {
+  return MEDIA_MODEL_ALIASES[id] ?? id;
+}
+
 export function findMediaModel(id: string): MediaModel | null {
   const all: MediaModel[] = [
     ...IMAGE_MODELS,
@@ -714,7 +724,8 @@ export function findMediaModel(id: string): MediaModel | null {
     ...AUDIO_MODELS_BY_KIND.speech,
     ...AUDIO_MODELS_BY_KIND.sfx,
   ];
-  return all.find((m) => m.id === id) ?? null;
+  const canonicalId = canonicalMediaModelId(id);
+  return all.find((m) => m.id === canonicalId) ?? null;
 }
 
 export function findProvider(id: MediaProviderId): MediaProvider | null {
