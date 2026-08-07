@@ -76,27 +76,41 @@ const MEMBER_MIRROR_EXCLUDED_ENTRIES = [
 const MEMBER_MIRROR_EXCLUDED_PREFIXES = ['.env'] as const;
 
 /**
- * Every entry name a `vela resource push` snapshot skips — the union of two
- * invariant families:
+ * Every entry name a `vela resource push` snapshot skips.
  *
- * - {@link MEMBER_MIRROR_EXCLUDED_ENTRIES}: secret-bearing entries
- *   (credentials, tool state, Open Design private bookkeeping) that must
- *   never leave the author's machine, at any depth.
- * - {@link IGNORED_PROJECT_DIR_NAMES}: generated, installed, or cache trees
- *   the project file list and watcher already hide from the owner. A member
- *   mirror without them matches what the owner sees in the UI while keeping
- *   node_modules-scale payloads out of every publish.
+ * Two families with DIFFERENT matching semantics, which is why they are not
+ * one flat list:
  *
- * `--exclude` matches entry names exactly at any depth (directories and
- * same-named files alike) — the same per-segment semantics the owner-side
- * ignore list applies.
+ * - {@link MEMBER_MIRROR_EXCLUDED_ENTRIES} — secret-bearing entries
+ *   (credentials, tool state, Open Design private bookkeeping). These must
+ *   never leave the author's machine whether they are a file, a directory, or
+ *   a symlink, so they are sent bare and match any entry of that name.
+ * - {@link IGNORED_PROJECT_DIR_NAMES} — generated/installed/cache trees the
+ *   owner's own file list already hides. The owner hides them as DIRECTORIES
+ *   only (`collectFiles` consults `shouldSkipDir` inside its `isDirectory()`
+ *   branch), so a bare name here would over-match: a project holding a regular
+ *   file called `target` or `out` would have it silently dropped from every
+ *   member mirror while the owner still sees it. These are therefore sent with
+ *   a trailing slash, the directory-only form.
+ *
+ * The trailing slash is also the compatibility seam. A Vela build that does
+ * not yet understand it compares `"dist/"` against entry names that never
+ * contain a slash, so the rule matches nothing and the tree is published in
+ * full — the pre-optimization payload, never a missing file. Once the CLI
+ * understands the form, the same push starts skipping those directories with
+ * no further Open Design change. A new `--exclude-dir` flag could NOT degrade
+ * this way: older CLIs reject unknown flags, which would fail every publish.
  */
-export const MEMBER_MIRROR_PUSH_EXCLUDED_ENTRIES: readonly string[] = [
-  ...new Set<string>([
-    ...MEMBER_MIRROR_EXCLUDED_ENTRIES,
-    ...IGNORED_PROJECT_DIR_NAMES,
-  ]),
-];
+export const MEMBER_MIRROR_PUSH_EXCLUDED_ENTRIES: readonly string[] = (() => {
+  const secretBearing = new Set<string>(MEMBER_MIRROR_EXCLUDED_ENTRIES);
+  // `.git` and `node_modules` appear in both families. The bare rule already
+  // covers them for every entry type, so adding the directory-only form would
+  // be dead weight on the command line.
+  const directoryOnly = [...IGNORED_PROJECT_DIR_NAMES]
+    .filter((name) => !secretBearing.has(name))
+    .map((name) => `${name}/`);
+  return [...secretBearing, ...directoryOnly];
+})();
 
 /** Run `vela resource <args>` and resolve its stdout. */
 export type RunVelaResource = (

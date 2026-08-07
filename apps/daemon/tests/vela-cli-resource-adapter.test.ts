@@ -46,32 +46,34 @@ const EXPECTED_PUSH_EXCLUDED_ENTRIES = [
   'terraform.tfstate',
   'terraform.tfstate.backup',
   // Generated/installed trees (IGNORED_PROJECT_DIR_NAMES, minus the
-  // duplicates above) — the owner's file list and watcher already hide them.
-  'vendor',
-  '.od',
-  'debug',
-  'dist',
-  'build',
-  '.build',
-  'deriveddata',
-  'target',
-  '.next',
-  '.nuxt',
-  '.turbo',
-  '.cache',
-  '.output',
-  'out',
-  'coverage',
-  '.gradle',
-  '.swiftpm',
-  '.tmp',
-  '.venv',
-  'venv',
-  '__pycache__',
-  '.mypy_cache',
-  '.pytest_cache',
-  '.tox',
-  '.ruff_cache',
+  // duplicates above). Trailing slash = directory-only: the owner hides these
+  // as directories, so a bare name would also swallow a regular file of the
+  // same name (a project file literally called `target` or `out`).
+  'vendor/',
+  '.od/',
+  'debug/',
+  'dist/',
+  'build/',
+  '.build/',
+  'deriveddata/',
+  'target/',
+  '.next/',
+  '.nuxt/',
+  '.turbo/',
+  '.cache/',
+  '.output/',
+  'out/',
+  'coverage/',
+  '.gradle/',
+  '.swiftpm/',
+  '.tmp/',
+  '.venv/',
+  'venv/',
+  '__pycache__/',
+  '.mypy_cache/',
+  '.pytest_cache/',
+  '.tox/',
+  '.ruff_cache/',
 ];
 const EXPECTED_PUSH_EXCLUDE_ARGS = EXPECTED_PUSH_EXCLUDED_ENTRIES
   .flatMap((name) => ['--exclude', name]);
@@ -141,7 +143,7 @@ describe('createVelaCliResourceAdapter', () => {
     const excluded = excludedNamesIn(calls[0]!);
     // Build/venv/cache output the project list and watcher never show the
     // owner must not fan out to member mirrors either.
-    for (const name of ['dist', 'build', '.next', '.venv', 'coverage', '.tmp', '__pycache__', 'node_modules']) {
+    for (const name of ['dist/', 'build/', '.next/', '.venv/', 'coverage/', '.tmp/', '__pycache__/', 'node_modules']) {
       expect(excluded).toContain(name);
     }
     // The pre-existing secret exclusions must survive the merge untouched.
@@ -151,6 +153,28 @@ describe('createVelaCliResourceAdapter', () => {
     const prefixAt = calls[0]!.indexOf('--exclude-prefix');
     expect(prefixAt).toBeGreaterThan(-1);
     expect(calls[0]![prefixAt + 1]).toBe('.env');
+  });
+
+  it('scopes generated-tree exclusions to directories so same-named files still sync', async () => {
+    const { run, calls } = recordingRun({ push: JSON.stringify({ version: 1 }) });
+    const adapter = createVelaCliResourceAdapter({ ...OPTS, run });
+    await adapter.publish({ projectId: 'p1', reason: 'edit' });
+
+    const excluded = excludedNamesIn(calls[0]!);
+    // `--exclude target` matches by entry name regardless of type, so the bare
+    // form would also drop a regular project file named `target` — content the
+    // owner still sees, silently missing from every member mirror. The owner
+    // side hides these as directories only, and the slash form says so.
+    for (const bare of ['target', 'out', 'dist', 'build', 'debug', 'coverage', 'vendor']) {
+      expect(excluded).not.toContain(bare);
+      expect(excluded).toContain(`${bare}/`);
+    }
+    // Secret-bearing entries keep the bare form on purpose: those must never
+    // leave the machine as a file OR a directory.
+    for (const bare of ['.git', '.ssh', '.aws', 'node_modules', 'terraform.tfstate']) {
+      expect(excluded).toContain(bare);
+      expect(excluded).not.toContain(`${bare}/`);
+    }
   });
 
   it('passes project metadata to the resource index when available', async () => {
