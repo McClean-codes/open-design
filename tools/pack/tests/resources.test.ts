@@ -40,6 +40,43 @@ async function pinnedVelaCliVersion(): Promise<string> {
   return version;
 }
 
+/**
+ * Help output as current Vela prints it: `--authorize-only` made `stageDir`
+ * optional, so the usage line reads `[stageDir]`. Every flag the daemon drives
+ * is still there — the capability is unchanged, only the usage shape moved.
+ */
+async function velaCliCommandWithOptionalStageDir(
+  _source: string,
+  args: readonly string[],
+): Promise<{ stderr: string; stdout: string }> {
+  if (args[0] === "--version") {
+    return { stderr: "", stdout: `${await pinnedVelaCliVersion()}\n` };
+  }
+  if (args[0] === "billing") {
+    return {
+      stderr: "",
+      stdout: [
+        "Usage:",
+        "  vela billing workspace-snapshot [flags]",
+        "      --workspace-id string",
+        "      --format string",
+      ].join("\n"),
+    };
+  }
+  return {
+    stderr: "",
+    stdout: [
+      "Usage:",
+      "  vela team-projects pull <projectId> [stageDir] [flags]",
+      "      --authorize-only",
+      "      --expected-version int",
+      "      --live-dir string",
+      "      --ref string",
+      "      --json",
+    ].join("\n"),
+  };
+}
+
 async function matchingVelaCliCommand(
   _binary: string,
   args: readonly string[],
@@ -333,6 +370,33 @@ describe("copyOptionalVelaCliBinary", () => {
       await expect(access(target)).resolves.toBeUndefined();
       const openCodeName = process.platform === "win32" ? "opencode.exe" : "opencode";
       await expect(access(join(resourceRoot, "bin", "libexec", "opencode", openCodeName))).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("accepts a Vela CLI whose pull usage line marks stageDir optional", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-vela-optional-stage-"));
+    const source = join(root, "source", "vela");
+    const resourceRoot = join(root, "resources", "open-design");
+
+    try {
+      await mkdir(join(root, "source"), { recursive: true });
+      await writeFile(source, "#!/bin/sh\nexit 0\n", "utf8");
+      await writeFakeOpenCodeCompanion(source, "#!/bin/sh\necho opencode\n");
+
+      // Validation must gate on the capability, not on whether an argument is
+      // spelled <required> or [optional]; otherwise a purely cosmetic usage
+      // change in Vela blocks packaging for no reason.
+      const copied = await copyOptionalVelaCliBinary({
+        env: { OPEN_DESIGN_VELA_CLI_BIN: source },
+        platform: "mac",
+        requireBundled: true,
+        resourceRoot,
+        runCommand: velaCliCommandWithOptionalStageDir,
+      });
+
+      expect(copied?.target).toBe(join(resourceRoot, "bin", "vela"));
     } finally {
       await rm(root, { force: true, recursive: true });
     }

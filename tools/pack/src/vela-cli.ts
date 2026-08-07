@@ -5,8 +5,15 @@ import { dirname, join } from "node:path";
 export const VELA_CLI_BIN_ENV = "OPEN_DESIGN_VELA_CLI_BIN";
 const OPEN_CODE_COMPANION_RELATIVE_PATH = ["libexec", "opencode"] as const;
 const AUTHORIZED_PULL_HELP_ARGS = ["team-projects", "pull", "--help"] as const;
+// What the bundle needs from `team-projects pull` is the authorized staged
+// pull CAPABILITY: the subcommand exists, takes a project id, and accepts the
+// flags the daemon drives it with. Deliberately not asserted: whether
+// `stageDir` is required or optional. Vela made it optional when it added
+// `--authorize-only` (a size probe that stages nothing), which changed the
+// usage line from `<stageDir>` to `[stageDir]` without removing anything the
+// daemon uses — a shape change, not a capability change.
 const AUTHORIZED_PULL_HELP_MARKERS = [
-  "pull <projectId> <stageDir>",
+  "pull <projectId>",
   "--expected-version",
   "--live-dir",
   "--ref",
