@@ -40,6 +40,16 @@ async function pinnedVelaCliVersion(): Promise<string> {
   return version;
 }
 
+function compareNumericVersions(left: string, right: string): number {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  for (let index = 0; index < 3; index += 1) {
+    const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
 async function matchingVelaCliCommand(
   _binary: string,
   args: readonly string[],
@@ -225,6 +235,12 @@ describe("copyBundledResourceTrees", () => {
 });
 
 describe("copyOptionalVelaCliBinary", () => {
+  it("pins a Vela CLI release that forwards OpenCode retry exhaustion to ACP hosts", async () => {
+    expect(
+      compareNumericVersions(await pinnedVelaCliVersion(), "0.0.29"),
+    ).toBeGreaterThanOrEqual(0);
+  });
+
   it("rejects a strict build when the Vela CLI version does not match the package pin", async () => {
     const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-vela-version-"));
     const source = join(root, "source", "vela");
