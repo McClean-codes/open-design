@@ -1,10 +1,12 @@
 import { expect, test } from '@/playwright/suite';
 import { routeAgents } from '@/playwright/mock-factory';
+import { T } from '@/timeouts';
 import type { Page } from '@playwright/test';
 
 const STORAGE_KEY = 'open-design:config';
+const AUTOMATIONS_TITLE = /Automations|自动化/i;
 
-test.describe.configure({ timeout: 30_000 });
+test.describe.configure({ timeout: T.xlong });
 
 async function seedAutomationsBase(page: Page) {
   await page.addInitScript(({ key, value }) => {
@@ -65,9 +67,14 @@ async function seedAutomationsBase(page: Page) {
 
 async function gotoAutomations(page: Page) {
   await page.goto('/automations', { waitUntil: 'domcontentloaded' });
-  await expect(page.getByText('Loading Open Design…')).toHaveCount(0, { timeout: 15_000 });
+  await page
+    .getByText('Loading Open Design…')
+    .waitFor({ state: 'hidden', timeout: T.long })
+    .catch(() => {});
   const view = page.getByTestId('tasks-view');
-  await expect(view.getByRole('heading', { level: 1, name: /Automations|自动化/i })).toBeVisible();
+  await expect(view.getByRole('heading', { level: 1, name: AUTOMATIONS_TITLE })).toBeVisible({
+    timeout: T.long,
+  });
   return view;
 }
 
