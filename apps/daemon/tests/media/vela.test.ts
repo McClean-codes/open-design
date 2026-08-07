@@ -87,8 +87,79 @@ describe('Vela media provider', () => {
     };
   }
 
-  function mockReadyImage(mime = 'image/webp') {
+  // Mirrors what `vela media models --json` publishes for these models: one
+  // aspect ratio can carry several resolutions, and `default` marks the tier an
+  // unqualified request would have used.
+  function publishedModels() {
+    const profile = (aspectRatio: string, resolution: string) => ({
+      aspect_ratio: aspectRatio,
+      resolution,
+    });
+    const envelope = (profiles: Array<{ aspect_ratio: string; resolution: string }>, resolution: string) => ({
+      profiles,
+      default: { aspect_ratio: '1:1', resolution },
+    });
+    const gptImage2 = envelope(
+      [profile('1:1', '1K'), profile('1:1', '2K'), profile('16:9', '2K')],
+      '2K',
+    );
+    return {
+      models: [
+        // The alias test renders vela/gpt-image-2 under a tenant wire name, and
+        // the catalogue is keyed by the wire name the request actually carries.
+        { model: 'tenant-image-model', kind: 'image', capabilities: { profiles: { generations: gptImage2 } } },
+        {
+          model: 'gpt-image-2',
+          kind: 'image',
+          capabilities: { profiles: { generations: gptImage2, edits: gptImage2 } },
+        },
+        {
+          model: 'nano-banana-2',
+          kind: 'image',
+          capabilities: {
+            profiles: {
+              // 16:9 exists at both tiers; the default tier must win.
+              edits: envelope(
+                [profile('1:1', '2K'), profile('16:9', '1K'), profile('16:9', '2K')],
+                '2K',
+              ),
+            },
+          },
+        },
+        {
+          model: 'seedream-5.0-pro',
+          kind: 'image',
+          capabilities: {
+            profiles: {
+              generations: envelope([profile('1:1', '2K'), profile('9:16', '2K')], '2K'),
+            },
+          },
+        },
+      ],
+    };
+  }
+
+  // The profile lookup precedes the render, so index-based lookups would drift.
+  function imageCall() {
+    const call = runVelaCommandMock.mock.calls.find(([args]) => args[0] === 'image');
+    if (!call) throw new Error('expected an image command to be spawned');
+    return call;
+  }
+
+  // Every image render now asks for the published profiles first, so a test
+  // that only stubs the render would have its catalogue lookup fall into that
+  // stub and fail on a missing --output.
+  function mockVelaCommand(handler: (args: string[]) => Promise<string>) {
     runVelaCommandMock.mockImplementation(async (args: string[]) => {
+      if (args[0] === 'media' && args[1] === 'models') {
+        return JSON.stringify(publishedModels());
+      }
+      return handler(args);
+    });
+  }
+
+  function mockReadyImage(mime = 'image/webp') {
+    mockVelaCommand(async (args: string[]) => {
       const output = valueAfter(args, '--output');
       tempOutputDirs.push(path.dirname(output));
       await writeFile(output, IMAGE_BYTES);
@@ -120,10 +191,14 @@ describe('Vela media provider', () => {
     expect(result.usedStubFallback).toBe(false);
     expect(result.name).toBe('poster.webp');
     expect(result.providerNote).toContain('vela/tenant-image-model');
-    const [args, options] = runVelaCommandMock.mock.calls[0]!;
+    const [args, options] = imageCall();
     expect(args.slice(0, 2)).toEqual(['image', 'gen']);
     expect(valueAfter(args, '--model')).toBe('tenant-image-model');
     expect(args).not.toContain('--size');
+    // 1:1 is published at 1K and 2K; the model's default tier decides.
+    expect(valueAfter(args, '--aspect-ratio')).toBe('1:1');
+    expect(valueAfter(args, '--resolution')).toBe('2K');
+    expect(result.providerNote).toContain('1:1 2K');
     expect(options.timeoutMs).toBe(330_000);
     expect(options.configuredEnv).toEqual({
       VELA_INVOCATION_SOURCE: 'open-design',
@@ -143,9 +218,12 @@ describe('Vela media provider', () => {
       output: 'edited.png',
     });
 
-    const [args, options] = runVelaCommandMock.mock.calls[0]!;
+    const [args, options] = imageCall();
     expect(args.slice(0, 2)).toEqual(['image', 'edit']);
     expect(valueAfter(args, '--model')).toBe('nano-banana-2');
+    // Edits carry their own published envelope, distinct from generations.
+    expect(valueAfter(args, '--aspect-ratio')).toBe('1:1');
+    expect(valueAfter(args, '--resolution')).toBe('2K');
     expect(allValuesAfter(args, '--image')).toEqual(
       refs.slice(0, 5).map((name) => path.join(projectDir, name)),
     );
@@ -165,15 +243,51 @@ describe('Vela media provider', () => {
     expect(runVelaCommandMock).not.toHaveBeenCalled();
   });
 
-  it('rejects an unproven non-default image aspect before spawning Vela', async () => {
+  it('requests a published non-default aspect ratio instead of the provider default', async () => {
+    mockReadyImage();
+
+    const result = await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      aspect: '16:9',
+      output: 'wide.png',
+    });
+
+    const [args] = imageCall();
+    expect(valueAfter(args, '--aspect-ratio')).toBe('16:9');
+    expect(valueAfter(args, '--resolution')).toBe('2K');
+    expect(result.providerNote).toContain('16:9 2K');
+  });
+
+  it('prefers the default resolution when one aspect ratio publishes several', async () => {
+    mockReadyImage();
+
+    await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/nano-banana-2',
+      images: refs.slice(0, 1),
+      aspect: '16:9',
+      output: 'wide-edit.png',
+    });
+
+    const [args] = imageCall();
+    expect(valueAfter(args, '--aspect-ratio')).toBe('16:9');
+    expect(valueAfter(args, '--resolution')).toBe('2K');
+  });
+
+  it('names the published aspect ratios when the requested one is not one of them', async () => {
+    mockReadyImage();
+
     await expect(generateMedia({
       ...baseArgs(),
       surface: 'image',
       model: 'vela/seedream-5.0-pro',
       aspect: '16:9',
       output: 'wrong-aspect.png',
-    })).rejects.toThrow('does not advertise a proven size');
-    expect(runVelaCommandMock).not.toHaveBeenCalled();
+    })).rejects.toThrow('does not publish aspect 16:9; supported: 1:1, 9:16');
+    expect(runVelaCommandMock.mock.calls.every(([args]) => args[0] !== 'image')).toBe(true);
   });
 
   it.each([
@@ -214,7 +328,7 @@ describe('Vela media provider', () => {
       'wrote an empty output file',
     ],
   ])('fails on %s and cleans the daemon temp directory', async (_name, implementation, message) => {
-    runVelaCommandMock.mockImplementation(implementation);
+    mockVelaCommand(implementation);
     await expect(generateMedia({
       ...baseArgs(),
       surface: 'image',
@@ -228,7 +342,7 @@ describe('Vela media provider', () => {
 
   it('never turns a Vela failure into a stub, even when stubs are enabled', async () => {
     process.env.OD_MEDIA_ALLOW_STUBS = '1';
-    runVelaCommandMock.mockImplementation(async (args: string[]) => {
+    mockVelaCommand(async (args: string[]) => {
       tempOutputDirs.push(path.dirname(valueAfter(args, '--output')));
       throw new Error('workspace billing denied');
     });

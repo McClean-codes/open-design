@@ -37,6 +37,7 @@ export interface VelaRenderResult {
 type JsonRecord = Record<string, unknown>;
 
 const VELA_IMAGE_TIMEOUT_MS = 330_000;
+const VELA_MODELS_TIMEOUT_MS = 30_000;
 const VELA_VIDEO_SUBMIT_TIMEOUT_MS = 330_000;
 const DEFAULT_VELA_VIDEO_POLL_COMMAND_TIMEOUT_MS = 90_000;
 const DEFAULT_VELA_VIDEO_POLL_INTERVAL_MS = 5_000;
@@ -111,13 +112,77 @@ function assertInputImageCount(imageRefs: VelaMediaImageRef[]): void {
   }
 }
 
-function assertDefaultImageAspect(aspect: string | undefined): void {
-  if (aspect && aspect !== '1:1') {
+// One (aspect_ratio, resolution) pair from the model's published output
+// profiles. Vela publishes these per model and per request kind, and its CLI
+// requires both halves together -- an aspect ratio alone is not a request.
+interface VelaImageOutputProfile {
+  aspectRatio: string;
+  resolution: string;
+}
+
+function parsePublishedProfiles(
+  stdout: string,
+  model: string,
+  edits: boolean,
+): { profiles: VelaImageOutputProfile[]; defaultResolution: string | null } | null {
+  const response = parseJsonObject(stdout, 'media models');
+  const models = Array.isArray(response.models) ? response.models : [];
+  const entry = models.find(
+    (item): item is JsonRecord => isRecord(item) && item.model === model && item.kind === 'image',
+  );
+  if (!entry) return null;
+  const capabilities = isRecord(entry.capabilities) ? entry.capabilities : null;
+  const byRequestKind = capabilities && isRecord(capabilities.profiles) ? capabilities.profiles : null;
+  const envelope = byRequestKind?.[edits ? 'edits' : 'generations'];
+  if (!isRecord(envelope)) return null;
+  const rawProfiles = Array.isArray(envelope.profiles) ? envelope.profiles : [];
+  const profiles: VelaImageOutputProfile[] = [];
+  for (const item of rawProfiles) {
+    if (!isRecord(item)) continue;
+    const aspectRatio = nonEmptyString(item.aspect_ratio);
+    const resolution = nonEmptyString(item.resolution);
+    if (aspectRatio && resolution) profiles.push({ aspectRatio, resolution });
+  }
+  const fallback = isRecord(envelope.default) ? nonEmptyString(envelope.default.resolution) : null;
+  return { profiles, defaultResolution: fallback };
+}
+
+// Vela owns which shapes a model can actually deliver, so read the published
+// profiles per request instead of caching a copy here: a catalogue that gained
+// or lost a shape must take effect immediately, and one extra CLI call is
+// nothing beside the generation it precedes. Returning undefined leaves the
+// request without output flags, which is how the server's own default profile
+// stays in charge.
+async function resolveImageOutputProfile(
+  input: VelaImageRenderInput,
+  edits: boolean,
+  wireModel: string,
+  runCommand: VelaCommandRunner,
+): Promise<VelaImageOutputProfile | undefined> {
+  const aspect = input.aspect?.trim();
+  if (!aspect) return undefined;
+  const stdout = await runCommand(['media', 'models', '--json'], {
+    ...velaWorkspaceCommandOptions(input.workspaceId),
+    timeoutMs: VELA_MODELS_TIMEOUT_MS,
+  });
+  const published = parsePublishedProfiles(stdout, wireModel, edits);
+  if (!published || published.profiles.length === 0) {
     throw new Error(
-      `Vela image model does not advertise a proven size for aspect ${aspect}; `
-      + 'only the OD default 1:1 mode is currently available and it uses the provider default size',
+      `Vela model ${wireModel} does not publish output profiles, so aspect ${aspect} cannot be requested`,
     );
   }
+  const matching = published.profiles.filter((profile) => profile.aspectRatio === aspect);
+  if (matching.length === 0) {
+    const supported = [...new Set(published.profiles.map((profile) => profile.aspectRatio))];
+    throw new Error(
+      `Vela model ${wireModel} does not publish aspect ${aspect}; supported: ${supported.join(', ')}`,
+    );
+  }
+  // Several resolutions can share one aspect ratio. Prefer the one the model
+  // defaults to, so asking only for a shape does not silently change quality
+  // tier or price relative to an unqualified request.
+  const preferred = matching.find((profile) => profile.resolution === published.defaultResolution);
+  return preferred ?? matching[0];
 }
 
 function videoTaskError(task: JsonRecord): string {
@@ -140,12 +205,13 @@ export async function renderVelaImage(
   runCommand: VelaCommandRunner = runVelaCommand,
 ): Promise<VelaRenderResult> {
   assertInputImageCount(input.imageRefs);
-  assertDefaultImageAspect(input.aspect);
   const wireModel = wireModelForVela(input.model, input.wireModel);
+  const edits = input.imageRefs.length > 0;
+  const profile = await resolveImageOutputProfile(input, edits, wireModel, runCommand);
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'open-design-vela-image-'));
   const outputPath = path.join(tempDir, 'result.bin');
   try {
-    const command = input.imageRefs.length === 0 ? 'gen' : 'edit';
+    const command = edits ? 'edit' : 'gen';
     const args = [
       'image',
       command,
@@ -154,6 +220,9 @@ export async function renderVelaImage(
       '--prompt',
       input.prompt,
       ...input.imageRefs.flatMap((image) => ['--image', image.abs]),
+      ...(profile
+        ? ['--aspect-ratio', profile.aspectRatio, '--resolution', profile.resolution]
+        : []),
       '--output',
       outputPath,
       '--json',
@@ -180,7 +249,9 @@ export async function renderVelaImage(
     const bytes = await readNonEmptyOutput(outputPath, `image ${command}`);
     return {
       bytes,
-      providerNote: `vela/${wireModel} · provider default size · ${bytes.length} bytes`,
+      providerNote: `vela/${wireModel} · ${
+        profile ? `${profile.aspectRatio} ${profile.resolution}` : 'model default profile'
+      } · ${bytes.length} bytes`,
       suggestedExt: extensionForImageMime(mime),
     };
   } finally {
