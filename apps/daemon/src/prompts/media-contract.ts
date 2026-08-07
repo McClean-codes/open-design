@@ -191,6 +191,13 @@ Never invoke the \`vela\` CLI directly and never call its remote media API.
 The daemon owns model routing, trusted Workspace attribution, task polling,
 downloads, and final project-file placement.
 
+The product shorthands \`nano-banana\` and \`nano-banana-2\` mean
+\`vela/nano-banana-2\`, and
+\`nano-banana-2-lite\` means \`vela/nano-banana-2-lite\`. Prefer the canonical
+\`vela/*\` ids in commands. Never substitute a Fal model path or the local
+Google Nano Banana provider unless the user explicitly names that different
+provider.
+
 The command prints a single line of JSON describing the written file:
 
 \`\`\`json
@@ -440,7 +447,11 @@ path is given.
    After the command completes, reply with **one brief message** (2–3 sentences max):
    the filename, the model used, and a single follow-up offer ("Want a different
    aspect ratio?" / "Try again with more fog?"). Do not write long descriptions,
-   artistic analyses, or multi-paragraph commentary. Speed matters.
+    artistic analyses, or multi-paragraph commentary. Speed matters.
+    Do not call \`Read\` on the generated image/video/audio file after the
+    dispatcher succeeds. Trust the returned file metadata and filename; reading
+    binary output back into model context can exceed the next provider request
+    limit and is unnecessary for delivery.
    If it fails, quote the real stderr / exit code and stop there.
    Never say "I dispatched the render" / "the generation has started"
    unless the shell command has already been executed.

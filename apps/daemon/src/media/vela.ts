@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -112,6 +112,22 @@ function assertInputImageCount(imageRefs: VelaMediaImageRef[]): void {
   }
 }
 
+async function stageInputImages(
+  imageRefs: VelaMediaImageRef[],
+  tempDir: string,
+): Promise<VelaMediaImageRef[]> {
+  return Promise.all(imageRefs.map(async (image, index) => {
+    // Vela CLI may downscale oversized references in place before upload. A
+    // project file is user data and also participates in the daemon's artifact
+    // diff, so never let a transport optimization mutate the source or make an
+    // untouched reference appear as this run's output.
+    const extension = path.extname(image.abs);
+    const staged = path.join(tempDir, `input-${index + 1}${extension}`);
+    await copyFile(image.abs, staged);
+    return { abs: staged };
+  }));
+}
+
 // One (aspect_ratio, resolution) pair from the model's published output
 // profiles. Vela publishes these per model and per request kind, and its CLI
 // requires both halves together -- an aspect ratio alone is not a request.
@@ -211,6 +227,7 @@ export async function renderVelaImage(
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'open-design-vela-image-'));
   const outputPath = path.join(tempDir, 'result.bin');
   try {
+    const stagedImageRefs = await stageInputImages(input.imageRefs, tempDir);
     const command = edits ? 'edit' : 'gen';
     const args = [
       'image',
@@ -219,7 +236,7 @@ export async function renderVelaImage(
       wireModel,
       '--prompt',
       input.prompt,
-      ...input.imageRefs.flatMap((image) => ['--image', image.abs]),
+      ...stagedImageRefs.flatMap((image) => ['--image', image.abs]),
       ...(profile
         ? ['--aspect-ratio', profile.aspectRatio, '--resolution', profile.resolution]
         : []),
@@ -290,7 +307,8 @@ export async function renderVelaVideo(
   );
   let lastStatus = 'submitted';
   try {
-    const [firstFrame, ...references] = input.imageRefs;
+    const stagedImageRefs = await stageInputImages(input.imageRefs, tempDir);
+    const [firstFrame, ...references] = stagedImageRefs;
     const submitArgs = [
       'video',
       'gen',

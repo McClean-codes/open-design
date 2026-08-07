@@ -92,6 +92,9 @@
 .produced-file:hover {
   background: var(--bg-fill-tertiary);
 }
+.produced-file-openable {
+  cursor: pointer;
+}
 .produced-file-icon { width: 22px; text-align: center; color: var(--text-muted); }
 .produced-file-name {
   flex: 1;

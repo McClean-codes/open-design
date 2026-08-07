@@ -91,6 +91,21 @@ function projectCollabValue(workspaceContext = PROJECT_A_CONTEXT) {
 }
 
 describe('AssistantMessage feedback gate', () => {
+  it('opens a produced file when the user clicks the filename row', () => {
+    const onRequestOpenFile = vi.fn();
+    render(
+      <AssistantMessage
+        message={baseMessage({ producedFiles: [producedFile('poster.png')] })}
+        streaming={false}
+        projectId="proj-1"
+        onRequestOpenFile={onRequestOpenFile}
+      />,
+    );
+
+    fireEvent.click(screen.getByText('poster.png'));
+    expect(onRequestOpenFile).toHaveBeenCalledWith('poster.png');
+  });
+
   it('renders plugin suggestions as compact user decisions with secondary actions in details', () => {
     const message = baseMessage({
       content: '',

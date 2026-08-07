@@ -420,7 +420,7 @@ export async function generateMedia(args: {
     surface === 'audio' ? audioKind || 'music' : undefined;
   if (!isFalCustomPath && !isCatalogBypass) {
     const allowed = modelsForSurface(surface, resolvedAudioKind);
-    if (!allowed.some((m) => m.id === model)) {
+    if (!allowed.some((m) => m.id === def.id)) {
       const ids = allowed.map((m) => m.id).join(', ');
       const where =
         surface === 'audio' ? `audio · ${resolvedAudioKind}` : surface;
@@ -488,16 +488,18 @@ export async function generateMedia(args: {
 
   // Resolve any user-configured model alias BEFORE we hand the id to a
   // dispatcher (issue #1277). Catalog lookup + surface validation above
-  // ran against the original id so we still enforce the registered
-  // catalog; the alias only changes what the provider receives on the
-  // wire. lefarcen + codex P2 on PR #1309: keep BOTH values on ctx so
+  // resolved product shorthands to `def.id`, so use that canonical id here:
+  // e.g. `nano-banana` must reach Vela as `nano-banana-2`, never as an
+  // unregistered wire model. The alias only changes what the provider
+  // receives on the wire. lefarcen + codex P2 on PR #1309: keep BOTH values on ctx so
   // capability branches (DALL-E sizing, gpt-image quality, gpt-4o-mini-tts
   // instructions, MINIMAX/FISHAUDIO TTS map) continue to key off the
   // catalog id while the provider's request body carries the alias.
-  const wireModel = await resolveModelAlias(projectRoot, model);
+  const canonicalModel = def.id;
+  const wireModel = await resolveModelAlias(projectRoot, canonicalModel);
   const ctx: MediaContext = {
     surface,
-    model,
+    model: canonicalModel,
     wireModel,
     modelDef: def,
     provider: findProvider(def.provider),
