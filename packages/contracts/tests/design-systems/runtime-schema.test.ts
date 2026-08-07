@@ -4,6 +4,7 @@ import {
   DESIGN_SYSTEM_COMPONENTS_SCHEMA_VERSION,
   DESIGN_SYSTEM_COMPONENT_SCHEMA_VERSION,
   DESIGN_SYSTEM_INTENT_MAP_SCHEMA_VERSION,
+  DesignSystemAdherenceRequestSchema,
   DesignSystemComponentDefinitionSchema,
   DesignSystemRuntimePathsSchema,
   resolveDesignSystemIntentForGeneration,
@@ -112,6 +113,24 @@ describe('design-system runtime schema', () => {
     }
   });
 
+  it('accepts bounded project-relative adherence inputs and rejects traversal', () => {
+    expect(DesignSystemAdherenceRequestSchema.parse({
+      intent: 'account.settings.save',
+      artifacts: ['account-settings.html', 'styles/account-settings.css'],
+    })).toEqual({
+      intent: 'account.settings.save',
+      artifacts: ['account-settings.html', 'styles/account-settings.css'],
+    });
+    expect(DesignSystemAdherenceRequestSchema.safeParse({
+      intent: 'account.settings.save',
+      artifacts: ['../outside.html'],
+    }).success).toBe(false);
+    expect(DesignSystemAdherenceRequestSchema.safeParse({
+      intent: 'account.settings.save',
+      artifacts: ['account-settings.html', 'account-settings.html'],
+    }).success).toBe(false);
+  });
+
   it('validates component, variant, property, and state references across files', () => {
     const validIntentMap: DesignSystemIntentMap = {
       schemaVersion: DESIGN_SYSTEM_INTENT_MAP_SCHEMA_VERSION,
@@ -155,7 +174,6 @@ describe('design-system runtime schema', () => {
       component: 'Button',
       variant: 'primary',
       properties: { label: 'Save' },
-      states: ['focus'],
       priority: 100,
     }]), 'account.settings.save');
 

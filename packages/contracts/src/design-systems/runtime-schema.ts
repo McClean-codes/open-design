@@ -5,6 +5,7 @@ export const DESIGN_SYSTEM_COMPONENT_SCHEMA_VERSION = 'od-design-system-componen
 export const DESIGN_SYSTEM_INTENT_MAP_SCHEMA_VERSION = 'od-design-system-intents/v1' as const;
 export const DESIGN_SYSTEM_LINT_SCHEMA_VERSION = 'od-design-system-lint/v1' as const;
 export const DESIGN_SYSTEM_FALLBACK_SCHEMA_VERSION = 'od-design-system-fallback/v1' as const;
+export const DESIGN_SYSTEM_ADHERENCE_SCHEMA_VERSION = 'od-design-system-adherence/v1' as const;
 
 const NonEmptyStringSchema = z.string().trim().min(1);
 const ComponentIdSchema = NonEmptyStringSchema.regex(/^[A-Za-z][A-Za-z0-9_-]*$/);
@@ -285,6 +286,58 @@ export type DesignSystemGenerationResolution = {
   matches: DesignSystemIntentSelection[];
 };
 
+export const DesignSystemAdherenceRequestSchema = z.object({
+  intent: DesignSystemIntentIdSchema,
+  artifacts: z.array(SafeRelativePathSchema).min(1).max(20),
+}).strict().superRefine((value, ctx) => {
+  reportDuplicates(value.artifacts, 'artifact path', ctx);
+});
+
+export type DesignSystemAdherenceRequest = z.infer<typeof DesignSystemAdherenceRequestSchema>;
+
+export type DesignSystemAdherenceCheckStatus =
+  | 'passed'
+  | 'failed'
+  | 'needs-confirmation'
+  | 'not-applicable';
+
+export type DesignSystemAdherenceCheck = {
+  id:
+    | 'intent-resolution'
+    | 'fallback-marker'
+    | 'mapped-component-reuse'
+    | 'variant-reuse'
+    | 'declared-state'
+    | 'token-reference'
+    | 'unauthorized-token-reference'
+    | 'unauthorized-color-literal';
+  status: DesignSystemAdherenceCheckStatus;
+  subject?: string;
+  message: string;
+  remediation?: string;
+  evidence?: string[];
+};
+
+export type DesignSystemAdherenceReport = {
+  schemaVersion: typeof DESIGN_SYSTEM_ADHERENCE_SCHEMA_VERSION;
+  intent: string;
+  status: 'passed' | 'failed' | 'confirmation-required';
+  nextAction: 'complete' | 'fix-and-rerun' | 'request-human-confirmation';
+  resolution: DesignSystemGenerationResolution;
+  artifacts: Array<{
+    path: string;
+    size: number;
+    mime?: string;
+  }>;
+  summary: {
+    passed: number;
+    failed: number;
+    needsConfirmation: number;
+    notApplicable: number;
+  };
+  checks: DesignSystemAdherenceCheck[];
+};
+
 export function resolveDesignSystemIntent(
   bundle: DesignSystemRuntimeBundle,
   intent: string,
@@ -297,7 +350,13 @@ export function resolveDesignSystemIntent(
       const component = components.get(mapping.component);
       if (component === undefined) return [];
       const variant = mapping.variant === undefined ? undefined : component.variants?.[mapping.variant];
-      const states = (mapping.states ?? []).flatMap((stateId) => {
+      const stateIds = new Set([
+        ...(mapping.states ?? []),
+        ...Object.entries(component.states ?? {})
+          .filter(([, state]) => state.required === true)
+          .map(([stateId]) => stateId),
+      ]);
+      const states = [...stateIds].flatMap((stateId) => {
         const state = component.states?.[stateId];
         if (state === undefined) return [];
         return [{
