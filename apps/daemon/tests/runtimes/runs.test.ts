@@ -437,10 +437,11 @@ describe('chat run service shutdown', () => {
     const run = runs.create({ projectId: 'project-1', conversationId: 'conv-queued' });
 
     const wait = runs.wait(run);
-    await runs.cancel(run);
+    await runs.cancel(run, 'user_stop');
 
     expect(run.status).toBe('canceled');
     expect(run.cancelRequested).toBe(true);
+    expect(runs.statusBody(run).cancelOrigin).toBe('user_stop');
     expect(run.signal).toBe('SIGTERM');
     expect(run.events.at(-1)).toMatchObject({
       event: 'end',
@@ -814,6 +815,7 @@ describe('chat run service shutdown', () => {
     expect(child.signals).toEqual(['SIGTERM']);
     expect(run.status).toBe('canceled');
     expect(run.cancelRequested).toBe(true);
+    expect(runs.statusBody(run).cancelOrigin).toBe('daemon_shutdown');
     expect(run.signal).toBe('SIGTERM');
     await expect(wait).resolves.toMatchObject({ status: 'canceled', signal: 'SIGTERM' });
     expect(run.events.at(-1)).toMatchObject({

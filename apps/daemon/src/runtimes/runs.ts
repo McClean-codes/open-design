@@ -513,6 +513,8 @@ function durableRunState(run) {
     failureCategory: run.failureCategory ?? null,
     failureDetail: run.failureDetail ?? null,
     failureAction: run.failureAction ?? null,
+    cancelOrigin: run.cancelOrigin ?? null,
+    terminalTrigger: run.terminalTrigger ?? null,
     resumable: run.resumable ?? false,
     artifactCount: Number.isFinite(run.artifactCount) ? run.artifactCount : 0,
     endedWithUnfinishedWork: Boolean(run.endedWithUnfinishedWork),
@@ -731,6 +733,8 @@ export function createChatRunService({
       childPid: null,
       processGroupId: null,
       cancelRequested: false,
+      cancelOrigin: null,
+      terminalTrigger: null,
       eventsLogPath,
       statePath,
       eventsLogStream: null,
@@ -823,6 +827,8 @@ export function createChatRunService({
       error: null,
       errorCode: null,
       cancelRequested: false,
+      cancelOrigin: null,
+      terminalTrigger: null,
       runtimeFailureObservedBeforeCancellation: false,
       retryRestartTimer: null,
       // First failure that triggered a same-run retry. The next attempt creates
@@ -983,6 +989,8 @@ export function createChatRunService({
     run.failureAction = null;
     run.resumable = false;
     run.cancelRequested = false;
+    run.cancelOrigin = null;
+    run.terminalTrigger = null;
     run.runtimeFailureObservedBeforeCancellation = false;
     run.retryRestartTimer = null;
     run.retryAttemptCount = 0;
@@ -1100,6 +1108,8 @@ export function createChatRunService({
     createdAt: run.createdAt,
     updatedAt: run.updatedAt,
     cancelRequested: !!run.cancelRequested,
+    cancelOrigin: run.cancelOrigin ?? null,
+    terminalTrigger: run.terminalTrigger ?? null,
     childPid: typeof run.child?.pid === 'number' ? run.child.pid : run.childPid ?? null,
     processGroupId: run.processGroupId ?? null,
     childExited: !run.child || run.child.exitCode !== null || run.child.signalCode !== null,
@@ -1408,9 +1418,10 @@ export function createChatRunService({
     }
   };
 
-  const cancel = async (run) => {
+  const cancel = async (run, origin = 'unknown') => {
     if (TERMINAL_RUN_STATUSES.has(run.status)) return statusBody(run);
     run.cancelRequested = true;
+    run.cancelOrigin = origin;
     run.updatedAt = Date.now();
     clearPendingRetryRestart(run);
     closeRunStdin(run);
@@ -1454,6 +1465,7 @@ export function createChatRunService({
     const activeRuns = Array.from(runs.values()).filter((run) => !TERMINAL_RUN_STATUSES.has(run.status));
     await Promise.all(activeRuns.map(async (run) => {
       run.cancelRequested = true;
+      run.cancelOrigin = 'daemon_shutdown';
       run.updatedAt = Date.now();
       clearPendingRetryRestart(run);
       closeRunStdin(run);
