@@ -1176,6 +1176,22 @@ describe('run event log persistence', () => {
     });
   });
 
+  it('retains the cancellation cause when hydrating durable status after restart', async () => {
+    const beforeRestart = createRunsWithLog(tmpDir);
+    const canceled = beforeRestart.create({ projectId: 'p1' });
+    await beforeRestart.cancel(canceled, 'user_stop');
+
+    const afterRestart = createRunsWithLog(tmpDir);
+    const hydrated = afterRestart.get(canceled.id);
+
+    expect(hydrated).not.toBeNull();
+    expect(afterRestart.statusBody(hydrated)).toMatchObject({
+      id: canceled.id,
+      status: 'canceled',
+      cancelOrigin: 'user_stop',
+    });
+  });
+
   it('reuses an interrupted durable request instead of starting it twice after restart', () => {
     const clientRequestId = '018f6f2e-6666-7666-8666-666666666666';
     const requestFingerprint = 'same-cloud-request';
@@ -1209,6 +1225,7 @@ describe('run event log persistence', () => {
       errorCode: 'DAEMON_RESTARTED',
       error: 'Run interrupted because the daemon restarted.',
     });
+    expect(afterRestart.statusBody(reused.run).terminalTrigger).toBe('daemon_restart');
     expect(reused.run.events.slice(-2)).toMatchObject([
       { event: 'error', data: { error: { code: 'DAEMON_RESTARTED' } } },
       { event: 'end', data: { status: 'failed' } },
