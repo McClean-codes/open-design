@@ -386,7 +386,8 @@ test('[P0] UI-created Personal project recovers preview and write authority afte
   // not that ephemeral witness — must reconnect the already-ready artifact.
   await page.reload({ waitUntil: 'domcontentloaded' });
   await expect(page.getByTestId('file-workspace')).toBeVisible();
-  await expect(page.locator('.viewer-loading')).toBeVisible();
+  await expect(page.getByTestId('chat-composer-input')).toHaveAttribute('aria-readonly', 'true');
+  await expect(page.getByRole('button', { name: /^Share$/i })).toBeDisabled();
 
   releaseScope();
   await expect(artifactPreviewFrame(page).getByRole('heading', {
