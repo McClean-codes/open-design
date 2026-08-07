@@ -106,6 +106,25 @@ describe('AssistantMessage feedback gate', () => {
     expect(onRequestOpenFile).toHaveBeenCalledWith('poster.png');
   });
 
+  it.each(['Enter', ' '])(
+    'opens a produced file when the user presses %s on its row',
+    (key) => {
+      const onRequestOpenFile = vi.fn();
+      render(
+        <AssistantMessage
+          message={baseMessage({ producedFiles: [producedFile('poster.png')] })}
+          streaming={false}
+          projectId="proj-1"
+          onRequestOpenFile={onRequestOpenFile}
+        />,
+      );
+
+      const row = screen.getByRole('button', { name: 'Open: poster.png' });
+      fireEvent.keyDown(row, { key });
+      expect(onRequestOpenFile).toHaveBeenCalledWith('poster.png');
+    },
+  );
+
   it('renders plugin suggestions as compact user decisions with secondary actions in details', () => {
     const message = baseMessage({
       content: '',

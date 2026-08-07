@@ -2168,7 +2168,16 @@ function ProducedFiles({
           <div
             key={f.name}
             className={`produced-file${onRequestOpenFile ? " produced-file-openable" : ""}`}
+            role={onRequestOpenFile ? "button" : undefined}
+            tabIndex={onRequestOpenFile ? 0 : undefined}
+            aria-label={onRequestOpenFile ? `${t("assistant.openFile")}: ${f.name}` : undefined}
             onClick={onRequestOpenFile ? () => onRequestOpenFile(f.name) : undefined}
+            onKeyDown={onRequestOpenFile ? (event) => {
+              if (event.target !== event.currentTarget) return;
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              onRequestOpenFile(f.name);
+            } : undefined}
           >
             <span className="produced-file-icon" aria-hidden>
               <Icon name={kindIconName(f.kind)} size={14} />
