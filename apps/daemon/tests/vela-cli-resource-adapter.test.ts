@@ -132,6 +132,8 @@ describe('createVelaCliResourceAdapter', () => {
       ...EXPECTED_PUSH_EXCLUDE_ARGS,
       '--exclude-prefix',
       '.env',
+      '--exclude-prefix',
+      'deriveddata-/',
     ]);
   });
 
@@ -153,6 +155,21 @@ describe('createVelaCliResourceAdapter', () => {
     const prefixAt = calls[0]!.indexOf('--exclude-prefix');
     expect(prefixAt).toBeGreaterThan(-1);
     expect(calls[0]![prefixAt + 1]).toBe('.env');
+  });
+
+  it('carries the owner-side deriveddata- prefix rule, directory-scoped', async () => {
+    const { run, calls } = recordingRun({ push: JSON.stringify({ version: 1 }) });
+    const adapter = createVelaCliResourceAdapter({ ...OPTS, run });
+    await adapter.publish({ projectId: 'p1', reason: 'edit' });
+
+    const prefixes = calls[0]!.flatMap((arg, i) =>
+      arg === '--exclude-prefix' ? [calls[0]![i + 1]!] : []);
+    // The owner hides any `deriveddata-*` DIRECTORY; a regular file starting
+    // with that prefix is ordinary content and must still reach members.
+    expect(prefixes).toContain('deriveddata-/');
+    expect(prefixes).not.toContain('deriveddata-');
+    // `.env` stays bare: a secret is unwelcome as a file or a directory.
+    expect(prefixes).toContain('.env');
   });
 
   it('scopes generated-tree exclusions to directories so same-named files still sync', async () => {
@@ -196,6 +213,8 @@ describe('createVelaCliResourceAdapter', () => {
       ...EXPECTED_PUSH_EXCLUDE_ARGS,
       '--exclude-prefix',
       '.env',
+      '--exclude-prefix',
+      'deriveddata-/',
       '--metadata-json',
       JSON.stringify({ name: 'Launch Deck', metadata: { kind: 'deck' } }),
     ]);
