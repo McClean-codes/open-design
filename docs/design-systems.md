@@ -137,6 +137,29 @@ as an alternate inventory: selection goes through the intent index and resolver.
 The fixture and its derived manifest remain package evidence, preview inputs,
 and authoring checks, but they do not compete with the runtime mapping.
 
+After generation, the filesystem agent validates the files that implement the
+intent. Pass every related source file when markup and styles are split:
+
+```bash
+"$OD_NODE_BIN" "$OD_BIN" tools design-systems validate \
+  --intent account.settings.save \
+  --artifact account-settings.html \
+  --artifact styles/account-settings.css
+```
+
+The adherence report checks mapped component and variant reuse, required state
+coverage, declared token references, and color literals outside token
+definitions. `passed` allows the task to complete; `failed` returns concrete
+remediation and must be fixed and re-run; `confirmation-required` preserves the
+package fallback gate and must be surfaced to the user. Validation is scoped to
+the active run and reads only safe project-relative text files.
+
+The first bundled runtime packages are `hud`, `webflow`, and `uber`. They carry
+the component and intent coverage used by the three-task DS 3.0 regression
+(account settings, delete-workspace confirmation, and team directory). The
+destructive confirmation intent intentionally has no component mapping so its
+human-confirmation fallback remains part of the release signal.
+
 Omitting `runtime` preserves the legacy prompt-based component manifest / fixture
 path.
 Declaring only part of the graph, using unsafe paths, or leaving dangling

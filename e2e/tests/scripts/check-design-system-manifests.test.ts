@@ -16,6 +16,13 @@ import {
   DESIGN_SYSTEM_FALLBACK_SCHEMA_VERSION,
   DESIGN_SYSTEM_INTENT_MAP_SCHEMA_VERSION,
   DESIGN_SYSTEM_LINT_SCHEMA_VERSION,
+  DesignSystemComponentDefinitionSchema,
+  DesignSystemComponentsIndexSchema,
+  DesignSystemFallbackRulesSchema,
+  DesignSystemIntentMapSchema,
+  DesignSystemLintRulesSchema,
+  validateDesignSystemRuntimeReferences,
+  type LoadedDesignSystemComponent,
 } from "../../../design-systems/_schema/runtime.schema.ts";
 import {
   renderDesignTokensJson,
@@ -344,6 +351,71 @@ test("design-system runtime guard validates cross-file component references", as
     ]);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("bundled DS 3.0 regression packages cover the three-task intent set and no-match gate", () => {
+  const requiredMappedIntents = [
+    "account.settings.section",
+    "account.settings.field",
+    "account.settings.save",
+    "account.settings.cancel",
+    "workspace.delete.dialog",
+    "workspace.delete.name_field",
+    "workspace.delete.warning",
+    "workspace.delete.cancel",
+    "team.directory.surface",
+    "team.directory.search",
+    "team.directory.invite",
+    "team.member.row",
+    "team.member.status",
+    "team.member.action",
+  ];
+
+  for (const designSystemId of ["hud", "webflow", "uber"]) {
+    const root = path.resolve(import.meta.dirname, "../../../design-systems", designSystemId);
+    const manifestResult = validateDesignSystemProjectManifest(
+      JSON.parse(readFileSync(path.join(root, "manifest.json"), "utf8")),
+    );
+    assert.equal(manifestResult.ok, true, `${designSystemId} manifest must be valid`);
+    if (!manifestResult.ok) continue;
+    const runtime = manifestResult.manifest.runtime;
+    assert.ok(runtime, `${designSystemId} must declare a runtime`);
+
+    const componentsIndex = DesignSystemComponentsIndexSchema.parse(
+      JSON.parse(readFileSync(path.join(root, runtime.components), "utf8")),
+    );
+    const components: LoadedDesignSystemComponent[] = componentsIndex.components.map((entry) => ({
+      path: entry.path,
+      definition: DesignSystemComponentDefinitionSchema.parse(
+        JSON.parse(readFileSync(path.join(root, entry.path), "utf8")),
+      ),
+    }));
+    const intentMap = DesignSystemIntentMapSchema.parse(
+      JSON.parse(readFileSync(path.join(root, runtime.intents), "utf8")),
+    );
+    DesignSystemLintRulesSchema.parse(
+      JSON.parse(readFileSync(path.join(root, runtime.lint), "utf8")),
+    );
+    const fallback = DesignSystemFallbackRulesSchema.parse(
+      JSON.parse(readFileSync(path.join(root, runtime.fallback), "utf8")),
+    );
+
+    assert.deepEqual(validateDesignSystemRuntimeReferences({
+      componentsIndex,
+      components,
+      intentMap,
+    }), []);
+    const mappedIntents = new Set(intentMap.mappings.map((mapping) => mapping.intent));
+    for (const intent of requiredMappedIntents) {
+      assert.equal(mappedIntents.has(intent), true, `${designSystemId} must map ${intent}`);
+    }
+    assert.equal(mappedIntents.has("workspace.delete.confirm"), false);
+    assert.deepEqual(fallback.noMatch, {
+      action: "request-human-confirmation",
+      allowInventComponent: false,
+      outputMarker: 'data-ds-fallback="no-match"',
+    });
   }
 });
 

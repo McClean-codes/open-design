@@ -65,13 +65,24 @@ async function startRouteServer(options: {
   runtimeEnabled?: boolean | (() => boolean);
   activeDesignSystemId: string | null;
   runDesignSystemId?: string | null;
+  projectFiles?: Record<string, string>;
 }): Promise<string> {
+  const projectsRoot = fresh();
+  for (const [filePath, content] of Object.entries(options.projectFiles ?? {})) {
+    const target = path.join(projectsRoot, 'project-1', filePath);
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, content);
+  }
   const app = express();
   app.use(express.json());
   registerDesignSystemToolRoutes(app, {
     auth: {
       authorizeToolRequest: (_req, _res, operation) => {
-        expect(['design-systems:read', 'design-systems:resolve-intent']).toContain(operation);
+        expect([
+          'design-systems:read',
+          'design-systems:resolve-intent',
+          'design-systems:validate-adherence',
+        ]).toContain(operation);
         return {
           token: 'token',
           runId: 'run-1',
@@ -83,8 +94,13 @@ async function startRouteServer(options: {
           allowedEndpoints: [
             '/api/tools/design-systems/read',
             '/api/tools/design-systems/resolve-intent',
+            '/api/tools/design-systems/validate-adherence',
           ],
-          allowedOperations: ['design-systems:read', 'design-systems:resolve-intent'],
+          allowedOperations: [
+            'design-systems:read',
+            'design-systems:resolve-intent',
+            'design-systems:validate-adherence',
+          ],
           issuedAt: new Date(0).toISOString(),
           expiresAt: new Date(60_000).toISOString(),
         };
@@ -96,6 +112,7 @@ async function startRouteServer(options: {
       },
     },
     paths: {
+      PROJECTS_DIR: projectsRoot,
       DESIGN_SYSTEMS_DIR: options.builtInRoot,
       USER_DESIGN_SYSTEMS_DIR: options.userRoot,
       resolveUserDesignSystemsRoot: (grant, designSystemId) => {
@@ -276,6 +293,7 @@ describe('design-system pull tool route', () => {
       userRoot,
       runtimeEnabled: false,
       activeDesignSystemId: 'runtime-v3',
+      projectFiles: { 'account-settings.html': '<button class="button">Save</button>' },
     });
 
     const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/resolve-intent`, {
@@ -284,6 +302,13 @@ describe('design-system pull tool route', () => {
 
     expect(response.status).toBe(409);
     expect(response.body.error.code).toBe('DESIGN_SYSTEM_RUNTIME_UNAVAILABLE');
+
+    const validation = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['account-settings.html'],
+    });
+    expect(validation.status).toBe(409);
+    expect(validation.body.error.code).toBe('DESIGN_SYSTEM_RUNTIME_UNAVAILABLE');
   });
 
   it('resolves a team-scoped user runtime instead of a same-id personal runtime', async () => {
@@ -357,6 +382,111 @@ describe('design-system pull tool route', () => {
         designSystemId: 'user:shared-brand',
       },
     });
+
+    const validationResponse = await jsonFetch(
+      `${baseUrl}/api/tools/design-systems/validate-adherence`,
+      { intent: 'account.settings.save', artifacts: ['account-settings.html'] },
+    );
+    expect(validationResponse.status).toBe(404);
+    expect(validationResponse.body.error).toMatchObject({
+      code: 'DESIGN_SYSTEM_SCOPE_UNAVAILABLE',
+      details: {
+        workspaceId: 'workspace-team',
+        designSystemId: 'user:shared-brand',
+      },
+    });
+  });
+
+  it('validates generated artifacts and returns actionable failures', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'runtime-v3'),
+      { recursive: true },
+    );
+    const validHtml = `<style>
+      :root { --accent: #245cff; }
+      .button { color: var(--accent); }
+      .button--primary:hover { opacity: .9; }
+      .button:focus-visible { outline: 2px solid var(--accent); }
+    </style><button class="button button--primary">Save changes</button>`;
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'project-default',
+      runDesignSystemId: 'runtime-v3',
+      projectFiles: {
+        'account-settings.html': validHtml,
+        'near-copy.html': '<button class="save-action" style="color: #123">Save changes</button>',
+        'pending.html': '<div data-ds-fallback="no-match">Needs confirmation</div>',
+      },
+    });
+
+    const valid = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['account-settings.html'],
+    });
+    expect(valid.status, JSON.stringify(valid.body)).toBe(200);
+    expect(valid.body.report).toMatchObject({
+      schemaVersion: 'od-design-system-adherence/v1',
+      status: 'passed',
+      nextAction: 'complete',
+      summary: { failed: 0, needsConfirmation: 0 },
+    });
+
+    const invalid = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['near-copy.html'],
+    });
+    expect(invalid.status).toBe(200);
+    expect(invalid.body.report).toMatchObject({
+      status: 'failed',
+      nextAction: 'fix-and-rerun',
+    });
+    expect(invalid.body.report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'mapped-component-reuse', status: 'failed' }),
+      expect.objectContaining({ id: 'variant-reuse', status: 'failed' }),
+      expect.objectContaining({ id: 'token-reference', status: 'failed' }),
+      expect.objectContaining({ id: 'unauthorized-color-literal', status: 'failed' }),
+    ]));
+
+    const fallback = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'workspace.delete.confirm',
+      artifacts: ['pending.html'],
+    });
+    expect(fallback.status).toBe(200);
+    expect(fallback.body.report).toMatchObject({
+      status: 'confirmation-required',
+      nextAction: 'request-human-confirmation',
+      summary: { failed: 0, needsConfirmation: 1 },
+    });
+  });
+
+  it('rejects an oversized artifact before loading it for adherence validation', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'runtime-v3'),
+      { recursive: true },
+    );
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'runtime-v3',
+      projectFiles: {
+        'oversized.html': 'x'.repeat(2 * 1024 * 1024 + 1),
+      },
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['oversized.html'],
+    });
+
+    expect(response.status).toBe(413);
+    expect(response.body.error).toMatchObject({ code: 'ARTIFACT_TOO_LARGE' });
   });
 
   it('reports legacy and malformed runtime packages without downgrading them', async () => {

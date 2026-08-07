@@ -137,6 +137,22 @@ authority: `components.manifest.json` and `components.html` remain package
 evidence and authoring checks, but are not injected as a second component
 inventory. If `runtime` is absent, the package keeps the existing prompt-based
 component manifest / fixture path.
+
+After writing the artifact, the agent closes the loop with:
+
+```bash
+"$OD_NODE_BIN" "$OD_BIN" tools design-systems validate \
+  --intent account.settings.save \
+  --artifact account-settings.html \
+  --artifact styles.css
+```
+
+The validator returns `passed`, `failed`, or `confirmation-required`. It checks
+the generated files against the selected component, variant, required states,
+tokens, and raw-color policy; failed checks include remediation and must be
+re-run after correction.
+`hud`, `webflow`, and `uber` are the first bundled packages using this complete
+runtime path and cover the three-task DS 3.0 regression set.
 If `runtime` is present but invalid, it is reported as invalid rather than
 silently treated as a legacy package. The production schema versions and shared
 types live in

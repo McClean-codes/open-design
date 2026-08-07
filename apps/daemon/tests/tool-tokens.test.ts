@@ -138,6 +138,11 @@ describe('run-scoped tool tokens', () => {
       operation: 'design-systems:resolve-intent',
       nowMs: 1_001,
     })).toMatchObject({ ok: true });
+    expect(registry.validate(grant.token, {
+      endpoint: '/api/tools/design-systems/validate-adherence',
+      operation: 'design-systems:validate-adherence',
+      nowMs: 1_001,
+    })).toMatchObject({ ok: true });
     registry.clear();
   });
 });
