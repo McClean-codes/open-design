@@ -907,6 +907,10 @@ async function resolveDesignSystemAssetsUncached(
   builtInRoot: string,
   userInstalledRoot: string,
 ): Promise<DesignSystemAssets> {
+  if (designSystemId.startsWith('user:')) {
+    return readDesignSystemAssets(userInstalledRoot, designSystemId);
+  }
+
   const builtIn = await readDesignSystemAssets(builtInRoot, designSystemId);
   if (builtIn.tokensCss !== undefined && builtIn.fixtureHtml !== undefined) {
     return builtIn;
@@ -940,12 +944,15 @@ async function designSystemAssetsCacheFingerprint(
   userInstalledRoot: string,
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
+  const roots = designSystemId.startsWith('user:')
+    ? [designSystemAssetsRootFingerprint(userInstalledRoot, designSystemId)]
+    : [
+        designSystemAssetsRootFingerprint(builtInRoot, designSystemId),
+        designSystemAssetsRootFingerprint(userInstalledRoot, designSystemId),
+      ];
   const payload = {
     tokenChannel: env.OD_DESIGN_TOKEN_CHANNEL ?? null,
-    roots: await Promise.all([
-      designSystemAssetsRootFingerprint(builtInRoot, designSystemId),
-      designSystemAssetsRootFingerprint(userInstalledRoot, designSystemId),
-    ]),
+    roots: await Promise.all(roots),
   };
   return createHash('sha256').update(JSON.stringify(payload), 'utf8').digest('hex');
 }
