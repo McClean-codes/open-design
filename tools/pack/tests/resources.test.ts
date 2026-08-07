@@ -77,6 +77,42 @@ async function velaCliCommandWithOptionalStageDir(
   };
 }
 
+/**
+ * A CLI whose pull usage dropped the staging-directory positional entirely.
+ * The daemon always passes it, so packaging must refuse this binary rather
+ * than ship one that rejects the invocation at runtime.
+ */
+async function velaCliCommandWithoutStageDir(
+  _source: string,
+  args: readonly string[],
+): Promise<{ stderr: string; stdout: string }> {
+  if (args[0] === "--version") {
+    return { stderr: "", stdout: `${await pinnedVelaCliVersion()}\n` };
+  }
+  if (args[0] === "billing") {
+    return {
+      stderr: "",
+      stdout: [
+        "Usage:",
+        "  vela billing workspace-snapshot [flags]",
+        "      --workspace-id string",
+        "      --format string",
+      ].join("\n"),
+    };
+  }
+  return {
+    stderr: "",
+    stdout: [
+      "Usage:",
+      "  vela team-projects pull <projectId> [flags]",
+      "      --expected-version int",
+      "      --live-dir string",
+      "      --ref string",
+      "      --json",
+    ].join("\n"),
+  };
+}
+
 async function matchingVelaCliCommand(
   _binary: string,
   args: readonly string[],
@@ -397,6 +433,33 @@ describe("copyOptionalVelaCliBinary", () => {
       });
 
       expect(copied?.target).toBe(join(resourceRoot, "bin", "vela"));
+    } finally {
+      await rm(root, { force: true, recursive: true });
+    }
+  });
+
+  it("refuses a Vela CLI whose pull usage dropped the staging directory", async () => {
+    const root = await mkdtemp(join(tmpdir(), "open-design-tools-pack-vela-no-stage-"));
+    const source = join(root, "source", "vela");
+    const resourceRoot = join(root, "resources", "open-design");
+
+    try {
+      await mkdir(join(root, "source"), { recursive: true });
+      await writeFile(source, "#!/bin/sh\nexit 0\n", "utf8");
+      await writeFakeOpenCodeCompanion(source, "#!/bin/sh\necho opencode\n");
+
+      // The daemon invokes `pull <projectId> <stageDir> --live-dir …`, so a CLI
+      // that no longer takes the positional must fail packaging rather than
+      // ship and reject that invocation at runtime.
+      await expect(
+        copyOptionalVelaCliBinary({
+          env: { OPEN_DESIGN_VELA_CLI_BIN: source },
+          platform: "mac",
+          requireBundled: true,
+          resourceRoot,
+          runCommand: velaCliCommandWithoutStageDir,
+        }),
+      ).rejects.toThrow(/staged pull capability markers/u);
     } finally {
       await rm(root, { force: true, recursive: true });
     }
