@@ -104,6 +104,101 @@ describe('design-system adherence validation', () => {
     ]));
   });
 
+  it('does not count comment-only token references as executable token use', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [
+        {
+          path: 'account-settings.html',
+          size: 90,
+          content: '<button class="button button--primary">Save changes</button>',
+        },
+        {
+          path: 'account-settings.css',
+          size: 180,
+          content: `/* var(--accent) */
+            .button--primary:hover { opacity: .9; }
+            .button:focus-visible { outline: 2px solid currentColor; }`,
+        },
+        {
+          path: 'note.ts',
+          size: 50,
+          content: 'const tokenExample = "var(--accent)";',
+        },
+      ],
+    });
+
+    expect(report.status).toBe('failed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'token-reference', status: 'failed' }),
+    ]));
+  });
+
+  it('rejects generated token definitions that override the active design system', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [
+        {
+          path: 'account-settings.html',
+          size: 90,
+          content: '<button class="button button--primary">Save changes</button>',
+        },
+        {
+          path: 'account-settings.css',
+          size: 220,
+          content: `:root { --accent: #123456; }
+            .button { color: var(--accent); }
+            .button--primary:hover { opacity: .9; }
+            .button:focus-visible { outline: 2px solid var(--accent); }`,
+        },
+      ],
+    });
+
+    expect(report.status).toBe('failed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'unauthorized-color-literal',
+        status: 'failed',
+        message: expect.stringContaining('#123456'),
+      }),
+    ]));
+  });
+
+  it('does not treat a matching token value in a different scope as an active token definition', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [
+        {
+          path: 'account-settings.html',
+          size: 90,
+          content: '<button class="button button--primary">Save changes</button>',
+        },
+        {
+          path: 'account-settings.css',
+          size: 220,
+          content: `.account-settings { --accent: #245cff; }
+            .button { color: var(--accent); }
+            .button--primary:hover { opacity: .9; }
+            .button:focus-visible { outline: 2px solid var(--accent); }`,
+        },
+      ],
+    });
+
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'unauthorized-color-literal',
+        status: 'failed',
+        message: expect.stringContaining('#245cff'),
+      }),
+    ]));
+  });
+
   it('recognizes declared classes in component source files without counting tag names as reuse', async () => {
     const report = validateDesignSystemAdherence({
       bundle: await loadBundle(),
@@ -114,12 +209,14 @@ describe('design-system adherence validation', () => {
         mime: 'text/plain',
         size: 260,
         content: `export function AccountSettings() {
-          return <button className="button button--primary">Save changes</button>;
-        }
-        const css = \`:root { --accent: #245cff; }
-          .button { color: var(--accent); }
-          .button--primary:hover { opacity: .9; }
-          .button:focus-visible { outline: 2px solid var(--accent); }\`;`,
+          return <>
+            <style>{\`.button--primary:hover { opacity: .9; }
+              .button:focus-visible { outline: 2px solid var(--accent); }\`}</style>
+            <button className="button button--primary" style={{ color: 'var(--accent)' }}>
+              Save changes
+            </button>
+          </>;
+        }`,
       }],
     });
 
@@ -157,5 +254,33 @@ describe('design-system adherence validation', () => {
       nextAction: 'request-human-confirmation',
       summary: { failed: 0, needsConfirmation: 1 },
     });
+  });
+
+  it('does not accept fallback markers that exist only in comments or non-markup files', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'workspace.delete.confirm',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [
+        {
+          path: 'delete.html',
+          size: 80,
+          content: '<!-- data-ds-fallback="no-match" --><div>Pending component choice</div>',
+        },
+        {
+          path: 'delete.css',
+          size: 50,
+          content: '/* data-ds-fallback="no-match" */',
+        },
+      ],
+    });
+
+    expect(report).toMatchObject({
+      status: 'failed',
+      nextAction: 'fix-and-rerun',
+    });
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'fallback-marker', status: 'failed' }),
+    ]));
   });
 });

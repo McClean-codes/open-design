@@ -55,6 +55,7 @@ export function validateDesignSystemAdherence(input: {
     ));
     checks.push(validateUnauthorizedColorLiterals(
       input.artifacts,
+      input.tokensCss,
       input.bundle.lint.forbidUnauthorizedColorLiteralsOutsideTokenDefinitions,
     ));
     return buildReport(input.intent, resolution, input.artifacts, checks);
@@ -79,6 +80,7 @@ export function validateDesignSystemAdherence(input: {
   ));
   checks.push(validateUnauthorizedColorLiterals(
     input.artifacts,
+    input.tokensCss,
     input.bundle.lint.forbidUnauthorizedColorLiteralsOutsideTokenDefinitions,
   ));
 
@@ -169,7 +171,7 @@ function validateDeclaredStates(
     const usage = selectorUsage(artifacts, staticSelectors);
     const cssEvidence = artifacts
       .filter((artifact) => state.selectors.some((selector) =>
-        hasPseudoSelector(selector) && hasCssRule(artifact.content, selector)))
+        hasPseudoSelector(selector) && hasCssRule(visualStyleSource(artifact), selector)))
       .map((artifact) => artifact.path);
     const evidence = unique([...usage.paths, ...cssEvidence]);
     if (usage.count > 0 || cssEvidence.length > 0) {
@@ -208,7 +210,7 @@ function validateTokenReferences(
     }];
   }
 
-  const references = collectMatches(artifacts, /var\(\s*(--[A-Za-z0-9_-]+)/gu, 1);
+  const references = collectStyleMatches(artifacts, /var\(\s*(--[A-Za-z0-9_-]+)/gu, 1);
   const declared = new Set(matchAll(tokensCss ?? '', /(--[A-Za-z0-9_-]+)\s*:/gu, 1));
   const checks: DesignSystemAdherenceCheck[] = [];
   if (declared.size === 0) {
@@ -256,6 +258,7 @@ function validateTokenReferences(
 
 function validateUnauthorizedColorLiterals(
   artifacts: readonly DesignSystemAdherenceArtifact[],
+  tokensCss: string | undefined,
   forbidden: boolean,
 ): DesignSystemAdherenceCheck {
   if (!forbidden) {
@@ -267,7 +270,7 @@ function validateUnauthorizedColorLiterals(
   }
 
   const findings = artifacts.flatMap((artifact) =>
-    findColorLiteralsOutsideTokenDefinitions(visualStyleSource(artifact)).map((value) => ({
+    findColorLiteralsOutsideTokenDefinitions(visualStyleSource(artifact), tokensCss).map((value) => ({
       path: artifact.path,
       value,
     })),
@@ -283,7 +286,7 @@ function validateUnauthorizedColorLiterals(
     id: 'unauthorized-color-literal',
     status: 'failed',
     message: `Found unauthorized color literal(s): ${unique(findings.map((finding) => finding.value)).join(', ')}.`,
-    remediation: 'Move the value into the token definition block or replace it with a declared var(--token-name) reference.',
+    remediation: 'Replace the literal with a declared var(--token-name) reference; update the active design-system package if a new token is required.',
     evidence: unique(findings.map((finding) => finding.path)),
   };
 }
@@ -299,7 +302,12 @@ function validateFallbackMarker(
       message: 'The selected fallback does not declare an output marker.',
     };
   }
-  const paths = artifacts.filter((artifact) => artifact.content.includes(marker)).map((artifact) => artifact.path);
+  const markerAttribute = parseAttributeMarker(marker);
+  const paths = markerAttribute === undefined
+    ? []
+    : artifacts
+        .filter((artifact) => hasMarkupAttribute(artifact, markerAttribute))
+        .map((artifact) => artifact.path);
   if (paths.length > 0) {
     return {
       id: 'fallback-marker',
@@ -431,17 +439,35 @@ function normalizeCssSelector(value: string): string {
   return value.replace(/\s+/gu, ' ').trim();
 }
 
-function findColorLiteralsOutsideTokenDefinitions(source: string): string[] {
+function findColorLiteralsOutsideTokenDefinitions(
+  source: string,
+  tokensCss: string | undefined,
+): string[] {
   const withoutComments = stripComments(source);
-  const withoutTokenDefinitions = withoutComments.replace(/--[A-Za-z0-9_-]+\s*:\s*[^;{}]+;?/gu, '');
+  const activeDefinitions = collectScopedTokenDefinitions(tokensCss ?? '');
+  const withoutTokenDefinitions = withoutComments.replace(/([^{}]+)\{([^{}]*)\}/gu, (block, selector: string, body: string) => {
+    const normalizedSelector = normalizeCssSelector(selector);
+    const filteredBody = body.replace(
+      /(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+);?/gu,
+      (declaration, token: string, value: string) => activeDefinitions.has(tokenDefinitionKey(
+        normalizedSelector,
+        token,
+        value,
+      )) ? '' : declaration,
+    );
+    return `${selector}{${filteredBody}}`;
+  });
   const colorPattern = /#[0-9A-Fa-f]{8}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{6}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{4}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{3}(?![0-9A-Fa-f])|\b(?:rgba?|hsla?|lab|lch|oklab|oklch|color)\([^)]*\)/gu;
   return unique([...withoutTokenDefinitions.matchAll(colorPattern)].map((match) => match[0]!));
 }
 
 function visualStyleSource(artifact: DesignSystemAdherenceArtifact): string {
   if (/\.css$/iu.test(artifact.path) || artifact.mime === 'text/css') return artifact.content;
+  if (/\.(?:jsx|tsx|vue|svelte)$/iu.test(artifact.path)) {
+    return componentStyleSource(artifact.content);
+  }
   if (!/\.(?:html?|svg)$/iu.test(artifact.path) && artifact.mime?.includes('html') !== true) {
-    return artifact.content;
+    return '';
   }
   try {
     const $ = load(artifact.content);
@@ -461,11 +487,81 @@ function visualStyleSource(artifact: DesignSystemAdherenceArtifact): string {
   }
 }
 
+function componentStyleSource(source: string): string {
+  const withoutComments = stripComments(source);
+  const parts: string[] = [];
+  for (const match of withoutComments.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/giu)) {
+    parts.push(unwrapEmbeddedStyle(match[1]!));
+  }
+  for (const match of withoutComments.matchAll(/\bstyle\s*=\s*["']([^"']*)["']/giu)) {
+    parts.push(match[1]!);
+  }
+  for (const match of withoutComments.matchAll(/\bstyle\s*=\s*\{\{([\s\S]*?)\}\}/gu)) {
+    parts.push(match[1]!);
+  }
+  return parts.join('\n');
+}
+
+function unwrapEmbeddedStyle(source: string): string {
+  return source
+    .replace(/^\s*\{\s*([`"'])/u, '')
+    .replace(/([`"'])\s*\}\s*$/u, '')
+    .trim();
+}
+
+function collectScopedTokenDefinitions(source: string): Set<string> {
+  const definitions = new Set<string>();
+  for (const block of stripComments(source).matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
+    const selector = normalizeCssSelector(block[1]!);
+    for (const declaration of block[2]!.matchAll(/(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+);?/gu)) {
+      definitions.add(tokenDefinitionKey(selector, declaration[1]!, declaration[2]!));
+    }
+  }
+  return definitions;
+}
+
+function tokenDefinitionKey(selector: string, token: string, value: string): string {
+  return `${normalizeCssSelector(selector)}\u0000${token}\u0000${normalizeCssValue(value)}`;
+}
+
+function normalizeCssValue(value: string): string {
+  return value.replace(/\s+/gu, ' ').trim().toLowerCase();
+}
+
+type AttributeMarker = { name: string; value?: string };
+
+function parseAttributeMarker(marker: string): AttributeMarker | undefined {
+  const match = /^([A-Za-z_:][A-Za-z0-9_.:-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?$/u.exec(marker.trim());
+  if (match === null) return undefined;
+  const value = match[2] ?? match[3];
+  return value === undefined ? { name: match[1]! } : { name: match[1]!, value };
+}
+
+function hasMarkupAttribute(
+  artifact: DesignSystemAdherenceArtifact,
+  marker: AttributeMarker,
+): boolean {
+  if (!looksLikeMarkup(artifact.path, artifact.mime)) return false;
+  try {
+    const $ = load(stripComments(artifact.content));
+    let found = false;
+    $('*').each((_index, element) => {
+      const value = $(element).attr(marker.name);
+      if (value !== undefined && (marker.value === undefined || value === marker.value)) {
+        found = true;
+      }
+    });
+    return found;
+  } catch {
+    return false;
+  }
+}
+
 function stripComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//gu, '').replace(/<!--([\s\S]*?)-->/gu, '');
 }
 
-function collectMatches(
+function collectStyleMatches(
   artifacts: readonly DesignSystemAdherenceArtifact[],
   pattern: RegExp,
   group: number,
@@ -473,7 +569,7 @@ function collectMatches(
   const values: string[] = [];
   const paths: string[] = [];
   for (const artifact of artifacts) {
-    const matches = matchAll(artifact.content, pattern, group);
+    const matches = matchAll(stripComments(visualStyleSource(artifact)), pattern, group);
     if (matches.length === 0) continue;
     values.push(...matches);
     paths.push(artifact.path);
