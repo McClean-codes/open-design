@@ -45,6 +45,10 @@ import {
   designBrowserHistoryStorageKey,
   designBrowserViewportStorageKey,
 } from '../../src/components/design-browser-storage';
+import {
+  currentWorkspaceContextRequestToken,
+  resetWorkspaceContextCache,
+} from '../../src/collab/useWorkspaceContext';
 
 function personalWorkspaceContext(): WorkspaceCollabContext {
   return {
@@ -557,6 +561,57 @@ describe('createProject', () => {
     })).toThrow('Workspace context is unavailable');
   });
 
+  it('passes a retained last-good context through a transient outage when it belongs to the current generation', () => {
+    // Task#5: a vela authority outage set `failure: 'unavailable'`, but the
+    // shell still holds a directory-verified context resolved under the CURRENT
+    // identity generation. The old fail-closed behavior threw here, which turned
+    // every create click during the outage into a dead button + retry storm.
+    // The backend re-verifies the claimed identity, so honor the cache.
+    resetWorkspaceContextCache();
+    const context = teamWorkspaceContext();
+    expect(resolvedWorkspaceContextForWrite({
+      context,
+      loading: false,
+      failure: 'unavailable',
+      resourceReadIdentity: {
+        context,
+        generation: currentWorkspaceContextRequestToken(),
+      },
+    })).toBe(context);
+  });
+
+  it('still fails closed when the retained context belongs to a RETIRED generation (account switch)', () => {
+    // An account switch advanced the request token; the state still carries the
+    // previous account's cached context stamped with the OLD generation. Passing
+    // it through would authorize a write under the wrong account (cross-account
+    // write). The generation mismatch must keep this fail-closed.
+    resetWorkspaceContextCache();
+    const previousAccountContext = teamWorkspaceContext();
+    expect(() => resolvedWorkspaceContextForWrite({
+      context: previousAccountContext,
+      loading: false,
+      failure: 'unavailable',
+      resourceReadIdentity: {
+        context: previousAccountContext,
+        generation: 'retired-generation',
+      },
+    })).toThrow('Workspace context is unavailable');
+
+    // And the unscoped policy yields null (not the stale context) in that case.
+    expect(resolvedWorkspaceContextForWrite(
+      {
+        context: previousAccountContext,
+        loading: false,
+        failure: 'unavailable',
+        resourceReadIdentity: {
+          context: previousAccountContext,
+          generation: 'retired-generation',
+        },
+      },
+      { unavailablePolicy: 'unscoped' },
+    )).toBeNull();
+  });
+
   it('allows an explicitly local project-create caller to remain unscoped while workspace sync is unresolved', () => {
     expect(resolvedWorkspaceContextForWrite(
       { context: null, loading: true },
@@ -588,6 +643,80 @@ describe('createProject', () => {
       loading: false,
       failure: 'unsupported',
     })).toBeNull();
+  });
+
+  // P1.C: the daemon returns 503 WORKSPACE_AUTHORITY_UNAVAILABLE (retryable) when
+  // vela's membership authority is momentarily down. Before this change the very
+  // first 503 threw straight through, so a create during a vela blip failed with
+  // zero retries and the user re-clicked into a storm. The write must ride out a
+  // transient authority outage with bounded backoff before surfacing an error.
+  it('retries a retryable 503 authority-unavailable response and then succeeds', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn<typeof fetch>(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
+              message: 'workspace membership authority is temporarily unavailable',
+              retryable: true,
+            },
+          }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(
+        JSON.stringify({ project: { id: 'p1' }, conversationId: 'c1' }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await createProject(
+      { name: 'Retry me', skillId: null, designSystemId: null },
+      { sleep: async () => {} },
+    );
+    expect(created.project.id).toBe('p1');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    // The retry reuses the SAME client-provided project id (idempotent): the
+    // 503 fails the authority check before any row is written.
+    const firstBody = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    ) as { id: string };
+    const secondBody = JSON.parse(
+      (fetchMock.mock.calls[1]![1] as RequestInit).body as string,
+    ) as { id: string };
+    expect(secondBody.id).toBe(firstBody.id);
+  });
+
+  it('does not retry a 503 that is not marked retryable', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: { code: 'INTERNAL_ERROR', message: 'nope' } }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createProject(
+      { name: 'x', skillId: null, designSystemId: null },
+      { sleep: async () => {} },
+    )).rejects.toThrow('nope');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after the retry budget when a retryable 503 persists', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: { message: 'still down', retryable: true } }),
+      { status: 503, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createProject(
+      { name: 'x', skillId: null, designSystemId: null },
+      { maxRetries: 2, sleep: async () => {} },
+    )).rejects.toThrow('still down');
+    // Initial attempt + 2 retries.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 });
 
