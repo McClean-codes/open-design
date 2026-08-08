@@ -190,43 +190,50 @@
 
 /* ── Collapse cascade ──────────────────────────────────────────────────────
    Clicking collapse plays a top-to-bottom sequence: each rail row fades and
-   lifts a few px, staggered by its document order (search → nav items → team
-   items → footer), so the sidebar empties from the top down before the track
-   squeezes shut. Expanding is instant (no per-row delay) to stay snappy. */
-.entry-nav-rail__group > .entry-nav-rail__search,
-.entry-nav-rail__group > .entry-nav-rail__btn,
-.entry-nav-rail__group > .entry-nav-rail__team-wrap,
-.entry-nav-rail__section-divider,
+   lifts a few px, staggered by its VISUAL order (workspace switcher → search
+   row → nav items → team items → footer), so the sidebar empties from the
+   top down before the track squeezes shut. Expanding is instant (no per-row
+   delay) to stay snappy.
+
+   Two structural facts drive the selectors, and both have drifted before —
+   revisit them when the rail's tree changes again:
+   • the signed-in tree nests 个人项目…设置 inside .entry-nav-rail__team-wrap's
+     sibling .entry-nav-rail__team-section, so those rows fade INDIVIDUALLY
+     (the wrapper itself must not also fade, or the block would double-fade
+     and pop out of order);
+   • the search box sits inside .entry-nav-rail__search-row (search +
+     collapse control), so the ROW is the faded unit, not the box. */
+.entry-nav-rail__group > *,
+.entry-nav-rail__team-section > *,
 .entry-nav-rail__footer {
   transition:
     opacity 150ms cubic-bezier(0.23, 1, 0.32, 1),
     transform 150ms cubic-bezier(0.23, 1, 0.32, 1);
 }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > .entry-nav-rail__search,
-.entry:not(.entry--rail-open) .entry-nav-rail__group > .entry-nav-rail__btn,
-.entry:not(.entry--rail-open) .entry-nav-rail__group > .entry-nav-rail__team-wrap,
-.entry:not(.entry--rail-open) .entry-nav-rail__section-divider,
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:not(.entry-nav-rail__team-section),
+.entry:not(.entry--rail-open) .entry-nav-rail__team-section > *,
 .entry:not(.entry--rail-open) .entry-nav-rail__footer {
   opacity: 0;
   transform: translateY(-4px);
 }
 /* Per-row stagger — applied only while collapsing so the cascade runs
-   top→bottom. Our rail keeps every row (search → nav items → team switcher →
-   team items → divider …) as direct children of one __group, so a single
-   nth-child run covers the whole sequence (the designer branch split this
-   across a group + team-section pair). Child 1 is the brand slot, which does
-   not fade, so the sequence starts at child 2. */
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(2) { transition-delay: 0ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(3) { transition-delay: 15ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(4) { transition-delay: 30ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(5) { transition-delay: 45ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(6) { transition-delay: 60ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(7) { transition-delay: 75ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(8) { transition-delay: 90ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(9) { transition-delay: 105ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(10) { transition-delay: 120ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(11) { transition-delay: 135ms; }
-.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(n + 12) { transition-delay: 150ms; }
+   top→bottom. Direct group rows first (signed-in: switcher, search row, 首页,
+   社区; signed-out: the full flat button list)… */
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(1) { transition-delay: 0ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(2) { transition-delay: 15ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(3) { transition-delay: 30ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(4) { transition-delay: 45ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(5) { transition-delay: 60ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(6) { transition-delay: 75ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(7) { transition-delay: 90ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__group > *:nth-child(n + 8) { transition-delay: 105ms; }
+/* …then the team-section rows pick the sequence up where the group left off
+   (the section is group child 5, delay 60ms — its rows continue from 75ms). */
+.entry:not(.entry--rail-open) .entry-nav-rail__team-section > *:nth-child(1) { transition-delay: 75ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__team-section > *:nth-child(2) { transition-delay: 90ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__team-section > *:nth-child(3) { transition-delay: 105ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__team-section > *:nth-child(4) { transition-delay: 120ms; }
+.entry:not(.entry--rail-open) .entry-nav-rail__team-section > *:nth-child(n + 5) { transition-delay: 135ms; }
 .entry:not(.entry--rail-open) .entry-nav-rail__footer { transition-delay: 165ms; }
 /* Footer finale: after the rows have cascaded out top-to-bottom, the account
    底卡 does NOT fade up with them — it stays fully opaque and slides left as
@@ -237,15 +244,14 @@
   transform: translateX(-36px);
 }
 @media (prefers-reduced-motion: reduce) {
-  .entry-nav-rail__group > .entry-nav-rail__search,
-  .entry-nav-rail__group > .entry-nav-rail__btn,
-  .entry-nav-rail__group > .entry-nav-rail__team-wrap,
-  .entry-nav-rail__section-divider,
+  .entry-nav-rail__group > *,
+  .entry-nav-rail__team-section > *,
   .entry-nav-rail__footer {
     transition: none;
     transform: none;
   }
-  .entry:not(.entry--rail-open) .entry-nav-rail__group > * { transition-delay: 0ms; }
+  .entry:not(.entry--rail-open) .entry-nav-rail__group > *,
+  .entry:not(.entry--rail-open) .entry-nav-rail__team-section > * { transition-delay: 0ms; }
   .entry:not(.entry--rail-open) .entry-nav-rail__footer { transition-delay: 0ms; }
   .entry-shell--no-header .entry { transition-delay: 0ms; }
 }
@@ -6000,7 +6006,18 @@
 .entry-top-right-account-pill {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
+  /* ONE shared capsule around credits + avatar (per product: 两个合成一个
+     胶囊) — the pill material lives here; the segments inside stay
+     chrome-free click targets. */
+  min-height: 30px;
+  padding: 2px 3px 2px 10px;
+  border: 1px solid var(--material-separator);
+  border-radius: var(--radius-pill);
+  background: color-mix(in srgb, var(--bg-elevated) 86%, transparent);
+  box-shadow: var(--shadow-xs);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 /* Avatar-only trigger at the capsule's right end: a circle sized to the
    capsule's inner height — the name/email/plan all live in the hover menu. */
@@ -6030,16 +6047,14 @@
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  /* Its own compact pill (the shared capsule is gone): a 24px hairline
-     chip matching the avatar's height rather than a tall stroke. */
+  /* Chrome-free segment inside the shared capsule — the wrapper
+     (.entry-top-right-account-pill) owns the pill material. */
   height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--material-separator);
+  padding: 0;
+  border: 0;
   border-radius: var(--radius-pill);
-  background: color-mix(in srgb, var(--bg-elevated) 86%, transparent);
-  box-shadow: var(--shadow-xs);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: transparent;
+  box-shadow: none;
   font-family: inherit;
   font-size: 12px;
   font-weight: 600;
@@ -6050,8 +6065,13 @@
 .entry-top-right-credits svg {
   color: var(--text-soft);
 }
-.entry-top-right-credits:hover {
-  background: color-mix(in srgb, var(--text) 7%, transparent);
+/* No hover fill on the credits segment — the shared capsule stays calm;
+   the pointer cursor alone signals clickability. Needs an explicit :hover
+   override: the primitives.css `button:hover:not(:disabled)` gray fill
+   outranks the bare class rule above. */
+.entry-top-right-credits:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
 }
 /* Doubled class on the container: the rail-era
    `.entry-nav-rail__account .entry-nav-rail__account-menu` sizing rule
