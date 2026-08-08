@@ -41,7 +41,7 @@ const jsonLd = {
           />
         </span>
         <span class="event-launch-copy">
-          <span class="event-launch-pill">Happening now · Aug 10–14</span>
+          <span class="event-pill">Happening now · Aug 10–14</span>
           <strong class="event-launch-title">Launch Week <span>Vol.01</span></strong>
           <span class="event-launch-body">
             Five days, five design jobs, one launch a day — each one aimed at a tool
@@ -123,8 +123,9 @@ const jsonLd = {
       width: min(1100px, calc(100% - 40px));
       margin: 0 auto;
       overflow: hidden;
-      color: #f8f5ed;
-      background: #070707;
+      color: var(--event-ink);
+      background: #fff;
+      border: 1px solid var(--event-line);
       border-radius: 18px;
       text-decoration: none;
       transition: transform .18s ease, box-shadow .18s ease;
@@ -161,29 +162,19 @@ const jsonLd = {
       line-height: 1.04;
       letter-spacing: -.03em;
     }
-    .event-launch-title span { color: var(--event-green); }
+    .event-launch-title span { color: var(--event-green-dark); }
     .event-launch-body {
       max-width: 34ch;
       font-size: 14.5px;
       line-height: 1.55;
-      color: rgba(248,245,237,.66);
-    }
-    .event-launch-pill {
-      padding: 6px 11px;
-      color: #070707;
-      background: var(--event-green);
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: .1em;
-      text-transform: uppercase;
+      color: var(--event-soft);
     }
     .event-launch-link {
       font-family: var(--mono);
       font-size: 12px;
       font-weight: 700;
       letter-spacing: .06em;
-      color: var(--event-green);
+      color: var(--event-green-dark);
     }
     @media (max-width: 860px) {
       .event-launch { grid-template-columns: 1fr; }
