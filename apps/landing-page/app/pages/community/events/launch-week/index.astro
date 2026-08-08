@@ -25,6 +25,14 @@ const DROPS = [
   { day: 5, date: 'AUG 14', iso: '2026-08-14' },
 ];
 
+/**
+ * Shared key that unlocks `?preview=`. Not a secret in the cryptographic sense —
+ * the page is static, so anything here ships to the client. It only has to stop
+ * a casual visitor from reading the running order off a URL guess. Rotate it by
+ * editing this constant; there is nothing else to update.
+ */
+const PREVIEW_KEY = 'lw01-dry-run';
+
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'Event',
@@ -48,12 +56,12 @@ const jsonLd = {
   active="community"
   ogImage={ogImage}
   jsonLd={jsonLd}
-  mainClassName="sub-main lw"
+  mainClassName="lw"
 >
   <Fragment set:html={launchWeekMain} />
 </Layout>
 
-<script is:inline define:vars={{ DROPS }}>
+<script is:inline define:vars={{ DROPS, PREVIEW_KEY }}>
   // Resolve drop state on the client too: the page is statically built, so a
   // visitor on a cached copy must still see the correct day without a redeploy.
   (() => {
@@ -65,10 +73,12 @@ const jsonLd = {
       return now < closes ? 'live' : 'released';
     };
 
-    // ?preview= lets the team review and screenshot any day before it happens.
-    // `all` reveals everything, `1`–`5` simulate that launch day, and anything
-    // else (or no param) uses the real schedule.
-    const preview = new URLSearchParams(location.search).get('preview');
+    // Preview lets the team review and screenshot any day before it happens.
+    // Gated by a shared key so a visitor can't peek at the running order early:
+    //   ?preview=<day>&key=<PREVIEW_KEY>   day = 1–5 | all
+    // Without the key the param is ignored and the real schedule applies.
+    const params = new URLSearchParams(location.search);
+    const preview = params.get('key') === PREVIEW_KEY ? params.get('preview') : null;
     const simulate = (day) => {
       if (preview === 'all') return 'released';
       const n = Number(preview);

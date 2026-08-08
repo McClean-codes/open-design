@@ -80,7 +80,12 @@
   min-height: calc(100svh - var(--lw-header, 85px)); scroll-snap-align: start;
 }
 .lw {
+  /* Not using .sub-main: this page is full-bleed and must butt straight against
+     the site footer, so it declares only the offset it needs — clearance for
+     the sticky nav. */
+  max-width: none;
   margin: 0;
+  padding: var(--lw-header, 85px) 0 0;
   overflow-x: clip;
   color: var(--ink);
   background: var(--paper);
@@ -1002,7 +1007,7 @@
 /* quiet bar — acid lives only on the primary button */
 .lw .finale {
   position: relative;
-  padding: clamp(34px, 3.4vw, 46px) var(--gutter) 0;
+  padding: clamp(40px, 4vw, 58px) var(--gutter) clamp(40px, 4vw, 58px);
   background: var(--ink);
   color: var(--paper-light);
   overflow: hidden;
@@ -1036,18 +1041,6 @@
 .lw .finale .button { border-color: var(--paper-light); color: var(--paper-light);
 }
 .lw .finale .button.is-acid { background: var(--acid); border-color: var(--acid); color: var(--ink);
-}
-.lw .finale-base {
-  display: flex;
-  justify-content: space-between;
-  margin-top: clamp(24px, 2.6vw, 34px);
-  padding: 14px 0 16px;
-  border-top: 1px solid rgba(248,245,237,.25);
-  font: 600 10px/1 var(--utility);
-  letter-spacing: .08em;
-  color: rgba(248,245,237,.65);
-}
-.lw .finale-base a:hover { color: var(--acid);
 }
 /* ============================================================
    Scroll & interaction motion — all of it inside one
