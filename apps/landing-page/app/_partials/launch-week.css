@@ -783,9 +783,10 @@ html:has(main.lw) {
 /* the stamp presses onto the redacted lines rather than floating in the void */
 .lw .drop.is-classified .tba {
   position: absolute;
-  left: 42%;
-  top: 24%;
+  right: 4%;
+  top: 50%;
   margin: 0;
+  transform: translateY(-50%);
 }
 .lw .drop.is-classified .tba img {
   width: clamp(132px, 13vw, 200px);
