@@ -154,46 +154,6 @@ importers:
         specifier: 4.1.6
         version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@20.19.39)(jsdom@29.1.1)(vite@7.3.3(@types/node@20.19.39)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.22.3)(yaml@2.9.0))
 
-  apps/desktop:
-    dependencies:
-      '@open-design/diagnostics':
-        specifier: workspace:*
-        version: link:../../packages/diagnostics
-      '@open-design/download':
-        specifier: workspace:*
-        version: link:../../packages/download
-      '@open-design/host':
-        specifier: workspace:*
-        version: link:../../packages/host
-      '@open-design/launcher-proto':
-        specifier: workspace:*
-        version: link:../../packages/launcher-proto
-      '@open-design/platform':
-        specifier: workspace:*
-        version: link:../../packages/platform
-      '@open-design/release':
-        specifier: workspace:*
-        version: link:../../packages/release
-      '@open-design/sidecar':
-        specifier: workspace:*
-        version: link:../../packages/sidecar
-      '@open-design/sidecar-proto':
-        specifier: workspace:*
-        version: link:../../packages/sidecar-proto
-    devDependencies:
-      '@types/node':
-        specifier: 24.12.2
-        version: 24.12.2
-      electron:
-        specifier: 41.3.0
-        version: 41.3.0
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: 4.1.6
-        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(jsdom@29.1.1)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.22.3)(yaml@2.9.0))
-
   apps/landing-page:
     dependencies:
       '@astrojs/rss':
@@ -254,64 +214,6 @@ importers:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
-
-  apps/packaged:
-    dependencies:
-      '@open-design/closure-store':
-        specifier: workspace:*
-        version: link:../../packages/closure-store
-      '@open-design/closure-update':
-        specifier: workspace:*
-        version: link:../../packages/closure-update
-      '@open-design/contracts':
-        specifier: workspace:*
-        version: link:../../packages/contracts
-      '@open-design/daemon':
-        specifier: workspace:*
-        version: link:../daemon
-      '@open-design/desktop':
-        specifier: workspace:*
-        version: link:../desktop
-      '@open-design/launcher-proto':
-        specifier: workspace:*
-        version: link:../../packages/launcher-proto
-      '@open-design/platform':
-        specifier: workspace:*
-        version: link:../../packages/platform
-      '@open-design/release':
-        specifier: workspace:*
-        version: link:../../packages/release
-      '@open-design/sidecar':
-        specifier: workspace:*
-        version: link:../../packages/sidecar
-      '@open-design/sidecar-proto':
-        specifier: workspace:*
-        version: link:../../packages/sidecar-proto
-      '@open-design/standalone-runtime':
-        specifier: workspace:*
-        version: link:../../packages/standalone-runtime
-      '@open-design/web':
-        specifier: workspace:*
-        version: link:../web
-    devDependencies:
-      '@open-design/closure-proto':
-        specifier: workspace:*
-        version: link:../../packages/closure-proto
-      '@types/node':
-        specifier: 24.12.2
-        version: 24.12.2
-      electron:
-        specifier: 41.3.0
-        version: 41.3.0
-      esbuild:
-        specifier: 0.28.0
-        version: 0.28.0
-      typescript:
-        specifier: 6.0.3
-        version: 6.0.3
-      vitest:
-        specifier: 4.1.6
-        version: 4.1.6(@opentelemetry/api@1.9.1)(@types/node@24.12.2)(jsdom@29.1.1)(vite@7.3.3(@types/node@24.12.2)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.22.3)(yaml@2.9.0))
 
   apps/standalone:
     dependencies:
@@ -906,6 +808,9 @@ importers:
       '@open-design/release':
         specifier: workspace:*
         version: link:../release
+      '@open-design/standalone-proto':
+        specifier: workspace:*
+        version: link:../standalone-proto
     devDependencies:
       '@types/node':
         specifier: 24.12.2
@@ -1075,6 +980,9 @@ importers:
       '@open-design/sidecar-proto':
         specifier: workspace:*
         version: link:../../packages/sidecar-proto
+      '@open-design/standalone-proto':
+        specifier: workspace:*
+        version: link:../../packages/standalone-proto
       cac:
         specifier: 6.7.14
         version: 6.7.14

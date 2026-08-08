@@ -78,7 +78,7 @@ const releaseStableNotesScriptPath = join(workspaceRoot, ".github", "scripts", "
 const releasePreviewScriptPath = join(workspaceRoot, "tools", "release", "src", "metadata", "prepare-preview.ts");
 const releaseStableScriptPath = join(workspaceRoot, "tools", "release", "src", "metadata", "prepare-stable.ts");
 const releaseBetaScriptPath = join(workspaceRoot, "tools", "release", "src", "metadata", "prepare-beta.ts");
-const packagedPackageJsonPath = join(workspaceRoot, "apps", "packaged", "package.json");
+const shellPackageJsonPath = join(workspaceRoot, "shells", "electron", "package.json");
 const scopesScriptPath = join(workspaceRoot, "scripts", "scopes.ts");
 const runnersScriptPath = join(workspaceRoot, ".github", "scripts", "runners.py");
 const notifyDailyFeishuWorkflowPath = join(workspaceRoot, ".github", "workflows", "notify-daily-feishu.yml");
@@ -223,9 +223,9 @@ async function runReleaseStableForFailure(env: Record<string, string>): Promise<
 }
 
 async function readPackagedVersion(): Promise<string> {
-  const packageJson = JSON.parse(await readFile(packagedPackageJsonPath, "utf8")) as { version?: unknown };
+  const packageJson = JSON.parse(await readFile(shellPackageJsonPath, "utf8")) as { version?: unknown };
   if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
-    throw new Error("apps/packaged/package.json must define a version");
+    throw new Error("shells/electron/package.json must define a version");
   }
   return packageJson.version;
 }
@@ -1082,9 +1082,8 @@ process.stdin.on("end", () => {
     const workspaceUnit = sectionBetween(workflow, "  workspace_unit_tests:", "  daemon_unit_tests:");
 
     expect(workspaceUnit).toContain(`if [ "\${{ needs.scopes.outputs.tools_pack_tests_required }}" = "true" ]; then
-            pnpm --filter @open-design/desktop build
-            pnpm --filter @open-design/desktop test
-            pnpm --filter @open-design/packaged test
+            pnpm --filter @open-design/shell-electron build
+            pnpm --filter @open-design/shell-electron test
             pnpm --filter @open-design/tools-pack test
             if [ "\${{ needs.scopes.outputs.run_e2e_vitest }}" != "true" ]; then
               pnpm --filter @open-design/e2e test tests/packaged-launcher-update-loop.test.ts
@@ -1108,12 +1107,12 @@ process.stdin.on("end", () => {
   it("[P2] skips the critical fallback for pure packaged-leaf changes and stays fail-closed elsewhere", async () => {
     const hot = { inputs: { ci_mode: "hot" } };
 
-    // Playwright never starts the desktop, packaged, or tools-pack
+    // Playwright never starts the Electron Shell or tools-pack
     // entrypoints, so a change confined to those leaf roots keeps its
     // package tests but must not pay the two-job critical fallback.
     for (const file of [
-      "apps/desktop/src/main.ts",
-      "apps/packaged/src/index.ts",
+      "shells/electron/src/index.ts",
+      "shells/electron/src/main/index.ts",
       "tools/pack/src/win/installer.ts",
     ]) {
       await expect(runScopesPrint("workflow_dispatch", hot, [file])).resolves.toMatchObject({
@@ -1132,7 +1131,7 @@ process.stdin.on("end", () => {
         head_sha: "2222222222222222222222222222222222222222",
       },
     };
-    await expect(runScopesPrint("merge_group", mergeGroup, ["apps/desktop/src/main.ts"])).resolves.toMatchObject({
+    await expect(runScopesPrint("merge_group", mergeGroup, ["shells/electron/src/index.ts"])).resolves.toMatchObject({
       run_e2e_vitest: false,
       run_playwright_critical: false,
       run_playwright_visual: false,
@@ -1144,7 +1143,7 @@ process.stdin.on("end", () => {
       workspace_validation_required: true,
     });
 
-    await expect(runScopesPrint("merge_group", mergeGroup, ["apps/desktop/package.json"])).resolves.toMatchObject({
+    await expect(runScopesPrint("merge_group", mergeGroup, ["shells/electron/package.json"])).resolves.toMatchObject({
       run_e2e_vitest: true,
       run_playwright_visual: true,
       run_ui_p0: true,
@@ -1173,7 +1172,7 @@ process.stdin.on("end", () => {
 
     // A mixed leaf + runtime change retains the fallback.
     await expect(
-      runScopesPrint("workflow_dispatch", hot, ["apps/desktop/src/main.ts", "tools/dev/src/index.ts"]),
+      runScopesPrint("workflow_dispatch", hot, ["shells/electron/src/index.ts", "tools/dev/src/index.ts"]),
     ).resolves.toMatchObject({
       run_playwright_critical: true,
       ui_critical_validation_required: true,
@@ -1703,43 +1702,6 @@ process.stdin.on("end", () => {
     expect(postMergeWorkflow).not.toContain("PREVIEW_BAKE_TOKEN");
   });
 
-  it("[P2] preserves beta linux AppImage smoke reports for platform publication", async () => {
-    const workflow = await readFile(releaseBetaWorkflowPath, "utf8");
-    const linuxBuildStep = workflow.match(/- name: Build beta linux_x64\r?\n(?:.+\r?\n)+?(?=\r?\n      - name: Write linux_x64 release report)/m);
-    expect(linuxBuildStep?.[0]).toBeDefined();
-    expect(linuxBuildStep?.[0]).toContain("RELEASE_TARGET: linux_x64");
-    expect(linuxBuildStep?.[0]).toContain("RELEASE_REPORT_DIR: ${{ runner.temp }}/release-report/linux_x64");
-    expect(linuxBuildStep?.[0]).toContain("bash tools/release/scripts/build-platform.sh");
-    expect(workflow).toContain("Write linux_x64 release report");
-    expect(workflow).toContain("RELEASE_REPORT_JSON_PATH: ${{ runner.temp }}/release-report/linux_x64/report.json");
-    expect(workflow).toContain("Prepare linux_x64 assets");
-    expect(workflow).toContain("Publish linux_x64 platform");
-    expect(workflow).toContain("Upload linux_x64 publish manifest");
-    expect(workflow).toContain("open-design-beta-linux-x64-publish-manifest");
-    expect(workflow).toContain("Download linux_x64 publish manifest");
-    expect(workflow).not.toContain(".github/scripts/release/assets/linux.sh");
-    expect(workflow).not.toContain(".github/scripts/release/r2/publish-platform.ts");
-  });
-
-  it("[P2] preserves stable linux AppImage smoke reports for release publication", async () => {
-    const workflow = await readFile(releaseStableWorkflowPath, "utf8");
-    const linuxBuildStep = workflow.match(
-      /- name: Build release linux artifacts\r?\n(?:.+\r?\n)+?(?=\r?\n      - name: Smoke release linux AppImage runtime)/m,
-    );
-    expect(linuxBuildStep?.[0]).toBeDefined();
-    expect(linuxBuildStep?.[0]).toContain(
-      'node -e \'const fs = require("node:fs"); JSON.parse(fs.readFileSync(process.argv[1], "utf8"));\' "$build_json_path"',
-    );
-    expect(workflow).toContain("Smoke release linux AppImage runtime");
-    expect(workflow).toContain("manifest.json");
-    expect(workflow).toContain("tools-pack.json");
-    expect(workflow).toContain("Upload linux e2e spec report");
-    expect(workflow).toContain("open-design-release-linux-e2e-report");
-    expect(workflow).toContain("Download linux e2e spec report");
-    expectReleaseLinuxBuildPreservesEvidence(workflow, "Build release linux artifacts");
-    expectReleaseLinuxSmokePreservesEvidenceBeforeApt(workflow, "Smoke release linux AppImage runtime");
-  });
-
   it("[P2] keeps release namespaces aligned with release channels", async () => {
     const [releaseStableWorkflow, releaseStableScript, releasePreviewWorkflow, releasePrereleaseWorkflow, releaseBetaWorkflow] = await Promise.all([
       readFile(releaseStableWorkflowPath, "utf8"),
@@ -1753,34 +1715,28 @@ process.stdin.on("end", () => {
     expect(releaseStableScript).toContain('setOutput("namespace", namespaces.mac);');
     expect(releaseStableScript).toContain('setOutput("mac_intel_namespace", namespaces.macIntel);');
     expect(releaseStableScript).toContain('setOutput("win_namespace", namespaces.win);');
-    expect(releaseStableScript).toContain('setOutput("linux_namespace", namespaces.linux);');
 
     expect(releaseStableWorkflow).toContain("namespace: ${{ steps.stable.outputs.namespace }}");
     expect(releaseStableWorkflow).toContain("mac_intel_namespace: ${{ steps.stable.outputs.mac_intel_namespace }}");
     expect(releaseStableWorkflow).toContain("win_namespace: ${{ steps.stable.outputs.win_namespace }}");
-    expect(releaseStableWorkflow).toContain("linux_namespace: ${{ steps.stable.outputs.linux_namespace }}");
     expect(releaseStableWorkflow).toContain('--namespace "${{ needs.metadata.outputs.namespace }}"');
     expect(releaseStableWorkflow).toContain("OD_PACKAGED_E2E_NAMESPACE: ${{ needs.metadata.outputs.namespace }}");
     expect(releaseStableWorkflow).toContain('"--namespace", "${{ needs.metadata.outputs.win_namespace }}",');
     expect(releaseStableWorkflow).toContain('OD_PACKAGED_E2E_NAMESPACE: ${{ needs.metadata.outputs.win_namespace }}');
-    expect(releaseStableWorkflow).toContain('--namespace "${{ needs.metadata.outputs.linux_namespace }}"');
-    expect(releaseStableWorkflow).toContain('"namespace": "${{ needs.metadata.outputs.linux_namespace }}",');
-    expect(releaseStableWorkflow).not.toMatch(/--namespace release-stable(?:-intel|-win|-linux)?\b/);
-    expect(releaseStableWorkflow).not.toMatch(/OD_PACKAGED_E2E_NAMESPACE: release-stable(?:-win|-linux)?\b/);
-    expect(releaseStableWorkflow).not.toMatch(/namespaces\/release-stable(?:-intel|-win|-linux)?\b/);
+    expect(releaseStableWorkflow).not.toMatch(/--namespace release-stable(?:-intel|-win)?\b/);
+    expect(releaseStableWorkflow).not.toMatch(/OD_PACKAGED_E2E_NAMESPACE: release-stable(?:-win)?\b/);
+    expect(releaseStableWorkflow).not.toMatch(/namespaces\/release-stable(?:-intel|-win)?\b/);
 
-    expectChannelWorkflowNamespaces(releasePreviewWorkflow, "preview", { hasLinuxSmoke: false });
-    expectChannelWorkflowNamespaces(releasePrereleaseWorkflow, "prerelease", { hasLinuxSmoke: false });
+    expectChannelWorkflowNamespaces(releasePreviewWorkflow, "preview");
+    expectChannelWorkflowNamespaces(releasePrereleaseWorkflow, "prerelease");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-win");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-x64");
-    expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-linux");
     expect(releaseBetaWorkflow).toContain("RELEASE_TARGET: mac_arm64");
     expect(releaseBetaWorkflow).toContain("RELEASE_TARGET: win_x64");
     expect(releaseBetaWorkflow).toContain("RELEASE_TARGET: mac_x64");
-    expect(releaseBetaWorkflow).toContain("RELEASE_TARGET: linux_x64");
     expect(releaseBetaWorkflow).toContain("OD_PACKAGED_E2E_MAC_UPDATE_FIXTURE: ${{ inputs.mac_arm64_smoke_mode == 'full' && inputs.mac_arm64_update_metadata_url == '' && inputs.mac_arm64_update_target_version == '' && 'tools-serve' || '' }}");
-    const betaWinJob = sectionBetween(releaseBetaWorkflow, "  build_win_x64:", "  build_linux_x64:");
+    const betaWinJob = sectionBetween(releaseBetaWorkflow, "  build_win_x64:", "  publish:");
     expect(betaWinJob).not.toContain("tools\\release\\scripts\\build-platform.ps1");
     expect(betaWinJob).toContain("uses: actions/cache/restore@v5");
     expect(betaWinJob).toContain("uses: actions/cache/save@v5");
@@ -1831,8 +1787,7 @@ process.stdin.on("end", () => {
     const jobBounds: Array<[string, string]> = [
       ["  build_mac:", "  build_mac_intel:"],
       ["  build_mac_intel:", "  build_win:"],
-      ["  build_win:", "  build_linux:"],
-      ["  build_linux:", "  publish:"],
+      ["  build_win:", "  publish:"],
       ["  publish:", "  cleanup_partial_release_assets:"],
     ];
     for (const [start, end] of jobBounds) {
@@ -1851,9 +1806,9 @@ process.stdin.on("end", () => {
     expectCountedReleaseWorkflowCallContract(prereleaseWorkflow, "prerelease");
 
     expect(previewWorkflow).toContain("OPEN_DESIGN_PREVIEW_VERSION: ${{ inputs.release_version }}");
-    expect(previewWorkflow).toContain("Empty uses preview/vX.Y.Z when present, otherwise apps/packaged/package.json.");
+    expect(previewWorkflow).toContain("Empty uses preview/vX.Y.Z when present, otherwise shells/electron/package.json.");
     expect(previewScript).toContain("function resolvePreviewBaseVersion");
-    expect(previewScript).toContain('source: "apps/packaged/package.json"');
+    expect(previewScript).toContain('source: "shells/electron/package.json"');
     expect(previewScript).not.toContain("release-preview can only run from preview/vX.Y.Z branches");
 
     expect(prereleaseWorkflow).toContain("OPEN_DESIGN_STABLE_VERSION: ${{ inputs.release_version }}");
@@ -1869,7 +1824,7 @@ process.stdin.on("end", () => {
     // path and receives its own collision-free dogfood build id per platform.
     const workflow = await readFile(releaseBetaWorkflowPath, "utf8");
     const macJob = sectionBetween(workflow, "  build_mac_arm64:", "  build_mac_x64:");
-    const winJob = sectionBetween(workflow, "  build_win_x64:", "  build_linux_x64:");
+    const winJob = sectionBetween(workflow, "  build_win_x64:", "  publish:");
 
     for (const [label, job] of [["mac_arm64", macJob], ["win_x64", winJob]] as const) {
       expect(job, label).toContain("run: pnpm exec tools-release publish-dogfood");
@@ -1954,7 +1909,7 @@ process.stdin.on("end", () => {
     expect(script).toContain("release-stable requires GITHUB_REF_NAME to be release/vX.Y.Z");
     expect(script).toContain("function resolvePrereleaseBaseVersion");
     expect(script).toContain(
-      '${stableBaseVersion.source ?? "release base"} version ${stableBaseVersion.value} must match apps/packaged/package.json version',
+      '${stableBaseVersion.source ?? "release base"} version ${stableBaseVersion.value} must match shells/electron/package.json version',
     );
   });
 
@@ -1983,7 +1938,7 @@ process.stdin.on("end", () => {
     // betaVersion/betaNumber. tools-release's daily-beta reader must accept
     // those aliases or the scheduled build dies at metadata time.
     const packagedVersion = JSON.parse(
-      await readFile(join(workspaceRoot, "apps", "packaged", "package.json"), "utf8"),
+      await readFile(join(workspaceRoot, "shells", "electron", "package.json"), "utf8"),
     ).version as string;
 
     const objects: Record<string, unknown> = {
@@ -2418,7 +2373,7 @@ process.stdin.on("end", () => {
     expect(workflow).toContain("token: ${{ steps.app.outputs.token }}");
     expect(workflow).toContain('git push origin "$BRANCH"');
     // The version bump is a no-op whenever main already leads stable by this exact
-    // patch (apps/packaged == $VERSION), so the release commit MUST tolerate an empty
+    // patch (shells/electron == $VERSION), so the release commit MUST tolerate an empty
     // tree — otherwise `git commit` dies on "nothing to commit" and no branch is cut.
     expect(workflow).toContain('git commit --allow-empty -am "chore(release): v$VERSION"');
 
@@ -2678,7 +2633,7 @@ process.stdin.on("end", () => {
   it("builds and publishes shell-neutral Closure assets in the release-beta mac_arm64 and win_x64 lanes", async () => {
     const workflow = await readFile(releaseBetaWorkflowPath, "utf8");
     const macJob = sectionBetween(workflow, "  build_mac_arm64:", "  build_mac_x64:");
-    const winJob = sectionBetween(workflow, "  build_win_x64:", "  build_linux_x64:");
+    const winJob = sectionBetween(workflow, "  build_win_x64:", "  publish:");
     const publishStart = workflow.indexOf("\n  publish:");
     expect(publishStart).toBeGreaterThan(0);
     const publishJob = workflow.slice(publishStart);
@@ -2739,7 +2694,7 @@ process.stdin.on("end", () => {
     expect(workflow).toContain("enable_win_x64:");
     expect(workflow).toContain("enable_mac_arm64:");
     expect(workflow).toContain("enable_mac_x64:");
-    expect(workflow).toContain("enable_linux_x64:");
+    expect(workflow).not.toContain("enable_linux_x64:");
     expect(workflow).toMatch(/enable_win_x64:[\s\S]*?default: true/);
     expect(workflow).toMatch(/enable_mac_arm64:[\s\S]*?default: true/);
     expect(workflow).toMatch(/publish:[\s\S]*?default: true/);
@@ -2777,7 +2732,7 @@ process.stdin.on("end", () => {
     expect(workflow).toContain("release_version: ${{ inputs.publish && steps.reserve.outputs.release_version || inputs.release_version != '' && inputs.release_version || steps.betas.outputs.release_version }}");
     expect(workflow).toContain("if: ${{ inputs.publish }}");
     expect(workflow).toContain("Reject unsupported self-hosted mac_x64");
-    expect(workflow).toContain("Reject unsupported self-hosted linux_x64");
+    expect(workflow).not.toContain("Reject unsupported self-hosted linux_x64");
     expect(workflow).toContain("name: Probe Windows signing capability");
     expect(workflow).toContain("probe-win-signing.ps1");
     expect(workflow).toContain("needs: metadata");
@@ -2915,7 +2870,6 @@ process.stdin.on("end", () => {
           env: {
             ...process.env,
             BASE_VERSION: "1.2.3",
-            ENABLE_LINUX_X64: "false",
             ENABLE_MAC_ARM64: "true",
             ENABLE_MAC_X64: "false",
             ENABLE_WIN_X64: "false",
@@ -2999,7 +2953,6 @@ process.stdin.on("end", () => {
           env: {
             ...process.env,
             BASE_VERSION: "1.2.3",
-            ENABLE_LINUX_X64: "false",
             ENABLE_MAC_ARM64: "true",
             ENABLE_MAC_X64: "false",
             ENABLE_WIN_X64: "false",
@@ -3080,7 +3033,6 @@ process.stdin.on("end", () => {
         env: {
           ...process.env,
           BASE_VERSION: "1.2.3",
-          ENABLE_LINUX_X64: "false",
           ENABLE_MAC_ARM64: "true",
           ENABLE_MAC_X64: "false",
           ENABLE_WIN_X64: "false",
@@ -3165,7 +3117,6 @@ process.stdin.on("end", () => {
         env: {
           ...process.env,
           BASE_VERSION: "1.2.3",
-          ENABLE_LINUX_X64: "false",
           ENABLE_MAC_ARM64: "false",
           ENABLE_MAC_X64: "false",
           ENABLE_WIN_X64: "true",
@@ -3295,7 +3246,6 @@ process.stdin.on("end", () => {
         env: {
           ...process.env,
           BASE_VERSION: "1.2.3",
-          ENABLE_LINUX_X64: "false",
           ENABLE_MAC_ARM64: "true",
           ENABLE_MAC_X64: "false",
           ENABLE_WIN_X64: "true",
@@ -3390,7 +3340,6 @@ process.stdin.on("end", () => {
 function expectChannelWorkflowNamespaces(
   workflow: string,
   channel: "beta" | "preview" | "prerelease",
-  options: { hasLinuxSmoke: boolean },
 ): void {
   const namespace = `release-${channel}`;
   expect(workflow).toContain(`--namespace ${namespace}`);
@@ -3398,11 +3347,6 @@ function expectChannelWorkflowNamespaces(
   expect(workflow).toContain(`--namespace ${namespace}-intel`);
   expect(workflow).toContain(`"--namespace", "${namespace}-win",`);
   expect(workflow).toContain(`OD_PACKAGED_E2E_NAMESPACE: ${namespace}-win`);
-  expect(workflow).toContain(`--namespace ${namespace}-linux`);
-
-  if (options.hasLinuxSmoke) {
-    expect(workflow).toContain(`OD_PACKAGED_E2E_NAMESPACE: ${namespace}-linux`);
-  }
 }
 
 function expectWindowsUpdaterSmokeContract(workflow: string, channel: "beta" | "preview" | "prerelease" | "stable"): void {
@@ -3443,34 +3387,11 @@ function expectCountedReleaseWorkflowCallContract(workflow: string, channel: "pr
   expect(workflow).toContain("mac_arm64_url:");
   expect(workflow).toContain("mac_intel_url:");
   expect(workflow).toContain("win_url:");
-  expect(workflow).toContain("linux_url:");
   expect(workflow).toContain("GITHUB_SHA: ${{ needs.metadata.outputs.commit }}");
   expect(workflow).toContain("version_metadata_url: ${{ steps.outputs.outputs.version_metadata_url }}");
   expect(workflow).toContain("mac_arm64_url: ${{ steps.outputs.outputs.mac_arm64_dmg_url }}");
   expect(workflow).toContain("mac_intel_url: ${{ steps.outputs.outputs.mac_x64_dmg_url }}");
   expect(workflow).toContain("win_url: ${{ steps.outputs.outputs.win_x64_installer_url }}");
-  expect(workflow).toContain("linux_url: ${{ steps.outputs.outputs.linux_x64_appImage_url }}");
-}
-
-function expectReleaseLinuxBuildPreservesEvidence(workflow: string, stepName: string): void {
-  const step = workflow.match(new RegExp(`- name: ${stepName}\\r?\\n(?:.+\\r?\\n)+?(?=\\r?\\n      - name: Smoke .+ linux AppImage runtime)`, "m"))?.[0];
-  expect(step).toBeDefined();
-  expect(step).toContain('report_dir="$RUNNER_TEMP/release-report/linux"');
-  expect(step).toContain('mkdir -p "$report_dir"');
-  expect(step).toContain('build_json_path="$report_dir/tools-pack.json"');
-  expect(step).toContain('build_log_path="$report_dir/tools-pack.log"');
-  expect(step).toContain('printf \'%s\\n\' "$build_output" | tee "$build_json_path"');
-}
-
-function expectReleaseLinuxSmokePreservesEvidenceBeforeApt(workflow: string, stepName: string): void {
-  const step = workflow.match(new RegExp(`- name: ${stepName}\\r?\\n(?:.+\\r?\\n)+?(?=\\r?\\n      - name: Upload linux e2e spec report)`, "m"))?.[0];
-  expect(step).toBeDefined();
-  const aptIndex = step?.indexOf("sudo apt-get update") ?? -1;
-  const reportDirIndex = step?.indexOf('report_dir="$RUNNER_TEMP/release-report/linux"') ?? -1;
-
-  expect(aptIndex).toBeGreaterThan(-1);
-  expect(reportDirIndex).toBeGreaterThan(-1);
-  expect(reportDirIndex).toBeLessThan(aptIndex);
 }
 
 async function startStablePrereleaseMetadataServer(objects: Record<string, unknown>): Promise<{
