@@ -147,10 +147,11 @@
 }
 /* the hero reads as an artboard, not a sheet of paper: a drawing grid over the
    washed paint (house move — open-design.ai builds its hero the same way) */
-.lw .hero::before {
-  content: "";
+.lw .lw-wash {
   position: absolute;
   inset: 0;
+  width: 100%;
+  height: 100%;
   z-index: 1;
   background:
     repeating-linear-gradient(to right, rgba(7,7,7,.055) 0 1px, transparent 1px 220px),
@@ -163,7 +164,7 @@
 /* the lower-left is closed with the plate's own fractured-splatter texture —
    discontinuous flecks and halftone tears, not a solid stroke. Two crops of the
    same field at different angles so nothing reads as mirrored. */
-.lw .hero > *:not(.hero-counterweight) { position: relative; z-index: 2;
+.lw .hero > *:not(.lw-wash) { position: relative; z-index: 2;
 }
 /* pinned to the artboard's top edge — reads as part of the canvas, not as
    copy floating inside it. The page's real nav is the site header above. */
@@ -1007,12 +1008,16 @@
 /* quiet bar — acid lives only on the primary button */
 .lw .finale {
   position: relative;
-  padding: clamp(40px, 4vw, 58px) var(--gutter) clamp(40px, 4vw, 58px);
+  display: flex;
+  align-items: center;
+  min-height: clamp(420px, 52vh, 560px);
+  padding: clamp(64px, 7vw, 96px) var(--gutter);
   background: var(--ink);
   color: var(--paper-light);
   overflow: hidden;
 }
 .lw .finale-row {
+  width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(240px, 1fr);
   align-items: center;
@@ -1022,7 +1027,7 @@
 }
 .lw .finale h2 {
   margin: 0;
-  font: 400 clamp(46px, 4.1vw, 68px)/.9 var(--display);
+  font: 400 clamp(56px, 5.4vw, 92px)/.9 var(--display);
   text-transform: uppercase;
 }
 .lw .finale h2 .turn { color: var(--acid);
