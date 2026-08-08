@@ -3933,10 +3933,12 @@
   text-align: left;
   /* Pivot far below the card: a few degrees of rotation reads as a wide
      hand-of-cards arc, and drops the outer cards lower at the same time.
-     The pivot distance sets the HORIZONTAL spread per degree (1600px ≈ 98px
-     between neighbours at the fan's 3.5° step) — widen the fan here, flatten
-     the tilt via STEP_DEG in TypeFanCarousel.tsx. */
-  transform-origin: 50% 3700px;
+     The pivot distance sets the HORIZONTAL spread per degree — 3273px puts
+     140px between neighbouring card CENTERS at the fan's 2.5° step
+     (140 ÷ sin 2.5°, plus the ~63px from card top — where the origin is
+     measured — down to its center). Widen the fan here, flatten the tilt via
+     STEP_DEG in TypeFanCarousel.tsx. */
+  transform-origin: 50% 3273px;
   /* Opacity matches the transform's 0.26s so the edge cards' enter/exit fade
      rides the same clock as the slide instead of finishing early and reading
      as a blink. */
@@ -4047,6 +4049,23 @@
   border-top-left-radius: 10px;
   background: var(--bg-panel);
   overflow: hidden;
+}
+/* Covered cards: a soft wash over the preview so a DARK poster (e.g. the
+   slide-deck example's near-black pitch deck) can't read as a stray black
+   block where only a sliver peeks out from behind the active card. The
+   active card shows its art unveiled, and hovering a covered card fades the
+   wash away so it previews exactly like the selected one. */
+.home-hero__type-fan-card:not(.is-active) .home-hero__type-fan-card-art-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-panel) 70%, transparent);
+  opacity: 1;
+  transition: opacity 0.2s cubic-bezier(0.23, 1, 0.32, 1);
+  pointer-events: none;
+}
+.home-hero__type-fan-card:not(.is-active):hover .home-hero__type-fan-card-art-panel::after {
+  opacity: 0;
 }
 .home-hero__type-fan-card-panel-preview {
   position: relative;

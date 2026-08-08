@@ -1030,7 +1030,9 @@
   padding: 0;
   border: 0;
   border-radius: 10px;
-  background: transparent;
+  /* White seat matching the dropdown beside it. */
+  background: #fff;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text);
   -webkit-app-region: no-drag;
 }
@@ -1078,7 +1080,7 @@
   width: 100%;
   height: 36px;
   padding: 0 10px 0 12px;
-  border: 1px solid var(--border);
+  border: 0;
   border-radius: 12px;
   background: #fff;
   color: var(--text);
@@ -1087,9 +1089,7 @@
   text-align: left;
   box-shadow: 0 1px 2px color-mix(in srgb, var(--text) 5%, transparent);
 }
-.workspace-tabs-dropdown__trigger:hover {
-  border-color: var(--border-strong);
-}
+
 .workspace-tabs-dropdown__icon {
   display: inline-flex;
   flex: 0 0 auto;

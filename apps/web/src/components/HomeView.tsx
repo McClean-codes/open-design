@@ -1624,6 +1624,37 @@ export function HomeView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingChipRestore, pluginsLoading, plugins, active, pendingPluginUseHandoff]);
 
+  // Default creation type (per product): a fresh Home composer starts on
+  // 幻灯片 (the `deck` chip) instead of typeless. One-shot per mount, decided
+  // from the MOUNT-time draft state — if a persisted chip draft exists, the
+  // restore effect above owns the composer and this seed must never race its
+  // async resolution, so it is skipped outright. Explicitly clearing the chip
+  // (×) also stays cleared: the ref flips on first seed.
+  //
+  // The seed uses the same silent, deferred-apply path as a user pick on a
+  // create chip (no daemon apply until submit, textarea untouched) but skips
+  // `pickChip` itself so no synthetic chat_composer click lands in analytics.
+  const defaultChipSeededRef = useRef(readHomeComposerChipDraft() !== null);
+  useEffect(() => {
+    if (defaultChipSeededRef.current) return;
+    if (pluginsLoading || active || pendingPluginUseHandoff || pendingChipRestore) return;
+    const deckChip = findChip('deck');
+    const deckAction = deckChip?.action;
+    if (!deckChip || !deckAction || deckAction.kind !== 'apply-scenario') return;
+    const record = plugins.find((plugin) => plugin.id === deckAction.pluginId);
+    if (!record) return;
+    defaultChipSeededRef.current = true;
+    void usePlugin(record, undefined, {
+      projectKind: deckAction.projectKind,
+      chipId: deckChip.id,
+      inputs: deckAction.inputs,
+      projectMetadata: deckAction.projectMetadata ?? null,
+      suppressPromptUpdate: true,
+      deferApply: true,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pluginsLoading, active, pendingPluginUseHandoff, pendingChipRestore, plugins]);
+
   function addPluginContext(record: InstalledPluginRecord, nextPrompt: string | null) {
     setSelectedPluginContexts((prev) => {
       if (prev.some((item) => item.record.id === record.id)) return prev;
