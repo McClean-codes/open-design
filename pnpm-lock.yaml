@@ -971,9 +971,6 @@ importers:
       '@open-design/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
-      '@open-design/daemon':
-        specifier: workspace:*
-        version: link:../../apps/daemon
       '@open-design/diagnostics':
         specifier: workspace:*
         version: link:../../packages/diagnostics
@@ -1004,9 +1001,6 @@ importers:
       '@open-design/standalone-runtime':
         specifier: workspace:*
         version: link:../../packages/standalone-runtime
-      '@open-design/web':
-        specifier: workspace:*
-        version: link:../../apps/web
     devDependencies:
       '@open-design/closure-proto':
         specifier: workspace:*
