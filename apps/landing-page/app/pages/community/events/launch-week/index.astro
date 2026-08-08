@@ -5,9 +5,9 @@ import '../../../../sub-pages.css';
 import '../../../../_partials/launch-week.css';
 import launchWeekMain from '../../../../_partials/launch-week-main.html?raw';
 
-const title = 'Open Design Launch Week Vol.01';
+const title = 'Launch Week Vol.01: five design launches in five days — Open Design';
 const description =
-  'Five days, five design jobs, one launch a day. Aug 10–14: what can Codex, DeepSeek and MiniMax + Open Design kill?';
+  'Open Design Launch Week runs Aug 10–14: one new design capability a day, each aimed at a tool your team already pays for. Five days, five design jobs, five targets.';
 const fallbackSite = 'https://open-design.ai/';
 const ogImage = new URL('/launch-week/launch-week-og.jpg', Astro.site ?? fallbackSite).toString();
 
@@ -47,6 +47,17 @@ const jsonLd = {
     url: new URL(Astro.url.pathname, Astro.site ?? fallbackSite).toString(),
   },
   organizer: { '@type': 'Organization', name: 'Open Design', url: fallbackSite },
+  image: [ogImage],
+  performer: { '@type': 'Organization', name: 'Open Design' },
+  isAccessibleForFree: true,
+  offers: {
+    '@type': 'Offer',
+    price: '0',
+    priceCurrency: 'USD',
+    availability: 'https://schema.org/InStock',
+    url: new URL(Astro.url.pathname, Astro.site ?? fallbackSite).toString(),
+    validFrom: '2026-08-10T08:00:00+08:00',
+  },
 };
 ---
 
