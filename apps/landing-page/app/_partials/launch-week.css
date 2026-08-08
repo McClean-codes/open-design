@@ -168,31 +168,13 @@
 }
 /* pinned to the artboard's top edge — reads as part of the canvas, not as
    copy floating inside it. The page's real nav is the site header above. */
-.lw .hero-top {
-  position: relative;
-  z-index: 2;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  padding: 0 var(--gutter);
-  height: 54px;
-  border-bottom: 1.5px solid rgba(7,7,7,.16);
-  /* the paint runs strong to the edges now — the masthead keeps its own ground */
-  background: linear-gradient(rgba(238,234,226,.9), rgba(238,234,226,.76));
-  backdrop-filter: blur(2px);
-}
-.lw .hero-top .masthead-line {
-  margin: 0;
-  color: rgba(7,7,7,.72);
-  font: 600 clamp(9px, .78vw, 11px)/1 var(--utility);
-  letter-spacing: .2em;
-}
-.lw .hero-top .datechip {
-  color: rgba(7,7,7,.82);
-  font: 600 clamp(9px, .78vw, 11px)/1 var(--utility);
-  letter-spacing: .14em;
+/* the campaign's own eyebrow, in the hero where it belongs — the site header
+   above already carries the brand, so a second strip only read as a second nav */
+.lw .hero-eyebrow {
+  margin: 0 0 clamp(20px, 3.6vh, 34px);
+  color: rgba(7,7,7,.6);
+  font: 600 clamp(10px, .82vw, 12px)/1 var(--utility);
+  letter-spacing: .22em;
 }
 .lw .hero-main {
   flex: 1;
@@ -1006,47 +988,45 @@
   background: repeating-linear-gradient(180deg, var(--ink) 0 2px, transparent 2px 5px);
 }
 /* quiet bar — acid lives only on the primary button */
+/* Closes like the house `.v4final`: one left-aligned column stepping down from
+   headline to copy to a single row of buttons, over a darkened image rather
+   than flat black. The image here is our own plate, so the campaign's material
+   carries through to the last screen. */
 .lw .finale {
   position: relative;
-  display: flex;
-  align-items: center;
-  min-height: clamp(420px, 52vh, 560px);
-  padding: clamp(64px, 7vw, 96px) var(--gutter);
-  background: var(--ink);
-  color: var(--paper-light);
   overflow: hidden;
+  padding: clamp(88px, 9vw, 132px) var(--gutter);
+  color: var(--paper-light);
+  background: var(--ink);
 }
-.lw .finale-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1.5fr) minmax(240px, 1fr);
-  align-items: center;
-  gap: clamp(28px, 3.4vw, 52px);
+.lw .finale::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(7,7,7,.86), rgba(7,7,7,.93)),
+    url("/launch-week/kv-desktop.webp") center / cover no-repeat;
+  pointer-events: none;
 }
-.lw .finale .eyebrow { color: var(--acid);
-}
+.lw .finale-row { position: relative; z-index: 1; max-width: 860px; }
+.lw .finale .eyebrow { color: var(--acid); }
 .lw .finale h2 {
-  margin: 0;
-  font: 400 clamp(56px, 5.4vw, 92px)/.9 var(--display);
+  margin: 0 0 18px;
+  font: 400 clamp(52px, 5.6vw, 96px)/.94 var(--display);
+  letter-spacing: -.01em;
   text-transform: uppercase;
 }
-.lw .finale h2 .turn { color: var(--acid);
+.lw .finale h2 .turn { color: var(--acid); }
+.lw .finale p {
+  max-width: 46ch;
+  margin: 0 0 34px;
+  color: rgba(248,245,237,.74);
+  font-size: clamp(16px, 1.3vw, 18px);
+  line-height: 1.6;
 }
-.lw .finale p { max-width: 46ch; margin: 14px 0 0; font-size: 15px; line-height: 1.5;
-}
-.lw .finale .finale-inside {
-  margin-top: 8px;
-  color: rgba(248,245,237,.6);
-  font-size: 14px;
-}
-.lw .finale .ctas { display: flex; flex-direction: column; gap: 12px;
-}
-.lw .finale .ctas .button { width: 100%;
-}
-.lw .finale .button { border-color: var(--paper-light); color: var(--paper-light);
-}
-.lw .finale .button.is-acid { background: var(--acid); border-color: var(--acid); color: var(--ink);
-}
+.lw .finale .ctas { display: flex; flex-wrap: wrap; gap: 14px; }
+.lw .finale .button { width: auto; border-color: var(--paper-light); color: var(--paper-light); }
+.lw .finale .button.is-acid { background: var(--acid); border-color: var(--acid); color: var(--ink); }
 /* ============================================================
    Scroll & interaction motion — all of it inside one
    prefers-reduced-motion guard, all of it transform/opacity only.
