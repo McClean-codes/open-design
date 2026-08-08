@@ -1,0 +1,128 @@
+---
+import Layout from '../../../../_components/sub-page-layout.astro';
+import '../../../../globals.css';
+import '../../../../sub-pages.css';
+import '../../../../_partials/launch-week.css';
+import launchWeekMain from '../../../../_partials/launch-week-main.html?raw';
+
+const title = 'Open Design Launch Week Vol.01';
+const description =
+  'Five days, five design jobs, one launch a day. Aug 10–14: what can Codex, DeepSeek and MiniMax + Open Design kill?';
+const fallbackSite = 'https://open-design.ai/';
+const ogImage = new URL('/launch-week/launch-week-og.jpg', Astro.site ?? fallbackSite).toString();
+
+/**
+ * Drop schedule. Each day flips at 08:00 UTC+8, which is exactly 00:00 UTC —
+ * and UTC+8 has no daylight saving, so a plain UTC timestamp is the whole story.
+ * Rendered per build; the inline script below re-resolves it in the visitor's
+ * browser so a cached page still shows the right state.
+ */
+const DROPS = [
+  { day: 1, date: 'AUG 10', iso: '2026-08-10' },
+  { day: 2, date: 'AUG 11', iso: '2026-08-11' },
+  { day: 3, date: 'AUG 12', iso: '2026-08-12' },
+  { day: 4, date: 'AUG 13', iso: '2026-08-13' },
+  { day: 5, date: 'AUG 14', iso: '2026-08-14' },
+];
+
+const jsonLd = {
+  '@context': 'https://schema.org',
+  '@type': 'Event',
+  name: title,
+  description,
+  startDate: '2026-08-10T08:00:00+08:00',
+  endDate: '2026-08-14T23:59:00+08:00',
+  eventAttendanceMode: 'https://schema.org/OnlineEventAttendanceMode',
+  eventStatus: 'https://schema.org/EventScheduled',
+  location: {
+    '@type': 'VirtualLocation',
+    url: new URL(Astro.url.pathname, Astro.site ?? fallbackSite).toString(),
+  },
+  organizer: { '@type': 'Organization', name: 'Open Design', url: fallbackSite },
+};
+---
+
+<Layout
+  title={title}
+  description={description}
+  active="community"
+  ogImage={ogImage}
+  jsonLd={jsonLd}
+  mainClassName="sub-main lw"
+>
+  <Fragment set:html={launchWeekMain} />
+</Layout>
+
+<script is:inline define:vars={{ DROPS }}>
+  // Resolve drop state on the client too: the page is statically built, so a
+  // visitor on a cached copy must still see the correct day without a redeploy.
+  (() => {
+    const now = Date.now();
+    const stateFor = (iso) => {
+      const opens = Date.parse(iso + 'T00:00:00Z'); // 08:00 UTC+8
+      const closes = opens + 86400000;
+      if (now < opens) return 'classified';
+      return now < closes ? 'live' : 'released';
+    };
+
+    // ?preview= lets the team review and screenshot any day before it happens.
+    // `all` reveals everything, `1`–`5` simulate that launch day, and anything
+    // else (or no param) uses the real schedule.
+    const preview = new URLSearchParams(location.search).get('preview');
+    const simulate = (day) => {
+      if (preview === 'all') return 'released';
+      const n = Number(preview);
+      if (!Number.isInteger(n) || n < 1 || n > 5) return null;
+      return day < n ? 'released' : day === n ? 'live' : 'classified';
+    };
+
+    const states = {};
+    DROPS.forEach((d) => (states[d.day] = simulate(d.day) ?? stateFor(d.iso)));
+    // Before the week opens, day 1 is the one we tease as next up.
+    document.documentElement.dataset.launchWeek = Object.values(states).includes('live')
+      ? 'running'
+      : now < Date.parse(DROPS[0].iso + 'T00:00:00Z')
+        ? 'before'
+        : 'after';
+
+    document.querySelectorAll('.drop[data-launch-day]').forEach((card) => {
+      const state = states[card.dataset.launchDay];
+      const sealed = card.classList.contains('is-classified');
+      // A sealed card only belongs on screen while its day is still secret;
+      // the revealed twin takes over the moment it opens.
+      card.hidden = sealed ? state !== 'classified' : state === 'classified';
+      if (!sealed) card.dataset.state = state;
+    });
+
+    document.querySelectorAll('.killticker li[data-launch-day]').forEach((li) => {
+      const state = states[li.dataset.launchDay];
+      li.classList.toggle('is-today', state === 'live');
+      const slot = li.querySelector('[data-state-label]');
+      if (!slot) return;
+      slot.textContent = state === 'live' ? 'LIVE' : state === 'released' ? 'RELEASED' : 'CLASSIFIED';
+      slot.className = state === 'live' ? 'is-live' : state === 'released' ? 'is-done' : 'is-classified';
+    });
+  })();
+
+  // Scroll reveal. Lives here rather than in the partial so the markup stays
+  // pure content; no-ops entirely when the visitor asks for reduced motion.
+  (() => {
+    const targets = document.querySelectorAll('.lw .reveal, .lw .drop.is-classified .tba');
+    if (!targets.length) return;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches || !('IntersectionObserver' in window)) {
+      targets.forEach((el) => el.classList.add('is-in'));
+      return;
+    }
+    const obs = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((e) => {
+          if (!e.isIntersecting) return;
+          e.target.classList.add('is-in');
+          obs.unobserve(e.target);
+        });
+      },
+      { rootMargin: '0px 0px -12% 0px', threshold: 0.12 },
+    );
+    targets.forEach((el) => obs.observe(el));
+  })();
+</script>
