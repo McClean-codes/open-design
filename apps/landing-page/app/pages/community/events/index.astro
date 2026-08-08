@@ -41,7 +41,12 @@ const jsonLd = {
           />
         </span>
         <span class="event-launch-copy">
-          <span class="event-launch-pill">Happening now</span>
+          <span class="event-launch-pill">Happening now · Aug 10–14</span>
+          <strong class="event-launch-title">Launch Week <span>Vol.01</span></strong>
+          <span class="event-launch-body">
+            Five days, five design jobs, one launch a day — each one aimed at a tool
+            your team already pays for.
+          </span>
           <span class="event-launch-link">See the lineup -></span>
         </span>
       </a>
@@ -112,7 +117,9 @@ const jsonLd = {
     .events-lead { padding-top: 34px; }
     .event-launch {
       position: relative;
-      display: block;
+      display: grid;
+      grid-template-columns: minmax(0, 1.32fr) minmax(0, 1fr);
+      align-items: stretch;
       width: min(1100px, calc(100% - 40px));
       margin: 0 auto;
       overflow: hidden;
@@ -141,10 +148,25 @@ const jsonLd = {
     }
     .event-launch-copy {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding: clamp(16px, 1.8vw, 26px) clamp(18px, 2vw, 30px);
+      flex-direction: column;
+      align-items: flex-start;
+      justify-content: center;
+      gap: 12px;
+      padding: clamp(24px, 2.6vw, 38px);
+    }
+    .event-launch-title {
+      font-family: var(--sans);
+      font-size: clamp(26px, 2.6vw, 34px);
+      font-weight: 800;
+      line-height: 1.04;
+      letter-spacing: -.03em;
+    }
+    .event-launch-title span { color: var(--event-green); }
+    .event-launch-body {
+      max-width: 34ch;
+      font-size: 14.5px;
+      line-height: 1.55;
+      color: rgba(248,245,237,.66);
     }
     .event-launch-pill {
       padding: 6px 11px;
@@ -164,10 +186,10 @@ const jsonLd = {
       color: var(--event-green);
     }
     @media (max-width: 860px) {
-      .event-launch { aspect-ratio: auto; }
+      .event-launch { grid-template-columns: 1fr; }
       .event-launch-media { position: relative; aspect-ratio: 16 / 9; }
       .event-launch-media::after { background: linear-gradient(rgba(7,7,7,0) 40%, rgba(7,7,7,.9)); }
-      .event-launch-copy { padding: 16px 20px; }
+      .event-launch-copy { padding: 22px 20px 26px; }
     }
 
     .od-events {
