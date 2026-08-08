@@ -66,19 +66,19 @@
 }
 .lw * { box-sizing: border-box;
 }
-.lw {
+/* The scroll port is the document, so the snap rules have to live on html.
+   This file is only imported by the Launch Week page, so the scope holds. */
+html:has(main.lw) {
   scroll-behavior: smooth;
-  background: var(--ink);
-  /* screen-by-screen rhythm. proximity (not mandatory) so the sticky
-     card stack in the lineup still scrolls freely. */
+  /* proximity, not mandatory — the lineup's sticky card stack must stay free */
   scroll-snap-type: y proximity;
-}@media (prefers-reduced-motion: reduce) {
-  .lw { scroll-snap-type: none;
+  scroll-padding-top: var(--lw-header, 85px);
 }
+@media (prefers-reduced-motion: reduce) {
+  html:has(main.lw) { scroll-snap-type: none; }
 }
-.lw .hero, .lw .join {
-  min-height: calc(100svh - var(--lw-header, 85px)); scroll-snap-align: start;
-}
+.lw { background: var(--ink); }.lw .hero, .lw .join { scroll-snap-align: start; }
+.lw .join { min-height: 100svh; }
 .lw {
   /* Not using .sub-main: this page is full-bleed and must butt straight against
      the site footer, so it declares only the offset it needs — clearance for
@@ -136,7 +136,7 @@
 .lw .hero {
   position: relative;
   /* every major section is one screen — the page is read a screen at a time */
-  height: calc(100svh - var(--lw-header, 85px) - 46px);
+  height: calc(100svh - var(--lw-header, 85px));
   min-height: 640px;
   overflow: hidden;
   display: flex;
