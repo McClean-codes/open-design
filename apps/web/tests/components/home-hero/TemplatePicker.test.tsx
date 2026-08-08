@@ -25,10 +25,6 @@ function labelFor(chipId: string): string {
   return chipById(chipId).label;
 }
 
-function descriptionFor(chipId: string): string {
-  return chipById(chipId).description ?? '';
-}
-
 function renderPicker(activeChipId: string | null, onClear = vi.fn()) {
   const onPick = vi.fn();
   return {
@@ -39,7 +35,6 @@ function renderPicker(activeChipId: string | null, onClear = vi.fn()) {
         templates={templates}
         activeChipId={activeChipId}
         labelFor={labelFor}
-        descriptionFor={descriptionFor}
         onPick={onPick}
         onClear={onClear}
       />,
@@ -69,7 +64,6 @@ describe('TemplatePicker', () => {
         templates={templates}
         activeChipId={null}
         labelFor={labelFor}
-        descriptionFor={descriptionFor}
         onPick={vi.fn()}
         onClear={onClear}
       />,
