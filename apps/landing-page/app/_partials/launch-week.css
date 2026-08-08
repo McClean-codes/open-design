@@ -1085,3 +1085,26 @@ html:has(main.lw) {
 .lw .drop:not(.is-classified) { display: none; }
 .lw .drop:not(.is-classified):not([hidden]) { display: grid; }
 
+
+
+/* CJK sets much wider than Anton at the same size, so the drop headlines and the
+   lineup title overflow their two lines. Give those scripts their own step. */
+:where(:lang(zh), :lang(ja), :lang(ko)) .lw .drop h3 {
+  font-size: clamp(30px, 3.2vw, 50px);
+  line-height: 1.12;
+  letter-spacing: 0;
+}
+:where(:lang(zh), :lang(ja), :lang(ko)) .lw .cabin-title {
+  font-size: clamp(36px, min(4.4vw, 8vh), 72px);
+  line-height: 1.08;
+}
+:where(:lang(zh), :lang(ja), :lang(ko)) .lw .today-ticket h2,
+:where(:lang(zh), :lang(ja), :lang(ko)) .lw .ticket h3,
+:where(:lang(zh), :lang(ja), :lang(ko)) .lw .join-heading h2 {
+  font-size: clamp(26px, 2.9vw, 44px);
+  line-height: 1.15;
+}
+:where(:lang(zh), :lang(ja), :lang(ko)) .lw .finale h2 {
+  font-size: clamp(38px, 4.2vw, 66px);
+  line-height: 1.12;
+}

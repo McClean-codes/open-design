@@ -1,13 +1,21 @@
 ---
 import Layout from '../../../../_components/sub-page-layout.astro';
+import { localeFromPath } from '../../../../i18n';
 import '../../../../globals.css';
 import '../../../../sub-pages.css';
 import '../../../../_partials/launch-week.css';
-import launchWeekMain from '../../../../_partials/launch-week-main.html?raw';
+import { LW_BODY, LW_META, LW_STATUS } from '../../../../_partials/launch-week-i18n';
 
-const title = 'Launch Week Vol.01: five design launches in five days — Open Design';
-const description =
-  'Open Design Launch Week runs Aug 10–14: one new design capability a day, each aimed at a tool your team already pays for. Five days, five design jobs, five targets.';
+const locale = localeFromPath(Astro.url.pathname);
+const meta = LW_META[locale] ?? LW_META.en;
+const launchWeekMain = LW_BODY[locale] ?? LW_BODY.en;
+// The client script rewrites drop states, so it needs this locale's words too.
+const statusCopy = Object.fromEntries(
+  Object.entries(LW_STATUS).map(([state, byLocale]) => [state, byLocale[locale] ?? byLocale.en]),
+);
+
+const title = meta.title;
+const description = meta.description;
 const fallbackSite = 'https://open-design.ai/';
 const ogImage = new URL('/launch-week/launch-week-og.jpg', Astro.site ?? fallbackSite).toString();
 
@@ -72,7 +80,7 @@ const jsonLd = {
   <Fragment set:html={launchWeekMain} />
 </Layout>
 
-<script is:inline define:vars={{ DROPS, PREVIEW_KEY }}>
+<script is:inline define:vars={{ DROPS, PREVIEW_KEY, statusCopy }}>
   // Resolve drop state on the client too: the page is statically built, so a
   // visitor on a cached copy must still see the correct day without a redeploy.
   (() => {
@@ -120,7 +128,8 @@ const jsonLd = {
       li.classList.toggle('is-today', state === 'live');
       const slot = li.querySelector('[data-state-label]');
       if (!slot) return;
-      slot.textContent = state === 'live' ? 'LIVE' : state === 'released' ? 'RELEASED' : 'CLASSIFIED';
+      slot.textContent =
+        state === 'live' ? statusCopy.LIVE : state === 'released' ? statusCopy.RELEASED : statusCopy.CLASSIFIED;
       slot.className = state === 'live' ? 'is-live' : state === 'released' ? 'is-done' : 'is-classified';
     });
   })();
