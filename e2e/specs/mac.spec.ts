@@ -374,7 +374,7 @@ macDescribe('packaged mac runtime smoke', () => {
   let installedAppPath: string | null = null;
   let started = false;
 
-  test('installs, starts, inspects, stops, and uninstalls the built mac artifact', async () => {
+  test('installs, starts, inspects, stops, and uninstalls the DMG-installed mac artifact', async () => {
     const report = await createPackagedSmokeReport('mac');
     const updateEnv = captureUpdateEnv();
     let payloadFixture: ToolsServeUpdaterFixture | null = null;
@@ -2013,6 +2013,7 @@ desktopMacDescribe('mac desktop settings smoke', () => {
 });
 
 async function runToolsPackJson<T>(action: string, extraArgs: string[] = []): Promise<T> {
+  const startSourceArgs = action === 'start' ? ['--start-source', 'installed'] : [];
   const args = [
     'exec',
     'tools-pack',
@@ -2024,6 +2025,7 @@ async function runToolsPackJson<T>(action: string, extraArgs: string[] = []): Pr
     namespace,
     ...toolsPackReleaseVersionArgs,
     '--json',
+    ...startSourceArgs,
     ...extraArgs,
   ];
   const result = await execFileAsync(pnpmCommand, args, {
