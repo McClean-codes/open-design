@@ -1079,6 +1079,8 @@ html:has(main.lw) {
 .lw .drop .live-stamp { display: none; }
 .lw .drop[data-state="live"] .live-stamp { display: block; }
 .lw .drop[hidden] { display: none; }
-/* pre-script truth for no-JS visitors: day 1 open, the rest sealed */
-.lw .drop.is-classified[data-launch-day="1"] { display: none; }
+/* Pre-script truth for a no-JS visitor: every day sealed. That is honest on any
+   date — the script then opens whichever days have actually happened. */
+.lw .drop:not(.is-classified) { display: none; }
+.lw .drop:not(.is-classified):not([hidden]) { display: grid; }
 
