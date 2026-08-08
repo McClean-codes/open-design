@@ -470,13 +470,16 @@ importers:
       '@open-design/closure-store':
         specifier: workspace:*
         version: link:../closure-store
-      '@open-design/closure-update':
+      '@open-design/standalone-proto':
         specifier: workspace:*
-        version: link:../closure-update
+        version: link:../standalone-proto
       '@open-design/standalone-runtime':
         specifier: workspace:*
         version: link:../standalone-runtime
     devDependencies:
+      '@open-design/closure-update':
+        specifier: workspace:*
+        version: link:../closure-update
       '@types/node':
         specifier: 24.12.2
         version: 24.12.2

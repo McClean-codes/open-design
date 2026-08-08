@@ -245,7 +245,7 @@ describe("renderMacPackagedConfig", () => {
 
       const packagedConfig = JSON.parse(
         renderMacPackagedConfig({
-          appVersion: "1.2.3",
+          shellVersion: "1.2.3",
           config,
           usePrebundledStandaloneWeb: true,
         }),
@@ -265,7 +265,7 @@ describe("renderMacPackagedConfig", () => {
 
       const packagedConfig = JSON.parse(
         renderMacPackagedConfig({
-          appVersion: "1.2.3-beta.0",
+          shellVersion: "1.2.3-beta.0",
           config,
           usePrebundledStandaloneWeb: true,
         }),
@@ -291,7 +291,7 @@ describe("renderMacPackagedConfig", () => {
 
       const packagedConfig = JSON.parse(
         renderMacPackagedConfig({
-          appVersion: "1.2.3-beta.0",
+          shellVersion: "1.2.3-beta.0",
           config,
           usePrebundledStandaloneWeb: true,
         }),
@@ -308,7 +308,7 @@ describe("renderMacPackagedConfig", () => {
     try {
       const packagedConfig = JSON.parse(
         renderMacPackagedConfig({
-          appVersion: "1.2.3",
+          shellVersion: "1.2.3",
           config: makeConfig(root),
           usePrebundledStandaloneWeb: true,
         }),
@@ -326,7 +326,7 @@ describe("runElectronBuilder", () => {
     const cliPath = join(root, "fake-electron-builder.mjs");
 
     const config = makeConfig(root, {
-      appVersion: "1.2.3-prerelease.4",
+      releaseVersion: "1.2.3-prerelease.4",
       electronBuilderCliPath: cliPath,
       signed: true,
       webOutputMode: "server",
@@ -464,7 +464,7 @@ describe("writeLaunchPackagedConfig", () => {
         embeddedConfigPath,
         `${JSON.stringify(
           {
-            appVersion: "0.5.1-beta.2",
+            shellVersion: "0.5.1-beta.2",
             namespace: "packaged-default",
             nodeCommandRelative: "open-design/bin/node",
             webOutputMode: "standalone",
@@ -481,7 +481,7 @@ describe("writeLaunchPackagedConfig", () => {
 
       expect(launchConfigPath).toBe(join(config.roots.runtime.namespaceRoot, "runtime", "open-design-config.json"));
       expect(launchConfig).toMatchObject({
-        appVersion: "0.5.1-beta.2",
+        shellVersion: "0.5.1-beta.2",
         namespace: "release-beta",
         namespaceBaseRoot: config.roots.runtime.namespaceBaseRoot,
         nodeCommandRelative: "open-design/bin/node",
