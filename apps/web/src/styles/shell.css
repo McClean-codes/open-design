@@ -935,8 +935,13 @@ html.od-radial-open .workspace-shell {
   gap: 6px;
 }
 .chrome-share-menu--unified .chrome-unified-popover {
-  width: min(360px, calc(100vw - 32px));
-  min-width: min(320px, calc(100vw - 32px));
+  /* Hug the content instead of a fixed 360px: the rows are short labels, so a
+     fixed width left a wide empty gutter on the right. The floor keeps narrow
+     menus (Export) from looking cramped; the ceiling keeps long ones (a
+     published URL, deploy labels) from running off the viewport. */
+  width: max-content;
+  min-width: min(248px, calc(100vw - 32px));
+  max-width: min(360px, calc(100vw - 32px));
   padding: 6px;
   border-radius: var(--radius);
   background: var(--bg-panel);
