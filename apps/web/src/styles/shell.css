@@ -926,7 +926,10 @@ html.od-radial-open .workspace-shell {
    (the popover swaps its panel instead of remounting, so switching intents
    keeps the menu anchored in place). The 0.18.0 three-tab strip that lived
    inside this popover is gone — handoff is a standalone header control now. */
-.chrome-share-menu--unified {
+/* Doubled class beats `.share-menu`'s `display: inline-block` in
+   viewer/tools.css, which is imported after this sheet — without the flex
+   display the Share and Export buttons render flush against each other. */
+.share-menu.chrome-share-menu--unified {
   display: inline-flex;
   align-items: center;
   gap: 6px;
