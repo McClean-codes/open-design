@@ -1108,3 +1108,9 @@ html:has(main.lw) {
   font-size: clamp(38px, 4.2vw, 66px);
   line-height: 1.12;
 }
+
+
+/* the two community buttons carry very different word lengths per locale;
+   a shared minimum keeps the pair from looking lopsided */
+.lw .hero-ctas .button,
+.lw .finale .ctas .button { min-width: 210px; }
