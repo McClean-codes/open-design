@@ -35,14 +35,6 @@ const fallbackSite = 'https://open-design.ai/';
 const ogImage = new URL('/launch-week/launch-week-og.jpg', Astro.site ?? fallbackSite).toString();
 
 
-/**
- * Shared key that unlocks `?preview=`. Not a secret in the cryptographic sense —
- * the page is static, so anything here ships to the client. It only has to stop
- * a casual visitor from reading the running order off a URL guess. Rotate it by
- * editing this constant; there is nothing else to update.
- */
-const PREVIEW_KEY = 'lw01-dry-run';
-
 const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'Event',
@@ -82,7 +74,7 @@ const jsonLd = {
   <Fragment set:html={launchWeekMain} />
 </Layout>
 
-<script is:inline define:vars={{ DROPS, PREVIEW_KEY, statusCopy, PAGE_LOCALE: locale }}>
+<script is:inline define:vars={{ DROPS, statusCopy, PAGE_LOCALE: locale }}>
   // Resolve drop state on the client too: the page is statically built, so a
   // visitor on a cached copy must still see the correct day without a redeploy.
   (() => {
@@ -94,27 +86,31 @@ const jsonLd = {
       return now < closes ? 'live' : 'released';
     };
 
-    // Preview lets the team review and screenshot any day before it happens.
-    // Gated by a shared key so a visitor can't peek at the running order early:
-    //   ?preview=<day>&key=<PREVIEW_KEY>   day = 1–5 | all
-    // Without the key the param is ignored and the real schedule applies.
+    // Preview lets the team rehearse a day before it happens. The page holds no
+    // key — it would be readable by every visitor, which is the whole thing the
+    // schedule protects against. It forwards whatever `?preview=` and `?key=`
+    // are in the URL and the endpoint decides; `states` is rebuilt from the
+    // preview the endpoint says it honoured.
     const params = new URLSearchParams(location.search);
-    const preview = params.get('key') === PREVIEW_KEY ? params.get('preview') : null;
-    const simulate = (day) => {
+    const simulate = (day, preview) => {
       if (preview === 'all') return 'released';
       const n = Number(preview);
       if (!Number.isInteger(n) || n < 1 || n > 5) return null;
       return day < n ? 'released' : day === n ? 'live' : 'classified';
     };
 
-    const states = {};
-    DROPS.forEach((d) => (states[d.day] = simulate(d.day) ?? stateFor(d.iso)));
-    // Before the week opens, day 1 is the one we tease as next up.
-    document.documentElement.dataset.launchWeek = Object.values(states).includes('live')
-      ? 'running'
-      : now < Date.parse(DROPS[0].iso + 'T00:00:00Z')
-        ? 'before'
-        : 'after';
+    let states = {};
+    const resolveStates = (preview) => {
+      states = {};
+      DROPS.forEach((d) => (states[d.day] = simulate(d.day, preview) ?? stateFor(d.iso)));
+      // Before the week opens, day 1 is the one we tease as next up.
+      document.documentElement.dataset.launchWeek = Object.values(states).includes('live')
+        ? 'running'
+        : now < Date.parse(DROPS[0].iso + 'T00:00:00Z')
+          ? 'before'
+          : 'after';
+    };
+    resolveStates(null);
 
     const applyStates = () => {
       document.querySelectorAll('.drop[data-launch-day]').forEach((card) => {
@@ -142,13 +138,14 @@ const jsonLd = {
     // readable from the page source days early. Ask the endpoint, which
     // releases each one on its date without needing a deploy.
     const query = new URLSearchParams({ locale: PAGE_LOCALE });
-    if (preview) {
-      query.set('preview', preview);
-      query.set('key', PREVIEW_KEY);
+    if (params.get('key')) {
+      query.set('key', params.get('key'));
+      if (params.get('preview')) query.set('preview', params.get('preview'));
     }
     fetch('/launch-week/drops?' + query)
-      .then((r) => (r.ok ? r.json() : { drops: [] }))
-      .then(({ drops }) => {
+      .then((r) => (r.ok ? r.json() : { drops: [], preview: null }))
+      .then(({ drops, preview }) => {
+        if (preview) resolveStates(preview);
         const stack = document.querySelector('.lw .drop-stack');
         if (!stack) return;
         drops.forEach(({ day, html }) => {

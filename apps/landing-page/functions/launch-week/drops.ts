@@ -29,11 +29,26 @@ const OPENS_AT = [
 ].map((iso) => Date.parse(iso));
 
 /**
- * Shared with the page so the team can rehearse a day before it opens. It is a
- * gate against a casual URL guess, not a secret: anyone holding it can read the
- * running order early, so it stays inside the team.
+ * Unlocks `?preview=` so the team can rehearse a day before it opens.
+ *
+ * It lives in the Pages project's encrypted secrets, never in this file and
+ * never in the page. This repository is public and the page is served to
+ * everyone, so a key written into either is a key everyone has — which is
+ * exactly how the first version of this leaked the whole running order.
+ *
+ * Unset means preview is off and only the real schedule applies. Failing
+ * closed is the point: a missing secret must never open the week up.
  */
-const PREVIEW_KEY = 'lw01-dry-run';
+type Env = { LAUNCH_WEEK_PREVIEW_KEY?: string };
+
+function acceptedPreview(url: URL, env: Env): string | null {
+  const secret = env.LAUNCH_WEEK_PREVIEW_KEY;
+  if (!secret) return null;
+  if (url.searchParams.get('key') !== secret) return null;
+  const preview = url.searchParams.get('preview');
+  if (preview === 'all') return 'all';
+  return Number(preview) >= 1 && Number(preview) <= 5 ? preview : null;
+}
 
 /**
  * Where each day's "Watch the drop" button points — the X post for that day.
@@ -70,22 +85,23 @@ function secondsUntilNextOpen(now: number): number {
   return Math.max(60, Math.min(3600, Math.floor((next - now) / 1000)));
 }
 
-export const onRequest: PagesFunction<Record<string, never>> = ({ request }) => {
+export const onRequest: PagesFunction<Env> = ({ request, env }) => {
   const url = new URL(request.url);
   const locale = url.searchParams.get('locale') ?? 'en';
-  const preview = url.searchParams.get('key') === PREVIEW_KEY ? url.searchParams.get('preview') : null;
+  const preview = acceptedPreview(url, env);
 
   const now = Date.now();
-  const openThrough = preview === 'all' ? 5 : Number(preview) >= 1 && Number(preview) <= 5
-    ? Number(preview)
-    : OPENS_AT.filter((t) => now >= t).length;
+  const openThrough =
+    preview === 'all' ? 5 : preview ? Number(preview) : OPENS_AT.filter((t) => now >= t).length;
 
   const byLocale = LW_DROP_MARKUP[locale] ?? LW_DROP_MARKUP.en;
   const drops = byLocale
     .slice(0, openThrough)
     .map((html, i) => ({ day: i + 1, html: withWatchLink(html, i + 1) }));
 
-  return new Response(JSON.stringify({ drops }), {
+  // The page holds no key, so it cannot know whether a preview was honoured.
+  // Report it back and let the response drive what the day labels say.
+  return new Response(JSON.stringify({ drops, preview }), {
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       // A preview response is per-request and must never be cached publicly.

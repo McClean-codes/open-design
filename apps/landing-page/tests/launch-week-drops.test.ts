@@ -4,12 +4,14 @@ import { test } from 'node:test';
 
 import { onRequest } from '../functions/launch-week/drops.ts';
 
-const call = async (url: string, now?: number) => {
+const KEY = 'test-preview-key';
+
+const call = async (url: string, now?: number, env: { LAUNCH_WEEK_PREVIEW_KEY?: string } = { LAUNCH_WEEK_PREVIEW_KEY: KEY }) => {
   const realNow = Date.now;
   if (now !== undefined) Date.now = () => now;
   try {
-    const response = await onRequest({ request: new Request(url), env: {} });
-    return { response, body: (await response.json()) as { drops: { day: number }[] } };
+    const response = await onRequest({ request: new Request(url), env });
+    return { response, body: (await response.json()) as { drops: { day: number; html: string }[]; preview: string | null } };
   } finally {
     Date.now = realNow;
   }
@@ -46,7 +48,7 @@ test('preview needs the key, and is never cached', async () => {
   assert.deepEqual(guessed.body.drops, [], 'a bare ?preview= is ignored');
   assert.match(guessed.response.headers.get('Cache-Control') ?? '', /^public/);
 
-  const keyed = await call(`${ENDPOINT}?preview=4&key=lw01-dry-run`, at('2026-08-09T00:00:00Z'));
+  const keyed = await call(`${ENDPOINT}?preview=4&key=${KEY}`, at('2026-08-09T00:00:00Z'));
   assert.deepEqual(
     keyed.body.drops.map((d) => d.day),
     [1, 2, 3, 4],
@@ -88,9 +90,36 @@ test('the page itself ships no revealed drop', () => {
 });
 
 test('a day with no post link ships no Watch button, not a dead one', async () => {
-  const { body } = await call(`${ENDPOINT}?preview=all&key=lw01-dry-run`, at('2026-08-09T00:00:00Z'));
-  const html = body.drops.map((d) => (d as { html: string }).html).join('');
+  const { body } = await call(`${ENDPOINT}?preview=all&key=${KEY}`, at('2026-08-09T00:00:00Z'));
+  const html = body.drops.map((d) => d.html).join('');
 
   assert.doesNotMatch(html, /href="#"/, 'no button may point at nothing');
   assert.doesNotMatch(html, /class="watch"/, 'with DROP_LINKS empty, no day has a button yet');
+});
+
+test('the key is never in anything we serve to a visitor', () => {
+  const dir = new URL('../app/', import.meta.url);
+  const page = readFileSync(new URL('pages/community/events/launch-week/index.astro', dir), 'utf8');
+
+  assert.doesNotMatch(page, /PREVIEW_KEY|dry-run/, 'the page must not carry the key it is protected by');
+  assert.doesNotMatch(
+    readFileSync(new URL('../functions/launch-week/drops.ts', import.meta.url), 'utf8'),
+    /const .*KEY.*=\s*['"`][^'"`]+['"`]/,
+    'the key belongs in the Pages secret, not in a public repository',
+  );
+});
+
+test('no secret configured means no preview, not an open week', async () => {
+  const { body } = await call(`${ENDPOINT}?preview=all&key=${KEY}`, at('2026-08-09T00:00:00Z'), {});
+  assert.deepEqual(body.drops, [], 'a missing secret fails closed');
+  assert.equal(body.preview, null);
+});
+
+test('the response reports which preview it honoured', async () => {
+  const honoured = await call(`${ENDPOINT}?preview=3&key=${KEY}`, at('2026-08-09T00:00:00Z'));
+  assert.equal(honoured.body.preview, '3', 'the page has no key, so it needs telling');
+
+  const rejected = await call(`${ENDPOINT}?preview=3&key=wrong`, at('2026-08-09T00:00:00Z'));
+  assert.equal(rejected.body.preview, null);
+  assert.deepEqual(rejected.body.drops, []);
 });
