@@ -86,3 +86,11 @@ test('the page itself ships no revealed drop', () => {
     );
   }
 });
+
+test('a day with no post link ships no Watch button, not a dead one', async () => {
+  const { body } = await call(`${ENDPOINT}?preview=all&key=lw01-dry-run`, at('2026-08-09T00:00:00Z'));
+  const html = body.drops.map((d) => (d as { html: string }).html).join('');
+
+  assert.doesNotMatch(html, /href="#"/, 'no button may point at nothing');
+  assert.doesNotMatch(html, /class="watch"/, 'with DROP_LINKS empty, no day has a button yet');
+});

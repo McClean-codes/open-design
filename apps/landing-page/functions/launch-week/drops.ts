@@ -36,6 +36,30 @@ const OPENS_AT = [
 const PREVIEW_KEY = 'lw01-dry-run';
 
 /**
+ * Where each day's "Watch the drop" button points — the X post for that day.
+ *
+ * The posts do not exist when the page ships, and a card whose button goes
+ * nowhere is worse than a card with no button: it is the most prominent thing
+ * on the live card, and the click costs the visitor a scroll to the top for
+ * nothing. So a day with no entry here renders no button at all, and gains one
+ * the moment its URL is filled in.
+ *
+ * Backfilling costs a production deploy, which needs a `landing-deployers`
+ * approval — so batch the days rather than editing this every morning.
+ */
+const DROP_LINKS: Record<number, string> = {
+  // 1: 'https://x.com/opendesign_ai/status/…',
+};
+
+/** Point the button at the day's post, or drop it entirely if there isn't one. */
+function withWatchLink(html: string, day: number): string {
+  const url = DROP_LINKS[day];
+  return url
+    ? html.replace('<a class="watch" href="#">', `<a class="watch" href="${url}" target="_blank" rel="noopener">`)
+    : html.replace(/\s*<a class="watch" href="#">[\s\S]*?<\/a>/, '');
+}
+
+/**
  * Cache until the next boundary rather than for a fixed window, so the edge
  * cannot keep serving yesterday's set into the new day. Clamped to a minute so
  * a clock skew near the boundary self-corrects quickly.
@@ -57,7 +81,9 @@ export const onRequest: PagesFunction<Record<string, never>> = ({ request }) => 
     : OPENS_AT.filter((t) => now >= t).length;
 
   const byLocale = LW_DROP_MARKUP[locale] ?? LW_DROP_MARKUP.en;
-  const drops = byLocale.slice(0, openThrough).map((html, i) => ({ day: i + 1, html }));
+  const drops = byLocale
+    .slice(0, openThrough)
+    .map((html, i) => ({ day: i + 1, html: withWatchLink(html, i + 1) }));
 
   return new Response(JSON.stringify({ drops }), {
     headers: {
