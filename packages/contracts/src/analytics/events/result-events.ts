@@ -785,6 +785,27 @@ export interface ArtifactDeployResultProps {
   project_kind: TrackingProjectKind | null;
 }
 
+// Fired when a "Publish this file for everyone" attempt from the Share tab
+// resolves — publishing and unpublishing share the event, split by `action`.
+// Fires when the daemon call settles (success once the public URL is returned
+// for publish, or removal is confirmed for unpublish), regardless of whether a
+// newer request superseded this one in the UI. Clicking the publish button
+// reports separately as ui_click element 'publish_file'.
+export interface ArtifactPublishResultProps {
+  page_name: 'artifact';
+  area: 'share_option_popover';
+  artifact_id: string;
+  artifact_kind: TrackingArtifactKind;
+  action: 'publish' | 'unpublish';
+  result: TrackingExportResult;
+  // 'workspace_identity_required' when the workspace context could not be
+  // confirmed (the one actionable failure), 'publish_failed' otherwise.
+  error_code?: string;
+  publish_duration_ms: number;
+  project_id: string;
+  project_kind: TrackingProjectKind | null;
+}
+
 // Outcome of an HTML file version restore from the version history modal.
 // Fires once per confirmed restore attempt (after the restore API settles) —
 // opening the confirm popover or cancelling it only reports ui_click.

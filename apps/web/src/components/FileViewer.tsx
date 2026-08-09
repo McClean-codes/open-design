@@ -36,10 +36,12 @@ import {
 import { useAnalytics } from '../analytics/provider';
 import { exportErrorCode } from '../analytics/export-error-code';
 import { deployErrorCode } from '../analytics/deploy-error-code';
+import { publishErrorCode } from '../analytics/publish-error-code';
 import { trackIframeLoad } from '../observability/iframe-error';
 import {
   trackArtifactExportResult,
   trackArtifactDeployResult,
+  trackArtifactPublishResult,
   trackArtifactHeaderClick,
   trackArtifactToolbarClick,
   trackCommentPopoverClick,
@@ -6317,6 +6319,7 @@ function ReactComponentViewer({
   viewerOnly?: boolean;
 }) {
   const t = useT();
+  const analytics = useAnalytics();
   const { workspaceContext } = useProjectCollabContext();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [source, setSource] = useState<string | null>(null);
@@ -6485,16 +6488,42 @@ function ReactComponentViewer({
     // render as unpublished.
   }, [projectId, file.name, canPublishPublic, viewerOnly]);
 
+  // Shared identity fields for the publish-flow events. ReactComponentViewer
+  // has no projectKind prop, so project_kind reports null from this viewer.
+  function publishTrackingIdentity() {
+    return {
+      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
+      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
+      project_id: projectId,
+      project_kind: null,
+    } as const;
+  }
+
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element: 'publish_file',
+      ...publishTrackingIdentity(),
+    });
+    const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'publish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+        ...publishTrackingIdentity(),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -6507,6 +6536,15 @@ function ReactComponentViewer({
       setPublishedFileSlug(response.slug);
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'publish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+        ...publishTrackingIdentity(),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -6522,11 +6560,20 @@ function ReactComponentViewer({
     const requestFileName = file.name;
     const requestSlug = publishedFileSlug;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    const unpublishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'unpublish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+        ...publishTrackingIdentity(),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -6539,6 +6586,15 @@ function ReactComponentViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'unpublish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+        ...publishTrackingIdentity(),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -6549,6 +6605,12 @@ function ReactComponentViewer({
   }
 
   async function copyPublishedFileLink() {
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element: 'copy_publish_link',
+      ...publishTrackingIdentity(),
+    });
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -7819,16 +7881,41 @@ function HtmlViewer({
     sourceAuthorizationScopeKey,
   ]);
 
+  // Shared identity fields for the publish-flow events (HtmlViewer copy).
+  function publishTrackingIdentity() {
+    return {
+      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
+      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
+      project_id: projectId,
+      project_kind: projectKind,
+    } as const;
+  }
+
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element: 'publish_file',
+      ...publishTrackingIdentity(),
+    });
+    const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'publish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+        ...publishTrackingIdentity(),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -7841,6 +7928,15 @@ function HtmlViewer({
       setPublishedFileSlug(response.slug);
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'publish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+        ...publishTrackingIdentity(),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -7856,11 +7952,20 @@ function HtmlViewer({
     const requestFileName = file.name;
     const requestSlug = publishedFileSlug;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    const unpublishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'unpublish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+        ...publishTrackingIdentity(),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -7873,6 +7978,15 @@ function HtmlViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
+      trackArtifactPublishResult(analytics.track, {
+        page_name: 'artifact',
+        area: 'share_option_popover',
+        action: 'unpublish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+        ...publishTrackingIdentity(),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -7883,6 +7997,12 @@ function HtmlViewer({
   }
 
   async function copyPublishedFileLink() {
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element: 'copy_publish_link',
+      ...publishTrackingIdentity(),
+    });
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
