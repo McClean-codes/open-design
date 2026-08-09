@@ -6797,9 +6797,15 @@ function ReactComponentViewer({
                         </div>
                         ) : null}
                         {/* De-shelled hero — same structure as the HtmlViewer
-                            copy: the primary button carries the headline, a
-                            muted one-liner explains, errors sit last. */}
+                            copy: a section label aligned with the tiers below,
+                            the primary button carrying the headline, and a
+                            help "?" whose tooltip explains reach and the
+                            single-file limitation. */}
                         {canPublishPublic ? (
+                        <>
+                        <div className="share-menu-section-label" role="presentation">
+                          {t('fileViewer.shareMenuPublishViaOd')}
+                        </div>
                         <div className="chrome-publish-plain">
                           {filePublished ? (
                             <>
@@ -6834,7 +6840,7 @@ function ReactComponentViewer({
                               </div>
                             </>
                           ) : (
-                            <>
+                            <div className="chrome-publish-cta">
                               <button
                                 type="button"
                                 className="chrome-publish-primary"
@@ -6852,8 +6858,16 @@ function ReactComponentViewer({
                                 />
                                 {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}
                               </button>
-                              <p className="chrome-publish-hint">{t('fileViewer.publishSingleFileDescription')}</p>
-                            </>
+                              <button
+                                type="button"
+                                className="chrome-publish-help od-tooltip"
+                                aria-label={t('fileViewer.publishSingleFileDescription')}
+                                data-tooltip={t('fileViewer.publishSingleFileDescription')}
+                                data-tooltip-placement="bottom"
+                              >
+                                <RemixIcon name="question-line" size={15} />
+                              </button>
+                            </div>
                           )}
                           {publishFailureKey ? (
                             <p className="chrome-publish-error" role="status">
@@ -6861,6 +6875,7 @@ function ReactComponentViewer({
                             </p>
                           ) : null}
                         </div>
+                        </>
                         ) : null}
                       </div>
                     ) : null}
@@ -14935,12 +14950,15 @@ function HtmlViewer({
                         </div>
                       </div>
                       ) : null}
-                      {/* De-shelled hero: no grey card, no separate title row —
-                          the primary button IS the headline ("publish & get a
-                          link") and a muted one-liner under it carries the
-                          explanation. Keeps the whole panel in one visual
-                          language; hierarchy comes from the lone solid button. */}
+                      {/* De-shelled hero: a section label aligned with the
+                          tiers below, one solid primary button carrying the
+                          headline, and a help "?" whose tooltip explains reach
+                          plus the single-file limitation. */}
                       {canPublishPublic ? (
+                      <>
+                      <div className="share-menu-section-label" role="presentation">
+                        {t('fileViewer.shareMenuPublishViaOd')}
+                      </div>
                       <div className="chrome-publish-plain">
                         {filePublished ? (
                           <>
@@ -14975,7 +14993,7 @@ function HtmlViewer({
                             </div>
                           </>
                         ) : (
-                          <>
+                          <div className="chrome-publish-cta">
                             <button
                               type="button"
                               className="chrome-publish-primary"
@@ -14993,8 +15011,16 @@ function HtmlViewer({
                               />
                               {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}
                             </button>
-                            <p className="chrome-publish-hint">{t('fileViewer.publishSingleFileDescription')}</p>
-                          </>
+                            <button
+                              type="button"
+                              className="chrome-publish-help od-tooltip"
+                              aria-label={t('fileViewer.publishSingleFileDescription')}
+                              data-tooltip={t('fileViewer.publishSingleFileDescription')}
+                              data-tooltip-placement="bottom"
+                            >
+                              <RemixIcon name="question-line" size={15} />
+                            </button>
+                          </div>
                         )}
                         {publishFailureKey ? (
                           <p className="chrome-publish-error" role="status">
@@ -15002,6 +15028,7 @@ function HtmlViewer({
                           </p>
                         ) : null}
                       </div>
+                      </>
                       ) : null}
                       {/* The share panel is organized by intent, not by
                           backend: the publish card above is the hero "get a
