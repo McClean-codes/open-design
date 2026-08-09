@@ -1114,3 +1114,76 @@ html:has(main.lw) {
    a shared minimum keeps the pair from looking lopsided */
 .lw .hero-ctas .button,
 .lw .finale .ctas .button { min-width: 210px; }
+
+
+/* ---------- narrow screens ---------- */
+@media (max-width: 900px) {
+  /* Five day-labels cannot share one row on a phone; they stack and the tape
+     marks today the same way it does on desktop. */
+  .lw .killticker {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 12px;
+    padding: 16px var(--gutter) 20px;
+  }
+  .lw .killticker ol { flex-direction: column; gap: 7px; }
+  .lw .killticker li { flex: none; }
+  .lw .killticker a { justify-content: flex-start; padding: 11px 16px; font-size: 11px; }
+
+  /* the lineup stops being two columns: the panel becomes a normal heading */
+  .lw .dualrail { grid-template-columns: 1fr; background: var(--paper); }
+  .lw .cabin {
+    position: static;
+    min-height: 0;
+    clip-path: none;
+    padding: clamp(34px, 8vw, 56px) var(--gutter);
+  }
+  .lw .rail { padding: clamp(26px, 7vw, 44px) var(--gutter) clamp(40px, 9vw, 64px); }
+  .lw .drop { grid-template-columns: 1fr; gap: 18px; min-height: 0; }
+  .lw .drop-meta { flex-direction: row; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .lw .drop .day-no { margin: 0; padding: 0; border: 0; }
+  .lw .drop .live-stamp { max-width: 92px; }
+  .lw .drop.is-classified .tba { position: static; transform: none; margin-top: 18px; }
+  .lw .drop.is-classified .tba img { width: 120px; }
+  .lw .drop.is-classified .redact { width: 100%; }
+
+  /* the sticky stack needs a scroll port taller than the cards to feel right */
+  .lw .drop { position: relative; top: auto; }
+  .lw .drop-stack { padding-bottom: 0; }
+
+  /* one column for the tickets, and the stub returns to the flow */
+  .lw .join { grid-template-columns: 1fr; min-height: 0; }
+  .lw .ticket { min-height: 0; }
+  /* the grid track has to be told it may shrink, or it keeps the desktop
+     intrinsic width and pushes past the ticket's own border box */
+  .lw .pass-ticket { grid-template-columns: minmax(0, 1fr); }
+  .lw .pass-ticket > .pass-body { min-width: 0; padding-right: 0; }
+  .lw .ticket > * { min-width: 0; }
+  .lw .pass-stub {
+    margin: 0;
+    flex-direction: row;
+    justify-content: space-between;
+    padding: 18px 0 0;
+    border-left: 0;
+    border-top: 3px dashed rgba(7,7,7,.5);
+  }
+  .lw .pass-stub::before, .lw .pass-stub::after { display: none; }
+  .lw .pass-stub .stub-label, .lw .pass-stub .stub-no { writing-mode: horizontal-tb; }
+  .lw .pass-stub .stub-barcode { min-height: 0; width: 90px; height: 22px;
+    background: repeating-linear-gradient(90deg, var(--ink) 0 2px, transparent 2px 5px); }
+  .lw .reward-grid { grid-template-columns: 1fr; }
+
+  .lw .finale { min-height: 0; padding: clamp(48px, 11vw, 72px) var(--gutter); }
+  .lw .finale .ctas { flex-direction: column; align-items: stretch; }
+  .lw .hero-ctas { flex-direction: column; align-items: stretch; width: 100%; }
+  .lw .hero-ctas .button, .lw .finale .ctas .button { min-width: 0; }
+  /* nowrap keeps the lockup on one line on desktop; every translated slogan is
+     longer than the English, so on a phone it has to be allowed to wrap. */
+  .lw .hero-brand h1, .lw .hero-brand .promise { white-space: normal; }
+  .lw .hero-brand .promise::before { inset: auto -.1em -.04em -.1em; height: .34em; }
+
+  .lw .hero-band { flex-direction: column; align-items: flex-start; gap: 16px; }
+  .lw .hero-note { padding-left: 0; border-left: 0; border-top: 1.5px solid rgba(7,7,7,.22); padding-top: 14px; }
+  .lw .join-heading { flex-direction: column; align-items: flex-start; gap: 14px; }
+  .lw .join-deck { text-align: left; }
+}

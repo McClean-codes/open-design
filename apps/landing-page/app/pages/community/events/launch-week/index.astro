@@ -8,16 +8,7 @@ import { LW_BODY, LW_META, LW_STATUS } from '../../../../_partials/launch-week-i
 
 const locale = localeFromPath(Astro.url.pathname);
 const meta = LW_META[locale] ?? LW_META.en;
-const launchWeekMain = LW_BODY[locale] ?? LW_BODY.en;
-// The client script rewrites drop states, so it needs this locale's words too.
-const statusCopy = Object.fromEntries(
-  Object.entries(LW_STATUS).map(([state, byLocale]) => [state, byLocale[locale] ?? byLocale.en]),
-);
-
-const title = meta.title;
-const description = meta.description;
-const fallbackSite = 'https://open-design.ai/';
-const ogImage = new URL('/launch-week/launch-week-og.jpg', Astro.site ?? fallbackSite).toString();
+const rawBody = LW_BODY[locale] ?? LW_BODY.en;
 
 /**
  * Drop schedule. Each day flips at 08:00 UTC+8, which is exactly 00:00 UTC —
@@ -32,6 +23,38 @@ const DROPS = [
   { day: 4, date: 'AUG 13', iso: '2026-08-13' },
   { day: 5, date: 'AUG 14', iso: '2026-08-14' },
 ];
+
+/**
+ * Strip the drops that have not opened yet.
+ *
+ * A static page ships its whole DOM to every visitor, so leaving a future day's
+ * headline and target in the markup means anyone can read the running order out
+ * of view-source days early — which is the one thing this campaign is built to
+ * withhold. The sealed twin always ships; its revealed counterpart is only
+ * emitted once its date has passed.
+ *
+ * The trade-off is that a day opens on the next deploy rather than on the hour.
+ * `?preview=` keeps working for review because it only reveals days the build
+ * already contains.
+ */
+const buildNow = Date.now();
+const openDays = new Set(
+  DROPS.filter((d) => buildNow >= Date.parse(`${d.iso}T00:00:00Z`)).map((d) => String(d.day)),
+);
+const launchWeekMain = rawBody.replace(
+  /<article class="drop reveal" data-day="(\d)"[\s\S]*?<\/article>\n/g,
+  (match, day) => (openDays.has(day) ? match : ''),
+);
+// The client script rewrites drop states, so it needs this locale's words too.
+const statusCopy = Object.fromEntries(
+  Object.entries(LW_STATUS).map(([state, byLocale]) => [state, byLocale[locale] ?? byLocale.en]),
+);
+
+const title = meta.title;
+const description = meta.description;
+const fallbackSite = 'https://open-design.ai/';
+const ogImage = new URL('/launch-week/launch-week-og.jpg', Astro.site ?? fallbackSite).toString();
+
 
 /**
  * Shared key that unlocks `?preview=`. Not a secret in the cryptographic sense —
