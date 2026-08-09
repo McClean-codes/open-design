@@ -1971,13 +1971,6 @@ export const HomeHero = forwardRef<HomeHeroHandle, Props>(function HomeHero(
               pickDisabled={pluginsLoading || pendingChipId !== null || pendingPluginId !== null}
               labelFor={(id) => homeHeroChipLabel(id, t)}
               onPick={handlePickTaskChip}
-              onClear={() => {
-                // Drop any lingering hover-preview too: when the rail card was
-                // hovered but the active chip is still null, clearing the chip
-                // alone is a no-op and the pill would stay on the preview.
-                setPreviewTemplateId(null);
-                onClearActiveChip();
-              }}
             />
             {footerInputFields.length > 0 ? (
               <div className="home-hero__footer-options" data-testid="home-hero-footer-options">
