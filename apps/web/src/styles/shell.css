@@ -1050,7 +1050,9 @@ html.od-radial-open .workspace-shell {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  padding: 2px 2px 6px;
+  /* Horizontal inset matches .share-menu-section-label / .share-menu-item
+     (10px), so the button column lines up with the row text below. */
+  padding: 2px 10px 8px;
 }
 .chrome-publish-cta {
   display: flex;
