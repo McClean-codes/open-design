@@ -6681,8 +6681,9 @@ function ReactComponentViewer({
                 {/* Share and Export are separate toolbar intents again (the
                     0.18.0 unified tabs buried Export one level deep); they
                     still share one popover shell so switching keeps the menu
-                    anchored in place. */}
-                {(['share', 'export'] as const).map((tab) => (
+                    anchored in place. Export leads — it is the far more used
+                    of the two (see the chrome header copy). */}
+                {(['export', 'share'] as const).map((tab) => (
                   <button
                     key={tab}
                     type="button"
@@ -14843,27 +14844,15 @@ function HtmlViewer({
                 {/* Share and Export are separate header intents again (the
                     0.18.0 unified tabs buried Export one level deep and export
                     reach halved); they still share one popover shell so
-                    switching between them keeps the menu anchored in place. */}
-                {rawCanShare ? (
-                  <button
-                    type="button"
-                    className="chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified chrome-action-share-dark"
-                    aria-haspopup="menu"
-                    aria-expanded={deployMenuOpen && unifiedActionTab === 'share'}
-                    aria-label={shareMenuLabel}
-                    disabled={viewerOnly}
-                    title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                    onClick={openShareMenu}
-                  >
-                    <RemixIcon name="share-forward-line" size={15} />
-                    <span>{shareMenuLabel}</span>
-                  </button>
-                ) : null}
+                    switching between them keeps the menu anchored in place.
+                    Export leads and carries the dark (primary) treatment —
+                    it is the far more used of the two (30-day: ~14k users
+                    exported successfully vs ~0.6k who attempted a deploy). */}
                 {rawCanDownload ? (
                   <button
                     type="button"
                     className={
-                      'chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified' +
+                      'chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified chrome-action-dark' +
                       (exportReadyNudge ? ' export-ready-nudge' : '')
                     }
                     aria-haspopup="menu"
@@ -14875,6 +14864,21 @@ function HtmlViewer({
                   >
                     <RemixIcon name="download-line" size={15} />
                     <span>{t('fileViewer.unifiedExportTab')}</span>
+                  </button>
+                ) : null}
+                {rawCanShare ? (
+                  <button
+                    type="button"
+                    className="chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified"
+                    aria-haspopup="menu"
+                    aria-expanded={deployMenuOpen && unifiedActionTab === 'share'}
+                    aria-label={shareMenuLabel}
+                    disabled={viewerOnly}
+                    title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                    onClick={openShareMenu}
+                  >
+                    <RemixIcon name="share-forward-line" size={15} />
+                    <span>{shareMenuLabel}</span>
                   </button>
                 ) : null}
                 {deployMenuOpen && (rawCanShare || rawCanDownload) ? (
