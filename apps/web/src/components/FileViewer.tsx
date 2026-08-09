@@ -6796,20 +6796,16 @@ function ReactComponentViewer({
                           </div>
                         </div>
                         ) : null}
-                        {/* De-shelled hero — same structure as the HtmlViewer
-                            copy: a section label aligned with the tiers below,
-                            the primary button carrying the headline, and a
-                            help "?" whose tooltip explains reach and the
-                            single-file limitation. */}
+                        {/* Menu row like the tiers below — same structure as
+                            the HtmlViewer copy. */}
                         {canPublishPublic ? (
                         <>
                         <div className="share-menu-section-label" role="presentation">
                           {t('fileViewer.shareMenuPublishViaOd')}
                         </div>
-                        <div className="chrome-publish-plain">
-                          {filePublished ? (
-                            <>
-                              <div className="chrome-publish-url" title={publishedFileUrl}>
+                        {filePublished ? (
+                          <div className="chrome-publish-plain">
+                            <div className="chrome-publish-url" title={publishedFileUrl}>
                                 {publishedFileUrl}
                               </div>
                               <div className="chrome-publish-actions">
@@ -6837,44 +6833,43 @@ function ReactComponentViewer({
                                 >
                                   {t('fileViewer.unpublishFile')}
                                 </button>
-                              </div>
-                            </>
-                          ) : (
-                            <div className="chrome-publish-cta">
-                              <button
-                                type="button"
-                                className="chrome-publish-primary"
-                                disabled={viewerOnly || publishingPublicFile}
-                                aria-busy={publishingPublicFile}
-                                title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                                onClick={() => {
-                                  void publishCurrentFilePublic();
-                                }}
-                              >
-                                <RemixIcon
-                                  name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
-                                  size={15}
-                                  className={publishingPublicFile ? 'icon-spin' : undefined}
-                                />
-                                {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}
-                              </button>
-                              <button
-                                type="button"
-                                className="chrome-publish-help od-tooltip"
-                                aria-label={t('fileViewer.publishSingleFileDescription')}
-                                data-tooltip={t('fileViewer.publishSingleFileDescription')}
-                                data-tooltip-placement="bottom"
-                              >
-                                <RemixIcon name="question-line" size={15} />
-                              </button>
                             </div>
-                          )}
-                          {publishFailureKey ? (
-                            <p className="chrome-publish-error" role="status">
-                              {t(publishFailureKey)}
-                            </p>
-                          ) : null}
-                        </div>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            className="share-menu-item"
+                            role="menuitem"
+                            disabled={viewerOnly || publishingPublicFile}
+                            aria-busy={publishingPublicFile}
+                            title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                            onClick={() => {
+                              void publishCurrentFilePublic();
+                            }}
+                          >
+                            <span className="share-menu-icon">
+                              <RemixIcon
+                                name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
+                                size={15}
+                                className={publishingPublicFile ? 'icon-spin' : undefined}
+                              />
+                            </span>
+                            <span>{publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}</span>
+                            <span
+                              className="share-menu-help od-tooltip"
+                              aria-label={t('fileViewer.publishSingleFileDescription')}
+                              data-tooltip={t('fileViewer.publishSingleFileDescription')}
+                              data-tooltip-placement="bottom"
+                            >
+                              <RemixIcon name="question-line" size={14} />
+                            </span>
+                          </button>
+                        ) }
+                        {publishFailureKey ? (
+                          <p className="chrome-publish-error" role="status">
+                            {t(publishFailureKey)}
+                          </p>
+                        ) : null}
                         </>
                         ) : null}
                       </div>
@@ -14950,19 +14945,20 @@ function HtmlViewer({
                         </div>
                       </div>
                       ) : null}
-                      {/* De-shelled hero: a section label aligned with the
-                          tiers below, one solid primary button carrying the
-                          headline, and a help "?" whose tooltip explains reach
-                          plus the single-file limitation. */}
+                      {/* Publishing is a menu row like every other action in
+                          this panel (deploy, save-as-template): same section
+                          label, same icon + label row, with a trailing "?"
+                          whose tooltip explains reach and the single-file
+                          limitation. The published state swaps the row for the
+                          link block (content, not an action). */}
                       {canPublishPublic ? (
                       <>
                       <div className="share-menu-section-label" role="presentation">
                         {t('fileViewer.shareMenuPublishViaOd')}
                       </div>
-                      <div className="chrome-publish-plain">
-                        {filePublished ? (
-                          <>
-                            <div className="chrome-publish-url" title={publishedFileUrl}>
+                      {filePublished ? (
+                        <div className="chrome-publish-plain">
+                          <div className="chrome-publish-url" title={publishedFileUrl}>
                               {publishedFileUrl}
                             </div>
                             <div className="chrome-publish-actions">
@@ -14990,44 +14986,43 @@ function HtmlViewer({
                               >
                                 {t('fileViewer.unpublishFile')}
                               </button>
-                            </div>
-                          </>
-                        ) : (
-                          <div className="chrome-publish-cta">
-                            <button
-                              type="button"
-                              className="chrome-publish-primary"
-                              disabled={viewerOnly || publishingPublicFile}
-                              aria-busy={publishingPublicFile}
-                              title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                              onClick={() => {
-                                void publishCurrentFilePublic();
-                              }}
-                            >
-                              <RemixIcon
-                                name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
-                                size={15}
-                                className={publishingPublicFile ? 'icon-spin' : undefined}
-                              />
-                              {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}
-                            </button>
-                            <button
-                              type="button"
-                              className="chrome-publish-help od-tooltip"
-                              aria-label={t('fileViewer.publishSingleFileDescription')}
-                              data-tooltip={t('fileViewer.publishSingleFileDescription')}
-                              data-tooltip-placement="bottom"
-                            >
-                              <RemixIcon name="question-line" size={15} />
-                            </button>
                           </div>
-                        )}
-                        {publishFailureKey ? (
-                          <p className="chrome-publish-error" role="status">
-                            {t(publishFailureKey)}
-                          </p>
-                        ) : null}
-                      </div>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          className="share-menu-item"
+                          role="menuitem"
+                          disabled={viewerOnly || publishingPublicFile}
+                          aria-busy={publishingPublicFile}
+                          title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                          onClick={() => {
+                            void publishCurrentFilePublic();
+                          }}
+                        >
+                          <span className="share-menu-icon">
+                            <RemixIcon
+                              name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
+                              size={15}
+                              className={publishingPublicFile ? 'icon-spin' : undefined}
+                            />
+                          </span>
+                          <span>{publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}</span>
+                          <span
+                            className="share-menu-help od-tooltip"
+                            aria-label={t('fileViewer.publishSingleFileDescription')}
+                            data-tooltip={t('fileViewer.publishSingleFileDescription')}
+                            data-tooltip-placement="bottom"
+                          >
+                            <RemixIcon name="question-line" size={14} />
+                          </span>
+                        </button>
+                      ) }
+                      {publishFailureKey ? (
+                        <p className="chrome-publish-error" role="status">
+                          {t(publishFailureKey)}
+                        </p>
+                      ) : null}
                       </>
                       ) : null}
                       {/* The share panel is organized by intent, not by

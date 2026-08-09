@@ -1046,49 +1046,35 @@ html.od-radial-open .workspace-shell {
 /* De-shelled publish hero: no grey card — a vertical stack of the primary
    button, a muted one-line hint, and (when relevant) the error line, sharing
    the panel's plain visual language. */
+/* Published state: the link + its actions are content, not a menu row, so
+   they keep a column layout inset to the same 10px as the rows around them. */
 .chrome-publish-plain {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  /* Horizontal inset matches .share-menu-section-label / .share-menu-item
-     (10px), so the button column lines up with the row text below. */
   padding: 2px 10px 8px;
 }
-.chrome-publish-cta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.chrome-publish-cta .chrome-publish-primary {
-  flex: 1 1 auto;
-}
-/* The "?" beside the publish button: quiet round icon whose od-tooltip carries
-   the reach + single-file-limitation explanation. */
-.chrome-publish-help {
+/* Trailing "?" inside a menu row — pushed to the row end; its od-tooltip
+   carries the reach + single-file-limitation explanation. */
+.share-menu-help {
+  margin-inline-start: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  min-width: 28px;
-  height: 28px;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
   color: var(--text-muted);
-  cursor: default;
 }
-.chrome-publish-help:hover {
-  background: var(--bg-subtle);
+.share-menu-item:hover:not(:disabled) .share-menu-help {
   color: var(--text);
 }
-/* Why a publish attempt failed. Wraps: the copy is a sentence, not a code. */
+/* Why a publish attempt failed. Wraps: the copy is a sentence, not a code.
+   Sits outside the row, so it carries the rows' own horizontal inset. */
 .chrome-publish-error {
   margin: 0;
+  padding: 0 10px 4px;
   color: var(--danger, #d64545);
   font-size: 12px;
   line-height: 1.35;
 }
-.chrome-publish-primary,
 .chrome-publish-button {
   display: inline-flex;
   align-items: center;
@@ -1103,14 +1089,6 @@ html.od-radial-open .workspace-shell {
   font-size: 12.5px;
   font-weight: 700;
   cursor: pointer;
-}
-/* Hover inverts the resting pair: ink-dark fill with the brand-green icon +
-   label on top (same ink-pill-with-green-label recipe as the launcher's
-   active chip and the move-to-team confirm). */
-.chrome-publish-primary:hover:not(:disabled) {
-  background: #202020;
-  border-color: #202020;
-  color: var(--brand);
 }
 .chrome-publish-button--ghost {
   border-color: var(--border);
