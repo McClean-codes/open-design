@@ -13,11 +13,11 @@
  * Mirrors apps/web/src/analytics/deploy-error-code.ts (issue-#5220 pattern).
  */
 
+import type { TrackingPublishErrorCode } from '@open-design/contracts/analytics';
+
 import { publicFilePublishFailureKey } from '../collab/public-file-publish';
 
-export type PublishErrorCode = 'workspace_identity_required' | 'publish_failed';
-
-export function publishErrorCode(err: unknown): PublishErrorCode {
+export function publishErrorCode(err: unknown): TrackingPublishErrorCode {
   return publicFilePublishFailureKey(err) === 'fileViewer.publishFileRequiresWorkspace'
     ? 'workspace_identity_required'
     : 'publish_failed';

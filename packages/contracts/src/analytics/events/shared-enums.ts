@@ -215,6 +215,10 @@ export type TrackingExportFormat =
 export type TrackingResult = 'success' | 'failed';
 export type TrackingRunResult = 'success' | 'failed' | 'cancelled';
 export type TrackingExportResult = 'success' | 'failed' | 'cancelled';
+// Stable codes for artifact_publish_result.error_code. Deliberately a CLOSED
+// set — unlike artifact_deploy_result's open-ended provider/HTTP codes — so no
+// free-form message text can ever be passed as an analytics error code.
+export type TrackingPublishErrorCode = 'workspace_identity_required' | 'publish_failed';
 export type TrackingTestResult = 'success' | 'failed' | 'timeout';
 export type TrackingRunFailureCategory =
   | 'auth'

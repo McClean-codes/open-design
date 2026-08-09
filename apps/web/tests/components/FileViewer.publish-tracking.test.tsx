@@ -105,8 +105,10 @@ function renderProjectFileViewer(
   );
 }
 
-function stubFetch(options: { publishStatus?: number; publishBody?: unknown } = {}) {
-  const { publishStatus = 200, publishBody } = options;
+function stubFetch(
+  options: { publishStatus?: number; publishBody?: unknown; unpublishStatus?: number } = {},
+) {
+  const { publishStatus = 200, publishBody, unpublishStatus = 200 } = options;
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === 'string' ? input : input.toString();
     if (url.includes('/api/workspace/context')) {
@@ -120,6 +122,13 @@ function stubFetch(options: { publishStatus?: number; publishBody?: unknown } = 
             ? { url: 'https://open-design.ai/p/slug-1', slug: 'slug-1', fileName: 'index.html' }
             : { error: { message: 'WORKSPACE_IDENTITY_REQUIRED' } });
         return new Response(JSON.stringify(body), { status: publishStatus });
+      }
+      if (init?.method === 'DELETE') {
+        const body =
+          unpublishStatus === 200
+            ? { ok: true, slug: 'slug-1', fileName: 'index.html' }
+            : { error: { message: 'WORKSPACE_IDENTITY_REQUIRED' } };
+        return new Response(JSON.stringify(body), { status: unpublishStatus });
       }
       return new Response(JSON.stringify({ publication: null }), { status: 200 });
     }
@@ -135,12 +144,45 @@ function trackedEvents(name: string): Record<string, unknown>[] {
     .map(([, props]) => props as Record<string, unknown>);
 }
 
+function reactComponentFile(): ProjectFile {
+  return {
+    name: 'App.jsx',
+    path: 'App.jsx',
+    type: 'file',
+    size: 512,
+    mtime: 1710000000,
+    kind: 'code',
+    mime: 'text/javascript',
+    artifactManifest: {
+      version: 1,
+      kind: 'react-component',
+      title: 'App',
+      entry: 'App.jsx',
+      renderer: 'react-component',
+      exports: ['jsx'],
+    },
+  };
+}
+
 async function openPublishPanel() {
   renderProjectFileViewer(teamWorkspaceContext(), {
     projectId: 'project-pub',
     projectKind: 'prototype',
     file: htmlFile(),
     liveHtml: '<html><body><h1>Hello</h1></body></html>',
+  });
+  const shareButton = await screen.findByRole('button', { name: /^share$/i });
+  fireEvent.click(shareButton);
+  return await screen.findByRole('button', { name: /publish file/i });
+}
+
+// Same flow through the ReactComponentViewer copy of the publish card, which
+// is hand-duplicated from HtmlViewer and can regress independently.
+async function openReactComponentPublishPanel() {
+  renderProjectFileViewer(teamWorkspaceContext(), {
+    projectId: 'project-pub',
+    projectKind: 'prototype',
+    file: reactComponentFile(),
   });
   const shareButton = await screen.findByRole('button', { name: /^share$/i });
   fireEvent.click(shareButton);
@@ -208,5 +250,68 @@ describe('publish flow analytics', () => {
     expect(
       trackedEvents('artifact_publish_result').some((p) => p.result === 'success'),
     ).toBe(false);
+  });
+
+  it('reports a successful unpublish as action unpublish', async () => {
+    stubFetch();
+    const publishButton = await openPublishPanel();
+    fireEvent.click(publishButton);
+
+    const unpublishButton = await screen.findByRole('button', { name: /unpublish file/i });
+    fireEvent.click(unpublishButton);
+    await waitFor(() => {
+      expect(trackedEvents('artifact_publish_result')).toContainEqual(
+        expect.objectContaining({
+          action: 'unpublish',
+          result: 'success',
+          publish_duration_ms: expect.any(Number),
+        }),
+      );
+    });
+  });
+
+  it('reports a failed unpublish with the workspace-identity error code', async () => {
+    stubFetch({ unpublishStatus: 403 });
+    const publishButton = await openPublishPanel();
+    fireEvent.click(publishButton);
+
+    const unpublishButton = await screen.findByRole('button', { name: /unpublish file/i });
+    fireEvent.click(unpublishButton);
+    await waitFor(() => {
+      expect(trackedEvents('artifact_publish_result')).toContainEqual(
+        expect.objectContaining({
+          action: 'unpublish',
+          result: 'failed',
+          error_code: 'workspace_identity_required',
+        }),
+      );
+    });
+    // The failed unpublish must not clear the published state's success record.
+    expect(
+      trackedEvents('artifact_publish_result').filter((p) => p.action === 'unpublish' && p.result === 'success'),
+    ).toEqual([]);
+  });
+
+  it('reports project_kind null from the ReactComponentViewer copy of the flow', async () => {
+    stubFetch();
+    const publishButton = await openReactComponentPublishPanel();
+    fireEvent.click(publishButton);
+
+    expect(trackedEvents('ui_click')).toContainEqual(
+      expect.objectContaining({
+        area: 'share_option_popover',
+        element: 'publish_file',
+        project_kind: null,
+      }),
+    );
+    await waitFor(() => {
+      expect(trackedEvents('artifact_publish_result')).toContainEqual(
+        expect.objectContaining({
+          action: 'publish',
+          result: 'success',
+          project_kind: null,
+        }),
+      );
+    });
   });
 });
