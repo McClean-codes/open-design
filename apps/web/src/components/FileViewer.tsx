@@ -12428,13 +12428,6 @@ function HtmlViewer({
     await loadDeployProvider(nextProviderId, { fallbackToExisting: true });
   }
 
-  async function openSocialShareFlow() {
-    const providerWithDeployment = DEPLOY_PROVIDER_OPTIONS.find(
-      (option) => deploymentsByProvider[option.id]?.url?.trim(),
-    )?.id;
-    await openDeployModal(providerWithDeployment ?? deployProviderId, 'social-share');
-  }
-
   async function changeDeployProvider(nextProviderId: WebDeployProviderId) {
     if (nextProviderId === deployProviderId) return;
     setDeployError(null);
@@ -13748,8 +13741,11 @@ function HtmlViewer({
     DEPLOY_PROVIDER_OPTIONS.map((option) => deploymentsByProvider[option.id])
       .map((item) => publicShareUrlForDeployment(item))
       .find(Boolean) ?? '';
+  // A link is a link: the published-file URL unlocks social sharing exactly
+  // like a ready deployment does, so a blocked/protected deployment never
+  // gates sharing when a clean publish link exists.
   const socialShareBlockedDeployment =
-    shareableDeploymentUrl
+    shareableDeploymentUrl || publishedFileUrl
       ? null
       : deployedEntries.find((item) => deployResultState(item.status) === 'protected' && !publicShareUrlForDeployment(item)) ??
         deployedEntries.find((item) => !publicShareUrlForDeployment(item)) ??
@@ -13758,7 +13754,7 @@ function HtmlViewer({
     ? deployResultState(socialShareBlockedDeployment.status)
     : null;
   const socialShareDisplayUrl =
-    shareableDeploymentUrl || socialShareBlockedDeployment?.url?.trim() || activeDeployedUrl;
+    shareableDeploymentUrl || publishedFileUrl || socialShareBlockedDeployment?.url?.trim() || activeDeployedUrl;
   const socialShareUnavailableMessage =
     socialShareBlockedState === 'protected'
       ? t('fileViewer.deployLinkProtected')
@@ -13815,14 +13811,6 @@ function HtmlViewer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectSocialShareKey]);
   const activeProjectSocialShare = projectSocialShare ?? projectSocialShareFallback;
-  const socialShareMenuLabel =
-    activeProjectSocialShare
-      ? t('socialShare.projectSection')
-      : socialShareBlockedState === 'protected'
-        ? t('fileViewer.deployLinkProtectedLabel')
-        : socialShareBlockedState === 'delayed'
-        ? t('fileViewer.deployLinkPreparingLabel')
-          : t('socialShare.deployFirst');
   const deployActionIconFor = (providerId: WebDeployProviderId) => {
     if (providerId === 'cloudflare-pages') return 'pages-line';
     return 'upload-cloud-line';
@@ -15015,11 +15003,24 @@ function HtmlViewer({
                         )}
                       </div>
                       ) : null}
-                      {/* 发布到线上 / 社媒分享 / 保存为模板 live on the Share
-                          panel: they produce a link or a reusable asset, which
-                          is sharing — Export stays a pure file-format menu. The
-                          old "publish online first" guide row is gone; the
-                          publish button above IS that step now. */}
+                      {/* The share panel is organized by intent, not by
+                          backend: the publish card above is the hero "get a
+                          link" path; social icons appear only once ANY link
+                          exists (published or deployed); Vercel/Cloudflare are
+                          the secondary "more ways to publish" tier; save-as-
+                          template keeps its spot at the bottom. */}
+                      {/* Icons only for a CLEAN link (published file or a
+                          deployment whose share page is live) — a protected or
+                          still-preparing deployment must not hand out a URL
+                          that recipients cannot open. */}
+                      {activeProjectSocialShare && (shareableDeploymentUrl || publishedFileUrl) ? (
+                        <>
+                          <div className="share-menu-section-label" role="presentation">
+                            {t('socialShare.projectSection')}
+                          </div>
+                          <SocialShareGrid share={activeProjectSocialShare} />
+                        </>
+                      ) : null}
                       <div className="share-menu-divider" />
                       <div className="share-menu-section-label" role="presentation">
                         {t('fileViewer.shareMenuPublishOnline')}
@@ -15094,28 +15095,6 @@ function HtmlViewer({
                           {shareLinkStatusHint || shareUnavailableHint}
                         </div>
                       ) : null}
-                      <div className="share-menu-section-label" role="presentation">
-                        {t('socialShare.projectSection')}
-                      </div>
-                      <button
-                        type="button"
-                        className="share-menu-item"
-                        role="menuitem"
-                        disabled={streaming || viewerOnly}
-                        title={
-                          viewerOnly
-                            ? viewerOnlyDisabledTitle
-                            : streaming
-                              ? t('fileViewer.shareAfterGenerationComplete')
-                              : undefined
-                        }
-                        onClick={() => {
-                          void openSocialShareFlow();
-                        }}
-                      >
-                        <span className="share-menu-icon"><RemixIcon name="share-circle-line" size={15} /></span>
-                        <span>{socialShareMenuLabel}</span>
-                      </button>
                       <div className="share-menu-divider" />
                       <div className="share-menu-section-label" role="presentation">
                         {t('fileViewer.shareMenuSave')}

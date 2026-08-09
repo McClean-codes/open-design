@@ -5343,9 +5343,9 @@ describe('FileViewer SVG artifacts', () => {
     // publish, deploy, social share, save as template. No file formats.
     expect(await screen.findByRole('menu')).toBeTruthy();
     expect(screen.getByText('Share project in workspace')).toBeTruthy();
-    expect(await screen.findByText('Publish this file for everyone')).toBeTruthy();
+    expect(await screen.findByText('Publish & get a link')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Publish file/i })).toBeTruthy();
-    expect(screen.getByText('PUBLISH ONLINE')).toBeTruthy();
+    expect(screen.getByText('MORE WAYS TO PUBLISH')).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /Deploy to Vercel/i })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /Deploy to Cloudflare Pages/i })).toBeTruthy();
     // The "publish online first" guide row is gone — the publish button above
@@ -5362,7 +5362,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(menuItems).toContain('Export as image');
     expect(menuItems).toContain('Download as .zip');
     expect(menuItems).toContain('Export as standalone HTML');
-    expect(screen.queryByText('PUBLISH ONLINE')).toBeNull();
+    expect(screen.queryByText('MORE WAYS TO PUBLISH')).toBeNull();
     expect(menuItems).not.toContain('Publish online above to enable share ↑');
     expect(menuItems).not.toContain('Deploy to Vercel');
     expect(menuItems).not.toContain('Deploy to Cloudflare Pages');
@@ -5428,7 +5428,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(await screen.findByRole('menu')).toBeTruthy();
     // The single-file publish card — the thing the dogfood report said was
     // missing — is back for a personal workspace.
-    expect(await screen.findByText('Publish this file for everyone')).toBeTruthy();
+    expect(await screen.findByText('Publish & get a link')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Publish file/i })).toBeTruthy();
     // "Share project in workspace" is TEAM project sharing, which a personal
     // workspace has no team to receive — see the dedicated test below
@@ -5507,7 +5507,7 @@ describe('FileViewer SVG artifacts', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
     expect(await screen.findByRole('menu')).toBeTruthy();
-    await screen.findByText('Publish this file for everyone');
+    await screen.findByText('Publish & get a link');
     expect(screen.queryByText('Share project in workspace')).toBeNull();
   });
 
@@ -5534,7 +5534,7 @@ describe('FileViewer SVG artifacts', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
     expect(await screen.findByRole('menu')).toBeTruthy();
-    await screen.findByText('Publish this file for everyone');
+    await screen.findByText('Publish & get a link');
     expect(screen.queryByText('Nothing to share yet')).toBeNull();
     expect(screen.queryByText('No team to share with yet')).toBeNull();
     expect(screen.queryByRole('link', { name: /create team/i })).toBeNull();
@@ -5579,7 +5579,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(await screen.findByRole('menu')).toBeTruthy();
     // Gone, not merely disabled — a signed-out caller has no id to publish
     // under and the daemon answers 409 WORKSPACE_IDENTITY_REQUIRED.
-    expect(screen.queryByText('Publish this file for everyone')).toBeNull();
+    expect(screen.queryByText('Publish & get a link')).toBeNull();
     expect(screen.queryByRole('button', { name: /Publish file/i })).toBeNull();
     expect(screen.queryByText('Share project in workspace')).toBeNull();
     // recvqgif6Xa7Wb: the "no team to share with yet" bridge card that used to
@@ -6580,7 +6580,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(screen.getByRole('menu')).toBeTruthy();
   });
 
-  it('opens existing deployed projects in the deploy/share modal before showing social targets', async () => {
+  it('shows social icons inline once a deployment link is live', async () => {
     const file = baseFile({
       name: 'index.html',
       path: 'index.html',
@@ -6635,19 +6635,14 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     await openUnifiedShareTab();
-    const socialShareItem = await screen.findByRole('menuitem', { name: /social share/i });
-    expect(document.querySelector('.share-menu-social-grid')).toBeNull();
-    fireEvent.click(socialShareItem);
 
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toBeTruthy();
-    expect(within(dialog).getByRole('heading', { name: /Publish share page/i })).toBeTruthy();
-    expect(within(dialog).getByRole('button', { name: /Publish share page/i })).toBeTruthy();
+    // A ready deployment IS a clean link: social icons render inline in the
+    // share panel — no share-page ceremony, no modal detour.
     expect(await screen.findByRole('link', { name: 'X' })).toBeTruthy();
-    expect(screen.getAllByText('https://vercel.example').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('keeps social sharing in the deploy modal after a successful deploy', async () => {
+  it('hides social icons until any link exists', async () => {
     const file = baseFile({
       name: 'index.html',
       path: 'index.html',
@@ -6702,20 +6697,15 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     await openUnifiedShareTab();
-    fireEvent.click(await screen.findByRole('menuitem', { name: /deploy then share/i }));
 
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toBeTruthy();
-    expect(within(dialog).getByRole('heading', { name: /Publish share page/i })).toBeTruthy();
+    // No link yet (nothing published, nothing deployed): no social icons and
+    // no "deploy first" teaser row — the deploy rows below are the path.
+    expect(await screen.findByRole('menuitem', { name: /Deploy to Vercel/i })).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'X' })).toBeNull();
-    const deployButtons = within(dialog).getAllByRole('button', { name: /Publish share page/i });
-    fireEvent.click(deployButtons[deployButtons.length - 1]!);
-
-    expect(await screen.findByRole('link', { name: 'X' })).toBeTruthy();
-    expect(screen.getAllByText('https://vercel.example').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('menuitem', { name: /deploy then share/i })).toBeNull();
   });
 
-  it('shows social sharing with a warning for protected deployments', async () => {
+  it('hides social icons for protected deployments', async () => {
     const file = baseFile({
       name: 'index.html',
       path: 'index.html',
@@ -6770,16 +6760,11 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     await openUnifiedShareTab();
-    const socialShareItem = await screen.findByRole('menuitem', { name: /social share/i });
-    fireEvent.click(socialShareItem);
 
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog).toBeTruthy();
-    expect(within(dialog).getByRole('heading', { name: /Publish share page/i })).toBeTruthy();
-    expect(await screen.findByRole('link', { name: 'X' })).toBeTruthy();
-    expect(screen.getAllByText(/requiring authentication/i).length).toBeGreaterThan(0);
-    expect(screen.getAllByText('https://protected.vercel.example').length).toBeGreaterThan(0);
-    expect(screen.getAllByRole('button', { name: /copy link/i }).length).toBeGreaterThan(0);
+    // A protected deployment is NOT a clean link — recipients could not open
+    // it, so the panel offers no social icons until the link is public.
+    expect(await screen.findByRole('menuitem', { name: /Deploy to Vercel/i })).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'X' })).toBeNull();
   });
 
   it('renders unsafe SVG source as escaped text instead of executable markup', () => {
