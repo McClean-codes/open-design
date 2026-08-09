@@ -953,6 +953,9 @@ html.od-radial-open .workspace-shell {
 }
 .chrome-access-select {
   position: relative;
+  /* Inset to the rows' own 10px so the access control lines up with the
+     publish / deploy / save rows below it. */
+  padding: 0 10px 8px;
 }
 .chrome-access-trigger,
 .chrome-access-options button {
@@ -1001,30 +1004,6 @@ html.od-radial-open .workspace-shell {
   background: color-mix(in srgb, var(--accent) 6%, var(--bg));
   color: var(--text-strong);
 }
-.chrome-share-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--bg-subtle) 72%, var(--bg-panel));
-}
-.chrome-share-card__header {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr);
-  align-items: start;
-  gap: 8px;
-}
-.chrome-share-card__header .share-menu-text > span {
-  color: var(--text-strong);
-  font-size: 13px;
-  font-weight: 650;
-}
-.chrome-share-card__header .share-menu-text small {
-  font-size: 12px;
-  line-height: 1.35;
-}
 .chrome-publish-url {
   overflow: hidden;
   padding: 7px 8px;
@@ -1053,6 +1032,13 @@ html.od-radial-open .workspace-shell {
   flex-direction: column;
   gap: 6px;
   padding: 2px 10px 8px;
+}
+/* A section label that carries a trailing "?" (access control, where the
+   explanation is state-dependent and does not belong in a permanent line). */
+.share-menu-section-label--help {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 /* Trailing "?" inside a menu row — pushed to the row end; its od-tooltip
    carries the reach + single-file-limitation explanation. */

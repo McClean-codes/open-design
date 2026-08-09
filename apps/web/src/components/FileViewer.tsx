@@ -6727,19 +6727,26 @@ function ReactComponentViewer({
                             public single-file publish card below uses; that one is
                             deliberately workspace-agnostic. */}
                         {workspaceContextHasTeamIdentity(workspaceContext) ? (
-                        <div className="chrome-share-card">
-                          <div className="chrome-share-card__header">
-                            <span className="share-menu-icon"><RemixIcon name="team-line" size={16} /></span>
-                            <span className="share-menu-text">
-                              <span>{t('fileViewer.workspaceShareTitle')}</span>
-                              <small>
-                                {shareAccess === 'private'
-                                  ? t('fileViewer.workspaceSharePrivateDescription')
-                                  : t('fileViewer.workspaceShareWorkspaceDescription')}
-                              </small>
-                            </span>
-                          </div>
-                          <div className="chrome-access-select">
+                        <>
+                        {/* Access control gets the same section-label + row treatment as the
+                            publish / deploy / save tiers below; its explanation moves into the
+                            trailing "?" instead of a card sub-line. */}
+                        <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
+                          <span>{t('fileViewer.workspaceShareTitle')}</span>
+                          <span
+                            className="share-menu-help od-tooltip"
+                            aria-label={shareAccess === 'private'
+                              ? t('fileViewer.workspaceSharePrivateDescription')
+                              : t('fileViewer.workspaceShareWorkspaceDescription')}
+                            data-tooltip={shareAccess === 'private'
+                              ? t('fileViewer.workspaceSharePrivateDescription')
+                              : t('fileViewer.workspaceShareWorkspaceDescription')}
+                            data-tooltip-placement="bottom"
+                          >
+                            <RemixIcon name="question-line" size={14} />
+                          </span>
+                        </div>
+                        <div className="chrome-access-select">
                             <button
                               type="button"
                               className="chrome-access-trigger"
@@ -6794,7 +6801,7 @@ function ReactComponentViewer({
                               </div>
                             ) : null}
                           </div>
-                        </div>
+                        </>
                         ) : null}
                         {/* Menu row like the tiers below — same structure as
                             the HtmlViewer copy. */}
@@ -14877,19 +14884,26 @@ function HtmlViewer({
                       {/* Team-only, same as ReactComponentViewer's copy of this card above —
                           see the comment there (recvq5bM78HWCE). */}
                       {workspaceContextHasTeamIdentity(workspaceContext) ? (
-                      <div className="chrome-share-card">
-                        <div className="chrome-share-card__header">
-                          <span className="share-menu-icon"><RemixIcon name="team-line" size={16} /></span>
-                          <span className="share-menu-text">
-                            <span>{t('fileViewer.workspaceShareTitle')}</span>
-                            <small>
-                              {shareAccess === 'private'
-                                ? t('fileViewer.workspaceSharePrivateDescription')
-                                : t('fileViewer.workspaceShareWorkspaceDescription')}
-                            </small>
-                          </span>
-                        </div>
-                        <div className="chrome-access-select">
+                      <>
+                      {/* Access control gets the same section-label + row treatment as the
+                          publish / deploy / save tiers below; its explanation moves into the
+                          trailing "?" instead of a card sub-line. */}
+                      <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
+                        <span>{t('fileViewer.workspaceShareTitle')}</span>
+                        <span
+                          className="share-menu-help od-tooltip"
+                          aria-label={shareAccess === 'private'
+                            ? t('fileViewer.workspaceSharePrivateDescription')
+                            : t('fileViewer.workspaceShareWorkspaceDescription')}
+                          data-tooltip={shareAccess === 'private'
+                            ? t('fileViewer.workspaceSharePrivateDescription')
+                            : t('fileViewer.workspaceShareWorkspaceDescription')}
+                          data-tooltip-placement="bottom"
+                        >
+                          <RemixIcon name="question-line" size={14} />
+                        </span>
+                      </div>
+                      <div className="chrome-access-select">
                           <button
                             type="button"
                             className="chrome-access-trigger"
@@ -14943,7 +14957,7 @@ function HtmlViewer({
                             </div>
                           ) : null}
                         </div>
-                      </div>
+                      </>
                       ) : null}
                       {/* Publishing is a menu row like every other action in
                           this panel (deploy, save-as-template): same section
