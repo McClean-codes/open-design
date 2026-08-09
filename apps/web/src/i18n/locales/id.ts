@@ -3200,7 +3200,7 @@ export const id: Dict = {
   'fileViewer.workspaceAccessPrivate': 'Only me',
   'fileViewer.workspaceAccessMembers': 'Workspace members',
   'fileViewer.publishSingleFileTitle': 'Terbitkan & dapatkan tautan',
-  'fileViewer.publishSingleFileDescription': 'Make the current file externally visible. Anyone with the published link can view it online.',
+  'fileViewer.publishSingleFileDescription': 'Siapa pun dengan tautan dapat melihatnya secara online.',
   'fileViewer.openFileRequired': 'Open a file to use this.',
   'fileViewer.publishFile': 'Publish file',
   'fileViewer.publishingFile': 'Publishing…',
@@ -3212,7 +3212,7 @@ export const id: Dict = {
 
   'fileViewer.publishFileRequiresTeam': 'Menerbitkan tautan publik memerlukan ruang kerja tim. Beralihlah ke ruang kerja tim, atau gunakan Deploy untuk menerbitkan berkas ini.',
   'fileViewer.publishFileRequiresWorkspace': 'Menerbitkan tautan publik memerlukan ruang kerja yang sudah masuk. Masuk ke Open Design Cloud, atau gunakan Deploy untuk menerbitkan berkas ini.',
-  'fileViewer.publishFileFailed': 'Tidak dapat menerbitkan berkas ini. Silakan coba lagi.',
+  'fileViewer.publishFileFailed': 'Gagal menerbitkan. Coba lagi atau gunakan opsi deploy di bawah.',
   'fileViewer.workspaceShareSuccess': 'Shared with workspace members',
   'fileViewer.workspaceShareFailed': 'Could not share with workspace',
   'fileViewer.workspaceUnshareSuccess': 'Moved back to private',

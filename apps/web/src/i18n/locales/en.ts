@@ -3214,7 +3214,7 @@ export const en: Dict = {
   'fileViewer.workspaceAccessPrivate': 'Only me',
   'fileViewer.workspaceAccessMembers': 'Workspace members',
   'fileViewer.publishSingleFileTitle': 'Publish & get a link',
-  'fileViewer.publishSingleFileDescription': 'Make the current file externally visible. Anyone with the published link can view it online.',
+  'fileViewer.publishSingleFileDescription': 'Anyone with the link can view it online.',
   'fileViewer.openFileRequired': 'Open a file to use this.',
   'fileViewer.publishFile': 'Publish file',
   'fileViewer.publishingFile': 'Publishing…',
@@ -3226,7 +3226,7 @@ export const en: Dict = {
 
   'fileViewer.publishFileRequiresTeam': 'Publishing a public link needs a team workspace. Switch to a team workspace, or use Deploy to publish this file.',
   'fileViewer.publishFileRequiresWorkspace': 'Publishing a public link needs a signed-in workspace. Sign in to Open Design Cloud, or use Deploy to publish this file.',
-  'fileViewer.publishFileFailed': 'Could not publish this file. Please try again.',
+  'fileViewer.publishFileFailed': 'Publish failed. Try again, or use a deploy option below.',
   'fileViewer.workspaceShareSuccess': 'Shared with workspace members',
   'fileViewer.workspaceShareFailed': 'Could not share with workspace',
   'fileViewer.workspaceUnshareSuccess': 'Moved back to private',

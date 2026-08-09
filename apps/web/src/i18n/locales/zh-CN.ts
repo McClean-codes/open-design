@@ -3373,7 +3373,7 @@ export const zhCN: Dict = {
   "fileViewer.workspaceAccessPrivate": "仅自己",
   "fileViewer.workspaceAccessMembers": "工作空间成员",
   "fileViewer.publishSingleFileTitle": "发布并获取链接",
-  "fileViewer.publishSingleFileDescription": "将当前单个文件设为外部可见。任何获得发布链接的人都可以在线查看。",
+  "fileViewer.publishSingleFileDescription": "任何拿到链接的人都可在线查看。",
   "fileViewer.openFileRequired": "打开文件后可用。",
   "fileViewer.publishFile": "发布文件",
   "fileViewer.publishingFile": "发布中…",
@@ -3385,7 +3385,7 @@ export const zhCN: Dict = {
 
   "fileViewer.publishFileRequiresTeam": "发布公开链接需要团队工作区。请切换到团队工作区，或使用「部署」发布此文件。",
   "fileViewer.publishFileRequiresWorkspace": "发布公开链接需要登录工作区。请登录 Open Design Cloud，或使用「部署」发布此文件。",
-  "fileViewer.publishFileFailed": "无法发布此文件，请重试。",
+  "fileViewer.publishFileFailed": "发布失败，请稍后重试，或改用下方的部署方式。",
   "fileViewer.workspaceShareSuccess": "已分享给工作空间成员",
   "fileViewer.workspaceShareFailed": "分享到工作空间失败",
   "fileViewer.workspaceUnshareSuccess": "已移回仅自己可见",

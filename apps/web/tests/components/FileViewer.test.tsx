@@ -5344,7 +5344,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(await screen.findByRole('menu')).toBeTruthy();
     expect(screen.getByText('Share project in workspace')).toBeTruthy();
     expect(await screen.findByText('Publish & get a link')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Publish file/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Publish & get a link/i })).toBeTruthy();
     expect(screen.getByText('MORE WAYS TO PUBLISH')).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /Deploy to Vercel/i })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: /Deploy to Cloudflare Pages/i })).toBeTruthy();
@@ -5429,7 +5429,7 @@ describe('FileViewer SVG artifacts', () => {
     // The single-file publish card — the thing the dogfood report said was
     // missing — is back for a personal workspace.
     expect(await screen.findByText('Publish & get a link')).toBeTruthy();
-    expect(screen.getByRole('button', { name: /Publish file/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Publish & get a link/i })).toBeTruthy();
     // "Share project in workspace" is TEAM project sharing, which a personal
     // workspace has no team to receive — see the dedicated test below
     // (recvq5bM78HWCE) for the card's own gating.
@@ -5473,7 +5473,7 @@ describe('FileViewer SVG artifacts', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
     expect(await screen.findByRole('menu')).toBeTruthy();
-    fireEvent.click(await screen.findByRole('button', { name: /Publish file/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Publish & get a link/i }));
 
     await waitFor(() => expect(calls.some((call) => call.url.includes('publish-public'))).toBe(true));
     const publishCall = calls.find((call) => call.url.includes('publish-public'));
@@ -5580,7 +5580,7 @@ describe('FileViewer SVG artifacts', () => {
     // Gone, not merely disabled — a signed-out caller has no id to publish
     // under and the daemon answers 409 WORKSPACE_IDENTITY_REQUIRED.
     expect(screen.queryByText('Publish & get a link')).toBeNull();
-    expect(screen.queryByRole('button', { name: /Publish file/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Publish & get a link/i })).toBeNull();
     expect(screen.queryByText('Share project in workspace')).toBeNull();
     // recvqgif6Xa7Wb: the "no team to share with yet" bridge card that used to
     // fill this gap was product-ruled out entirely (never a designed surface —

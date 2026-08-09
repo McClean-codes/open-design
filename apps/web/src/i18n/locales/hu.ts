@@ -3200,7 +3200,7 @@ export const hu: Dict = {
   'fileViewer.workspaceAccessPrivate': 'Only me',
   'fileViewer.workspaceAccessMembers': 'Workspace members',
   'fileViewer.publishSingleFileTitle': 'Közzététel és link megszerzése',
-  'fileViewer.publishSingleFileDescription': 'Make the current file externally visible. Anyone with the published link can view it online.',
+  'fileViewer.publishSingleFileDescription': 'A linkkel bárki megtekintheti online.',
   'fileViewer.openFileRequired': 'Open a file to use this.',
   'fileViewer.publishFile': 'Publish file',
   'fileViewer.publishingFile': 'Publishing…',
@@ -3212,7 +3212,7 @@ export const hu: Dict = {
 
   'fileViewer.publishFileRequiresTeam': 'A nyilvános hivatkozás közzétételéhez csapatmunkaterület szükséges. Válts csapatmunkaterületre, vagy tedd közzé a fájlt a Közzététel funkcióval.',
   'fileViewer.publishFileRequiresWorkspace': 'A nyilvános hivatkozás közzétételéhez be kell jelentkezned egy munkaterületre. Jelentkezz be az Open Design Cloudba, vagy tedd közzé a fájlt a Közzététel funkcióval.',
-  'fileViewer.publishFileFailed': 'Nem sikerült közzétenni ezt a fájlt. Próbáld újra.',
+  'fileViewer.publishFileFailed': 'A közzététel nem sikerült. Próbáld újra, vagy használd a lenti telepítési lehetőségeket.',
   'fileViewer.workspaceShareSuccess': 'Shared with workspace members',
   'fileViewer.workspaceShareFailed': 'Could not share with workspace',
   'fileViewer.workspaceUnshareSuccess': 'Moved back to private',

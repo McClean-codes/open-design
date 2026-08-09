@@ -3200,7 +3200,7 @@ export const fa: Dict = {
   'fileViewer.workspaceAccessPrivate': 'Only me',
   'fileViewer.workspaceAccessMembers': 'Workspace members',
   'fileViewer.publishSingleFileTitle': 'انتشار و دریافت پیوند',
-  'fileViewer.publishSingleFileDescription': 'Make the current file externally visible. Anyone with the published link can view it online.',
+  'fileViewer.publishSingleFileDescription': 'هر کسی که پیوند را داشته باشد می‌تواند آن را آنلاین ببیند.',
   'fileViewer.openFileRequired': 'Open a file to use this.',
   'fileViewer.publishFile': 'Publish file',
   'fileViewer.publishingFile': 'Publishing…',
@@ -3212,7 +3212,7 @@ export const fa: Dict = {
 
   'fileViewer.publishFileRequiresTeam': 'انتشار پیوند عمومی به فضای کاری تیمی نیاز دارد. به یک فضای کاری تیمی بروید یا این فایل را با «استقرار» منتشر کنید.',
   'fileViewer.publishFileRequiresWorkspace': 'انتشار پیوند عمومی به ورود به یک فضای کاری نیاز دارد. به Open Design Cloud وارد شوید یا این فایل را با «استقرار» منتشر کنید.',
-  'fileViewer.publishFileFailed': 'انتشار این فایل ممکن نشد. لطفاً دوباره تلاش کنید.',
+  'fileViewer.publishFileFailed': 'انتشار ناموفق بود. دوباره تلاش کنید یا از گزینه‌های استقرار در پایین استفاده کنید.',
   'fileViewer.workspaceShareSuccess': 'Shared with workspace members',
   'fileViewer.workspaceShareFailed': 'Could not share with workspace',
   'fileViewer.workspaceUnshareSuccess': 'Moved back to private',

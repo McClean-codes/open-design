@@ -3382,7 +3382,7 @@ export const zhTW: Dict = {
   "fileViewer.workspaceAccessPrivate": "只有自己",
   "fileViewer.workspaceAccessMembers": "工作空間成員",
   "fileViewer.publishSingleFileTitle": "發布並取得連結",
-  "fileViewer.publishSingleFileDescription": "將目前單個檔案設為外部可見。任何取得發布連結的人都可以線上檢視。",
+  "fileViewer.publishSingleFileDescription": "任何取得連結的人都可以線上查看。",
   "fileViewer.openFileRequired": "打开文件后可用。",
   "fileViewer.publishFile": "發布檔案",
   "fileViewer.publishingFile": "發布中…",
@@ -3394,7 +3394,7 @@ export const zhTW: Dict = {
 
   "fileViewer.publishFileRequiresTeam": "發布公開連結需要團隊工作區。請切換到團隊工作區，或使用「部署」發布此檔案。",
   "fileViewer.publishFileRequiresWorkspace": "發布公開連結需要登入工作區。請登入 Open Design Cloud，或使用「部署」發布此檔案。",
-  "fileViewer.publishFileFailed": "無法發布此檔案，請重試。",
+  "fileViewer.publishFileFailed": "發布失敗，請稍後重試，或改用下方的部署方式。",
   "fileViewer.workspaceShareSuccess": "已分享給工作空間成員",
   "fileViewer.workspaceShareFailed": "分享到工作空間失敗",
   "fileViewer.workspaceUnshareSuccess": "已移回僅自己可見",

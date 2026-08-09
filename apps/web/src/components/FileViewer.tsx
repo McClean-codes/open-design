@@ -6796,20 +6796,11 @@ function ReactComponentViewer({
                           </div>
                         </div>
                         ) : null}
+                        {/* De-shelled hero — same structure as the HtmlViewer
+                            copy: the primary button carries the headline, a
+                            muted one-liner explains, errors sit last. */}
                         {canPublishPublic ? (
-                        <div className="chrome-share-card">
-                          <div className="chrome-share-card__header">
-                            <span className="share-menu-icon"><RemixIcon name="broadcast-line" size={16} /></span>
-                            <span className="share-menu-text">
-                              <span>{t('fileViewer.publishSingleFileTitle')}</span>
-                              <small>{t('fileViewer.publishSingleFileDescription')}</small>
-                            </span>
-                          </div>
-                          {publishFailureKey ? (
-                            <p className="chrome-publish-error" role="status">
-                              {t(publishFailureKey)}
-                            </p>
-                          ) : null}
+                        <div className="chrome-publish-plain">
                           {filePublished ? (
                             <>
                               <div className="chrome-publish-url" title={publishedFileUrl}>
@@ -6843,24 +6834,32 @@ function ReactComponentViewer({
                               </div>
                             </>
                           ) : (
-                            <button
-                              type="button"
-                              className="chrome-publish-primary"
-                              disabled={viewerOnly || publishingPublicFile}
-                              aria-busy={publishingPublicFile}
-                              title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                              onClick={() => {
-                                void publishCurrentFilePublic();
-                              }}
-                            >
-                              <RemixIcon
-                                name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
-                                size={15}
-                                className={publishingPublicFile ? 'icon-spin' : undefined}
-                              />
-                              {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishFile')}
-                            </button>
+                            <>
+                              <button
+                                type="button"
+                                className="chrome-publish-primary"
+                                disabled={viewerOnly || publishingPublicFile}
+                                aria-busy={publishingPublicFile}
+                                title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                                onClick={() => {
+                                  void publishCurrentFilePublic();
+                                }}
+                              >
+                                <RemixIcon
+                                  name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
+                                  size={15}
+                                  className={publishingPublicFile ? 'icon-spin' : undefined}
+                                />
+                                {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}
+                              </button>
+                              <p className="chrome-publish-hint">{t('fileViewer.publishSingleFileDescription')}</p>
+                            </>
                           )}
+                          {publishFailureKey ? (
+                            <p className="chrome-publish-error" role="status">
+                              {t(publishFailureKey)}
+                            </p>
+                          ) : null}
                         </div>
                         ) : null}
                       </div>
@@ -14936,20 +14935,13 @@ function HtmlViewer({
                         </div>
                       </div>
                       ) : null}
+                      {/* De-shelled hero: no grey card, no separate title row —
+                          the primary button IS the headline ("publish & get a
+                          link") and a muted one-liner under it carries the
+                          explanation. Keeps the whole panel in one visual
+                          language; hierarchy comes from the lone solid button. */}
                       {canPublishPublic ? (
-                      <div className="chrome-share-card">
-                        <div className="chrome-share-card__header">
-                          <span className="share-menu-icon"><RemixIcon name="broadcast-line" size={16} /></span>
-                          <span className="share-menu-text">
-                            <span>{t('fileViewer.publishSingleFileTitle')}</span>
-                            <small>{t('fileViewer.publishSingleFileDescription')}</small>
-                          </span>
-                        </div>
-                        {publishFailureKey ? (
-                          <p className="chrome-publish-error" role="status">
-                            {t(publishFailureKey)}
-                          </p>
-                        ) : null}
+                      <div className="chrome-publish-plain">
                         {filePublished ? (
                           <>
                             <div className="chrome-publish-url" title={publishedFileUrl}>
@@ -14983,24 +14975,32 @@ function HtmlViewer({
                             </div>
                           </>
                         ) : (
-                          <button
-                            type="button"
-                            className="chrome-publish-primary"
-                            disabled={viewerOnly || publishingPublicFile}
-                            aria-busy={publishingPublicFile}
-                            title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                            onClick={() => {
-                              void publishCurrentFilePublic();
-                            }}
-                          >
-                            <RemixIcon
-                              name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
-                              size={15}
-                              className={publishingPublicFile ? 'icon-spin' : undefined}
-                            />
-                            {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishFile')}
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              className="chrome-publish-primary"
+                              disabled={viewerOnly || publishingPublicFile}
+                              aria-busy={publishingPublicFile}
+                              title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                              onClick={() => {
+                                void publishCurrentFilePublic();
+                              }}
+                            >
+                              <RemixIcon
+                                name={publishingPublicFile ? 'loader-4-line' : 'upload-cloud-2-line'}
+                                size={15}
+                                className={publishingPublicFile ? 'icon-spin' : undefined}
+                              />
+                              {publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}
+                            </button>
+                            <p className="chrome-publish-hint">{t('fileViewer.publishSingleFileDescription')}</p>
+                          </>
                         )}
+                        {publishFailureKey ? (
+                          <p className="chrome-publish-error" role="status">
+                            {t(publishFailureKey)}
+                          </p>
+                        ) : null}
                       </div>
                       ) : null}
                       {/* The share panel is organized by intent, not by

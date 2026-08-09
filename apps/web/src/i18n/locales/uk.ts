@@ -3200,7 +3200,7 @@ export const uk: Dict = {
   'fileViewer.workspaceAccessPrivate': 'Only me',
   'fileViewer.workspaceAccessMembers': 'Workspace members',
   'fileViewer.publishSingleFileTitle': 'Опублікувати й отримати посилання',
-  'fileViewer.publishSingleFileDescription': 'Make the current file externally visible. Anyone with the published link can view it online.',
+  'fileViewer.publishSingleFileDescription': 'Будь-хто з посиланням може переглянути онлайн.',
   'fileViewer.openFileRequired': 'Open a file to use this.',
   'fileViewer.publishFile': 'Publish file',
   'fileViewer.publishingFile': 'Publishing…',
@@ -3212,7 +3212,7 @@ export const uk: Dict = {
 
   'fileViewer.publishFileRequiresTeam': 'Щоб опублікувати загальнодоступне посилання, потрібен командний робочий простір. Перейдіть до командного простору або скористайтеся «Розгорнути».',
   'fileViewer.publishFileRequiresWorkspace': 'Щоб опублікувати загальнодоступне посилання, потрібно ввійти в робочий простір. Увійдіть в Open Design Cloud або скористайтеся «Розгорнути».',
-  'fileViewer.publishFileFailed': 'Не вдалося опублікувати цей файл. Спробуйте ще раз.',
+  'fileViewer.publishFileFailed': 'Не вдалося опублікувати. Повторіть спробу або скористайтеся варіантом деплою нижче.',
   'fileViewer.workspaceShareSuccess': 'Shared with workspace members',
   'fileViewer.workspaceShareFailed': 'Could not share with workspace',
   'fileViewer.workspaceUnshareSuccess': 'Moved back to private',
