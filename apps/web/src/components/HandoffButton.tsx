@@ -337,8 +337,11 @@ export function HandoffButton({
     fetchHostEditors()
       .then((resp) => {
         if (cancelled) return;
-        setEditors(resp.editors);
-        setPlatform(resp.platform);
+        // The daemon contract always carries `editors`, but the button now
+        // mounts in the viewer chrome on every artifact, so a malformed host
+        // response must degrade to "no editors" instead of crashing the viewer.
+        setEditors(resp.editors ?? []);
+        setPlatform(resp.platform ?? 'unknown');
         setLoaded(true);
       })
       .catch(() => {

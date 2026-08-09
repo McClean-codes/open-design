@@ -6323,7 +6323,7 @@ function ReactComponentViewer({
   const [srcDoc, setSrcDoc] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [shareMenuOpen, setShareMenuOpen] = useState(false);
-  const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export' | 'send'>('share');
+  const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export'>('share');
   const [shareAccess, setShareAccess] = useState<'private' | 'workspace'>('private');
   const [shareAccessMenuOpen, setShareAccessMenuOpen] = useState(false);
   const [shareAccessConfirm, setShareAccessConfirm] = useState<'private' | 'workspace' | null>(null);
@@ -6678,41 +6678,43 @@ function ReactComponentViewer({
             <>
               <span className="viewer-divider" aria-hidden />
               <div className="share-menu chrome-share-menu chrome-share-menu--unified" ref={shareRef}>
-                <button
-                  type="button"
-                  className="viewer-action primary viewer-action-export od-tooltip"
-                  aria-haspopup="menu"
-                  aria-expanded={shareMenuOpen}
-                  disabled={viewerOnly}
-                  title={viewerOnly ? viewerOnlyDisabledTitle : t('fileViewer.shareLabel')}
-                  data-tooltip={viewerOnly ? viewerOnlyDisabledTitle : t('fileViewer.shareLabel')}
-                  data-tooltip-placement="bottom"
-                  onClick={() => setShareMenuOpen((v) => !v)}
-                >
-                  <span className="export-action-spacer" aria-hidden />
-                  <span>{t('fileViewer.shareLabel')}</span>
-                  <RemixIcon name="arrow-down-s-line" size={14} />
-                </button>
+                {/* Share and Export are separate toolbar intents again (the
+                    0.18.0 unified tabs buried Export one level deep); they
+                    still share one popover shell so switching keeps the menu
+                    anchored in place. */}
+                {(['share', 'export'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    className="viewer-action primary viewer-action-export od-tooltip"
+                    aria-haspopup="menu"
+                    aria-expanded={shareMenuOpen && unifiedActionTab === tab}
+                    disabled={viewerOnly}
+                    title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                    data-tooltip={
+                      viewerOnly
+                        ? viewerOnlyDisabledTitle
+                        : tab === 'share'
+                          ? t('fileViewer.unifiedShareTab')
+                          : t('fileViewer.unifiedExportTab')
+                    }
+                    data-tooltip-placement="bottom"
+                    onClick={() => {
+                      setShareMenuOpen((v) => !(v && unifiedActionTab === tab));
+                      setUnifiedActionTab(tab);
+                    }}
+                  >
+                    <span className="export-action-spacer" aria-hidden />
+                    <span>
+                      {tab === 'share'
+                        ? t('fileViewer.unifiedShareTab')
+                        : t('fileViewer.unifiedExportTab')}
+                    </span>
+                    <RemixIcon name="arrow-down-s-line" size={14} />
+                  </button>
+                ))}
                 {shareMenuOpen ? (
                   <div className="share-menu-popover chrome-unified-popover" role="menu">
-                    <div className="chrome-unified-tabs" role="tablist" aria-label={t('fileViewer.unifiedShareAria')}>
-                      {([
-                        ['share', t('fileViewer.unifiedShareTab')],
-                        ['export', t('fileViewer.unifiedExportTab')],
-                        ['send', t('fileViewer.unifiedSendTab')],
-                      ] as const).map(([tab, label]) => (
-                        <button
-                          key={tab}
-                          type="button"
-                          className={unifiedActionTab === tab ? 'is-active' : undefined}
-                          role="tab"
-                          aria-selected={unifiedActionTab === tab}
-                          onClick={() => setUnifiedActionTab(tab)}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
                     {unifiedActionTab === 'share' ? (
                       <div className="chrome-unified-panel chrome-unified-panel--share">
                         {/* Sharing a project INTO a workspace needs a team on the other
@@ -6913,37 +6915,21 @@ function ReactComponentViewer({
                         </button>
                       </div>
                     ) : null}
-                    {unifiedActionTab === 'send' ? (
-                      <div className="chrome-unified-panel chrome-unified-panel--handoff">
-                        {viewerOnly ? (
-                          <button
-                            type="button"
-                            className="share-menu-item"
-                            role="menuitem"
-                            disabled
-                            title={viewerOnlyDisabledTitle}
-                          >
-                            <span className="share-menu-icon"><RemixIcon name="send-plane-line" size={15} /></span>
-                            <span>{viewerOnlyDisabledTitle}</span>
-                          </button>
-                        ) : (
-                          <HandoffButton
-                            projectId={projectId}
-                            projectName={projectName}
-                            projectDir={projectDir}
-                            agents={agents}
-                            artifactId={artifactId}
-                            artifactKind={handoffArtifactKind}
-                            metricsConsent={metricsConsent}
-                            installationId={installationId}
-                            embedded
-                          />
-                        )}
-                      </div>
-                    ) : null}
                   </div>
                 ) : null}
               </div>
+              {viewerOnly ? null : (
+                <HandoffButton
+                  projectId={projectId}
+                  projectName={projectName}
+                  projectDir={projectDir}
+                  agents={agents}
+                  artifactId={artifactId}
+                  artifactKind={handoffArtifactKind}
+                  metricsConsent={metricsConsent}
+                  installationId={installationId}
+                />
+              )}
             </>
           ) : null}
         </div>
@@ -7653,7 +7639,7 @@ function HtmlViewer({
   // active tab is `unifiedActionTab`. External share/download requests below just
   // preselect the tab and open this one popover.
   const [deployMenuOpen, setDeployMenuOpen] = useState(false);
-  const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export' | 'send'>('share');
+  const [unifiedActionTab, setUnifiedActionTab] = useState<'share' | 'export'>('share');
   const [shareAccess, setShareAccess] = useState<'private' | 'workspace'>('private');
   const [shareAccessMenuOpen, setShareAccessMenuOpen] = useState(false);
   const [shareAccessConfirm, setShareAccessConfirm] = useState<'private' | 'workspace' | null>(null);
@@ -14844,46 +14830,51 @@ function HtmlViewer({
             </button>
           ) : null}
           {rawCanShare || rawCanDownload ? (
-            <div className="chrome-file-action-menus" ref={shareRef}>
-              <div className="share-menu chrome-share-menu chrome-share-menu--unified">
-                {rawCanShare || rawCanDownload ? (
+            <div className="chrome-file-action-menus">
+              {/* Outside-click dismissal is scoped to the Share/Export pair —
+                  the handoff split button next door must count as "outside" so
+                  opening it closes this popover (and vice versa via the
+                  handoff button's own dismiss listener). */}
+              <div className="share-menu chrome-share-menu chrome-share-menu--unified" ref={shareRef}>
+                {/* Share and Export are separate header intents again (the
+                    0.18.0 unified tabs buried Export one level deep and export
+                    reach halved); they still share one popover shell so
+                    switching between them keeps the menu anchored in place. */}
+                {rawCanShare ? (
                   <button
                     type="button"
-                    className={
-                      'chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified chrome-action-share-dark' +
-                      (exportReadyNudge ? ' export-ready-nudge' : '')
-                    }
+                    className="chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified chrome-action-share-dark"
                     aria-haspopup="menu"
-                    aria-expanded={deployMenuOpen}
+                    aria-expanded={deployMenuOpen && unifiedActionTab === 'share'}
                     aria-label={shareMenuLabel}
                     disabled={viewerOnly}
                     title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
-                    onClick={rawCanShare ? openShareMenu : openDownloadMenu}
+                    onClick={openShareMenu}
                   >
                     <RemixIcon name="share-forward-line" size={15} />
                     <span>{shareMenuLabel}</span>
                   </button>
                 ) : null}
+                {rawCanDownload ? (
+                  <button
+                    type="button"
+                    className={
+                      'chrome-action chrome-action-secondary chrome-action-with-label chrome-action-text-only chrome-action-unified' +
+                      (exportReadyNudge ? ' export-ready-nudge' : '')
+                    }
+                    aria-haspopup="menu"
+                    aria-expanded={deployMenuOpen && unifiedActionTab === 'export'}
+                    aria-label={t('fileViewer.unifiedExportTab')}
+                    disabled={viewerOnly}
+                    title={viewerOnly ? viewerOnlyDisabledTitle : undefined}
+                    onClick={openDownloadMenu}
+                  >
+                    <RemixIcon name="download-line" size={15} />
+                    <span>{t('fileViewer.unifiedExportTab')}</span>
+                  </button>
+                ) : null}
                 {deployMenuOpen && (rawCanShare || rawCanDownload) ? (
                   <div className="share-menu-popover chrome-unified-popover" role="menu">
-                    <div className="chrome-unified-tabs" role="tablist" aria-label={t('fileViewer.unifiedShareAria')}>
-                      {([
-                        ...(rawCanShare ? [['share', t('fileViewer.unifiedShareTab')] as const] : []),
-                        ...(rawCanDownload ? [['export', t('fileViewer.unifiedExportTab')] as const] : []),
-                        ['send', t('fileViewer.unifiedSendTab')] as const,
-                      ]).map(([tab, label]) => (
-                        <button
-                          key={tab}
-                          type="button"
-                          className={unifiedActionTab === tab ? 'is-active' : undefined}
-                          role="tab"
-                          aria-selected={unifiedActionTab === tab}
-                          onClick={() => setUnifiedActionTab(tab)}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
                     {unifiedActionTab === 'share' && rawCanShare ? (
                       <div className="chrome-unified-panel chrome-unified-panel--share">
                       {/* Team-only, same as ReactComponentViewer's copy of this card above —
@@ -15308,24 +15299,21 @@ function HtmlViewer({
                   </button>
                       </div>
                     ) : null}
-                    {unifiedActionTab === 'send' ? (
-                      <div className="chrome-unified-panel chrome-unified-panel--handoff">
-                        <HandoffButton
-                          projectId={projectId}
-                          projectName={projectName}
-                          projectDir={projectDir}
-                          agents={agents}
-                          artifactId={artifactId}
-                          artifactKind={handoffArtifactKind}
-                          metricsConsent={metricsConsent}
-                          installationId={installationId}
-                          embedded
-                        />
-                      </div>
-                    ) : null}
                   </div>
                 ) : null}
               </div>
+              {viewerOnly ? null : (
+                <HandoffButton
+                  projectId={projectId}
+                  projectName={projectName}
+                  projectDir={projectDir}
+                  agents={agents}
+                  artifactId={artifactId}
+                  artifactKind={handoffArtifactKind}
+                  metricsConsent={metricsConsent}
+                  installationId={installationId}
+                />
+              )}
             </div>
           ) : null}
       </>) : null}

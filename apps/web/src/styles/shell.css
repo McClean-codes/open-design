@@ -922,9 +922,15 @@ html.od-radial-open .workspace-shell {
   border-top: 1px solid var(--border);
   background: var(--bg-panel);
 }
-/* Unified share/export/send popover ported from the design demo's file
-   "分享" menu: a tabbed popover ("Share link" / "Export" / "Send to...") whose
-   Share-link tab carries the "Who can access" access-level dropdown. */
+/* Share and Export are separate header buttons that share one popover shell
+   (the popover swaps its panel instead of remounting, so switching intents
+   keeps the menu anchored in place). The 0.18.0 three-tab strip that lived
+   inside this popover is gone — handoff is a standalone header control now. */
+.chrome-share-menu--unified {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
 .chrome-share-menu--unified .chrome-unified-popover {
   width: min(360px, calc(100vw - 32px));
   min-width: min(320px, calc(100vw - 32px));
@@ -932,30 +938,6 @@ html.od-radial-open .workspace-shell {
   border-radius: var(--radius);
   background: var(--bg-panel);
   box-shadow: var(--shadow-md);
-}
-.chrome-unified-tabs {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 2px;
-  padding: 3px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-subtle);
-}
-.chrome-unified-tabs button {
-  min-height: 32px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-muted);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.chrome-unified-tabs button.is-active {
-  background: var(--bg-panel);
-  color: var(--text-strong);
-  box-shadow: var(--shadow-xs);
 }
 .chrome-unified-panel {
   display: flex;
@@ -1104,19 +1086,6 @@ html.od-radial-open .workspace-shell {
 }
 body[data-artifact-share-access='private'] .ws-tabs-file-actions-before {
   display: none;
-}
-.chrome-unified-panel--handoff {
-  padding-top: 10px;
-}
-.chrome-unified-panel--handoff .handoff-wrap {
-  width: 100%;
-  display: block;
-}
-.chrome-unified-panel--handoff .handoff-wrap--embedded .handoff-menu {
-  position: static;
-  width: 100%;
-  max-height: min(56vh, 460px);
-  box-shadow: none;
 }
 .artifact-version-panel {
   position: fixed;

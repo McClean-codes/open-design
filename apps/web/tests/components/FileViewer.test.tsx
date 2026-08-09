@@ -327,8 +327,8 @@ function clickAgentTool(testId: string) {
 }
 
 async function openUnifiedExportTab() {
-  fireEvent.click(screen.getByRole('button', { name: /share/i }));
-  fireEvent.click(await screen.findByRole('tab', { name: /export/i }));
+  // Export is a standalone header button now (no tab strip inside the popover).
+  fireEvent.click(await screen.findByRole('button', { name: /export/i }));
 }
 
 function manualEditTarget(id: string, label: string, x: number) {
@@ -4648,7 +4648,7 @@ describe('FileViewer SVG artifacts', () => {
       />,
     );
 
-    const exportButton = screen.getByRole('button', { name: /share/i });
+    const exportButton = screen.getByRole('button', { name: /export/i });
     await waitFor(() => {
       expect(exportButton.classList.contains('export-ready-nudge')).toBe(true);
     });
@@ -4697,7 +4697,7 @@ describe('FileViewer SVG artifacts', () => {
       />,
     );
 
-    const firstExportButton = screen.getByRole('button', { name: /share/i });
+    const firstExportButton = screen.getByRole('button', { name: /export/i });
     await waitFor(() => {
       expect(firstExportButton.classList.contains('export-ready-nudge')).toBe(true);
     });
@@ -4713,7 +4713,7 @@ describe('FileViewer SVG artifacts', () => {
       />,
     );
 
-    const secondExportButton = screen.getByRole('button', { name: /share/i });
+    const secondExportButton = screen.getByRole('button', { name: /export/i });
     await waitFor(() => {
       expect(secondExportButton.classList.contains('export-ready-nudge')).toBe(true);
     });
@@ -5335,7 +5335,7 @@ describe('FileViewer SVG artifacts', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
 
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     expect(screen.getByText('Share project in workspace')).toBeTruthy();
     expect(await screen.findByText('Publish this file for everyone')).toBeTruthy();
     expect(screen.getByRole('button', { name: /Publish file/i })).toBeTruthy();
@@ -5346,7 +5346,7 @@ describe('FileViewer SVG artifacts', () => {
     expect(screen.queryByRole('menuitem', { name: /Export as PDF/i })).toBeNull();
     expect(screen.queryByRole('menuitem', { name: /Export as image/i })).toBeNull();
 
-    fireEvent.click(screen.getByRole('tab', { name: /export/i }));
+    fireEvent.click(screen.getByRole('button', { name: /export/i }));
 
     expect(screen.getByText('PUBLISH ONLINE')).toBeTruthy();
     const menuItems = screen.getAllByRole('menuitem').map((item) => item.textContent ?? '');
@@ -5418,7 +5418,7 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     // The single-file publish card — the thing the dogfood report said was
     // missing — is back for a personal workspace.
     expect(await screen.findByText('Publish this file for everyone')).toBeTruthy();
@@ -5465,7 +5465,7 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: /Publish file/i }));
 
     await waitFor(() => expect(calls.some((call) => call.url.includes('publish-public'))).toBe(true));
@@ -5499,7 +5499,7 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     await screen.findByText('Publish this file for everyone');
     expect(screen.queryByText('Share project in workspace')).toBeNull();
   });
@@ -5526,7 +5526,7 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     await screen.findByText('Publish this file for everyone');
     expect(screen.queryByText('Nothing to share yet')).toBeNull();
     expect(screen.queryByText('No team to share with yet')).toBeNull();
@@ -5548,7 +5548,7 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     expect(screen.getByText('Share project in workspace')).toBeTruthy();
   });
 
@@ -5569,7 +5569,7 @@ describe('FileViewer SVG artifacts', () => {
     );
 
     fireEvent.click(screen.getByRole('button', { name: /share/i }));
-    expect(await screen.findByRole('tab', { name: /share/i })).toBeTruthy();
+    expect(await screen.findByRole('menu')).toBeTruthy();
     // Gone, not merely disabled — a signed-out caller has no id to publish
     // under and the daemon answers 409 WORKSPACE_IDENTITY_REQUIRED.
     expect(screen.queryByText('Publish this file for everyone')).toBeNull();
