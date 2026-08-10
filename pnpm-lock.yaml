@@ -116,6 +116,9 @@ importers:
       pdf-lib:
         specifier: 1.17.1
         version: 1.17.1
+      postcss:
+        specifier: 8.5.15
+        version: 8.5.15
       posthog-node:
         specifier: 5.34.6
         version: 5.34.6

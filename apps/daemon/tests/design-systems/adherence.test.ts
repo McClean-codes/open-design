@@ -136,6 +136,123 @@ describe('design-system adherence validation', () => {
     ]));
   });
 
+  it('does not count comment-only component and variant selectors as reuse', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [
+        {
+          path: 'account-settings.html',
+          size: 180,
+          content: '<!-- <button class="button button--primary">Save</button> --><div>Nothing rendered</div>',
+        },
+        {
+          path: 'account-settings.css',
+          size: 220,
+          content: `.button { color: var(--accent); }
+            .button--primary:hover { opacity: .9; }
+            .button:focus-visible { outline: 2px solid var(--accent); }`,
+        },
+      ],
+    });
+
+    expect(report.status).toBe('failed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'mapped-component-reuse', status: 'failed' }),
+      expect.objectContaining({ id: 'variant-reuse', status: 'failed' }),
+    ]));
+  });
+
+  it('does not count JSX comments or strings as rendered component reuse', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [{
+        path: 'AccountSettings.tsx',
+        size: 420,
+        content: `export function AccountSettings() {
+          const example = '<button className="button button--primary">Save</button>';
+          // <button className="button button--primary">Save</button>
+          return <>
+            {/* <button className="button button--primary">Save</button> */}
+            <style>{\`.button--primary:hover { opacity: .9; }
+              .button:focus-visible { outline: 2px solid var(--accent); }\`}</style>
+            <div style={{ color: 'var(--accent)' }}>Nothing rendered</div>
+          </>;
+        }`,
+      }],
+    });
+
+    expect(report.status).toBe('failed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'mapped-component-reuse', status: 'failed' }),
+      expect.objectContaining({ id: 'variant-reuse', status: 'failed' }),
+    ]));
+  });
+
+  it('requires active custom-property declarations instead of comment-only token definitions', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: '/* :root { --accent: #245cff; } */',
+      artifacts: [{
+        path: 'account-settings.html',
+        size: 260,
+        content: `<style>.button { color: var(--accent); }
+          .button--primary:hover { opacity: .9; }
+          .button:focus-visible { outline: 2px solid var(--accent); }</style>
+          <button class="button button--primary">Save changes</button>`,
+      }],
+    });
+
+    expect(report.status).toBe('failed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'token-reference',
+        status: 'failed',
+        message: expect.stringContaining('no readable token definitions'),
+      }),
+    ]));
+  });
+
+  it('detects named colors and nested color functions outside token definitions', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [
+        {
+          path: 'account-settings.html',
+          size: 90,
+          content: '<button class="button button--primary">Save changes</button>',
+        },
+        {
+          path: 'account-settings.css',
+          size: 300,
+          content: `.button {
+              color: red;
+              background: color-mix(in srgb, var(--accent), white);
+            }
+            .button--primary:hover { opacity: .9; }
+            .button:focus-visible { outline: 2px solid var(--accent); }`,
+        },
+      ],
+    });
+
+    expect(report.status).toBe('failed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'unauthorized-color-literal',
+        status: 'failed',
+        message: expect.stringContaining('red'),
+      }),
+    ]));
+    const colorCheck = report.checks.find((check) => check.id === 'unauthorized-color-literal');
+    expect(colorCheck?.message).toContain('color-mix(in srgb, var(--accent), white)');
+  });
+
   it('rejects generated token definitions that override the active design system', async () => {
     const report = validateDesignSystemAdherence({
       bundle: await loadBundle(),
@@ -271,6 +388,11 @@ describe('design-system adherence validation', () => {
           path: 'delete.css',
           size: 50,
           content: '/* data-ds-fallback="no-match" */',
+        },
+        {
+          path: 'DeleteDialog.tsx',
+          size: 100,
+          content: 'const example = \'<div data-ds-fallback="no-match">Example</div>\'; export default () => <div />;',
         },
       ],
     });

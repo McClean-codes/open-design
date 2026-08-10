@@ -463,6 +463,58 @@ describe('design-system pull tool route', () => {
     });
   });
 
+  it('rejects source types that the adherence validator cannot inspect', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'runtime-v3'),
+      { recursive: true },
+    );
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'runtime-v3',
+      projectFiles: {
+        'component.ts': "element.style.color = '#123';",
+      },
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['component.ts'],
+    });
+
+    expect(response.status).toBe(415);
+    expect(response.body.error).toMatchObject({ code: 'UNSUPPORTED_ARTIFACT' });
+  });
+
+  it('loads adherence tokens from the same user package selected for a bare-id runtime', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    writeHybridDesignSystem(builtInRoot, 'shared-brand');
+    copyRuntimeFixture(userRoot, 'shared-brand', 'User save');
+    const validHtml = `<style>
+      .button { color: var(--accent); }
+      .button--primary:hover { opacity: .9; }
+      .button:focus-visible { outline: 2px solid var(--accent); }
+    </style><button class="button button--primary">Save changes</button>`;
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'shared-brand',
+      projectFiles: { 'account-settings.html': validHtml },
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['account-settings.html'],
+    });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.report).toMatchObject({ status: 'passed', nextAction: 'complete' });
+  });
+
   it('rejects an oversized artifact before loading it for adherence validation', async () => {
     const builtInRoot = fresh();
     const userRoot = fresh();

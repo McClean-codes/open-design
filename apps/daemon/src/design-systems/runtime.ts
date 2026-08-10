@@ -21,7 +21,7 @@ import {
 
 export type DesignSystemRuntimeLoadResult =
   | { mode: 'legacy' }
-  | { mode: 'structured'; bundle: DesignSystemRuntimeBundle }
+  | { mode: 'structured'; bundle: DesignSystemRuntimeBundle; packageRoot: string }
   | { mode: 'invalid'; errors: string[] };
 
 type RuntimeSchema<T> = {
@@ -87,6 +87,7 @@ export async function loadDesignSystemRuntimePackage(
 
   return {
     mode: 'structured',
+    packageRoot: brandRoot,
     bundle: {
       paths,
       componentsIndex: parsedIndex,
