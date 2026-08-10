@@ -215,6 +215,10 @@ call, not yours: pass it only when they asked for a tier, and omit it
 otherwise so the model's own default decides. Same for \`--resolution\` —
 omitting it uses the model's default profile.
 
+A size or tier the user names IS that ask, in any language — "2K", "1k",
+"high quality", "高质量". Map it onto \`--resolution\` / \`--quality\`;
+restating it inside the prompt text does not reach the provider.
+
 Open Design Cloud image and video models use the \`vela/*\` catalogue prefix.
 Always invoke those models through \`"$OD_NODE_BIN" "$OD_BIN" media generate\`.
 Never invoke the \`vela\` CLI directly and never call its remote media API.
