@@ -296,6 +296,8 @@ interface ChatRun {
   createdAt: number;
   updatedAt: number;
   cancelRequested?: boolean;
+  cancelOrigin?: ChatRunStatusResponse['cancelOrigin'];
+  terminalTrigger?: ChatRunStatusResponse['terminalTrigger'];
   exitCode?: number | null;
   signal?: string | null;
   error?: string | null;
@@ -415,7 +417,10 @@ interface ChatRunService {
   stream(run: ChatRun, req: Request, res: Response): void;
   start(run: ChatRun, starter: () => Promise<unknown>): ChatRun;
   wait(run: ChatRun): Promise<ChatRunStatusResponse>;
-  cancel(run: ChatRun): Promise<ChatRunStatusResponse>;
+  cancel(
+    run: ChatRun,
+    origin?: NonNullable<ChatRunStatusResponse['cancelOrigin']>,
+  ): Promise<ChatRunStatusResponse>;
   isTerminal(status: ChatRunStatus): boolean;
   emit?(run: ChatRun, event: string, data: unknown): RunEventRecord;
   setAnalyticsRecovery?(run: ChatRun, recovery: {
@@ -2200,6 +2205,8 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           status,
           ...(errorCode ? { errorCode } : {}),
           agentId: run.agentId,
+          cancelOrigin: run.cancelOrigin ?? null,
+          terminalTrigger: run.terminalTrigger ?? null,
           events: run.events,
         });
         const usageAnalytics = scanRunEventsForUsageAnalytics(
@@ -2957,7 +2964,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
       run,
       { mode: 'write', capability: 'writeFiles' },
     )) return;
-    const status = await design.runs.cancel(run);
+    const status = await design.runs.cancel(run, 'user_stop');
     const body = { ok: true, run: status };
     res.json(body);
   });
