@@ -5537,6 +5537,15 @@ describe('FileViewer SVG artifacts', () => {
       // It is NOT inside the actionable publish row.
       expect(help.closest('[role="menuitem"]')).toBeNull();
 
+      // It must be a real focusable control, not a decorative span: the tooltip
+      // layer discloses on `focusin`, which only a focusable element receives,
+      // and touch devices have no hover path at all. A <span> leaves the
+      // single-file limitation unreadable for keyboard and touch users.
+      expect(help.tagName).toBe('BUTTON');
+      expect(help).toHaveProperty('type', 'button');
+      help.focus();
+      expect(document.activeElement).toBe(help);
+
       fireEvent.click(help);
 
       // No public link was created by a help-discovery gesture.
@@ -5566,6 +5575,32 @@ describe('FileViewer SVG artifacts', () => {
       }),
     'ReactComponentViewer',
   );
+
+  // The publish "?" is not the only one — the workspace-access help beside it
+  // uses the same markup, so the focusability fix has to be panel-wide rather
+  // than a one-off on the row that happened to get reviewed. This case needs a
+  // TEAM workspace, since the access card is team-gated.
+  it('exposes the workspace-access help as a focusable control too', async () => {
+    const context = teamWorkspaceContext();
+    stubFetchWithWorkspaceContext(context);
+
+    renderWithProjectWorkspace(
+      <FileViewer projectId="project-1" projectKind="prototype" file={publicPublishFile()}
+        liveHtml="<html><body><h1>Hello</h1></body></html>"
+      />,
+      context,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /share/i }));
+    expect(await screen.findByRole('menu')).toBeTruthy();
+
+    const help = await screen.findByTestId('workspace-access-help');
+    expect(help.tagName).toBe('BUTTON');
+    expect(help).toHaveProperty('type', 'button');
+    expect(help.closest('[role="menuitem"]')).toBeNull();
+    help.focus();
+    expect(document.activeElement).toBe(help);
+  });
 
   // recvq5bM78HWCE: the "在工作空间中分享项目" card rendered for a personal
   // workspace with no gate at all, so clicking its access toggle called

@@ -6687,7 +6687,15 @@ function ReactComponentViewer({
                   <button
                     key={tab}
                     type="button"
-                    className="viewer-action primary viewer-action-export od-tooltip"
+                    // Export leads and Share is the quieter neighbour — the same
+                    // hierarchy the Html chrome gets from `chrome-action-dark` on
+                    // Export only. One shared class here would give both intents
+                    // the accent fill and flatten that distinction.
+                    className={
+                      tab === 'export'
+                        ? 'viewer-action primary viewer-action-export od-tooltip'
+                        : 'viewer-action od-tooltip'
+                    }
                     aria-haspopup="menu"
                     aria-expanded={shareMenuOpen && unifiedActionTab === tab}
                     disabled={viewerOnly}
@@ -6734,8 +6742,10 @@ function ReactComponentViewer({
                             trailing "?" instead of a card sub-line. */}
                         <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
                           <span>{t('fileViewer.workspaceShareTitle')}</span>
-                          <span
+                          <button
+                            type="button"
                             className="share-menu-help od-tooltip"
+                            data-testid="workspace-access-help"
                             aria-label={shareAccess === 'private'
                               ? t('fileViewer.workspaceSharePrivateDescription')
                               : t('fileViewer.workspaceShareWorkspaceDescription')}
@@ -6743,9 +6753,10 @@ function ReactComponentViewer({
                               ? t('fileViewer.workspaceSharePrivateDescription')
                               : t('fileViewer.workspaceShareWorkspaceDescription')}
                             data-tooltip-placement="bottom"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             <RemixIcon name="question-line" size={14} />
-                          </span>
+                          </button>
                         </div>
                         <div className="chrome-access-select">
                             <button
@@ -6812,15 +6823,17 @@ function ReactComponentViewer({
                             menuitem — see the HtmlViewer copy for why. */}
                         <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
                           <span>{t('fileViewer.shareMenuPublishViaOd')}</span>
-                          <span
+                          <button
+                            type="button"
                             className="share-menu-help od-tooltip"
                             data-testid="publish-help"
                             aria-label={t('fileViewer.publishSingleFileDescription')}
                             data-tooltip={t('fileViewer.publishSingleFileDescription')}
                             data-tooltip-placement="bottom"
+                            onClick={(e) => e.stopPropagation()}
                           >
                             <RemixIcon name="question-line" size={14} />
-                          </span>
+                          </button>
                         </div>
                         {filePublished ? (
                           <div className="chrome-publish-plain">
@@ -14897,8 +14910,10 @@ function HtmlViewer({
                           trailing "?" instead of a card sub-line. */}
                       <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
                         <span>{t('fileViewer.workspaceShareTitle')}</span>
-                        <span
+                        <button
+                          type="button"
                           className="share-menu-help od-tooltip"
+                          data-testid="workspace-access-help"
                           aria-label={shareAccess === 'private'
                             ? t('fileViewer.workspaceSharePrivateDescription')
                             : t('fileViewer.workspaceShareWorkspaceDescription')}
@@ -14906,9 +14921,10 @@ function HtmlViewer({
                             ? t('fileViewer.workspaceSharePrivateDescription')
                             : t('fileViewer.workspaceShareWorkspaceDescription')}
                           data-tooltip-placement="bottom"
+                          onClick={(e) => e.stopPropagation()}
                         >
                           <RemixIcon name="question-line" size={14} />
-                        </span>
+                        </button>
                       </div>
                       <div className="chrome-access-select">
                           <button
@@ -14981,15 +14997,17 @@ function HtmlViewer({
                           structure as the workspace-access help above. */}
                       <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
                         <span>{t('fileViewer.shareMenuPublishViaOd')}</span>
-                        <span
+                        <button
+                          type="button"
                           className="share-menu-help od-tooltip"
                           data-testid="publish-help"
                           aria-label={t('fileViewer.publishSingleFileDescription')}
                           data-tooltip={t('fileViewer.publishSingleFileDescription')}
                           data-tooltip-placement="bottom"
+                          onClick={(e) => e.stopPropagation()}
                         >
                           <RemixIcon name="question-line" size={14} />
-                        </span>
+                        </button>
                       </div>
                       {filePublished ? (
                         <div className="chrome-publish-plain">

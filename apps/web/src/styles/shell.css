@@ -1048,13 +1048,35 @@ html.od-radial-open .workspace-shell {
   gap: 6px;
 }
 /* Trailing "?" — pushed to the end of its label/row; its od-tooltip carries the
-   explanation. */
+   explanation. It is a real <button> so keyboard and touch users can reach the
+   explanation at all: the tooltip layer opens on `focusin`, which a <span> can
+   never receive, and touch has no hover path. That means it must also shed the
+   global button box (36px tall, bordered, filled) to stay an inline glyph. */
 .share-menu-help {
   margin-inline-start: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   color: var(--text-muted);
+  height: auto;
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: help;
+}
+.share-menu-help:hover:not(:disabled) {
+  background: transparent;
+  border-color: transparent;
+}
+.share-menu-help:active:not(:disabled) {
+  transform: none;
+}
+/* Inherits primitives.css's `button:focus-visible` ring; only the radius is set
+   so the outline hugs the round glyph. */
+.share-menu-help:focus-visible {
+  border-radius: 4px;
 }
 .share-menu-item:hover:not(:disabled) .share-menu-help {
   color: var(--text);
