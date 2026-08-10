@@ -1680,8 +1680,8 @@ const jsonLd = [
   /* Modality that is presented but not yet purchasable. Reads as a
      parenthetical on the label rather than a badge, so it never competes
      with the campaign/bonus pills for attention. */
-  .pr-mode.is-soon svg { stroke: var(--ink-soft, #aaa); }
-  .pr-mode.is-soon > span { color: var(--ink-soft, #999); }
+  .pr-mode.is-soon svg { stroke: color-mix(in srgb, var(--ink, #262626) 48%, transparent); }
+  .pr-mode.is-soon > span { color: color-mix(in srgb, var(--ink, #262626) 48%, transparent); }
   /* No margin: each locale's string carries its own separator (a leading
      space for Latin/Hangul, the full-width bracket's side bearing for CJK). */
   .pr-soon-tag {
