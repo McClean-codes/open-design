@@ -1,3 +1,8 @@
+import {
+  COLLAB_VELA_FANOUT_CONCURRENCY,
+  ConcurrencyGate,
+  mapWithGate,
+} from './concurrency-gate.js';
 import { createSwrCache } from './swr-cache.js';
 import type {
   TeamResourceRequestScope,
@@ -31,22 +36,6 @@ export function invalidateTeamResourceListingCaches(input: {
 
 /** How long a listing stays fresh before the next read kicks a background refresh. */
 const TEAM_RESOURCE_LIST_FRESH_MS = 3000;
-
-/**
- * How many `vela` child processes one collab fan-out may have in flight.
- *
- * Both collab fan-outs — materializing a workspace's shared resources, and
- * publishing the projects that went dirty together — are sized by user data,
- * not by the machine. Left unbounded, a workspace that shares 200 design
- * systems spawns 200 concurrent `vela resource pull` processes on a single
- * listing read, each holding a socket, a transfer buffer, and a connection at
- * the far end. The cap makes the peak a property of the daemon.
- *
- * Sized for transfer work rather than CPU: these operations are dominated by
- * network round-trips, so a handful in flight keeps the pipe busy without
- * turning one workspace into a load generator against the hub.
- */
-export const COLLAB_VELA_FANOUT_CONCURRENCY = 4;
 
 /**
  * Cache identity for a listing. Team resource visibility is a function of the
@@ -96,13 +85,18 @@ export function createTeamResourceListCache(
 ): TeamResourceListCache {
   const { share, sync, invalidateSharedCommand } = options;
   const listings = new Map<string, ReturnType<typeof createSwrCache<TeamResourceListing>>>();
+  // One gate per listing, shared across every principal reading it: the cap
+  // bounds this daemon's concurrent transfers for this resource kind, so two
+  // members of the same workspace refreshing at once must contend for the same
+  // slots rather than each getting a full fan-out of their own.
+  const gate = new ConcurrencyGate(COLLAB_VELA_FANOUT_CONCURRENCY);
   const materialize = async (
     scope: TeamResourceRequestScope,
     readOptions?: TeamResourceSharedReadOptions,
   ): Promise<TeamResourceListing> => {
     const resources = await share.sharedResources(scope, readOptions);
     if (sync) {
-      await Promise.all(resources.map((resource) => sync(resource, scope)));
+      await mapWithGate(resources, gate, (resource) => sync(resource, scope));
     }
     return { ids: resources.map((resource) => resource.id), resources };
   };

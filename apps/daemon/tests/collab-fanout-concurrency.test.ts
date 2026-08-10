@@ -5,10 +5,8 @@
 // the workspace instead of the machine. These specs pin the peak.
 
 import { describe, expect, it, vi } from 'vitest';
-import {
-  COLLAB_VELA_FANOUT_CONCURRENCY,
-  createTeamResourceListCache,
-} from '../src/collab/team-resource-list-cache.js';
+import { COLLAB_VELA_FANOUT_CONCURRENCY } from '../src/collab/concurrency-gate.js';
+import { createTeamResourceListCache } from '../src/collab/team-resource-list-cache.js';
 import { CollabPublishScheduler } from '../src/collab/publish-scheduler.js';
 import type {
   TeamResourceRequestScope,
@@ -155,6 +153,83 @@ describe('cross-project publish fan-out', () => {
         await vi.advanceTimersByTimeAsync(0);
       }
       expect(probe.peak).toBeLessThanOrEqual(COLLAB_VELA_FANOUT_CONCURRENCY);
+      scheduler.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not stack a second publish for a change that arrives while queued', async () => {
+    vi.useFakeTimers();
+    try {
+      // Fill every slot with parked publishes, then queue one more project.
+      const blocker = concurrencyProbe();
+      const reasons: string[] = [];
+      const scheduler = new CollabPublishScheduler({
+        adapter: {
+          publish: async ({ projectId, reason }) => {
+            if (projectId !== 'queued') {
+              await blocker.run();
+              return { version: 1 };
+            }
+            reasons.push(reason);
+            return { version: 1 };
+          },
+        },
+        debounceMs: 10,
+      });
+
+      for (let index = 0; index < COLLAB_VELA_FANOUT_CONCURRENCY; index += 1) {
+        scheduler.notifyChanged(`blocker-${index}`);
+      }
+      scheduler.notifyChanged('queued', 'first');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(reasons).toEqual([]); // still behind the cap
+
+      // The author keeps editing while the publish waits for a slot. The
+      // adapter has not read the project yet, so this must NOT become a
+      // second publish — it must become the reason of the queued one.
+      scheduler.notifyChanged('queued', 'second');
+      scheduler.notifyChanged('queued', 'third');
+
+      blocker.drain();
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(reasons).toEqual(['third']);
+      scheduler.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still re-publishes for a change that arrives after the adapter started reading', async () => {
+    vi.useFakeTimers();
+    try {
+      const inFlight = concurrencyProbe();
+      const reasons: string[] = [];
+      const scheduler = new CollabPublishScheduler({
+        adapter: {
+          publish: async ({ reason }) => {
+            reasons.push(reason);
+            await inFlight.run();
+            return { version: 1 };
+          },
+        },
+        debounceMs: 10,
+      });
+
+      scheduler.notifyChanged('p1', 'first');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(reasons).toEqual(['first']); // admitted, adapter is reading
+
+      scheduler.notifyChanged('p1', 'second');
+      inFlight.drain();
+      await vi.advanceTimersByTimeAsync(10);
+      inFlight.drain();
+      await vi.advanceTimersByTimeAsync(10);
+
+      expect(reasons).toEqual(['first', 'second']);
       scheduler.dispose();
     } finally {
       vi.useRealTimers();
