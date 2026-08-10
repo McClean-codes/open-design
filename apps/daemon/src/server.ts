@@ -813,7 +813,10 @@ import {
 } from './collab/sync-snapshot-store.js';
 import { createPersistentSyncCache } from './collab/persistent-sync-cache.js';
 import { createSwrCache } from './collab/swr-cache.js';
-import { invalidateTeamResourceListingCaches } from './collab/team-resource-list-cache.js';
+import {
+  createTeamResourceListCache,
+  invalidateTeamResourceListingCaches,
+} from './collab/team-resource-list-cache.js';
 import {
   createRememberedTeamResourceScopes,
   type RememberedTeamResourceScopeLease,
@@ -5730,62 +5733,19 @@ export async function startServer({
       },
     },
   );
-  const teamResourceScopeKey = (scope: TeamResourceRequestScope): string =>
-    JSON.stringify([
-      scope.principal.teamId,
-      scope.principal.memberId,
-      scope.principal.role,
-      scope.principal.lifecycleState,
-    ]);
   const cachedTeamResourceList = (
     share: TeamResourceShareService,
     sync?: (
       resource: TeamResourceShareRecord,
       scope: TeamResourceRequestScope,
     ) => Promise<void>,
-  ) => {
-    const listings = new Map<
-      string,
-      ReturnType<typeof createSwrCache<{
-        ids: string[];
-        resources: TeamResourceShareRecord[];
-      }>>
-    >();
-    const materialize = async (
-      scope: TeamResourceRequestScope,
-      readOptions?: TeamResourceSharedReadOptions,
-    ) => {
-      const resources = await share.sharedResources(scope, readOptions);
-      if (sync) {
-        await Promise.all(resources.map((resource) => sync(resource, scope)));
-      }
-      return { ids: resources.map((resource) => resource.id), resources };
-    };
-    const read = async (scope: TeamResourceRequestScope) => {
-      const key = teamResourceScopeKey(scope);
-      let listing = listings.get(key);
-      if (!listing) {
-        listing = createSwrCache(
-          () => materialize(scope),
-          () => key,
-          3000,
-        );
-        listings.set(key, listing);
-      }
-      return listing();
-    };
-    return Object.assign(read, {
-      authoritative(scope: TeamResourceRequestScope) {
-        return materialize(scope, { authoritative: true });
-      },
-      invalidate(scope: TeamResourceRequestScope) {
-        const key = teamResourceScopeKey(scope);
-        listings.get(key)?.invalidate();
-        listings.delete(key);
-        sharedTeamResourcesCommand.invalidate(scope.principal.teamId);
-      },
+  ) =>
+    createTeamResourceListCache({
+      share,
+      ...(sync ? { sync } : {}),
+      invalidateSharedCommand: (workspaceId) =>
+        sharedTeamResourcesCommand.invalidate(workspaceId),
     });
-  };
   const runTeamResourceCommand = async (
     args: string[],
     workspaceId?: string,
