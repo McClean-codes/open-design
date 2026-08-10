@@ -16,10 +16,17 @@
  * How many `vela` child processes one collab fan-out may have in flight.
  *
  * Sized for transfer work rather than CPU: these operations are dominated by
- * network round-trips, so a handful in flight keeps the pipe busy without
- * turning one workspace into a load generator against the hub.
+ * network round-trips, so several in flight keep the pipe busy without turning
+ * one workspace into a load generator against the hub.
+ *
+ * The cap is a latency trade for a safety guarantee, and the trade is real: a
+ * 40-resource fan-out that used to run 40-wide now runs 8-wide, so it takes
+ * about five times as many rounds. That is the point — the old version was
+ * only "fast" because it borrowed unboundedly from the machine and the hub.
+ * 8 matches the bound the hub already puts on its own per-request fan-out
+ * (MAX_BLOB_INSPECTION_CONCURRENCY), so neither side is the surprise.
  */
-export const COLLAB_VELA_FANOUT_CONCURRENCY = 4;
+export const COLLAB_VELA_FANOUT_CONCURRENCY = 8;
 
 /**
  * Admits at most `capacity` operations at a time; the rest wait their turn.
