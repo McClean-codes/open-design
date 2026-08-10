@@ -174,6 +174,12 @@ function reactComponentFile(): ProjectFile {
 // copy-link / `fileViewer.unpublishFile` pair.
 const PUBLISH_ROW = /get a share link/i;
 const UNPUBLISH_ROW = /stop sharing/i;
+// `fileViewer.publishingFile` — the row's in-flight label, and therefore the
+// state the publish handler leaves behind only once its `finally` has run.
+const BUSY_PUBLISH_ROW = /creating link/i;
+// Either settled shape of the panel: the idle publish row, or the copy-link
+// control that replaces it once a published URL is committed.
+const SETTLED_PUBLISH_PANEL = /get a share link|copy share link/i;
 
 async function openPublishPanel() {
   renderProjectFileViewer(teamWorkspaceContext(), {
@@ -356,9 +362,26 @@ describe('publish flow analytics', () => {
       await act(async () => {
         settlePublish?.();
         await publishGate;
-        await new Promise((resolve) => setTimeout(resolve, 0));
-        await new Promise((resolve) => setTimeout(resolve, 0));
       });
+
+      // Wait for the operation's own completion signal rather than timer turns.
+      // The handler clears `publishingPublicFile` in its `finally`, strictly
+      // after the point where the result event would have been emitted, so the
+      // panel leaving its "Creating link…" state proves the continuation ran
+      // past the emission site. A retained viewer renders no chrome at all, so
+      // switch back first to observe it — the inactive window has already
+      // closed, and an event emitted during it would still be recorded.
+      rerenderWith({ ...props, workspaceActive: true });
+      const shareButton = await screen.findByRole('button', { name: /^share$/i });
+      // Only the HtmlViewer chrome drops its open popover while retained;
+      // re-opening the React one would toggle it shut.
+      if (shareButton.getAttribute('aria-expanded') !== 'true') fireEvent.click(shareButton);
+      // Settled looks different per chrome: HtmlViewer discards the published
+      // URL at the request-identity guard that follows the emission site and
+      // returns to the idle publish row, while ReactComponentViewer commits it
+      // and swaps in the copy-link control. Either one means "no longer busy".
+      await screen.findByText(SETTLED_PUBLISH_PANEL);
+      expect(screen.queryByText(BUSY_PUBLISH_ROW)).toBeNull();
       expect(trackedEvents('artifact_publish_result')).toEqual([]);
     });
   }
