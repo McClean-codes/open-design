@@ -323,9 +323,11 @@ test('[P0] projects empty state create action opens the new project flow', async
 });
 
 test('[P0] UI-created Personal project recovers preview and write authority after reload', async ({ page }) => {
+  // Create + upload + gated reload needs more than the suite default once the
+  // post-reload waits use the long boot/route budgets under CI contention.
+  test.setTimeout(T.xlong);
   await mockWritablePersonalProjectScope(page);
   await stubCatalogsEmpty(page);
-
   await page.goto('/');
   await openNewProjectModal(page);
   await page.getByTestId('new-project-tab-prototype').click();
@@ -345,11 +347,11 @@ test('[P0] UI-created Personal project recovers preview and write authority afte
     name: 'Reloaded Personal preview',
   })).toBeVisible();
 
-  let releaseScope!: () => void;
+  let releaseScope = () => {};
   const scopeGate = new Promise<void>((resolve) => {
     releaseScope = resolve;
   });
-  let releaseStatus!: () => void;
+  let releaseStatus = () => {};
   const statusGate = new Promise<void>((resolve) => {
     releaseStatus = resolve;
   });
@@ -380,22 +382,57 @@ test('[P0] UI-created Personal project recovers preview and write authority afte
     });
   });
 
-  // A hard reload drops the module-local same-session creation witness. Keep
-  // both authority reads unresolved long enough to observe the fail-closed
-  // state, then release them independently. The persisted Personal binding —
-  // not that ephemeral witness — must reconnect the already-ready artifact.
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await expect(page.getByTestId('file-workspace')).toBeVisible();
-  await expect(page.locator('.viewer-loading')).toBeVisible();
+  const scopeRequested = page.waitForRequest(
+    (request) => new URL(request.url()).pathname.endsWith('/workspace-scope'),
+    { timeout: T.long },
+  );
+  const statusRequested = page.waitForRequest(
+    (request) => new URL(request.url()).pathname.endsWith('/collab/status'),
+    { timeout: T.long },
+  );
 
-  releaseScope();
-  await expect(artifactPreviewFrame(page).getByRole('heading', {
-    name: 'Reloaded Personal preview',
-  })).toBeVisible();
+  try {
+    // A hard reload drops the module-local same-session creation witness. Keep
+    // both authority reads unresolved long enough to observe the fail-closed
+    // state, then release them independently. The persisted Personal binding —
+    // not that ephemeral witness — must reconnect the already-ready artifact.
+    //
+    // Reload only reaches `domcontentloaded` while the dynamic App boot shell
+    // (`Loading Open Design…`) and the project-route workspace-context gate
+    // (`Loading workspace…`) may still own the page. Wait those out with the
+    // suite's long budget before asserting the fail-closed workspace chrome —
+    // the default expect timeout is 10s and is too short under CI contention.
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page
+      .getByText('Loading Open Design…')
+      .waitFor({ state: 'hidden', timeout: T.long })
+      .catch(() => {});
+    await expect(page.getByText('Loading workspace…')).toHaveCount(0, { timeout: T.long });
+    await expect(page.getByTestId('file-workspace')).toBeVisible({ timeout: T.long });
+    await scopeRequested;
+    // The content-loading skeleton is intentionally transient: a restored
+    // iframe can become ready before this assertion runs. The authority gate is
+    // the durable user-visible contract while the scope request is unresolved.
+    await expect(page.getByTestId('chat-composer-input')).toHaveAttribute('aria-readonly', 'true');
+    await expect(page.getByRole('button', { name: /^Share$/i })).toBeDisabled();
 
-  releaseStatus();
-  await expect(page.getByTestId('chat-composer-input')).not.toHaveAttribute('aria-readonly', 'true');
-  await expect(page.getByRole('button', { name: /^Share$/i })).toBeVisible();
+    releaseScope();
+    // Prevent a second release from the finally if the remaining asserts fail.
+    releaseScope = () => {};
+    await statusRequested;
+    await expect(artifactPreviewFrame(page).getByRole('heading', {
+      name: 'Reloaded Personal preview',
+    })).toBeVisible({ timeout: T.long });
+    await expect(page.getByTestId('chat-composer-input')).toHaveAttribute('aria-readonly', 'true');
+
+    releaseStatus();
+    releaseStatus = () => {};
+    await expect(page.getByTestId('chat-composer-input')).not.toHaveAttribute('aria-readonly', 'true');
+    await expect(page.getByRole('button', { name: /^Share$/i })).toBeEnabled();
+  } finally {
+    releaseScope();
+    releaseStatus();
+  }
 });
 
 test('[P1] design system multi-select stores primary and inspiration metadata', async ({ page }) => {
@@ -1521,7 +1558,7 @@ async function createBoundTeamProject(
   page: Page,
   projectName: string,
 ): Promise<{ projectId: string; conversationId: string }> {
-  const response = await retryProjectCreate(page, projectName);
+  const response = await createProjectViaApi(page, projectName);
   const created = (await response.json()) as {
     project: Record<string, unknown> & { id: string };
     conversationId: string;
@@ -2820,18 +2857,205 @@ test('[P1] project detail assistant completion actions support copy, fork, and f
   const forkBody = forkRequest.postDataJSON() as {
     forkAfterMessageId?: string;
     seedFromConversationId?: string;
-    seedMessages?: Array<{ id?: string; role?: string }>;
+    seedMessages?: unknown;
   };
   expect(forkBody.seedFromConversationId).toBe(conversationId);
   expect(forkBody.forkAfterMessageId).toBe(assistantMessageId);
-  expect(
-    forkBody.seedMessages?.some((message) => {
-      return message.id === assistantMessageId && message.role === 'assistant';
-    }),
-  ).toBe(true);
+  expect(forkBody.seedMessages).toBeUndefined();
   await expect
     .poll(() => getProjectContextFromUrl(page).conversationId)
     .not.toBe(conversationId);
+});
+
+test('[P1] project detail fork emits correlated click and result analytics', async ({ page }) => {
+  const analyticsBodies: string[] = [];
+  await page.unroute('**/api/app-config').catch(() => {});
+  await page.addInitScript((key) => {
+    window.localStorage.setItem(
+      key,
+      JSON.stringify({
+        mode: 'daemon',
+        apiKey: '',
+        baseUrl: 'https://api.anthropic.com',
+        model: 'default',
+        agentId: 'codex',
+        skillId: null,
+        designSystemId: null,
+        onboardingCompleted: true,
+        privacyDecisionAt: 1,
+        telemetry: { metrics: true, content: false, artifactManifest: false },
+        agentModels: { codex: { model: 'default' } },
+      }),
+    );
+  }, STORAGE_KEY);
+  await page.route('**/api/app-config', async (route) => {
+    await route.fulfill({
+      json: {
+        config: {
+          onboardingCompleted: true,
+          privacyDecisionAt: 1,
+          telemetry: { metrics: true, content: false, artifactManifest: false },
+          mode: 'daemon',
+          agentId: 'codex',
+          skillId: null,
+          designSystemId: null,
+          agentModels: { codex: { model: 'default' } },
+          agentCliEnv: {},
+        },
+      },
+    });
+  });
+  await page.route('**/api/analytics/config', async (route) => {
+    await route.fulfill({
+      json: {
+        enabled: true,
+        env: 'e2e',
+        key: 'phc_e2e',
+        host: 'https://analytics.open-design.test',
+        installationId: 'e2e-installation',
+      },
+    });
+  });
+  await page.route('https://analytics.open-design.test/**', async (route) => {
+    analyticsBodies.push(route.request().postData() ?? '');
+    await route.fulfill({ status: 200, json: { status: 1 } });
+  });
+
+  const { projectId, conversationId } = await seedProjectWithAssistantCompletion(page);
+  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+  await expectWorkspaceReady(page);
+
+  const forkResponsePromise = page.waitForResponse((response) => {
+    return response.request().method() === 'POST'
+      && response.url().endsWith(`/api/projects/${projectId}/conversations`);
+  });
+  await page.getByTestId('assistant-fork-button').click();
+  expect((await forkResponsePromise).ok()).toBe(true);
+
+  await expect
+    .poll(() => analyticsBodies.join('\n'), { timeout: T.medium })
+    .toContain('conversation_fork_result');
+  const raw = analyticsBodies.join('\n');
+  expect(raw).toContain('assistant_fork_button');
+  expect(raw).toContain('fork_conversation');
+  expect(raw).toContain('"result":"success"');
+  expect(raw).toContain('"fork_point":"latest"');
+  expect(raw).toContain(projectId);
+  expect(raw).toContain(conversationId);
+  const requestIdCounts = new Map<string, number>();
+  for (const match of raw.matchAll(/"request_id":"([^"]+)"/g)) {
+    const requestId = match[1];
+    if (!requestId) continue;
+    requestIdCounts.set(requestId, (requestIdCounts.get(requestId) ?? 0) + 1);
+  }
+  expect([...requestIdCounts.values()].some((count) => count >= 2)).toBe(true);
+});
+
+test('[P1] project detail forks histories larger than the daemon JSON body limit', async ({ page }) => {
+  test.setTimeout(T.xlong);
+  const { projectId, conversationId, expectedContents } =
+    await seedProjectWithLargeAssistantHistory(page);
+
+  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+  await expectWorkspaceReady(page);
+  await expect(page.getByTestId('assistant-fork-button')).toHaveCount(3, {
+    timeout: T.long,
+  });
+
+  const forkResponsePromise = page.waitForResponse((response) => {
+    return response.request().method() === 'POST'
+      && response.url().endsWith(`/api/projects/${projectId}/conversations`);
+  });
+  await page.getByTestId('assistant-fork-button').last().click();
+  const forkResponse = await forkResponsePromise;
+  expect(
+    forkResponse.ok(),
+    `fork large conversation: ${await forkResponse.text()}`,
+  ).toBe(true);
+  const forkRequestBody = forkResponse.request().postDataJSON() as {
+    seedMessages?: unknown;
+  };
+  expect(forkRequestBody.seedMessages).toBeUndefined();
+
+  await expect
+    .poll(() => getProjectContextFromUrl(page).conversationId)
+    .not.toBe(conversationId);
+  const forkConversationId = getProjectContextFromUrl(page).conversationId;
+  expect(forkConversationId).toBeTruthy();
+  const forkRequestHeaders = forkResponse.request().headers();
+  const workspaceHeaders = Object.fromEntries(
+    ['x-od-workspace-id', 'x-od-workspace-member-id']
+      .map((name) => [name, forkRequestHeaders[name]] as const)
+      .filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+  );
+  const forkMessagesResponse = await page.request.get(
+    `/api/projects/${projectId}/conversations/${forkConversationId}/messages`,
+    { headers: workspaceHeaders },
+  );
+  expect(
+    forkMessagesResponse.ok(),
+    `load forked messages: ${await forkMessagesResponse.text()}`,
+  ).toBe(true);
+  const forkMessagesBody = (await forkMessagesResponse.json()) as {
+    messages: Array<{ content: string }>;
+  };
+  expect(forkMessagesBody.messages.map((message) => message.content)).toEqual(expectedContents);
+});
+
+test('[P1] read-only project viewers do not see conversation fork actions', async ({ page }) => {
+  const { projectId, conversationId } = await seedProjectWithAssistantCompletion(page);
+  const readonlyTeamContext = {
+    ...AMR_PERSONAL_WORKSPACE_CONTEXT,
+    workspaceId: 'workspace-readonly-fork',
+    workspaceType: 'team',
+    workspaceMemberId: 'member-readonly-fork',
+    role: 'member',
+    teamId: 'team-readonly-fork',
+    permissions: {
+      ...AMR_PERSONAL_WORKSPACE_CONTEXT.permissions,
+      canWriteSyncedFiles: false,
+    },
+  };
+  await page.route(`**/api/projects/${projectId}/workspace-scope`, async (route) => {
+    await route.fulfill({
+      json: {
+        scope: {
+          kind: 'team',
+          projectId,
+          workspaceId: readonlyTeamContext.workspaceId,
+          visibility: 'team',
+          context: readonlyTeamContext,
+        },
+      },
+    });
+  });
+  await page.route(`**/api/projects/${projectId}/collab/status`, async (route) => {
+    await route.fulfill({
+      json: {
+        publishedVersion: 1,
+        materializedVersion: 1,
+        syncState: 'synced',
+        ownerMemberId: 'member-project-owner',
+      },
+    });
+  });
+
+  await page.goto(`/projects/${projectId}/conversations/${conversationId}`);
+  await page
+    .getByText('Loading Open Design…')
+    .waitFor({ state: 'hidden', timeout: T.long })
+    .catch(() => {});
+  const showChat = page.getByTestId('workspace-focus-toggle');
+  if (await showChat.isVisible()) {
+    await showChat.click();
+  }
+  const expandConversation = page.getByRole('button', { name: 'Expand the conversation pane' });
+  if (await expandConversation.isVisible()) {
+    await expandConversation.click();
+  }
+  await expect(page.getByTestId('chat-composer-input')).toBeVisible({ timeout: T.long });
+  await expect(page.getByTestId('chat-composer-input')).toHaveAttribute('aria-readonly', 'true');
+  await expect(page.getByTestId('assistant-fork-button')).toHaveCount(0);
 });
 
 test('[P1] project detail conversations menu supports new chat, search, counts, and run duration metadata', async ({ page }) => {
@@ -2925,7 +3149,7 @@ test('[P0] project detail share menu copies the current share link for uploaded 
   });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
-  await openShareExportTab(page);
+  await openShareMenu(page);
   await page.getByRole('menuitem', { name: /^Copy share link$/i }).click();
   await expect(page.getByRole('menuitem', { name: /^Copied!$/i })).toBeVisible();
 
@@ -2988,7 +3212,7 @@ test('[P0] project detail share menu opens the current share page for uploaded h
   });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
-  await openShareExportTab(page);
+  await openShareMenu(page);
   await page.getByRole('menuitem', { name: /Open share page/i }).click();
 
   await expect
@@ -3032,7 +3256,7 @@ test('[P0] @critical project detail share menu publish action opens the deploy f
   });
   await openUploadedHtmlArtifactPreview(page, uploadedName);
 
-  await openShareExportTab(page);
+  await openShareMenu(page);
   await page.getByRole('menuitem', { name: /^Deploy to Vercel$/i }).click();
 
   const dialog = page.getByRole('dialog');
@@ -3635,7 +3859,7 @@ async function createProject(
   projectName: string,
   options: { headers?: Readonly<Record<string, string>> } = {},
 ) {
-  const response = await retryProjectCreate(page, projectName, options);
+  const response = await createProjectViaApi(page, projectName, options);
   const body = (await response.json()) as {
     project: { id: string };
     conversationId: string;
@@ -3643,40 +3867,33 @@ async function createProject(
   await page.goto(`/projects/${body.project.id}/conversations/${body.conversationId}`);
 }
 
-async function retryProjectCreate(
+async function createProjectViaApi(
   page: Page,
   projectName: string,
   options: { headers?: Readonly<Record<string, string>> } = {},
 ) {
-  let lastError = '';
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      const response = await page.request.post('/api/projects', {
-        timeout: 15_000,
-        ...(options.headers ? { headers: { ...options.headers } } : {}),
-        data: {
-          id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: projectName,
-          skillId: null,
-          designSystemId: null,
-          metadata: {
-            kind: 'prototype',
-            nameSource: 'user',
-          },
-        },
-      });
-      if (response.ok()) return response;
-      lastError = await response.text();
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-    }
-
-    if (attempt < 3) {
-      await page.waitForTimeout(500 * attempt);
-    }
-  }
-
-  throw new Error(`create project "${projectName}" failed after retries: ${lastError}`);
+  // The Playwright suite fixture waits on daemon `/api/health` before handing
+  // out a worker. Project create is therefore a single-shot completion signal
+  // (the HTTP response), not a call-site retry loop over an unknown race.
+  const response = await page.request.post('/api/projects', {
+    timeout: 15_000,
+    ...(options.headers ? { headers: { ...options.headers } } : {}),
+    data: {
+      id: `project-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      name: projectName,
+      skillId: null,
+      designSystemId: null,
+      metadata: {
+        kind: 'prototype',
+        nameSource: 'user',
+      },
+    },
+  });
+  expect(
+    response.ok(),
+    `create project "${projectName}": ${await response.text()}`,
+  ).toBeTruthy();
+  return response;
 }
 
 async function seedProjectWithAssistantCompletion(
@@ -3756,6 +3973,72 @@ async function seedProjectWithAssistantCompletion(
   expect(assistantResponse.ok(), `seed assistant message: ${await assistantResponse.text()}`).toBeTruthy();
 
   return { projectId, conversationId, assistantMessageId, assistantText };
+}
+
+async function seedProjectWithLargeAssistantHistory(
+  page: Page,
+): Promise<{
+  projectId: string;
+  conversationId: string;
+  expectedContents: string[];
+}> {
+  const projectId = `assistant-large-fork-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const projectResponse = await page.request.post('/api/projects', {
+    data: {
+      id: projectId,
+      name: 'Large Conversation Fork',
+      skillId: null,
+      designSystemId: null,
+      metadata: {
+        kind: 'prototype',
+        nameSource: 'user',
+      },
+    },
+  });
+  expect(projectResponse.ok(), `create project: ${await projectResponse.text()}`).toBeTruthy();
+  const { conversationId } = (await projectResponse.json()) as { conversationId: string };
+  const expectedContents: string[] = [];
+
+  for (let index = 1; index <= 3; index += 1) {
+    const userMessageId = `large-user-${index}`;
+    const userContent = `Large fork request ${index}`;
+    const userResponse = await page.request.put(
+      `/api/projects/${projectId}/conversations/${conversationId}/messages/${userMessageId}`,
+      {
+        data: {
+          id: userMessageId,
+          role: 'user',
+          content: userContent,
+          createdAt: Date.now() + index * 2,
+        },
+      },
+    );
+    expect(userResponse.ok(), `seed user ${index}: ${await userResponse.text()}`).toBeTruthy();
+    expectedContents.push(userContent);
+
+    const assistantMessageId = `large-assistant-${index}`;
+    const assistantContent = `Large fork point ${index}`;
+    const assistantResponse = await page.request.put(
+      `/api/projects/${projectId}/conversations/${conversationId}/messages/${assistantMessageId}`,
+      {
+        data: {
+          id: assistantMessageId,
+          role: 'assistant',
+          content: assistantContent,
+          runStatus: 'succeeded',
+          events: [{ kind: 'raw', line: 'x'.repeat(1_500_000) }],
+          createdAt: Date.now() + index * 2 + 1,
+        },
+      },
+    );
+    expect(
+      assistantResponse.ok(),
+      `seed assistant ${index}: ${await assistantResponse.text()}`,
+    ).toBeTruthy();
+    expectedContents.push(assistantContent);
+  }
+
+  return { projectId, conversationId, expectedContents };
 }
 
 type ConversationHistoryFixture = {
@@ -4306,12 +4589,15 @@ function getProjectIdFromApiPath(rawUrl: string) {
   return projectId;
 }
 
-async function openShareExportTab(page: Page) {
+// Share opens straight onto the link/asset-shaped rows — share link, share
+// page, deploy targets, save-as-template. These used to live under the old
+// popover's "Export" tab; the split moved them to Share and left Export as a
+// pure file-format menu, so the callers below take the Share door now. The
+// popover shell is still shared between the two, so the locator is unchanged.
+async function openShareMenu(page: Page) {
   await page.getByRole('button', { name: /^Share$/i }).click();
   const menu = page.locator('.share-menu-popover[role="menu"]');
   await expect(menu).toBeVisible();
-  await menu.getByRole('tab', { name: /^Export$/i }).click();
-  await expect(menu.getByRole('tab', { name: /^Export$/i })).toHaveAttribute('aria-selected', 'true');
   return menu;
 }
 
