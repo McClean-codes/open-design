@@ -363,4 +363,33 @@ describe('plugin install diagnostics', () => {
       code: 'INVALID_MANIFEST',
     });
   });
+
+  it.each([
+    ['malformed JSON', '{'],
+    ['a missing required name', JSON.stringify({ version: '1.0.0' })],
+    ['an invalid repeat stage', JSON.stringify({
+      name: 'sample-plugin',
+      version: '1.0.0',
+      od: {
+        pipeline: {
+          stages: [{ id: 'critique', atoms: ['critique-theater'], repeat: true }],
+        },
+      },
+    })],
+  ])('classifies open-design.json with %s as an invalid manifest', async (_label, manifest) => {
+    await writeFile(path.join(sourceFolder, 'open-design.json'), manifest);
+
+    const events = [];
+    for await (const event of installPlugin(db, {
+      source: sourceFolder,
+      roots: { userPluginsRoot: pluginsRoot },
+    })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      kind: 'error',
+      code: 'INVALID_MANIFEST',
+    });
+  });
 });

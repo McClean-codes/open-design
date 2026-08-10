@@ -761,7 +761,12 @@ export async function* installFromLocalFolder(
   }, opts);
   const probe = await resolvePluginFolder(probeOptions);
   if (!probe.ok) {
-    yield { kind: 'error', message: probe.errors.join('; '), warnings: probe.warnings };
+    yield {
+      kind: 'error',
+      message: probe.errors.join('; '),
+      warnings: probe.warnings,
+      code: 'INVALID_MANIFEST',
+    };
     return;
   }
   warnings.push(...probe.warnings);
@@ -816,7 +821,12 @@ export async function* installFromLocalFolder(
   const parsed = await resolvePluginFolder(parsedOptions);
   if (!parsed.ok) {
     await fsp.rm(destFolder, { recursive: true, force: true }).catch(() => undefined);
-    yield { kind: 'error', message: parsed.errors.join('; '), warnings: [...warnings, ...parsed.warnings] };
+    yield {
+      kind: 'error',
+      message: parsed.errors.join('; '),
+      warnings: [...warnings, ...parsed.warnings],
+      code: 'INVALID_MANIFEST',
+    };
     return;
   }
   warnings.push(...parsed.warnings);
