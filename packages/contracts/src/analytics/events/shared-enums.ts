@@ -214,6 +214,16 @@ export type TrackingExportFormat =
 
 export type TrackingResult = 'success' | 'failed';
 export type TrackingRunResult = 'success' | 'failed' | 'cancelled';
+export type TrackingRunCancelOrigin =
+  | 'user_stop'
+  | 'project_cleanup'
+  | 'daemon_shutdown'
+  | 'unknown';
+export type TrackingRunTerminalTrigger =
+  | TrackingRunCancelOrigin
+  | 'first_output_deadline'
+  | 'inactivity_watchdog'
+  | 'daemon_restart';
 export type TrackingExportResult = 'success' | 'failed' | 'cancelled';
 // Stable codes for artifact_publish_result.error_code. Deliberately a CLOSED
 // set — unlike artifact_deploy_result's open-ended provider/HTTP codes — so no

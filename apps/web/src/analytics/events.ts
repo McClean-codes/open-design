@@ -110,6 +110,7 @@ import type {
   AssistantFeedbackClickProps,
   AssistantFeedbackReasonClickProps,
   AssistantFeedbackReasonSubmitClickProps,
+  ConversationForkClickProps,
   AssistantFeedbackReasonSubmitProps,
   AssistantFeedbackReasonViewProps,
   SettingsSidebarClickProps,
@@ -140,6 +141,7 @@ import type {
   SketchSaveResultProps,
   SketchExportResultProps,
   FeedbackSubmitResultProps,
+  ConversationForkResultProps,
   SettingsViewProps,
   SettingsCliTestResultProps,
   SettingsByokModelsFetchResultProps,
@@ -992,6 +994,14 @@ export function trackAssistantFeedbackButtonClick(
   send(track, 'ui_click', props);
 }
 
+export function trackConversationForkClick(
+  track: Track,
+  props: ConversationForkClickProps,
+  options?: { requestId?: string },
+): void {
+  send(track, 'ui_click', props, options);
+}
+
 export function trackAssistantFeedbackReasonSubmitClick(
   track: Track,
   props: AssistantFeedbackReasonSubmitClickProps,
@@ -1186,6 +1196,14 @@ export function trackFeedbackSubmitResult(
   options?: { requestId?: string },
 ): void {
   send(track, 'feedback_submit_result', props, options);
+}
+
+export function trackConversationForkResult(
+  track: Track,
+  props: ConversationForkResultProps,
+  options?: { requestId?: string },
+): void {
+  send(track, 'conversation_fork_result', props, options);
 }
 
 // ---- Settings view + test/auth result events -----------------------------
