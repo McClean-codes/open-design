@@ -193,6 +193,7 @@ Every user-facing capability must be reachable through both the web UI **and** t
 
 ## Pull request expectations
 
+- All pull request operations in this repository must go through Odcrew. Use `odc gh pr create`, `odc gh pr view`, `odc gh pr list`, `odc gh pr comment`, `odc gh pr review`, and `odc gh pr push`; do not use direct `gh pr ...` commands or a direct `git push` to update a PR head branch. If Odcrew authentication is unavailable, restore it with `odc login` instead of bypassing the audited workflow.
 - Opening a PR uses `.github/pull_request_template.md`; fill every section, not just the title.
 - "Why" must answer both the author's use case (what made you write this PR) and the pain being addressed (user problem, technical debt, prod issue, or unblocker), not just a one-line restatement of the title.
 - "What users will see" describes the change from a user's perspective — what they click, what new thing appears, what default behavior changed — not from a code perspective.
