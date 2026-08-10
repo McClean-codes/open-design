@@ -153,13 +153,13 @@ export function classifyPluginInstallError(message: string): PluginInstallErrorC
   if (/cannot be replaced|owned by another workspace member|destination folder already exists/i.test(message)) {
     return 'CONFLICT';
   }
-  if (/network|fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
-    return 'FETCH_FAILED';
-  }
   if (/files? are required|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls|exceeds (?:size cap of )?\d+ (?:bytes|mib)|too large/i.test(message)) {
     return 'BAD_REQUEST';
   }
-  if (/manifest|plugin id|installable archive|re-parsing destination/i.test(message)) {
+  if (/network|fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
+    return 'FETCH_FAILED';
+  }
+  if (/manifest|plugin id|installable archive|re-parsing destination|contains no skill\.md/i.test(message)) {
     return 'INVALID_MANIFEST';
   }
   if (/archive|zip|symbolic|hard links?|path-traversal|integrity mismatch/i.test(message)) {

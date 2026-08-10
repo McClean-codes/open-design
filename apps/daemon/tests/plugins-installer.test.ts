@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import Database from 'better-sqlite3';
 import { migratePlugins } from '../src/plugins/persistence.js';
 import {
@@ -316,6 +317,47 @@ describe('plugin install diagnostics', () => {
       kind: 'error',
       message: 'network boom',
       code: 'FETCH_FAILED',
+    });
+  });
+
+  it('keeps a wrapped archive download limit in the bad-request bucket', async () => {
+    const events = [];
+    for await (const event of installPlugin(db, {
+      source: 'https://example.com/plugin.tgz',
+      roots: { userPluginsRoot: pluginsRoot },
+      maxBytes: 4,
+      fetcher: async () => ({
+        ok: true,
+        status: 200,
+        statusText: 'OK',
+        body: Readable.from(Buffer.from('too large')),
+      }),
+    })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      kind: 'error',
+      message: 'Archive download failed: Downloaded archive exceeds 4 bytes',
+      code: 'BAD_REQUEST',
+    });
+  });
+
+  it('classifies a real README-only folder as an invalid manifest', async () => {
+    await rm(path.join(sourceFolder, 'open-design.json'));
+    await writeFile(path.join(sourceFolder, 'README.md'), '# Not a plugin\n');
+
+    const events = [];
+    for await (const event of installPlugin(db, {
+      source: sourceFolder,
+      roots: { userPluginsRoot: pluginsRoot },
+    })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      kind: 'error',
+      code: 'INVALID_MANIFEST',
     });
   });
 });
