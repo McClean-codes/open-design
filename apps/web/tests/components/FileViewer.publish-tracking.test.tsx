@@ -169,6 +169,12 @@ function reactComponentFile(): ProjectFile {
   };
 }
 
+// The publish trigger is the Share panel's `role="menuitem"` row labelled by
+// `fileViewer.publishSingleFileTitle`; once published it is replaced by the
+// copy-link / `fileViewer.unpublishFile` pair.
+const PUBLISH_ROW = /get a share link/i;
+const UNPUBLISH_ROW = /stop sharing/i;
+
 async function openPublishPanel() {
   renderProjectFileViewer(teamWorkspaceContext(), {
     projectId: 'project-pub',
@@ -178,7 +184,7 @@ async function openPublishPanel() {
   });
   const shareButton = await screen.findByRole('button', { name: /^share$/i });
   fireEvent.click(shareButton);
-  return await screen.findByRole('button', { name: /publish file/i });
+  return await screen.findByRole('menuitem', { name: PUBLISH_ROW });
 }
 
 // Same flow through the ReactComponentViewer copy of the publish card, which
@@ -191,7 +197,7 @@ async function openReactComponentPublishPanel() {
   });
   const shareButton = await screen.findByRole('button', { name: /^share$/i });
   fireEvent.click(shareButton);
-  return await screen.findByRole('button', { name: /publish file/i });
+  return await screen.findByRole('menuitem', { name: PUBLISH_ROW });
 }
 
 afterEach(() => {
@@ -266,7 +272,7 @@ describe('publish flow analytics', () => {
     const publishButton = await openPublishPanel();
     fireEvent.click(publishButton);
 
-    const unpublishButton = await screen.findByRole('button', { name: /unpublish file/i });
+    const unpublishButton = await screen.findByRole('button', { name: UNPUBLISH_ROW });
     fireEvent.click(unpublishButton);
     await waitFor(() => {
       expect(trackedEvents('artifact_publish_result')).toContainEqual(
@@ -284,7 +290,7 @@ describe('publish flow analytics', () => {
     const publishButton = await openPublishPanel();
     fireEvent.click(publishButton);
 
-    const unpublishButton = await screen.findByRole('button', { name: /unpublish file/i });
+    const unpublishButton = await screen.findByRole('button', { name: UNPUBLISH_ROW });
     fireEvent.click(unpublishButton);
     await waitFor(() => {
       expect(trackedEvents('artifact_publish_result')).toContainEqual(
@@ -343,7 +349,7 @@ describe('publish flow analytics', () => {
     };
     const { rerenderWith } = renderProjectFileViewer(teamWorkspaceContext(), props);
     fireEvent.click(await screen.findByRole('button', { name: /^share$/i }));
-    fireEvent.click(await screen.findByRole('button', { name: /publish file/i }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: PUBLISH_ROW }));
     expect(trackedEvents('ui_click')).toContainEqual(
       expect.objectContaining({ element: 'publish_file' }),
     );
