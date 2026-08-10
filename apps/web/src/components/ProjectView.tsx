@@ -126,6 +126,7 @@ import {
 } from '../runtime/chat-events';
 import type { RunFailureClassificationFields } from '../runtime/chat-events';
 import {
+  designDeliveryReconciliationStale,
   designDeliveryVerificationPending,
   isRetryableAssistantTerminalFailure,
   resolveDesignDeliveryOutcome,
@@ -8981,7 +8982,7 @@ export function ProjectView({
 
   const handleForkFromMessage = useCallback(
     async (assistantMessage: ChatMessage) => {
-      if (!activeConversationId || forkingMessageId) return;
+      if (!activeConversationId || forkingMessageId || projectCollab.viewerOnly) return;
       setForkingMessageId(assistantMessage.id);
       setConversationLoadError(null);
       try {
@@ -8989,21 +8990,19 @@ export function ProjectView({
         const forkTitle = sourceTitle
           ? t('chat.forkedConversationTitle', { title: sourceTitle })
           : undefined;
-        // Seed the fork from the messages the user is actually looking at,
-        // up to and including the fork point. A run that errored or had its
-        // connection reset before its assistant message was persisted leaves
-        // that message in memory only; copying from the database by id would
-        // 404 and silently drop the fork. Sending the in-memory snapshot makes
-        // the fork resilient to that gap.
-        const forkIndex = messages.findIndex((m) => m.id === assistantMessage.id);
-        const seedMessages =
-          forkIndex >= 0 ? messages.slice(0, forkIndex + 1) : [...messages, assistantMessage];
+        const forkIndex = messages.findIndex((message) => message.id === assistantMessage.id);
+        const forkFallbackPredecessorMessageId = forkIndex < 0
+          ? undefined
+          : (messages[forkIndex - 1]?.id ?? null);
         const fresh = await createConversation(project.id, forkTitle, {
           seedFromConversationId: activeConversationId,
           forkAfterMessageId: assistantMessage.id,
           sessionMode: activeSessionMode,
-          seedMessages,
+          forkFallbackMessage:
+            forkFallbackPredecessorMessageId === undefined ? undefined : assistantMessage,
+          forkFallbackPredecessorMessageId,
           workspaceContext: projectRunWorkspaceContext,
+          throwOnError: true,
         });
         if (!fresh) throw new Error(t('chat.forkConversationFailed'));
         setMessages([]);
@@ -9048,6 +9047,7 @@ export function ProjectView({
       onProjectsRefresh,
       openTabsState.active,
       project.id,
+      projectCollab.viewerOnly,
       t,
     ],
   );
@@ -10734,7 +10734,9 @@ export function ProjectView({
               onAssistantFeedback={handleAssistantFeedback}
               onArtifactShare={handleArtifactShare}
               onArtifactDownload={handleArtifactDownload}
-              onForkFromMessage={handleForkFromMessage}
+              onForkFromMessage={
+                projectCollab.viewerOnly ? undefined : handleForkFromMessage
+              }
               forkingMessageId={forkingMessageId}
               onNewConversation={handleNewConversation}
               newConversationDisabled={newConversationDisabled}
@@ -11435,7 +11437,14 @@ export function shouldReplayTerminalRunMessage(message: ChatMessage): boolean {
   // A daemon can persist terminal success before the browser finishes its
   // project-file refresh. Reattach once even when prose already exists so the
   // delivery invariant can confirm a file or downgrade the turn after reload.
-  if (designDeliveryVerificationPending(message)) return true;
+  if (designDeliveryVerificationPending(message)) {
+    // #6505: a historical succeeded Design row whose delivery metadata never
+    // materialized must not be replayed/reattached on every reload. Bound
+    // reconciliation to a short window after the run's terminal time; past it,
+    // the row renders as a terminal outcome instead of looping through replay.
+    if (designDeliveryReconciliationStale(message)) return false;
+    return true;
+  }
   if (message.content.trim().length > 0) return false;
   if (
     message.startedAt == null
