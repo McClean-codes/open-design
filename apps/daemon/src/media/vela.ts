@@ -204,6 +204,24 @@ function parsePublishedProfiles(
 }
 
 /**
+ * Match a requested value against the catalogue without caring about case, and
+ * answer with the catalogue's own spelling.
+ *
+ * Vela publishes `2K` and `high`; a caller who writes `2k` or `HIGH` means the
+ * same thing, and there is no published value that differs only by case for
+ * the two to collide over. Rejecting on case alone spends a round trip (and a
+ * retry) teaching the caller to shift a letter. What goes on the wire is
+ * always the published spelling, never the caller's.
+ */
+function matchPublishedValue(
+  requested: string,
+  published: readonly string[],
+): string | undefined {
+  const folded = requested.toLowerCase();
+  return published.find((value) => value.toLowerCase() === folded);
+}
+
+/**
  * Turn a requested tier into the `--quality` argument, or into nothing.
  *
  * Three outcomes, and the difference matters for billing: an unqualified
@@ -224,12 +242,13 @@ function qualityArgs(
       `Vela model ${wireModel} does not publish a quality capability, so quality ${tier} cannot be requested`,
     );
   }
-  if (!published.qualityValues.includes(tier)) {
+  const publishedTier = matchPublishedValue(tier, published.qualityValues);
+  if (!publishedTier) {
     throw new Error(
       `Vela model ${wireModel} does not publish quality ${tier}; supported: ${published.qualityValues.join(', ')}`,
     );
   }
-  return ['--quality', tier];
+  return ['--quality', publishedTier];
 }
 
 // Vela owns which shapes and tiers a model can actually deliver, so read the
@@ -278,9 +297,10 @@ function selectImageOutputProfile(
     );
   }
   if (requestedResolution) {
-    const exact = matching.find((profile) => profile.resolution === requestedResolution);
+    const supported = matching.map((profile) => profile.resolution);
+    const publishedResolution = matchPublishedValue(requestedResolution, supported);
+    const exact = matching.find((profile) => profile.resolution === publishedResolution);
     if (!exact) {
-      const supported = matching.map((profile) => profile.resolution);
       throw new Error(
         `Vela model ${wireModel} does not publish resolution ${requestedResolution} at aspect ${aspect}; supported: ${supported.join(', ')}`,
       );

@@ -417,6 +417,27 @@ describe('Vela media provider', () => {
     expect(result.providerNote).toContain('1:1 1K');
   });
 
+  // An agent that writes "2k" means Vela's "2K". Rejecting on case alone cost
+  // a real run one failed request plus a retry before it shifted the letter.
+  it('accepts a published resolution or tier in any case and sends the published spelling', async () => {
+    mockReadyImage();
+
+    const result = await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      aspect: '1:1',
+      resolution: '1k',
+      quality: 'HIGH',
+      output: 'case-insensitive.png',
+    });
+
+    const [args] = imageCall();
+    expect(valueAfter(args, '--resolution')).toBe('1K');
+    expect(valueAfter(args, '--quality')).toBe('high');
+    expect(result.providerNote).toContain('1:1 1K');
+  });
+
   it('names the resolutions published at that aspect when the requested one is not one of them', async () => {
     mockReadyImage();
 
