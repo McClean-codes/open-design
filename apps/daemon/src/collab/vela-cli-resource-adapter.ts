@@ -73,7 +73,21 @@ const MEMBER_MIRROR_EXCLUDED_ENTRIES = [
   'terraform.tfstate',
   'terraform.tfstate.backup',
 ] as const;
-const MEMBER_MIRROR_EXCLUDED_PREFIXES = ['.env'] as const;
+/**
+ * Name prefixes a snapshot skips.
+ *
+ * `.env` is secret-bearing, so it is bare and matches any entry type — a
+ * `.env.local` file and a stray `.envrc` directory are equally unwelcome in a
+ * member mirror.
+ *
+ * `deriveddata-` mirrors the owner-side rule (`isIgnoredProjectDirName` treats
+ * any `deriveddata-*` name as hidden) and is directory-scoped for the same
+ * reason the generated-tree names are: a regular file starting with that
+ * prefix is ordinary project content. See
+ * {@link MEMBER_MIRROR_PUSH_EXCLUDED_ENTRIES} for the trailing-slash contract
+ * and why it degrades safely on a Vela that predates it.
+ */
+const MEMBER_MIRROR_EXCLUDED_PREFIXES = ['.env', 'deriveddata-/'] as const;
 
 /**
  * Every entry name a `vela resource push` snapshot skips.
