@@ -296,7 +296,12 @@ async function findSkillRoot(
     );
   }
   if (candidates.length === 0) {
-    return error('INVALID_MANIFEST', 'Skill archive does not contain a SKILL.md file');
+    return error(
+      'INVALID_MANIFEST',
+      preferredSkillPath
+        ? `Skill repository does not contain SKILL.md at ${preferredSkillPath}`
+        : 'Skill archive does not contain a SKILL.md file',
+    );
   }
   if (preferredSkillPath) {
     const expected = preferredSkillPath.toLowerCase();

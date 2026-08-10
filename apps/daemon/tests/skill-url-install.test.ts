@@ -185,6 +185,47 @@ describe('installSkillFromRemoteSource', () => {
     ]);
   });
 
+  it('tries a longer GitHub ref when the shorter ref archive has no skill manifest', async () => {
+    const nonSkillArchive = await archiveFrom(async (root) => {
+      const repositoryRoot = path.join(root, 'collection-feature');
+      await mkdir(repositoryRoot, { recursive: true });
+      await writeFile(path.join(repositoryRoot, 'README.md'), '# Not a skill\n');
+    }, ['collection-feature']);
+    const skillArchive = await archiveFrom(async (root) => {
+      const skillRoot = path.join(root, 'collection-feature-foo', 'skills', 'beta-skill');
+      await mkdir(skillRoot, { recursive: true });
+      await writeFile(
+        path.join(skillRoot, 'SKILL.md'),
+        '---\nname: beta-skill\ndescription: fixture\n---\n\n# Beta workflow\n',
+      );
+    }, ['collection-feature-foo']);
+    const urls: string[] = [];
+
+    const result = await installSkillFromRemoteSource(
+      await tempRoot('od-user-skills-'),
+      'https://github.com/owner/collection/tree/feature/foo/skills/beta-skill',
+      {
+        fetcher: async (url) => {
+          urls.push(url);
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            body: Readable.from(
+              url.endsWith('/tar.gz/feature') ? nonSkillArchive : skillArchive,
+            ),
+          };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, id: 'beta-skill' });
+    expect(urls).toEqual([
+      'https://codeload.github.com/owner/collection/tar.gz/feature',
+      'https://codeload.github.com/owner/collection/tar.gz/feature/foo',
+    ]);
+  });
+
   it('finds an explicitly selected nested skill below a parent SKILL.md', async () => {
     const archive = await archiveFrom(async (root) => {
       const repositoryRoot = path.join(root, 'collection-main');
