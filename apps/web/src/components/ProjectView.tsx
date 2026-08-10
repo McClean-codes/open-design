@@ -8922,11 +8922,17 @@ export function ProjectView({
         const forkTitle = sourceTitle
           ? t('chat.forkedConversationTitle', { title: sourceTitle })
           : undefined;
+        const forkIndex = messages.findIndex((message) => message.id === assistantMessage.id);
+        const forkFallbackPredecessorMessageId = forkIndex < 0
+          ? undefined
+          : (messages[forkIndex - 1]?.id ?? null);
         const fresh = await createConversation(project.id, forkTitle, {
           seedFromConversationId: activeConversationId,
           forkAfterMessageId: assistantMessage.id,
           sessionMode: activeSessionMode,
-          forkFallbackMessage: assistantMessage,
+          forkFallbackMessage:
+            forkFallbackPredecessorMessageId === undefined ? undefined : assistantMessage,
+          forkFallbackPredecessorMessageId,
           workspaceContext: projectRunWorkspaceContext,
           throwOnError: true,
         });

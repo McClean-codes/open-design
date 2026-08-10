@@ -378,7 +378,7 @@ describe('GET /api/projects/:id resolvedDir', () => {
     expect(forkMessages[1]?.lastRunEventId).toBeUndefined();
   });
 
-  it('appends one client fallback message when the fork point was never persisted', async () => {
+  it('cuts persisted history at the fallback predecessor before appending the missing fork point', async () => {
     const projectId = `proj-conv-fork-fallback-${Date.now()}`;
     const createProjectResp = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
@@ -416,6 +416,29 @@ describe('GET /api/projects/:id resolvedDir', () => {
     );
     expect(saveUserResp.status).toBe(200);
 
+    for (const message of [
+      {
+        id: 'fallback-user-2',
+        role: 'user',
+        content: 'Later persisted request that must be excluded',
+      },
+      {
+        id: 'fallback-assistant-2',
+        role: 'assistant',
+        content: 'Later persisted answer that must be excluded',
+      },
+    ]) {
+      const saveLaterResp = await fetch(
+        `${baseUrl}/api/projects/${projectId}/conversations/${sourceId}/messages/${message.id}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(message),
+        },
+      );
+      expect(saveLaterResp.status).toBe(200);
+    }
+
     const forkResp = await fetch(`${baseUrl}/api/projects/${projectId}/conversations`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -424,6 +447,7 @@ describe('GET /api/projects/:id resolvedDir', () => {
         sessionMode: 'chat',
         seedFromConversationId: sourceId,
         forkAfterMessageId: 'fallback-assistant-1',
+        forkFallbackPredecessorMessageId: 'fallback-user-1',
         forkFallbackMessage: {
           id: 'fallback-assistant-1',
           role: 'assistant',

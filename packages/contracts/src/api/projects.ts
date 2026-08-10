@@ -635,6 +635,13 @@ export interface CreateConversationRequest {
    */
   forkFallbackMessage?: ChatMessage;
   /**
+   * The persisted message immediately before `forkFallbackMessage`, or null
+   * when the fallback is the first message. The daemon cuts persisted history
+   * at this boundary before appending the fallback, so later turns cannot leak
+   * into a fork from an older unpersisted assistant message.
+   */
+  forkFallbackPredecessorMessageId?: string | null;
+  /**
    * Client-supplied snapshot of the messages to seed the fork with, in order,
    * up to and including the fork point. When present, the daemon copies these
    * instead of reading the source conversation from the database by id. This

@@ -119,6 +119,16 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
       && typeof req.body.forkFallbackMessage.content === 'string'
         ? req.body.forkFallbackMessage
         : null;
+    const rawForkFallbackPredecessorMessageId = req.body?.forkFallbackPredecessorMessageId;
+    let clientForkFallbackPredecessorMessageId: string | null | undefined;
+    if (rawForkFallbackPredecessorMessageId === null) {
+      clientForkFallbackPredecessorMessageId = null;
+    } else if (
+      typeof rawForkFallbackPredecessorMessageId === 'string'
+      && rawForkFallbackPredecessorMessageId
+    ) {
+      clientForkFallbackPredecessorMessageId = rawForkFallbackPredecessorMessageId;
+    }
     let seedMessages: any[] = [];
     if (clientSeedMessages && clientSeedMessages.length > 0) {
       seedMessages = clientSeedMessages;
@@ -137,6 +147,20 @@ export function registerProjectConversationRoutes(app: Express, ctx: RegisterPro
         if (forkIndex < 0) {
           if (clientForkFallbackMessage?.id !== requestedForkMessageId) {
             return res.status(404).json({ error: 'fork message not found' });
+          }
+          if (clientForkFallbackPredecessorMessageId === undefined) {
+            return res.status(400).json({ error: 'fork fallback predecessor is required' });
+          }
+          if (clientForkFallbackPredecessorMessageId === null) {
+            seedMessages = [];
+          } else {
+            const predecessorIndex = seedMessages.findIndex(
+              (message) => message.id === clientForkFallbackPredecessorMessageId,
+            );
+            if (predecessorIndex < 0) {
+              return res.status(404).json({ error: 'fork fallback predecessor not found' });
+            }
+            seedMessages = seedMessages.slice(0, predecessorIndex + 1);
           }
           seedMessages.push(clientForkFallbackMessage);
         } else {

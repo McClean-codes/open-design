@@ -141,6 +141,7 @@ describe('createConversation', () => {
     await expect(createConversation('project-1', 'Fork', {
       seedFromConversationId: 'source-1',
       forkAfterMessageId: 'assistant-missing',
+      forkFallbackPredecessorMessageId: 'user-before-missing',
       forkFallbackMessage: {
         id: 'assistant-missing',
         role: 'assistant',
@@ -156,6 +157,7 @@ describe('createConversation', () => {
     const retryBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
       seedMessages?: unknown;
       forkFallbackMessage?: Record<string, unknown>;
+      forkFallbackPredecessorMessageId?: string;
     };
     expect(retryBody.seedMessages).toBeUndefined();
     expect(retryBody.forkFallbackMessage).toEqual({
@@ -163,6 +165,7 @@ describe('createConversation', () => {
       role: 'assistant',
       content: 'Partial answer',
     });
+    expect(retryBody.forkFallbackPredecessorMessageId).toBe('user-before-missing');
   });
 
   it('surfaces the daemon error for an interactive conversation write', async () => {

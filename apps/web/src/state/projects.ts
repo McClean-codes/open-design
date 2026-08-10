@@ -959,6 +959,7 @@ type CreateConversationOptions = {
   sessionMode?: ChatSessionMode;
   // The one in-memory fork point to retry with when it never reached the DB.
   forkFallbackMessage?: ChatMessage;
+  forkFallbackPredecessorMessageId?: string | null;
   workspaceContext?: WorkspaceCollabContext | null;
   throwOnError?: boolean;
 };
@@ -1031,7 +1032,11 @@ export async function createConversation(
       if (resp.status === 404 && message === 'fork message not found' && fallbackMessage) {
         resp = await postConversation(
           projectId,
-          { ...body, forkFallbackMessage: fallbackMessage },
+          {
+            ...body,
+            forkFallbackMessage: fallbackMessage,
+            forkFallbackPredecessorMessageId: opts?.forkFallbackPredecessorMessageId,
+          },
           opts?.workspaceContext,
         );
       } else {
@@ -1072,7 +1077,7 @@ function compactForkFallbackMessage(
   opts: CreateConversationOptions | undefined,
 ): ChatMessage | null {
   const forkMessage = opts?.forkFallbackMessage;
-  if (!forkMessage) return null;
+  if (!forkMessage || opts?.forkFallbackPredecessorMessageId === undefined) return null;
   return {
     id: forkMessage.id,
     role: forkMessage.role,
