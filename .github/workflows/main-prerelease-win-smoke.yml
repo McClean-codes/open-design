@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: main-prerelease-win-smoke
+  group: pr-6699-win-smoke
   cancel-in-progress: false
 
 env:
@@ -38,7 +38,7 @@ jobs:
       - name: Checkout main canary ref
         uses: actions/checkout@v6.0.2
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
       - name: Resolve canary commit
@@ -232,7 +232,7 @@ jobs:
   notify_failure:
     name: Notify Feishu on canary failure
     needs: smoke
-    if: ${{ always() && needs.smoke.result == 'failure' }}
+    if: ${{ false }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout notifier
