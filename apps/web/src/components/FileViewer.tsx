@@ -7913,7 +7913,10 @@ function HtmlViewer({
       'action' | 'result' | 'error_code' | 'publish_duration_ms'
     >,
   ) => {
-    if (!workspaceActive) return;
+    // Read the live ref, not the captured prop: a publish/unpublish request can
+    // start while this viewer is active and settle after the user switches tabs,
+    // and the in-flight continuation still holds the render-time `true`.
+    if (!workspaceActiveRef.current) return;
     trackArtifactPublishResult(analytics.track, {
       page_name: 'artifact',
       area: 'share_option_popover',
