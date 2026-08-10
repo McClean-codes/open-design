@@ -1,4 +1,5 @@
 import { workspaceContextHasTeamIdentity } from '@open-design/contracts';
+import { boundedRequestErrorCode } from '../analytics/workspace';
 import type {
   ConnectorAuthConfigPrepareResponse,
   ConnectorDetail,
@@ -377,6 +378,7 @@ async function readSkillOperationError(resp: Response): Promise<SkillImportError
       ? payload.error
       : null;
     const rawCode = envelope?.code ?? payload.code;
+    const boundedCode = boundedRequestErrorCode(rawCode);
     const rawMessage = envelope?.message
       ?? payload.message
       ?? (typeof payload.error === 'string' ? payload.error : undefined);
@@ -384,9 +386,7 @@ async function readSkillOperationError(resp: Response): Promise<SkillImportError
       message: typeof rawMessage === 'string' && rawMessage.trim()
         ? rawMessage
         : `Request failed (${resp.status}).`,
-      ...(typeof rawCode === 'string' && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawCode)
-        ? { code: rawCode }
-        : {}),
+      ...(boundedCode ? { code: boundedCode } : {}),
       status: resp.status,
     };
   } catch {

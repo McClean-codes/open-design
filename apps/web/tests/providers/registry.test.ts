@@ -78,6 +78,19 @@ describe('skill operation diagnostics', () => {
       },
     });
   });
+
+  it('drops a syntactically valid but unknown import error code', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      error: { code: 'UPSTREAM_abc123', message: 'Unknown upstream failure' },
+    }), { status: 503 })));
+
+    await expect(importSkill({ name: 'broken', body: 'broken' })).resolves.toEqual({
+      error: {
+        message: 'Unknown upstream failure',
+        status: 503,
+      },
+    });
+  });
 });
 
 function personalWorkspaceContext(): WorkspaceCollabContext {

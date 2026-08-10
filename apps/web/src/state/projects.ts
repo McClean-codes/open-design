@@ -53,6 +53,7 @@ import type {
   ProjectTemplate,
 } from '../types';
 import { removeDesignBrowserProjectCache } from '../components/design-browser-storage';
+import { boundedRequestErrorCode } from '../analytics/workspace';
 
 export type { PluginInstallOutcome } from '@open-design/contracts';
 export type { PluginShareAction } from '@open-design/contracts';
@@ -957,12 +958,7 @@ export async function deleteProject(
         const rawMessage = envelope?.message
           ?? payload.message
           ?? (typeof payload.error === 'string' ? payload.error : undefined);
-        if (
-          typeof rawCode === 'string'
-          && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawCode)
-        ) {
-          code = rawCode;
-        }
+        code = boundedRequestErrorCode(rawCode);
         if (typeof rawMessage === 'string' && rawMessage.trim()) {
           message = rawMessage;
         }
@@ -1756,9 +1752,7 @@ export async function installPluginSource(
       if (ev.kind === 'success') success = ev.plugin;
       if (ev.kind === 'error') {
         errorMessage = ev.message ?? 'Install failed.';
-        if (ev.code && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(ev.code)) {
-          errorCode = ev.code;
-        }
+        errorCode = boundedRequestErrorCode(ev.code);
       }
     }
     return {

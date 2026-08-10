@@ -15,6 +15,7 @@ import {
   importFolderProject,
   invalidateWorkspaceProjectLists,
   installGeneratedPluginFolder,
+  installPluginSource,
   listPlugins,
   listPluginsFresh,
   invalidatePluginCatalogCache,
@@ -1289,6 +1290,31 @@ describe('installGeneratedPluginFolder', () => {
       warnings: ['Missing open-design.json'],
       message: 'Plugin validation failed.',
       log: ['Validating generated-plugin'],
+    });
+  });
+});
+
+describe('installPluginSource diagnostics', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('drops a syntactically valid but unknown SSE error code', async () => {
+    const event = JSON.stringify({
+      kind: 'error',
+      code: 'UPSTREAM_abc123',
+      message: 'Unknown upstream failure',
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(`data: ${event}\n\n`, {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })));
+
+    await expect(installPluginSource('github:owner/repo')).resolves.toEqual({
+      ok: false,
+      warnings: [],
+      message: 'Unknown upstream failure',
+      log: ['Unknown upstream failure'],
     });
   });
 });

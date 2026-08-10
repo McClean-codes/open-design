@@ -414,6 +414,7 @@ describe('PluginsView', () => {
 
   it.each([
     { errorCode: 'FETCH_FAILED', expected: 'FETCH_FAILED' },
+    { errorCode: 'UPSTREAM_abc123', expected: 'install_failed' },
     { errorCode: 'https://private.example/error//Users/alice', expected: 'install_failed' },
   ])('reports a bounded code instead of a URL or local path from a failed import', async ({
     errorCode,
