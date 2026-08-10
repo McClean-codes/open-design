@@ -65,8 +65,11 @@ export function installPreviewIframeMessageObserver(): () => void {
     const data = parsePreviewObservabilityMessage(event.data);
     if (!data) return;
     const message = { source: event.source, data, receivedAt: Date.now() };
-    previewMessageBuffer.push(message);
-    prunePreviewMessageBuffer();
+    if (previewMessageSubscribers.size === 0) {
+      previewMessageBuffer.push(message);
+      prunePreviewMessageBuffer();
+      return;
+    }
     for (const subscriber of previewMessageSubscribers) subscriber(message);
   };
   window.addEventListener('message', previewMessageListener);
@@ -85,7 +88,8 @@ export function subscribePreviewIframeMessages(
 ): () => void {
   previewMessageSubscribers.add(subscriber);
   prunePreviewMessageBuffer();
-  for (const message of previewMessageBuffer) subscriber(message);
+  const bufferedMessages = previewMessageBuffer.splice(0);
+  for (const message of bufferedMessages) subscriber(message);
   return () => previewMessageSubscribers.delete(subscriber);
 }
 
