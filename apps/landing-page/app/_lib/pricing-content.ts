@@ -50,6 +50,12 @@ export interface PricingLabels {
   topTextModels: string;
   topImageModels: string;
   topVideoModels: string;
+  /**
+   * Marks a modality that is presented but not yet purchasable. Hosted video
+   * generation has no server-owned entitlement/billing path yet, so its models
+   * render greyed-out behind this tag instead of as an included benefit.
+   */
+  comingSoon: string;
   recommended: string;
   // Lead benefit rows. `{amount}` `{pct}` filled at render.
   creditBenefit: string;
@@ -179,6 +185,7 @@ const EN: PricingContent = {
     topTextModels: 'Top text models',
     topImageModels: 'Top image models',
     topVideoModels: 'Top video models',
+    comingSoon: ' (Coming soon)',
     recommended: 'Recommended',
     creditBenefit: '{amount} model credits / mo',
     creditBonus: 'Limited +{pct}% bonus',
@@ -253,6 +260,7 @@ const ZH_CN: PricingContent = {
     topTextModels: '顶级文本模型',
     topImageModels: '顶级图片模型',
     topVideoModels: '顶级视频模型',
+    comingSoon: '（即将上线）',
     recommended: '推荐',
     creditBenefit: '每月 {amount} 模型额度',
     creditBonus: '限时加赠 {pct}%',
@@ -327,6 +335,7 @@ const ZH_TW: PricingContent = {
     topTextModels: '頂級文字模型',
     topImageModels: '頂級圖片模型',
     topVideoModels: '頂級影片模型',
+    comingSoon: '（即將上線）',
     recommended: '推薦',
     creditBenefit: '每月 {amount} 模型額度',
     creditBonus: '限時加贈 {pct}%',
@@ -401,6 +410,7 @@ const ES: PricingContent = {
     topTextModels: 'Modelos de texto líderes',
     topImageModels: 'Modelos de imagen líderes',
     topVideoModels: 'Modelos de vídeo líderes',
+    comingSoon: ' (Próximamente)',
     recommended: 'Recomendado',
     creditBenefit: '{amount} en créditos de modelo / mes',
     creditBonus: '+{pct}% extra (limitado)',
@@ -475,6 +485,7 @@ const PT_BR: PricingContent = {
     topTextModels: 'Principais modelos de texto',
     topImageModels: 'Principais modelos de imagem',
     topVideoModels: 'Principais modelos de vídeo',
+    comingSoon: ' (Em breve)',
     recommended: 'Recomendado',
     creditBenefit: '{amount} em créditos de modelo / mês',
     creditBonus: '+{pct}% bônus (limitado)',
@@ -549,6 +560,7 @@ const RU: PricingContent = {
     topTextModels: 'Лучшие текстовые модели',
     topImageModels: 'Лучшие модели изображений',
     topVideoModels: 'Лучшие видеомодели',
+    comingSoon: ' (Скоро)',
     recommended: 'Рекомендуется',
     creditBenefit: '{amount} кредитов моделей / мес.',
     creditBonus: '+{pct}% бонус (ограничено)',
@@ -623,6 +635,7 @@ const FR: PricingContent = {
     topTextModels: 'Meilleurs modèles de texte',
     topImageModels: 'Meilleurs modèles d’image',
     topVideoModels: 'Meilleurs modèles vidéo',
+    comingSoon: ' (Bientôt disponible)',
     recommended: 'Recommandé',
     creditBenefit: '{amount} de crédits de modèle / mois',
     creditBonus: '+{pct}% bonus (limité)',
@@ -697,6 +710,7 @@ const KO: PricingContent = {
     topTextModels: '최고급 텍스트 모델',
     topImageModels: '최고급 이미지 모델',
     topVideoModels: '최고급 동영상 모델',
+    comingSoon: ' (출시 예정)',
     recommended: '추천',
     creditBenefit: '매월 {amount} 모델 크레딧',
     creditBonus: '한정 {pct}% 추가 증정',
@@ -771,6 +785,7 @@ const DE: PricingContent = {
     topTextModels: 'Top-Textmodelle',
     topImageModels: 'Top-Bildmodelle',
     topVideoModels: 'Top-Videomodelle',
+    comingSoon: ' (Demnächst)',
     recommended: 'Empfohlen',
     creditBenefit: '{amount} Modell-Credits / Monat',
     creditBonus: '+{pct}% Bonus (befristet)',
@@ -845,6 +860,7 @@ const JA: PricingContent = {
     topTextModels: 'トップテキストモデル',
     topImageModels: 'トップ画像モデル',
     topVideoModels: 'トップ動画モデル',
+    comingSoon: '（近日公開）',
     recommended: 'おすすめ',
     creditBenefit: '毎月 {amount} のモデルクレジット',
     creditBonus: '期間限定 {pct}% 増量',

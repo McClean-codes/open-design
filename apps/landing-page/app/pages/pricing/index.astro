@@ -467,8 +467,11 @@ const jsonLd = [
                   </li>
                 ))}
               </ul>
-              <p class="pr-models-head">{L.topVideoModels}</p>
-              <ul class="pr-model-list">
+              {/* Hosted video has no server-owned entitlement/billing path yet,
+                  so the roster is shown greyed-out behind a coming-soon tag
+                  rather than as an included benefit. */}
+              <p class="pr-models-head">{L.topVideoModels}<span class="pr-soon-tag">{L.comingSoon}</span></p>
+              <ul class="pr-model-list is-soon">
                 {VIDEO_MODELS.map((m) => (
                   <li>
                     <span class="pr-model-logo" aria-hidden="true">
@@ -499,9 +502,9 @@ const jsonLd = [
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2" /><circle cx="9" cy="9" r="1.5" /><path d="m5.5 17 4-4 3 3 2-2 4 3" /></svg>
           <span>{L.imageGeneration}</span>
         </div>
-        <div class="pr-mode">
+        <div class="pr-mode is-soon">
           <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="2" /><path d="m10 9 5 3-5 3Z" /></svg>
-          <span>{L.videoGeneration}</span>
+          <span>{L.videoGeneration}<span class="pr-soon-tag">{L.comingSoon}</span></span>
         </div>
       </div>
     </section>
@@ -1583,6 +1586,10 @@ const jsonLd = [
   /* Models outside the Free trial pool render greyed-out. */
   .pr-model-list li.is-unavailable { color: var(--ink-soft, #aaa); }
   .pr-model-list li.is-unavailable .pr-model-logo { opacity: 0.55; }
+  /* Roster for a modality that is not purchasable yet. `--ink-soft` sits too
+     close to `--ink` to read as unavailable, so mute against the surface. */
+  .pr-model-list.is-soon li { color: color-mix(in srgb, var(--ink, #262626) 48%, transparent); }
+  .pr-model-list.is-soon .pr-model-logo { opacity: 0.5; }
 
   /* ---- Shared hosted multimodal benefit ---- */
   .pr-multimodal {
@@ -1669,6 +1676,20 @@ const jsonLd = [
     font-weight: 650;
     line-height: 1.3;
     color: var(--ink);
+  }
+  /* Modality that is presented but not yet purchasable. Reads as a
+     parenthetical on the label rather than a badge, so it never competes
+     with the campaign/bonus pills for attention. */
+  .pr-mode.is-soon svg { stroke: var(--ink-soft, #aaa); }
+  .pr-mode.is-soon > span { color: var(--ink-soft, #999); }
+  /* No margin: each locale's string carries its own separator (a leading
+     space for Latin/Hangul, the full-width bracket's side bearing for CJK). */
+  .pr-soon-tag {
+    color: var(--ink-soft, #aaa);
+    font-weight: 600;
+    letter-spacing: 0;
+    text-transform: none;
+    white-space: nowrap;
   }
   @media (max-width: 900px) {
     .pr-multimodal { grid-template-columns: 1fr; gap: 22px; }
