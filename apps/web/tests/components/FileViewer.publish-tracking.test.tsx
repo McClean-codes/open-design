@@ -215,6 +215,8 @@ describe('publish flow analytics', () => {
         area: 'share_option_popover',
         element: 'publish_file',
         project_id: 'project-pub',
+        // Derived from the `html` renderer, not from `file.kind` (which maps to `unknown`).
+        artifact_kind: 'html',
       }),
     );
     await waitFor(() => {
@@ -223,6 +225,7 @@ describe('publish flow analytics', () => {
           action: 'publish',
           result: 'success',
           publish_duration_ms: expect.any(Number),
+          artifact_kind: 'html',
         }),
       );
     });
@@ -233,6 +236,7 @@ describe('publish flow analytics', () => {
       expect.objectContaining({
         area: 'share_option_popover',
         element: 'copy_publish_link',
+        artifact_kind: 'html',
       }),
     );
   });
@@ -356,7 +360,7 @@ describe('publish flow analytics', () => {
     expect(trackedEvents('artifact_publish_result')).toEqual([]);
   });
 
-  it('reports the project kind from the ReactComponentViewer copy of the flow', async () => {
+  it('reports the project kind and artifact kind from the ReactComponentViewer copy of the flow', async () => {
     stubFetch();
     const publishButton = await openReactComponentPublishPanel();
     fireEvent.click(publishButton);
@@ -366,6 +370,9 @@ describe('publish flow analytics', () => {
         area: 'share_option_popover',
         element: 'publish_file',
         project_kind: 'prototype',
+        // Derived from the `react-component` renderer; `file.kind` is `code`,
+        // which on its own maps to `unknown`.
+        artifact_kind: 'html',
       }),
     );
     await waitFor(() => {
@@ -374,6 +381,7 @@ describe('publish flow analytics', () => {
           action: 'publish',
           result: 'success',
           project_kind: 'prototype',
+          artifact_kind: 'html',
         }),
       );
     });
@@ -385,6 +393,7 @@ describe('publish flow analytics', () => {
         area: 'share_option_popover',
         element: 'copy_publish_link',
         project_kind: 'prototype',
+        artifact_kind: 'html',
       }),
     );
   });

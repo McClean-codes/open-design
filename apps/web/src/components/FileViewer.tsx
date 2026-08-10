@@ -6493,10 +6493,17 @@ function ReactComponentViewer({
   }, [projectId, file.name, canPublishPublic, viewerOnly]);
 
   // Shared identity fields for the publish-flow events (ReactComponentViewer copy).
+  // `artifactKindToTracking` only recognises HTML through the renderer id — a React
+  // component's `file.kind` is `code`, which would degrade to `unknown` — and this
+  // viewer is reached only through the `react-component` renderer match, so its
+  // renderer identity is a constant.
   function publishTrackingIdentity() {
     return {
       artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
+      artifact_kind: artifactKindToTracking({
+        rendererId: 'react-component',
+        fileKind: file.kind ?? null,
+      }),
       project_id: projectId,
       project_kind: projectKind,
     } as const;
@@ -7885,10 +7892,17 @@ function HtmlViewer({
   ]);
 
   // Shared identity fields for the publish-flow events (HtmlViewer copy).
+  // `artifactKindToTracking` only recognises HTML through the renderer id — an HTML
+  // artifact's `file.kind` is `html`, which would degrade to `unknown` — and this
+  // viewer is reached only through the `html` / `deck-html` renderer matches, which
+  // is exactly what the `isDeck` prop is derived from.
   function publishTrackingIdentity() {
     return {
       artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
-      artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
+      artifact_kind: artifactKindToTracking({
+        rendererId: isDeck ? 'deck-html' : 'html',
+        fileKind: file.kind ?? null,
+      }),
       project_id: projectId,
       project_kind: projectKind,
     } as const;
