@@ -38,6 +38,9 @@ export type SrcdocOptions = {
   paletteBridge?: boolean;
   initialPalette?: string | null;
   previewFocusGuard?: boolean;
+  /** Install the live-preview error and white-screen reporting bridge. Keep
+   * this disabled for exports, captures, thumbnails, and historical previews. */
+  previewObservability?: boolean;
   /**
    * Force every CSS animation/transition to complete instantly so the
    * document settles at its final visual state and stops repainting. Meant
@@ -392,8 +395,11 @@ export function buildSrcdoc(
   // sandbox shim so it is installed before any author script or meta refresh.
   const withRedirectGuard = injectPreviewRedirectGuard(withShim, { blockLoadTimeScriptRedirect });
   // Runtime errors stay in the iframe's Window and never bubble to the host.
-  // Install this before every author script so even boot failures are bridged.
-  const withObservability = injectAfterHeadOpen(withRedirectGuard, buildPreviewObservabilityBridge());
+  // Live previews opt in so exports and other off-screen srcdoc consumers do
+  // not emit diagnostics that no host observer is prepared to consume.
+  const withObservability = options.previewObservability
+    ? injectAfterHeadOpen(withRedirectGuard, buildPreviewObservabilityBridge())
+    : withRedirectGuard;
   const withKeydownRegistry = options.deck ? injectDeckKeydownRegistryHook(withObservability) : withObservability;
   const withFocusGuard = options.previewFocusGuard
     ? injectPreviewFocusGuard(withKeydownRegistry)

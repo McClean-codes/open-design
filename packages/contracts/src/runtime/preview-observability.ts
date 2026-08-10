@@ -48,6 +48,46 @@ const EVENT_NAMES = new Set<PreviewObservabilityEvent>([
   'white_screen',
 ]);
 
+type PreviewStringField =
+  | 'message'
+  | 'name'
+  | 'source_url'
+  | 'stack'
+  | 'resource_tag'
+  | 'resource_url'
+  | 'ready_state'
+  | 'visibility_state';
+
+const STRING_FIELD_LIMITS: ReadonlyArray<readonly [PreviewStringField, number]> = [
+  ['message', 500],
+  ['name', 120],
+  ['source_url', 1_000],
+  ['stack', 2_000],
+  ['resource_tag', 32],
+  ['resource_url', 1_000],
+  ['ready_state', 32],
+  ['visibility_state', 32],
+];
+
+type PreviewNumberField =
+  | 'line'
+  | 'column'
+  | 'body_child_count'
+  | 'visible_element_count'
+  | 'viewport_width'
+  | 'viewport_height';
+
+const NUMBER_FIELDS: readonly PreviewNumberField[] = [
+  'line',
+  'column',
+  'body_child_count',
+  'visible_element_count',
+  'viewport_width',
+  'viewport_height',
+];
+
+const MAX_PREVIEW_OBSERVABILITY_NUMBER = 10_000_000;
+
 export function parsePreviewObservabilityMessage(
   value: unknown,
 ): PreviewObservabilityMessage | null {
@@ -58,7 +98,31 @@ export function parsePreviewObservabilityMessage(
   if (typeof candidate.event !== 'string' || !EVENT_NAMES.has(candidate.event as PreviewObservabilityEvent)) {
     return null;
   }
-  return candidate as unknown as PreviewObservabilityMessage;
+
+  // Construct a fresh, bounded payload before it can enter the host's message
+  // buffer. Generated artifacts are untrusted and may post arbitrary objects.
+  const normalized: Record<string, unknown> = {
+    type: PREVIEW_OBSERVABILITY_MESSAGE_TYPE,
+    version: PREVIEW_OBSERVABILITY_PROTOCOL_VERSION,
+    event: candidate.event,
+  };
+  for (const [field, limit] of STRING_FIELD_LIMITS) {
+    const value = candidate[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'string') return null;
+    const text = value.replace(/\s+/g, ' ').trim().slice(0, limit);
+    if (text) normalized[field] = text;
+  }
+  for (const field of NUMBER_FIELDS) {
+    const value = candidate[field];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+    normalized[field] = Math.max(
+      0,
+      Math.min(Math.round(value), MAX_PREVIEW_OBSERVABILITY_NUMBER),
+    );
+  }
+  return normalized as unknown as PreviewObservabilityMessage;
 }
 
 /**

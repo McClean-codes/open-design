@@ -95,7 +95,8 @@ describe('buildSrcdoc', () => {
   });
 
   it('injects preview observability before author scripts', () => {
-    const srcdoc = buildSrcdoc('<!doctype html><html><head><script>throw new Error("boot")</script></head><body></body></html>');
+    const html = '<!doctype html><html><head><script>throw new Error("boot")</script></head><body></body></html>';
+    const srcdoc = buildSrcdoc(html, { previewObservability: true });
 
     expect(srcdoc).toContain('data-od-preview-observability');
     expect(srcdoc).toContain("send('runtime_error'");
@@ -103,6 +104,7 @@ describe('buildSrcdoc', () => {
     expect(srcdoc.indexOf('data-od-preview-observability')).toBeLessThan(
       srcdoc.indexOf('<script>throw new Error("boot")</script>'),
     );
+    expect(buildSrcdoc(html)).not.toContain('data-od-preview-observability');
   });
 
   it('paints an opaque background before drawing so empty rasters never flatten to black', () => {

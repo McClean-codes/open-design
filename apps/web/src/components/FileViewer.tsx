@@ -9937,6 +9937,7 @@ function HtmlViewer({
       editBridge: true,
       paletteBridge: false,
       previewFocusGuard: true,
+      previewObservability: true,
       // Embed the reload counter so the srcdoc string differs across reloads
       // even when the fetched HTML bytes are identical (issue #4650).
       reloadKey,

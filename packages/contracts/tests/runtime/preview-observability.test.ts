@@ -42,4 +42,41 @@ describe('preview observability contract', () => {
       event: 'arbitrary_event',
     })).toBeNull();
   });
+
+  it('normalizes untrusted fields before returning a bounded payload', () => {
+    const parsed = parsePreviewObservabilityMessage({
+      type: PREVIEW_OBSERVABILITY_MESSAGE_TYPE,
+      version: 1,
+      event: 'runtime_error',
+      message: `  ${'x'.repeat(600)}  `,
+      stack: 'line one\nline two',
+      line: 12.6,
+      viewport_width: 20_000_000,
+      ignored: 'not part of the protocol',
+    });
+
+    expect(parsed).toMatchObject({
+      event: 'runtime_error',
+      message: 'x'.repeat(500),
+      stack: 'line one line two',
+      line: 13,
+      viewport_width: 10_000_000,
+    });
+    expect(parsed).not.toHaveProperty('ignored');
+  });
+
+  it('rejects known fields with invalid types', () => {
+    expect(parsePreviewObservabilityMessage({
+      type: PREVIEW_OBSERVABILITY_MESSAGE_TYPE,
+      version: 1,
+      event: 'runtime_error',
+      message: { nested: 'boom' },
+    })).toBeNull();
+    expect(parsePreviewObservabilityMessage({
+      type: PREVIEW_OBSERVABILITY_MESSAGE_TYPE,
+      version: 1,
+      event: 'runtime_error',
+      line: '12',
+    })).toBeNull();
+  });
 });
