@@ -292,7 +292,7 @@ describe('publish flow analytics', () => {
     ).toEqual([]);
   });
 
-  it('reports project_kind null from the ReactComponentViewer copy of the flow', async () => {
+  it('reports the project kind from the ReactComponentViewer copy of the flow', async () => {
     stubFetch();
     const publishButton = await openReactComponentPublishPanel();
     fireEvent.click(publishButton);
@@ -301,7 +301,7 @@ describe('publish flow analytics', () => {
       expect.objectContaining({
         area: 'share_option_popover',
         element: 'publish_file',
-        project_kind: null,
+        project_kind: 'prototype',
       }),
     );
     await waitFor(() => {
@@ -309,9 +309,19 @@ describe('publish flow analytics', () => {
         expect.objectContaining({
           action: 'publish',
           result: 'success',
-          project_kind: null,
+          project_kind: 'prototype',
         }),
       );
     });
+
+    const copyButton = await screen.findByRole('button', { name: /copy share link/i });
+    fireEvent.click(copyButton);
+    expect(trackedEvents('ui_click')).toContainEqual(
+      expect.objectContaining({
+        area: 'share_option_popover',
+        element: 'copy_publish_link',
+        project_kind: 'prototype',
+      }),
+    );
   });
 });

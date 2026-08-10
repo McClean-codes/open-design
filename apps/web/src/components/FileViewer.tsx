@@ -1895,6 +1895,7 @@ export const FileViewer = memo(function FileViewer({
     return (
       <ReactComponentViewer
         projectId={projectId}
+        projectKind={projectKind}
         file={file}
         onOpenFileReplacing={onOpenFileReplacing}
         projectName={projectName}
@@ -6296,6 +6297,7 @@ function ReactModulePointer({
 
 function ReactComponentViewer({
   projectId,
+  projectKind,
   file,
   onOpenFileReplacing,
   projectName,
@@ -6308,6 +6310,7 @@ function ReactComponentViewer({
   viewerOnly = false,
 }: {
   projectId: string;
+  projectKind: TrackingProjectKind;
   file: ProjectFile;
   onOpenFileReplacing?: (openName: string, closeName: string) => void;
   projectName?: string;
@@ -6489,14 +6492,13 @@ function ReactComponentViewer({
     // render as unpublished.
   }, [projectId, file.name, canPublishPublic, viewerOnly]);
 
-  // Shared identity fields for the publish-flow events. ReactComponentViewer
-  // has no projectKind prop, so project_kind reports null from this viewer.
+  // Shared identity fields for the publish-flow events (ReactComponentViewer copy).
   function publishTrackingIdentity() {
     return {
       artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
       artifact_kind: artifactKindToTracking({ fileKind: file.kind ?? null }),
       project_id: projectId,
-      project_kind: null,
+      project_kind: projectKind,
     } as const;
   }
 
