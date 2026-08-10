@@ -136,14 +136,25 @@ export const PREMIUM_MODELS: readonly PricingModel[] = [
   { name: 'Grok-4.5', icon: '/agents/xai.svg', trial: true },
 ] as const;
 
-/** Product-review media catalogue mirrored from open-design#6389.
- * Variant suffixes are grouped so one model family reads as one benefit. */
+/**
+ * Hosted image roster, mirrored from the shipped Open Design Cloud catalogue
+ * in `apps/daemon/src/media/models.ts` (`provider: 'vela'`, `credentialsRequired:
+ * false`): `vela/seedream-5.0`, `vela/seedream-5.0-pro`, `vela/nano-banana-2`
+ * (+ `-lite`), and `vela/gpt-image-2`. Variant suffixes are grouped so one model
+ * family reads as one benefit. Keep this list in step with that registry — it is
+ * the source of truth for what a paid plan can actually reach.
+ */
 export const IMAGE_MODELS = [
-  { name: 'Seedream 5 Lite / Pro', icon: '/model-icons/bytedance.svg' },
+  { name: 'Seedream 5 / Pro', icon: '/model-icons/bytedance.svg' },
   { name: 'Nano Banana 2', icon: '/agents/gemini.svg' },
   { name: 'GPT Image 2', icon: '/agents/openai.svg' },
 ] as const;
 
+/**
+ * Video roster. Cloud currently ships only `vela/doubao-seedance-2-0-260128`
+ * (seedance 2.0), so none of the families below are reachable yet — the pricing
+ * page renders this list muted behind `labels.comingSoon`.
+ */
 export const VIDEO_MODELS = [
   { name: 'Seedance 2.5', icon: '/model-icons/bytedance.svg' },
   { name: 'MiniMax H3', icon: '/agents/minimax.svg' },
