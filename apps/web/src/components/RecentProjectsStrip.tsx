@@ -2001,9 +2001,11 @@ export function RecentProjectsStrip({
           className="modal-confirm"
           role="alertdialog"
           onClose={() => {
+            if (deletePending) return;
             setConfirmTarget(null);
             setDeleteFailed(false);
           }}
+          closeOnBackdrop={!deletePending}
           ariaLabelledBy={confirmTitleId}
         >
           <DialogTitle id={confirmTitleId}>{t('designs.deleteTitle')}</DialogTitle>

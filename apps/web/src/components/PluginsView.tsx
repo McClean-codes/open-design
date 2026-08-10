@@ -44,7 +44,7 @@ import {
   trackWorkspaceResourceActionResult,
 } from '../analytics/events';
 import {
-  stableAnalyticsErrorCode,
+  stableAnalyticsRequestErrorCode,
   workspaceAnalyticsDimensions,
 } from '../analytics/workspace';
 import type { TrackingWorkspaceScope } from '@open-design/contracts/analytics';
@@ -228,10 +228,10 @@ function resourceActionAnalyticsErrorCode(
   error: { code?: string; errorCode?: string; status?: number },
   fallback: string,
 ): string {
-  if (error.errorCode) return error.errorCode;
-  if (error.code) return error.code;
-  if (error.status) return stableAnalyticsErrorCode(error.status);
-  return fallback;
+  return stableAnalyticsRequestErrorCode({
+    code: error.errorCode ?? error.code,
+    status: error.status,
+  }, fallback);
 }
 
 export function PluginsView({
@@ -3716,7 +3716,9 @@ function PluginImportModal({
           area: 'import_modal',
           import_source: kind,
           result: outcome.ok ? 'success' : 'failed',
-          ...(outcome.ok ? {} : { error_code: outcome.message ?? 'unknown' }),
+          ...(outcome.ok ? {} : {
+            error_code: resourceActionAnalyticsErrorCode(outcome, 'install_failed'),
+          }),
         });
       }
     } finally {

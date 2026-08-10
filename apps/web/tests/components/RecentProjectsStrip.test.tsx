@@ -1346,6 +1346,9 @@ describe('recvqbh189zBY6 — single-card delete confirmation', () => {
 
     expect(onDelete).toHaveBeenCalledTimes(1);
     expect((deleteButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(dialog.parentElement as HTMLElement);
+    expect(screen.getByRole('alertdialog')).toBe(dialog);
+    expect(within(dialog).getByText(/My project/)).toBeTruthy();
 
     await act(async () => resolveDelete(true));
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
