@@ -1261,6 +1261,7 @@ process.stdin.on("end", () => {
       grep: String.raw`\[P0\]`,
       files: ["ui/app-restoration.test.ts", "ui/critical-smoke.test.ts"],
     });
+    expect(uiP0Groups["entry-settings"].files).toContain("ui/home-hero-rail.test.ts");
     expect(workflow).not.toContain("  ui_p0_smoke:");
     expect(uiP0).toContain("run-ui-group critical-extras");
     expect(uiP0).toContain("Preserve project-runtime domain artifact");
@@ -1340,7 +1341,8 @@ process.stdin.on("end", () => {
       .sort();
 
     expect(playwrightConfig).toContain("testIgnore: 'visual-*.test.ts'");
-    expect(benchmarkWorkflow).not.toContain("\n  schedule:");
+    expect(benchmarkWorkflow).toContain("  schedule:");
+    expect(benchmarkWorkflow).toContain('github.event_name == \'schedule\'');
     expect(benchmarkWorkflow).not.toContain("layout:");
     expect(benchmarkWorkflow).toContain("run-ui-group critical-extras");
     expect(benchmarkWorkflow).toContain("Preserve project-runtime domain artifact");

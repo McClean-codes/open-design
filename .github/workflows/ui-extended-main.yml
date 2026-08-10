@@ -1,6 +1,10 @@
 name: ui-extended-main
 
 on:
+  schedule:
+    # Full coverage is intentionally off the PR critical path, but must stay
+    # fresh enough to expose P1/P2 and cross-file regressions.
+    - cron: "17 18 * * *"
   workflow_dispatch:
     inputs:
       suite:
@@ -179,7 +183,7 @@ jobs:
   ui_full:
     name: Full UI (shard ${{ matrix.shard }}/12)
     needs: [p0_runners]
-    if: ${{ github.repository == 'nexu-io/open-design' && github.event_name == 'workflow_dispatch' && inputs.suite == 'full' }}
+    if: ${{ github.repository == 'nexu-io/open-design' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.suite == 'full')) }}
     runs-on: ${{ fromJSON(needs.p0_runners.outputs.runs_on).ui_hot }}
     timeout-minutes: 20
     strategy:
