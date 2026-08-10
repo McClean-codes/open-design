@@ -43,7 +43,10 @@ import {
   trackExtensionMarketplaceClick,
   trackWorkspaceResourceActionResult,
 } from '../analytics/events';
-import { workspaceAnalyticsDimensions } from '../analytics/workspace';
+import {
+  stableAnalyticsErrorCode,
+  workspaceAnalyticsDimensions,
+} from '../analytics/workspace';
 import type { TrackingWorkspaceScope } from '@open-design/contracts/analytics';
 import {
   addPluginMarketplace,
@@ -219,6 +222,16 @@ interface PluginsViewProps {
     action: PluginShareAction,
     locale?: string,
   ) => Promise<PluginShareProjectOutcome>;
+}
+
+function resourceActionAnalyticsErrorCode(
+  error: { code?: string; errorCode?: string; status?: number },
+  fallback: string,
+): string {
+  if (error.errorCode) return error.errorCode;
+  if (error.code) return error.code;
+  if (error.status) return stableAnalyticsErrorCode(error.status);
+  return fallback;
 }
 
 export function PluginsView({
@@ -1213,9 +1226,10 @@ export function ExtensionsMarketplace({
         if ('error' in result) {
           trackResourceResult({
             kind: 'skill', scope: 'personal', action: 'add', result: 'failed',
-            startedAt, errorCode: 'import_failed',
+            startedAt,
+            errorCode: resourceActionAnalyticsErrorCode(result.error, 'import_failed'),
           });
-          setToast({ message: result.error || t('pluginsView.importFailed'), tone: 'error' });
+          setToast({ message: result.error.message || t('pluginsView.importFailed'), tone: 'error' });
           return;
         }
         await refresh();
@@ -1250,7 +1264,8 @@ export function ExtensionsMarketplace({
         setToast({ message: outcome.message || t('pluginsView.importFailed'), tone: 'error' });
         trackResourceResult({
           kind: 'expert_plugin', scope: 'personal', action: 'add', result: 'failed',
-          startedAt, errorCode: 'import_failed',
+          startedAt,
+          errorCode: resourceActionAnalyticsErrorCode(outcome, 'import_failed'),
         });
       }
     } finally {
@@ -1303,7 +1318,8 @@ export function ExtensionsMarketplace({
       if ('error' in result) {
         trackResourceResult({
           kind: 'skill', scope: 'personal', action: 'add', result: 'failed',
-          startedAt, errorCode: 'import_failed',
+          startedAt,
+          errorCode: resourceActionAnalyticsErrorCode(result.error, 'import_failed'),
         });
         setToast({ message: result.error.message, tone: 'error' });
         return;
@@ -1766,7 +1782,7 @@ export function ExtensionsMarketplace({
           action: 'add',
           result: 'failed',
           startedAt,
-          errorCode: 'install_failed',
+          errorCode: resourceActionAnalyticsErrorCode(outcome, 'install_failed'),
         });
       }
     } catch {

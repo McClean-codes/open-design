@@ -768,7 +768,27 @@ describe('deleteProject', () => {
   it('reports failure when the daemon refuses the delete', async () => {
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(null, { status: 403 })));
 
-    await expect(deleteProject('someone-elses-project', personalWorkspaceContext())).resolves.toBe(false);
+    await expect(deleteProject('someone-elses-project', personalWorkspaceContext())).rejects.toMatchObject({
+      name: 'ProjectDeleteError',
+      status: 403,
+    });
+  });
+
+  it('preserves the daemon error code for analytics drill-down', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: {
+        code: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
+        message: 'workspace authority is temporarily unavailable',
+        retryable: true,
+      },
+    }), { status: 503 })));
+
+    await expect(deleteProject('project-1', personalWorkspaceContext())).rejects.toMatchObject({
+      name: 'ProjectDeleteError',
+      status: 503,
+      code: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
+      message: 'workspace authority is temporarily unavailable',
+    });
   });
 });
 
@@ -1888,7 +1908,10 @@ describe('deleteProject local caches', () => {
   it('keeps tabs and Design Browser caches when the delete fails', async () => {
     const store = stubWindowStore();
     vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(null, { status: 500 })));
-    await expect(deleteProject('p1')).resolves.toBe(false);
+    await expect(deleteProject('p1')).rejects.toMatchObject({
+      name: 'ProjectDeleteError',
+      status: 500,
+    });
     expect(store.has(tabsKey)).toBe(true);
     expect(store.has(historyKey)).toBe(true);
     expect(store.has(viewportKey)).toBe(true);

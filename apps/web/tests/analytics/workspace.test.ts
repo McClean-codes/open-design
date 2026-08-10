@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   countBucket,
   stableAnalyticsErrorCode,
+  stableAnalyticsRequestErrorCode,
   workspaceAnalyticsDimensions,
 } from '../../src/analytics/workspace';
 import { workspaceContextFixture } from '../helpers/workspace-context';
@@ -42,6 +43,11 @@ describe('workspace analytics dimensions', () => {
     expect(stableAnalyticsErrorCode(403)).toBe('forbidden');
     expect(stableAnalyticsErrorCode(503)).toBe('server_error');
     expect(stableAnalyticsErrorCode()).toBe('network_error');
+    expect(stableAnalyticsRequestErrorCode({ code: 'WORKSPACE_AUTHORITY_UNAVAILABLE', status: 503 }))
+      .toBe('WORKSPACE_AUTHORITY_UNAVAILABLE');
+    expect(stableAnalyticsRequestErrorCode({ status: 404 })).toBe('not_found');
+    expect(stableAnalyticsRequestErrorCode({ code: 'bad code / project-name' }))
+      .toBe('request_failed');
   });
 
   it('does not treat unresolved seat state as available', () => {

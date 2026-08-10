@@ -60,3 +60,26 @@ export function stableAnalyticsErrorCode(status?: number): string {
   if (status === 429) return 'rate_limited';
   return status >= 500 ? 'server_error' : 'request_failed';
 }
+
+/**
+ * Preserve a daemon-provided, bounded API error code when one is available,
+ * then fall back to the stable HTTP status buckets above. This deliberately
+ * refuses arbitrary messages so analytics cardinality cannot grow with paths,
+ * project names, or upstream error text.
+ */
+export function stableAnalyticsRequestErrorCode(
+  error: unknown,
+  fallback = 'request_failed',
+): string {
+  if (!error || typeof error !== 'object') return fallback;
+  const candidate = error as { code?: unknown; status?: unknown };
+  if (
+    typeof candidate.code === 'string'
+    && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(candidate.code)
+  ) {
+    return candidate.code;
+  }
+  return typeof candidate.status === 'number'
+    ? stableAnalyticsErrorCode(candidate.status)
+    : fallback;
+}

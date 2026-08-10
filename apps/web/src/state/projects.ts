@@ -179,6 +179,18 @@ export class WorkspaceProjectMoveError extends Error {
   }
 }
 
+/** A refused project delete with the daemon's stable status/code preserved. */
+export class ProjectDeleteError extends Error {
+  constructor(
+    message: string,
+    readonly status: number | undefined,
+    readonly code: string | undefined,
+  ) {
+    super(message);
+    this.name = 'ProjectDeleteError';
+  }
+}
+
 /**
  * The contract error code a failed move carries, or null. Duck-typed on a
  * string `code` property (validated against `API_ERROR_CODES`) instead of
@@ -923,21 +935,54 @@ export async function patchProject(
 export async function deleteProject(
   id: string,
   workspaceContext?: WorkspaceCollabContext | null,
-): Promise<boolean> {
+): Promise<true> {
   try {
     const resp = await fetch(`/api/projects/${encodeURIComponent(id)}`, {
       method: 'DELETE',
       ...(workspaceContext ? { headers: workspaceProjectHeaders(workspaceContext) } : {}),
     });
+    if (!resp.ok) {
+      let message = `project delete failed with status ${resp.status}`;
+      let code: string | undefined;
+      try {
+        const payload = await resp.json() as {
+          error?: string | { code?: unknown; message?: unknown };
+          code?: unknown;
+          message?: unknown;
+        };
+        const envelope = payload.error && typeof payload.error === 'object'
+          ? payload.error
+          : null;
+        const rawCode = envelope?.code ?? payload.code;
+        const rawMessage = envelope?.message
+          ?? payload.message
+          ?? (typeof payload.error === 'string' ? payload.error : undefined);
+        if (
+          typeof rawCode === 'string'
+          && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(rawCode)
+        ) {
+          code = rawCode;
+        }
+        if (typeof rawMessage === 'string' && rawMessage.trim()) {
+          message = rawMessage;
+        }
+      } catch {
+        // Keep the stable HTTP fallback when a legacy daemon returns no JSON.
+      }
+      throw new ProjectDeleteError(message, resp.status, code);
+    }
     // Drop per-project browser caches once the project is gone server-side so
     // they do not accumulate in localStorage for the lifetime of the profile.
-    if (resp.ok) {
-      removeCachedTabs(id, workspaceContext);
-      removeDesignBrowserProjectCache(id);
-    }
-    return resp.ok;
-  } catch {
-    return false;
+    removeCachedTabs(id, workspaceContext);
+    removeDesignBrowserProjectCache(id);
+    return true;
+  } catch (error) {
+    if (error instanceof ProjectDeleteError) throw error;
+    throw new ProjectDeleteError(
+      error instanceof Error ? error.message : 'Project delete request failed.',
+      undefined,
+      'network_error',
+    );
   }
 }
 
@@ -1669,6 +1714,7 @@ interface PluginInstallEvent {
   kind?: 'progress' | 'success' | 'error';
   phase?: string;
   message?: string;
+  code?: string;
   plugin?: InstalledPluginRecord;
   warnings?: string[];
 }
@@ -1689,7 +1735,7 @@ export async function installPluginSource(
     });
     if (!resp.ok) {
       const message = await readErrorMessage(resp);
-      return { ok: false, warnings: [], message, log };
+      return { ok: false, warnings: [], message, status: resp.status, log };
     }
     if (!resp.body) {
       return {
@@ -1703,17 +1749,24 @@ export async function installPluginSource(
     let success: InstalledPluginRecord | undefined;
     let warnings: string[] = [];
     let errorMessage: string | undefined;
+    let errorCode: string | undefined;
     for await (const ev of readServerSentEvents(resp.body)) {
       if (ev.message) log.push(ev.message);
       if (ev.warnings) warnings = ev.warnings;
       if (ev.kind === 'success') success = ev.plugin;
-      if (ev.kind === 'error') errorMessage = ev.message ?? 'Install failed.';
+      if (ev.kind === 'error') {
+        errorMessage = ev.message ?? 'Install failed.';
+        if (ev.code && /^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(ev.code)) {
+          errorCode = ev.code;
+        }
+      }
     }
     return {
       ok: Boolean(success) && !errorMessage,
       plugin: success,
       warnings,
       message: errorMessage ?? (success ? `Installed ${success.title}.` : 'Install finished.'),
+      ...(errorCode ? { errorCode } : {}),
       log,
     };
   } catch (err) {
@@ -1721,6 +1774,7 @@ export async function installPluginSource(
       ok: false,
       warnings: [],
       message: (err as Error).message,
+      errorCode: 'network_error',
       log,
     };
   }

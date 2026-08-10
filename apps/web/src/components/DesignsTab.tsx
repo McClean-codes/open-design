@@ -422,7 +422,19 @@ export function DesignsTab({
 			title: t("designs.deleteTitle"),
 			message: t("designs.deleteConfirm", { name: project.name }),
 			confirmLabel: t("designs.menuDelete"),
-			onConfirm: () => onDelete(project.id),
+			onConfirm: async () => {
+				try {
+					const deleted = await onDelete(project.id);
+					if (deleted === false) throw new Error(t("ds.actionFailed"));
+				} catch (error) {
+					setDesignsToast({
+						id: (toastIdRef.current += 1),
+						message: error instanceof Error ? error.message : t("ds.actionFailed"),
+						role: "alert",
+						tone: "error",
+					});
+				}
+			},
 		});
 	};
 	const handleDuplicateProject = (project: Project) => {
