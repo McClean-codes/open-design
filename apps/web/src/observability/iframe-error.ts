@@ -108,13 +108,15 @@ export function reportPreviewIframeMessage(
   if (!message) return false;
 
   const sanitizedMessage = sanitizePreviewText(message.message, 500);
-  const sanitizedSource = sanitizePreviewText(message.source, 2_000);
+  const sanitizedSourceUrl = sanitizePreviewUrl(message.source_url);
+  const sanitizedStack = sanitizePreviewText(message.stack, 2_000);
   const sanitizedResourceUrl = sanitizePreviewUrl(message.resource_url);
   const fingerprint = [
     message.event,
     message.name ?? '',
     sanitizedMessage ?? '',
-    sanitizedSource ?? '',
+    sanitizedSourceUrl ?? '',
+    sanitizedStack ?? '',
     sanitizedResourceUrl ?? '',
   ].join('|');
   if (seen.has(fingerprint) || seen.size >= PREVIEW_REPORT_LIMIT) return false;
@@ -156,7 +158,8 @@ export function reportPreviewIframeMessage(
     error_origin: message.event,
     error_name: boundedText(message.name, 120),
     error_message: sanitizedMessage,
-    error_source: sanitizedSource,
+    error_source_url: sanitizedSourceUrl,
+    error_stack: sanitizedStack,
     line: boundedNumber(message.line),
     column: boundedNumber(message.column),
   });

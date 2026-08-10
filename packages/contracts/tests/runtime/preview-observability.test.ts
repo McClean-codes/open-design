@@ -17,6 +17,8 @@ describe('preview observability contract', () => {
     expect(bridge).toContain("send('console_error'");
     expect(bridge).toContain("send('resource_error'");
     expect(bridge).toContain("send('white_screen'");
+    expect(bridge).toContain('stack: text(value.stack, 2000)');
+    expect(bridge).toContain('detail.source_url = text(event && event.filename, 1000)');
     expect(bridge).toContain('var MAX_EVENTS = 12');
     expect(bridge).not.toContain('JSON.stringify(arguments)');
   });

@@ -28,7 +28,8 @@ describe('preview iframe observability', () => {
       event: 'runtime_error',
       name: 'TypeError',
       message: 'Failed at https://example.com/app.js?secret=token',
-      source: 'https://example.com/app.js?secret=token',
+      source_url: 'https://example.com/app.js?secret=token',
+      stack: 'TypeError: render failed at renderPreview',
       line: 12,
       column: 4,
     }, {
@@ -46,7 +47,8 @@ describe('preview iframe observability', () => {
       error_origin: 'runtime_error',
       error_name: 'TypeError',
       error_message: 'Failed at https://example.com/app.js',
-      error_source: 'https://example.com/app.js',
+      error_source_url: 'https://example.com/app.js',
+      error_stack: 'TypeError: render failed at renderPreview',
       line: 12,
       column: 4,
     }));

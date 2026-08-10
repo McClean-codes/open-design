@@ -26,7 +26,8 @@ export interface PreviewObservabilityMessage {
   event: PreviewObservabilityEvent;
   message?: string;
   name?: string;
-  source?: string;
+  source_url?: string;
+  stack?: string;
   line?: number;
   column?: number;
   resource_tag?: string;
@@ -86,7 +87,7 @@ export function buildPreviewObservabilityBridge(): string {
       return {
         name: text(value.name, 120),
         message: text(value.message, 500),
-        source: text(value.stack, 2000)
+        stack: text(value.stack, 2000)
       };
     }
     return { message: text(String(value == null ? '' : value), 500) };
@@ -94,7 +95,7 @@ export function buildPreviewObservabilityBridge(): string {
   function send(event, detail){
     if (sentCount >= MAX_EVENTS) return;
     detail = detail || {};
-    var fingerprint = [event, detail.name || '', detail.message || '', detail.source || '', detail.resource_url || ''].join('|');
+    var fingerprint = [event, detail.name || '', detail.message || '', detail.source_url || '', detail.stack || '', detail.resource_url || ''].join('|');
     if (sent[fingerprint]) return;
     sent[fingerprint] = true;
     sentCount += 1;
@@ -115,7 +116,7 @@ export function buildPreviewObservabilityBridge(): string {
     }
     var detail = describe(event && event.error);
     if (!detail.message) detail.message = text(event && event.message || 'Uncaught preview error', 500);
-    detail.source = text(event && event.filename || detail.source, 2000);
+    detail.source_url = text(event && event.filename, 1000);
     detail.line = Number.isFinite(event && event.lineno) ? Number(event.lineno) : undefined;
     detail.column = Number.isFinite(event && event.colno) ? Number(event.colno) : undefined;
     send('runtime_error', detail);
