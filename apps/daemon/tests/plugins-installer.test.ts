@@ -285,6 +285,9 @@ describe('plugin install diagnostics', () => {
     ['Only .tar.gz / .tgz archives are accepted from https sources (got https://example.com/plugin.zip)', 'BAD_REQUEST'],
     ['folder upload exceeds 50 MiB', 'BAD_REQUEST'],
     ['Plugin tree exceeds size cap of 1024 bytes', 'BAD_REQUEST'],
+    ['invalid upload path', 'BAD_REQUEST'],
+    ['unsafe upload path: ../outside', 'BAD_REQUEST'],
+    ['Downloaded GitHub contents exceed 52428800 bytes', 'BAD_REQUEST'],
   ] as const)('classifies %s as %s', (message, code) => {
     expect(classifyPluginInstallError(message)).toBe(code);
   });

@@ -153,7 +153,7 @@ export function classifyPluginInstallError(message: string): PluginInstallErrorC
   if (/cannot be replaced|owned by another workspace member|destination folder already exists/i.test(message)) {
     return 'CONFLICT';
   }
-  if (/files? are required|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls|exceeds (?:size cap of )?\d+ (?:bytes|mib)|too large/i.test(message)) {
+  if (/files? are required|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls|invalid upload path|unsafe upload path|exceeds? (?:size cap of )?\d+ (?:bytes|mib)|too large/i.test(message)) {
     return 'BAD_REQUEST';
   }
   if (/network|fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
