@@ -132,6 +132,15 @@ type MediaContext = {
   provider: MediaProvider | null;
   prompt: string;
   aspect: string | undefined;
+  /**
+   * Published quality tier the caller asked for, passed through verbatim and
+   * left undefined when they asked for nothing. Only the Vela renderer reads
+   * it today; the OpenAI branches keep deriving their own `body.quality` from
+   * the model id, which is a different vocabulary ('hd' / 'standard').
+   */
+  quality: string | undefined;
+  /** Published output resolution the caller asked for. Vela renderer only. */
+  resolution: string | undefined;
   length: number | undefined;
   duration: number | undefined;
   voice: string;
@@ -325,7 +334,8 @@ function clampWithWarning(value: unknown, allowed: number[], flagName: string): 
  */
 export async function generateMedia(args: {
   projectRoot: string; projectsRoot: string; projectId: string; surface: MediaSurface; model: string;
-  prompt?: string; output?: string; aspect?: string; length?: number; duration?: number; voice?: string;
+  prompt?: string; output?: string; aspect?: string; quality?: string; resolution?: string;
+  length?: number; duration?: number; voice?: string;
   audioKind?: AudioKind; language?: string; loop?: boolean; promptInfluence?: number;
   compositionDir?: string; image?: string; images?: string[]; onProgress?: ProgressFn; requestInit?: MediaRequestInit;
   workspaceId?: string;
@@ -340,6 +350,8 @@ export async function generateMedia(args: {
     prompt,
     output,
     aspect,
+    quality,
+    resolution,
     length,
     duration,
     voice,
@@ -505,6 +517,11 @@ export async function generateMedia(args: {
     provider: findProvider(def.provider),
     prompt: prompt || '',
     aspect: aspect || defaultAspectFor(surface),
+    // No default tier or resolution here on purpose: unlike aspect, an absent
+    // one is a meaningful request. Substituting a value would take the pricing
+    // decision away from the provider's own default.
+    quality: typeof quality === 'string' && quality.trim() ? quality.trim() : undefined,
+    resolution: typeof resolution === 'string' && resolution.trim() ? resolution.trim() : undefined,
     length: clampedLength,
     duration: clampedDuration,
     voice: voice || '',

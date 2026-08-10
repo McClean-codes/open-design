@@ -103,6 +103,9 @@ describe('Vela media provider', () => {
       [profile('1:1', '1K'), profile('1:1', '2K'), profile('16:9', '2K')],
       '2K',
     );
+    // Quality is published per model, not per request kind, and only some
+    // models are tiered at all -- gpt-image-2 is, the rest are not.
+    const quality = { default: 'low', values: ['high', 'low', 'medium'] };
     return {
       models: [
         // The alias test renders vela/gpt-image-2 under a tenant wire name, and
@@ -111,7 +114,7 @@ describe('Vela media provider', () => {
         {
           model: 'gpt-image-2',
           kind: 'image',
-          capabilities: { profiles: { generations: gptImage2, edits: gptImage2 } },
+          capabilities: { quality, profiles: { generations: gptImage2, edits: gptImage2 } },
         },
         {
           model: 'nano-banana-2',
@@ -327,6 +330,105 @@ describe('Vela media provider', () => {
     const [args] = imageCall();
     expect(valueAfter(args, '--aspect-ratio')).toBe('16:9');
     expect(valueAfter(args, '--resolution')).toBe('2K');
+  });
+
+  // Tiers are priced apart by more than an order of magnitude, so what an
+  // unqualified request sends is a billing decision, not a formatting one.
+  it('sends no quality tier when the caller asked for none, leaving the model default in charge', async () => {
+    mockReadyImage();
+
+    const result = await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      aspect: '1:1',
+      output: 'unqualified.png',
+    });
+
+    const [args] = imageCall();
+    expect(args).not.toContain('--quality');
+    expect(result.providerNote).toContain('model default quality');
+  });
+
+  it('forwards a published quality tier verbatim', async () => {
+    mockReadyImage();
+
+    const result = await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      images: refs.slice(0, 1),
+      aspect: '1:1',
+      quality: 'high',
+      output: 'high-tier.png',
+    });
+
+    const [args] = imageCall();
+    expect(valueAfter(args, '--quality')).toBe('high');
+    expect(result.providerNote).toContain('high');
+  });
+
+  it('names the published tiers when the requested one is not one of them', async () => {
+    mockReadyImage();
+
+    await expect(generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      aspect: '1:1',
+      quality: 'ultra',
+      output: 'wrong-tier.png',
+    })).rejects.toThrow('does not publish quality ultra; supported: high, low, medium');
+    expect(runVelaCommandMock.mock.calls.every(([args]) => args[0] !== 'image')).toBe(true);
+  });
+
+  // Both the CLI and the server reject a tier on an untiered model, so failing
+  // here keeps the round trip -- and its error message -- off the wire.
+  it('refuses a quality tier on a model that publishes no quality capability', async () => {
+    mockReadyImage();
+
+    await expect(generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/nano-banana-2',
+      images: refs.slice(0, 1),
+      aspect: '1:1',
+      quality: 'high',
+      output: 'untiered.png',
+    })).rejects.toThrow('does not publish a quality capability');
+    expect(runVelaCommandMock.mock.calls.every(([args]) => args[0] !== 'image')).toBe(true);
+  });
+
+  it('requests an explicitly named resolution instead of the model default', async () => {
+    mockReadyImage();
+
+    const result = await generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      aspect: '1:1',
+      resolution: '1K',
+      output: 'small.png',
+    });
+
+    const [args] = imageCall();
+    expect(valueAfter(args, '--aspect-ratio')).toBe('1:1');
+    expect(valueAfter(args, '--resolution')).toBe('1K');
+    expect(result.providerNote).toContain('1:1 1K');
+  });
+
+  it('names the resolutions published at that aspect when the requested one is not one of them', async () => {
+    mockReadyImage();
+
+    await expect(generateMedia({
+      ...baseArgs(),
+      surface: 'image',
+      model: 'vela/gpt-image-2',
+      aspect: '16:9',
+      resolution: '1K',
+      output: 'wrong-resolution.png',
+    })).rejects.toThrow('does not publish resolution 1K at aspect 16:9; supported: 2K');
+    expect(runVelaCommandMock.mock.calls.every(([args]) => args[0] !== 'image')).toBe(true);
   });
 
   it('names the published aspect ratios when the requested one is not one of them', async () => {

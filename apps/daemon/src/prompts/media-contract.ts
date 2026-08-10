@@ -195,6 +195,8 @@ Run via your shell tool (Bash on Claude Code, exec on Codex/Gemini, etc.):
   --output <filename> \\
   --prompt "<full prompt>" \\
   [--aspect 1:1|16:9|9:16|4:3|3:4] \\
+  [--quality <tier>]                # vela/* images only; gpt-image-2 accepts low|medium|high
+  [--resolution <res>]              # vela/* images only; e.g. 1K, 2K — must be published for --aspect
   [--length <seconds>]              # video only
   [--duration <seconds>]            # audio only
   [--prompt-influence <0-1>]        # audio:sfx only; higher follows the prompt more closely
@@ -207,6 +209,11 @@ Run via your shell tool (Bash on Claude Code, exec on Codex/Gemini, etc.):
 Always quote the prompt value. Use \`--prompt "<full prompt>"\` (or the
 equivalent safe quoting for your shell) — never splice an unquoted user
 string into the command line.
+
+Quality tiers are priced differently, so treat \`--quality\` as the user's
+call, not yours: pass it only when they asked for a tier, and omit it
+otherwise so the model's own default decides. Same for \`--resolution\` —
+omitting it uses the model's default profile.
 
 Open Design Cloud image and video models use the \`vela/*\` catalogue prefix.
 Always invoke those models through \`"$OD_NODE_BIN" "$OD_BIN" media generate\`.

@@ -19,10 +19,31 @@ export interface VelaImageRenderInput {
   imageRefs: VelaMediaImageRef[];
   model: string;
   prompt: string;
+  /**
+   * Published quality tier the caller asked for, or undefined when they did
+   * not ask. Undefined must stay undefined all the way to the command line:
+   * omitting `--quality` is how the server's own default tier (the cheapest
+   * one the model publishes) stays in charge. Inventing a tier here would
+   * silently re-price every unqualified request.
+   */
+  quality: string | undefined;
+  /**
+   * Published output resolution the caller asked for, or undefined to let the
+   * model's default profile decide. Vela's CLI refuses a resolution without an
+   * aspect ratio, so this only takes effect alongside `aspect`.
+   */
+  resolution: string | undefined;
   wireModel: string;
   workspaceId: string | undefined;
 }
 
+/**
+ * Video shares the image input shape but not its output vocabulary: it sends a
+ * fixed `--resolution` and publishes no quality tier, so the inherited
+ * `quality` and `resolution` fields are deliberately ignored here rather than
+ * forwarded. Wiring them up needs the video capability envelope, which is a
+ * separate change.
+ */
 export interface VelaVideoRenderInput extends VelaImageRenderInput {
   length: number | undefined;
   onProgress: ProgressFn | undefined;
@@ -136,11 +157,23 @@ interface VelaImageOutputProfile {
   resolution: string;
 }
 
+interface VelaPublishedImageCapabilities {
+  profiles: VelaImageOutputProfile[];
+  defaultResolution: string | null;
+  /**
+   * The tiers this model publishes, or null when it publishes no quality
+   * capability at all. Null and empty mean different things: only some models
+   * are tiered (today just gpt-image-2), and asking an untiered model for a
+   * tier is rejected by both the CLI and the server.
+   */
+  qualityValues: string[] | null;
+}
+
 function parsePublishedProfiles(
   stdout: string,
   model: string,
   edits: boolean,
-): { profiles: VelaImageOutputProfile[]; defaultResolution: string | null } | null {
+): VelaPublishedImageCapabilities | null {
   const response = parseJsonObject(stdout, 'media models');
   const models = Array.isArray(response.models) ? response.models : [];
   const entry = models.find(
@@ -148,6 +181,13 @@ function parsePublishedProfiles(
   );
   if (!entry) return null;
   const capabilities = isRecord(entry.capabilities) ? entry.capabilities : null;
+  // Quality is published per model, not per request kind, so it is read from
+  // the capability root rather than from the generations/edits envelope.
+  const qualityValues = capabilities && isRecord(capabilities.quality)
+    ? (Array.isArray(capabilities.quality.values) ? capabilities.quality.values : [])
+        .map((value) => nonEmptyString(value))
+        .filter((value): value is string => value != null)
+    : null;
   const byRequestKind = capabilities && isRecord(capabilities.profiles) ? capabilities.profiles : null;
   const envelope = byRequestKind?.[edits ? 'edits' : 'generations'];
   if (!isRecord(envelope)) return null;
@@ -160,28 +200,71 @@ function parsePublishedProfiles(
     if (aspectRatio && resolution) profiles.push({ aspectRatio, resolution });
   }
   const fallback = isRecord(envelope.default) ? nonEmptyString(envelope.default.resolution) : null;
-  return { profiles, defaultResolution: fallback };
+  return { profiles, defaultResolution: fallback, qualityValues };
 }
 
-// Vela owns which shapes a model can actually deliver, so read the published
-// profiles per request instead of caching a copy here: a catalogue that gained
-// or lost a shape must take effect immediately, and one extra CLI call is
-// nothing beside the generation it precedes. Returning undefined leaves the
-// request without output flags, which is how the server's own default profile
-// stays in charge.
-async function resolveImageOutputProfile(
+/**
+ * Turn a requested tier into the `--quality` argument, or into nothing.
+ *
+ * Three outcomes, and the difference matters for billing: an unqualified
+ * request sends no flag and is priced at the model's own default tier; a
+ * request for a tier the model publishes sends it verbatim; a request the
+ * model cannot honour fails here, before it costs anything, with the tiers it
+ * does publish.
+ */
+function qualityArgs(
+  requested: string | undefined,
+  published: VelaPublishedImageCapabilities,
+  wireModel: string,
+): string[] {
+  const tier = requested?.trim();
+  if (!tier) return [];
+  if (!published.qualityValues) {
+    throw new Error(
+      `Vela model ${wireModel} does not publish a quality capability, so quality ${tier} cannot be requested`,
+    );
+  }
+  if (!published.qualityValues.includes(tier)) {
+    throw new Error(
+      `Vela model ${wireModel} does not publish quality ${tier}; supported: ${published.qualityValues.join(', ')}`,
+    );
+  }
+  return ['--quality', tier];
+}
+
+// Vela owns which shapes and tiers a model can actually deliver, so read the
+// published capabilities per request instead of caching a copy here: a
+// catalogue that gained or lost one must take effect immediately, and one
+// extra CLI call is nothing beside the generation it precedes.
+async function fetchPublishedImageCapabilities(
   input: VelaImageRenderInput,
   edits: boolean,
   wireModel: string,
   runCommand: VelaCommandRunner,
-): Promise<VelaImageOutputProfile | undefined> {
-  const aspect = input.aspect?.trim();
-  if (!aspect) return undefined;
+): Promise<VelaPublishedImageCapabilities | null> {
   const stdout = await runCommand(['media', 'models', '--json'], {
     ...velaWorkspaceCommandOptions(input.workspaceId),
     timeoutMs: VELA_MODELS_TIMEOUT_MS,
   });
-  const published = parsePublishedProfiles(stdout, wireModel, edits);
+  return parsePublishedProfiles(stdout, wireModel, edits);
+}
+
+/**
+ * Pick the (aspect ratio, resolution) pair to request, or undefined to send no
+ * output flags at all and leave the server's default profile in charge.
+ *
+ * Vela's CLI treats the pair as one indivisible request, so a caller who names
+ * only a shape still has to be given a resolution. Which one they get is a
+ * pricing decision: the model's own default tier is the only choice that keeps
+ * an unqualified request costing what an unqualified request costs.
+ */
+function selectImageOutputProfile(
+  published: VelaPublishedImageCapabilities | null,
+  aspect: string | undefined,
+  requestedResolution: string | undefined,
+  wireModel: string,
+): VelaImageOutputProfile | undefined {
+  if (!aspect) return undefined;
   if (!published || published.profiles.length === 0) {
     throw new Error(
       `Vela model ${wireModel} does not publish output profiles, so aspect ${aspect} cannot be requested`,
@@ -193,6 +276,16 @@ async function resolveImageOutputProfile(
     throw new Error(
       `Vela model ${wireModel} does not publish aspect ${aspect}; supported: ${supported.join(', ')}`,
     );
+  }
+  if (requestedResolution) {
+    const exact = matching.find((profile) => profile.resolution === requestedResolution);
+    if (!exact) {
+      const supported = matching.map((profile) => profile.resolution);
+      throw new Error(
+        `Vela model ${wireModel} does not publish resolution ${requestedResolution} at aspect ${aspect}; supported: ${supported.join(', ')}`,
+      );
+    }
+    return exact;
   }
   // Several resolutions can share one aspect ratio. Prefer the one the model
   // defaults to, so asking only for a shape does not silently change quality
@@ -223,7 +316,27 @@ export async function renderVelaImage(
   assertInputImageCount(input.imageRefs);
   const wireModel = wireModelForVela(input.model, input.wireModel);
   const edits = input.imageRefs.length > 0;
-  const profile = await resolveImageOutputProfile(input, edits, wireModel, runCommand);
+  const requestedQuality = input.quality?.trim();
+  // One catalogue read serves both the output profile and the quality tier.
+  // Skip it entirely when the caller named neither, so an unqualified request
+  // still costs exactly one CLI spawn.
+  const published = input.aspect?.trim() || requestedQuality
+    ? await fetchPublishedImageCapabilities(input, edits, wireModel, runCommand)
+    : null;
+  const profile = selectImageOutputProfile(
+    published,
+    input.aspect?.trim() || undefined,
+    input.resolution?.trim() || undefined,
+    wireModel,
+  );
+  const quality = requestedQuality && published
+    ? qualityArgs(requestedQuality, published, wireModel)
+    : [];
+  if (requestedQuality && !published) {
+    throw new Error(
+      `Vela model ${wireModel} is not in the published image catalogue, so quality ${requestedQuality} cannot be requested`,
+    );
+  }
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'open-design-vela-image-'));
   const outputPath = path.join(tempDir, 'result.bin');
   try {
@@ -240,6 +353,7 @@ export async function renderVelaImage(
       ...(profile
         ? ['--aspect-ratio', profile.aspectRatio, '--resolution', profile.resolution]
         : []),
+      ...quality,
       '--output',
       outputPath,
       '--json',
@@ -266,9 +380,11 @@ export async function renderVelaImage(
     const bytes = await readNonEmptyOutput(outputPath, `image ${command}`);
     return {
       bytes,
+      // The tier is part of what the user was charged for, so name it when it
+      // was chosen and say so plainly when the server's default decided.
       providerNote: `vela/${wireModel} · ${
         profile ? `${profile.aspectRatio} ${profile.resolution}` : 'model default profile'
-      } · ${bytes.length} bytes`,
+      } · ${requestedQuality ?? 'model default quality'} · ${bytes.length} bytes`,
       suggestedExt: extensionForImageMime(mime),
     };
   } finally {

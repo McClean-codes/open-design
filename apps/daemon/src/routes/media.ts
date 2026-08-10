@@ -238,6 +238,8 @@ export function registerMediaRoutes(app: Express, ctx: RegisterMediaRoutesDeps) 
         prompt: req.body?.prompt,
         output: req.body?.output,
         aspect: req.body?.aspect,
+        quality: typeof req.body?.quality === 'string' ? req.body.quality : undefined,
+        resolution: typeof req.body?.resolution === 'string' ? req.body.resolution : undefined,
         length:
           typeof req.body?.length === 'number' ? req.body.length : undefined,
         duration:
