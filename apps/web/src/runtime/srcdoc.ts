@@ -15,6 +15,7 @@
  * after every navigation so the host can render its own counter / dots.
  */
 import { injectDeckStageFallback } from '@open-design/contracts/runtime/deck-stage-fallback';
+import { buildPreviewObservabilityBridge } from '@open-design/contracts/runtime/preview-observability';
 
 import {
   buildManualEditBridge,
@@ -390,7 +391,10 @@ export function buildSrcdoc(
   // is inert on documents that never self-redirect. Injected right after the
   // sandbox shim so it is installed before any author script or meta refresh.
   const withRedirectGuard = injectPreviewRedirectGuard(withShim, { blockLoadTimeScriptRedirect });
-  const withKeydownRegistry = options.deck ? injectDeckKeydownRegistryHook(withRedirectGuard) : withRedirectGuard;
+  // Runtime errors stay in the iframe's Window and never bubble to the host.
+  // Install this before every author script so even boot failures are bridged.
+  const withObservability = injectAfterHeadOpen(withRedirectGuard, buildPreviewObservabilityBridge());
+  const withKeydownRegistry = options.deck ? injectDeckKeydownRegistryHook(withObservability) : withObservability;
   const withFocusGuard = options.previewFocusGuard
     ? injectPreviewFocusGuard(withKeydownRegistry)
     : withKeydownRegistry;

@@ -94,6 +94,17 @@ describe('buildSrcdoc', () => {
     expect(srcdoc).toContain('foreignObject');
   });
 
+  it('injects preview observability before author scripts', () => {
+    const srcdoc = buildSrcdoc('<!doctype html><html><head><script>throw new Error("boot")</script></head><body></body></html>');
+
+    expect(srcdoc).toContain('data-od-preview-observability');
+    expect(srcdoc).toContain("send('runtime_error'");
+    expect(srcdoc).toContain("send('white_screen'");
+    expect(srcdoc.indexOf('data-od-preview-observability')).toBeLessThan(
+      srcdoc.indexOf('<script>throw new Error("boot")</script>'),
+    );
+  });
+
   it('paints an opaque background before drawing so empty rasters never flatten to black', () => {
     const srcdoc = buildSrcdoc('<main style="color:red">Hero</main>');
 
