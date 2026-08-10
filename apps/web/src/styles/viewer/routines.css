@@ -1049,15 +1049,13 @@
 .ws-tabs-project-dock .workspace-tab.is-pinned {
   display: none;
 }
-/* Focus-mode dock: the strip shares the workspace tab row, between the
-   expand-chat control and the file tabs; it shrinks and scrolls internally
-   before crowding them. */
+/* Focus-mode dock: it still OWNS the strip (registering here is what keeps
+   the strip out of the full-width chrome row), but shows nothing — the
+   workspace tab row keeps its own controls only (per product: 收起侧边栏后不要
+   把项目 tab / 项目下拉带到这一行). The strip stays mounted for its
+   measurement and drag hooks. */
 .ws-tabs-project-dock {
-  display: flex;
-  align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
-  margin-right: 6px;
+  display: none;
 }
 /* Docked mode swaps the pill strip for the white dropdown below. The strip
    stays mounted (its measurement/drag hooks keep their DOM) but invisible. */
@@ -1171,6 +1169,11 @@
   white-space: nowrap;
 }
 .workspace-tabs-home-chrome {
+  /* Same leading inset as .workspace-tabs-strip's padding-left, so the Home
+     icon lands on the IDENTICAL x in both chrome states — docked (this
+     button) and undocked (the strip's pinned entry tab). Without it the icon
+     jumped 10px left on every entry→project→entry trip. */
+  margin-left: 10px;
   width: 78px;
   height: 32px;
   padding: 0;
@@ -1193,8 +1196,7 @@
   /* Column: the docked strip sits above the chat card. */
   flex-direction: column;
 }
-.app .split-chat-slot > .pane,
-.app .split-chat-slot > .comment-left-host {
+.app .split-chat-slot > .pane {
   flex: 1 1 auto;
   min-height: 0;
 }

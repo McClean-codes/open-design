@@ -4402,6 +4402,7 @@ export function CommentSidePanel({
   activeCommentId,
   collapsed,
   onCollapsedChange,
+  onDismiss,
   onToggleSelect,
   onSelectAll,
   onClearSelection,
@@ -4426,6 +4427,10 @@ export function CommentSidePanel({
   activeCommentId: string | null;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
+  /** Closes the panel outright. The floating card passes this so its 收起
+   *  control hides the card instead of parking a full-height rail on the
+   *  right edge — the toolbar's comment button is the way back. */
+  onDismiss?: () => void;
   onToggleSelect: (commentId: string) => void;
   onSelectAll: () => void;
   canSendComment?: (comment: PreviewComment) => boolean;
@@ -4591,16 +4596,8 @@ export function CommentSidePanel({
           <span>{commentsLabel}</span>
         </div>
         <div className="comment-side-header-actions">
-          {sendableCount > 0 ? (
-            <button
-              type="button"
-              className="comment-side-select-all"
-              disabled={allSelected}
-              onClick={onSelectAll}
-            >
-              {t('chat.comments.selectAll')}
-            </button>
-          ) : null}
+          {/* The header's right slot collapses the panel to its rail (per
+              product: 收起); select all moved below the divider. */}
           <button
             ref={expandedToggleRef}
             type="button"
@@ -4609,12 +4606,30 @@ export function CommentSidePanel({
             aria-controls={panelId}
             aria-expanded={true}
             title={t('preview.hideSidebar', { label: commentsLabel })}
-            onClick={() => handleCollapsedChange(true, 'collapsed')}
+            onClick={() => {
+              if (onDismiss) {
+                onDismiss();
+                return;
+              }
+              handleCollapsedChange(true, 'collapsed');
+            }}
           >
             <Icon name="chevron-right" size={14} />
           </button>
         </div>
       </div>
+      {sendableCount > 0 ? (
+        <div className="comment-side-toolbar">
+          <button
+            type="button"
+            className="comment-side-select-all"
+            disabled={allSelected}
+            onClick={onSelectAll}
+          >
+            {t('chat.comments.selectAll')}
+          </button>
+        </div>
+      ) : null}
       <div
         className="comment-side-list"
         onDragLeave={(event) => {
@@ -4882,6 +4897,7 @@ function CommentSideDock({
   activeCommentId,
   collapsed,
   onCollapsedChange,
+  onDismiss,
   onToggleSelect,
   onSelectAll,
   onClearSelection,
@@ -4906,6 +4922,7 @@ function CommentSideDock({
   activeCommentId: string | null;
   collapsed: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
+  onDismiss?: () => void;
   onToggleSelect: (commentId: string) => void;
   onSelectAll: () => void;
   onClearSelection: () => void;
@@ -4939,6 +4956,7 @@ function CommentSideDock({
         activeCommentId={activeCommentId}
         collapsed={collapsed}
         onCollapsedChange={onCollapsedChange}
+        onDismiss={onDismiss}
         onToggleSelect={onToggleSelect}
         onSelectAll={onSelectAll}
         onClearSelection={onClearSelection}
@@ -14461,8 +14479,25 @@ function HtmlViewer({
       projectId={projectId}
       selectedIds={selectedSideCommentIds}
       activeCommentId={activeSideCommentId}
-      collapsed={commentPortalHost ? false : commentSidePanelCollapsed}
+      // The panel used to be pinned open whenever it was portaled (it docked
+      // into a full-height column, where a collapsed rail made no sense). It
+      // now always floats as a card, so its collapse control has to actually
+      // collapse — forcing `false` here made every click a no-op.
+      collapsed={commentSidePanelCollapsed}
       onCollapsedChange={setCommentSidePanelCollapsed}
+      // Floating card: 收起 closes it, mirroring the toolbar toggle's own OFF
+      // branch so the toolbar returns to its unpressed state and ONE click
+      // reopens the panel. (Closing only the panel left create/board mode on,
+      // so the next toolbar click spent itself turning those off.) The local
+      // dock keeps its collapse-to-rail behaviour.
+      onDismiss={commentPortalHost
+        ? () => {
+            setCommentPanelOpen(false);
+            setCommentCreateMode(false);
+            setBoardMode(false);
+            clearBoardComposer();
+          }
+        : undefined}
       onToggleSelect={(commentId) => {
         setSelectedSideCommentIds((current) => {
           const next = new Set(current);

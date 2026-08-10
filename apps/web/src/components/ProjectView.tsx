@@ -695,7 +695,6 @@ const CHAT_PANEL_WIDTH_STORAGE_KEY = 'open-design.project.chatPanelWidth';
 const DEFAULT_CHAT_PANEL_WIDTH = 460;
 const MIN_CHAT_PANEL_WIDTH = 345;
 const MAX_CHAT_PANEL_WIDTH = 720;
-const COMMENT_INSPECTOR_PANEL_WIDTH = 320;
 const MIN_WORKSPACE_PANEL_WIDTH = 400;
 const SPLIT_RESIZE_HANDLE_WIDTH = 8;
 const BYOK_OPENCODE_UNAVAILABLE_MESSAGE =
@@ -2243,7 +2242,6 @@ export function ProjectView({
   const chatTabsDockRef = useWorkspaceTabsDockRef();
   const [commentInspectorActive, setCommentInspectorActive] = useState(false);
   const commentInspectorPortalId = useId();
-  const leftInspectorActive = commentInspectorActive;
   // Per-session override for the BYOK chat's generate_image tool. Seeded once
   // from the New Project → Media model pick (project.metadata.imageModel) — but
   // only when that pick belongs to the active BYOK provider (see
@@ -9616,9 +9614,10 @@ export function ProjectView({
     workspacePanelMinWidth === 0
       ? 'minmax(0, 1fr)'
       : `minmax(${workspacePanelMinWidth}px, 1fr)`;
-  const splitLeftPanelWidth = leftInspectorActive
-    ? COMMENT_INSPECTOR_PANEL_WIDTH
-    : chatPanelWidthRef.current;
+  // The comment panel floats over the workspace now, so opening it must not
+  // touch the split at all: the chat column keeps the width the user set.
+  // (It used to take over this column at COMMENT_INSPECTOR_PANEL_WIDTH.)
+  const splitLeftPanelWidth = chatPanelWidthRef.current;
   const chatPanelAriaMinWidth = Math.min(MIN_CHAT_PANEL_WIDTH, chatPanelMaxWidth);
   const projectActionsToastInChatPane =
     projectActionsToast?.scope === 'chat-pane' &&
@@ -10693,7 +10692,6 @@ export function ProjectView({
         ref={splitRef}
         className={[
           projectSplitClassName(workspaceFocused),
-          leftInspectorActive && !workspaceFocused ? 'split-manual-edit' : '',
           resizingChatPanel && !workspaceFocused ? 'is-resizing-chat' : '',
         ].filter(Boolean).join(' ')}
         style={projectSplitStyle(workspaceFocused, splitLeftPanelWidth, workspacePanelTrack)}
@@ -10734,13 +10732,7 @@ export function ProjectView({
               </button>
             </div>
           ) : null}
-          {commentInspectorActive ? (
-            <div
-              id={commentInspectorPortalId}
-              className="comment-left-host"
-              aria-label="Comments"
-            />
-          ) : activeConversationId || conversationLoadError || emptyConversationReadOnlySettled ? (
+          {activeConversationId || conversationLoadError || emptyConversationReadOnlySettled ? (
             <ChatPane
               // The conversation id is part of the key so switching conversations
               // resets internal scroll/draft state inside ChatPane and ChatComposer.
@@ -10986,25 +10978,36 @@ export function ProjectView({
             </div>
           )}
         </div>
+        {/* The comment panel is a floating card over the workspace in EVERY
+            state (per product: 任何状态下评论卡片都在这个位置). It used to dock
+            inside the chat column, which put it in a different place —  and
+            made it invisible in full-screen preview, where that column is
+            hidden. Exactly one element ever carries
+            `commentInspectorPortalId`: FileViewer resolves the portal host by
+            id. */}
+        {commentInspectorActive ? (
+          <div
+            id={commentInspectorPortalId}
+            className="comment-float-host"
+            aria-label="Comments"
+            data-testid="comment-float-host"
+          />
+        ) : null}
         {!workspaceFocused ? (
-          leftInspectorActive ? (
-            <div className="split-edit-divider" aria-hidden />
-          ) : (
-            <div
-              className="split-resize-handle"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label={chatResizeLabel}
-              aria-valuemin={chatPanelAriaMinWidth}
-              aria-valuemax={chatPanelMaxWidth}
-              aria-valuenow={chatPanelWidth}
-              tabIndex={0}
-              title={chatResizeLabel}
-              onPointerDown={handleChatResizePointerDown}
-              onKeyDown={handleChatResizeKeyDown}
-              onBlur={handleChatResizeBlur}
-            />
-          )
+          <div
+            className="split-resize-handle"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={chatResizeLabel}
+            aria-valuemin={chatPanelAriaMinWidth}
+            aria-valuemax={chatPanelMaxWidth}
+            aria-valuenow={chatPanelWidth}
+            tabIndex={0}
+            title={chatResizeLabel}
+            onPointerDown={handleChatResizePointerDown}
+            onKeyDown={handleChatResizeKeyDown}
+            onBlur={handleChatResizeBlur}
+          />
         ) : null}
         <FileWorkspace
           projectId={project.id}
