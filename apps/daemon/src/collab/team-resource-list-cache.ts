@@ -33,6 +33,22 @@ export function invalidateTeamResourceListingCaches(input: {
 const TEAM_RESOURCE_LIST_FRESH_MS = 3000;
 
 /**
+ * How many `vela` child processes one collab fan-out may have in flight.
+ *
+ * Both collab fan-outs — materializing a workspace's shared resources, and
+ * publishing the projects that went dirty together — are sized by user data,
+ * not by the machine. Left unbounded, a workspace that shares 200 design
+ * systems spawns 200 concurrent `vela resource pull` processes on a single
+ * listing read, each holding a socket, a transfer buffer, and a connection at
+ * the far end. The cap makes the peak a property of the daemon.
+ *
+ * Sized for transfer work rather than CPU: these operations are dominated by
+ * network round-trips, so a handful in flight keeps the pipe busy without
+ * turning one workspace into a load generator against the hub.
+ */
+export const COLLAB_VELA_FANOUT_CONCURRENCY = 4;
+
+/**
  * Cache identity for a listing. Team resource visibility is a function of the
  * whole principal — a role or lifecycle change can add or remove entries — so
  * every field that the authority consults is part of the key.
