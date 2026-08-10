@@ -6941,10 +6941,10 @@ describe('FileViewer tweaks toolbar', () => {
     expect(screen.queryByPlaceholderText('Add a note for this mark')).toBeNull();
   });
 
-  it('reports diagnostics only from the active preview iframe', async () => {
+  it('reports diagnostics only from the active viewer and preview iframe', async () => {
     const teardownObserver = installPreviewIframeMessageObserver();
     try {
-      render(
+      const { rerender } = render(
         <FileViewer
           projectId="project-1"
           projectKind="prototype"
@@ -6986,6 +6986,31 @@ describe('FileViewer tweaks toolbar', () => {
           error_message: 'active preview failed',
         }),
       );
+
+      rerender(
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={htmlPreviewFile()}
+          liveHtml='<html><body><main>Preview</main></body></html>'
+          workspaceActive={false}
+        />,
+      );
+      const retainedFrame = screen.getByTestId(
+        'artifact-preview-frame-retained-preview.html',
+      ) as HTMLIFrameElement;
+      act(() => {
+        window.dispatchEvent(new MessageEvent('message', {
+          source: retainedFrame.contentWindow,
+          data: {
+            type: 'od:preview-observability',
+            version: 1,
+            event: 'white_screen',
+            message: 'retained preview looks blank',
+          },
+        }));
+      });
+      expect(safetyEventMock).toHaveBeenCalledTimes(1);
     } finally {
       teardownObserver();
     }

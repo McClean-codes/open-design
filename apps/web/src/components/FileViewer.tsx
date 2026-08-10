@@ -9706,6 +9706,7 @@ function HtmlViewer({
   useEffect(() => {
     if (mode !== 'preview') return undefined;
     return subscribePreviewIframeMessages(({ source: messageSource, data }) => {
+      if (!workspaceActiveRef.current) return;
       const activeFrame = useUrlLoadPreview
         ? urlPreviewIframeRef.current
         : srcDocPreviewIframeRef.current;
