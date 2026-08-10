@@ -6808,8 +6808,19 @@ function ReactComponentViewer({
                             the HtmlViewer copy. */}
                         {canPublishPublic ? (
                         <>
-                        <div className="share-menu-section-label" role="presentation">
-                          {t('fileViewer.shareMenuPublishViaOd')}
+                        {/* The "?" lives on the section label, not inside the publish
+                            menuitem — see the HtmlViewer copy for why. */}
+                        <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
+                          <span>{t('fileViewer.shareMenuPublishViaOd')}</span>
+                          <span
+                            className="share-menu-help od-tooltip"
+                            data-testid="publish-help"
+                            aria-label={t('fileViewer.publishSingleFileDescription')}
+                            data-tooltip={t('fileViewer.publishSingleFileDescription')}
+                            data-tooltip-placement="bottom"
+                          >
+                            <RemixIcon name="question-line" size={14} />
+                          </span>
                         </div>
                         {filePublished ? (
                           <div className="chrome-publish-plain">
@@ -6863,14 +6874,6 @@ function ReactComponentViewer({
                               />
                             </span>
                             <span>{publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}</span>
-                            <span
-                              className="share-menu-help od-tooltip"
-                              aria-label={t('fileViewer.publishSingleFileDescription')}
-                              data-tooltip={t('fileViewer.publishSingleFileDescription')}
-                              data-tooltip-placement="bottom"
-                            >
-                              <RemixIcon name="question-line" size={14} />
-                            </span>
                           </button>
                         ) }
                         {publishFailureKey ? (
@@ -14971,8 +14974,22 @@ function HtmlViewer({
                           link block (content, not an action). */}
                       {canPublishPublic ? (
                       <>
-                      <div className="share-menu-section-label" role="presentation">
-                        {t('fileViewer.shareMenuPublishViaOd')}
+                      {/* The "?" lives on the section label, not inside the publish
+                          menuitem: activating it is a help-discovery gesture, and
+                          nesting it in the row would make that gesture publish a
+                          public link (no hover-only path exists on touch). Same
+                          structure as the workspace-access help above. */}
+                      <div className="share-menu-section-label share-menu-section-label--help" role="presentation">
+                        <span>{t('fileViewer.shareMenuPublishViaOd')}</span>
+                        <span
+                          className="share-menu-help od-tooltip"
+                          data-testid="publish-help"
+                          aria-label={t('fileViewer.publishSingleFileDescription')}
+                          data-tooltip={t('fileViewer.publishSingleFileDescription')}
+                          data-tooltip-placement="bottom"
+                        >
+                          <RemixIcon name="question-line" size={14} />
+                        </span>
                       </div>
                       {filePublished ? (
                         <div className="chrome-publish-plain">
@@ -15026,14 +15043,6 @@ function HtmlViewer({
                             />
                           </span>
                           <span>{publishingPublicFile ? t('fileViewer.publishingFile') : t('fileViewer.publishSingleFileTitle')}</span>
-                          <span
-                            className="share-menu-help od-tooltip"
-                            aria-label={t('fileViewer.publishSingleFileDescription')}
-                            data-tooltip={t('fileViewer.publishSingleFileDescription')}
-                            data-tooltip-placement="bottom"
-                          >
-                            <RemixIcon name="question-line" size={14} />
-                          </span>
                         </button>
                       ) }
                       {publishFailureKey ? (

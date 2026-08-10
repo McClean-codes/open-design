@@ -1038,15 +1038,17 @@ html.od-radial-open .workspace-shell {
   gap: 6px;
   padding: 2px 10px 8px;
 }
-/* A section label that carries a trailing "?" (access control, where the
-   explanation is state-dependent and does not belong in a permanent line). */
+/* A section label that carries a trailing "?" — used where the explanation is
+   state-dependent (access control) or is something the user wants to read
+   BEFORE acting (publish). Both keep the "?" on the label rather than inside
+   the actionable row, so reading the help can never trigger the action. */
 .share-menu-section-label--help {
   display: flex;
   align-items: center;
   gap: 6px;
 }
-/* Trailing "?" inside a menu row — pushed to the row end; its od-tooltip
-   carries the reach + single-file-limitation explanation. */
+/* Trailing "?" — pushed to the end of its label/row; its od-tooltip carries the
+   explanation. */
 .share-menu-help {
   margin-inline-start: auto;
   display: inline-flex;

@@ -5484,6 +5484,89 @@ describe('FileViewer SVG artifacts', () => {
     );
   });
 
+  // Reading the help must never publish. The publish row's trailing "?" carries
+  // the reach + single-file limitation copy, i.e. exactly what a user wants to
+  // read BEFORE committing — but it used to be nested inside the same
+  // `role="menuitem"` button whose onClick calls `publishCurrentFilePublic()`
+  // unconditionally, so activating it created a public link. Touch devices have
+  // no hover path at all, so pressing was the only way to read it. The "?" now
+  // lives on the section label instead, outside the actionable row.
+  //
+  // The invariant: activating the publish help emits no publish-public request,
+  // in both viewer chromes.
+  function publishHelpCase(fileFor: () => ProjectFile, label: string) {
+    it(`reads the publish help without publishing (${label})`, async () => {
+      const context = teamWorkspaceContext();
+      // Only the mutating POST counts — the viewer GETs the same path on mount
+      // to read the current publication state, which is not a publish.
+      const publishCalls: string[] = [];
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (url.includes('/api/workspace/context')) {
+            return new Response(JSON.stringify({ context }), { status: 200 });
+          }
+          if (url.includes('publish-public')) {
+            if ((init?.method ?? 'GET').toUpperCase() !== 'GET') {
+              publishCalls.push(`${init?.method} ${url}`);
+            }
+            return new Response(
+              JSON.stringify({ url: 'https://pub.example/x', slug: 'x', fileName: 'index.html' }),
+              { status: 200 },
+            );
+          }
+          return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+        }),
+      );
+
+      renderWithProjectWorkspace(
+        <FileViewer projectId="project-1" projectKind="prototype" file={fileFor()}
+          liveHtml="<html><body><h1>Hello</h1></body></html>"
+        />,
+        context,
+      );
+
+      fireEvent.click(await screen.findByRole('button', { name: /share/i }));
+      expect(await screen.findByRole('menu')).toBeTruthy();
+
+      // Located by the explanation it carries, not by a testid the fix added —
+      // so this spec still finds the pre-fix help (nested in the publish row)
+      // and goes red on the behavior rather than on a missing hook.
+      const help = await screen.findByLabelText(/Only a single file can be shared for now/i);
+      // It is NOT inside the actionable publish row.
+      expect(help.closest('[role="menuitem"]')).toBeNull();
+
+      fireEvent.click(help);
+
+      // No public link was created by a help-discovery gesture.
+      await waitFor(() => expect(screen.getByRole('menu')).toBeTruthy());
+      expect(publishCalls).toEqual([]);
+      // The publish row is still sitting there unactivated.
+      expect(screen.getByRole('menuitem', { name: /Get a share link/i })).toBeTruthy();
+    });
+  }
+
+  publishHelpCase(publicPublishFile, 'HtmlViewer');
+  publishHelpCase(
+    () =>
+      baseFile({
+        name: 'Widget.tsx',
+        path: 'Widget.tsx',
+        mime: 'text/plain',
+        kind: 'code',
+        artifactManifest: {
+          version: 1,
+          kind: 'react-component',
+          title: 'Widget',
+          entry: 'Widget.tsx',
+          renderer: 'react-component',
+          exports: ['jsx'],
+        },
+      }),
+    'ReactComponentViewer',
+  );
+
   // recvq5bM78HWCE: the "在工作空间中分享项目" card rendered for a personal
   // workspace with no gate at all, so clicking its access toggle called
   // `moveWorkspaceProject({ visibility: 'team' })`, which the daemon's
