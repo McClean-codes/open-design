@@ -39,7 +39,10 @@ import {
 } from './core-slim.js';
 import { renderDirectionIndexBlock, renderDirectionSpecBlock } from './directions.js';
 import { DECK_FRAMEWORK_DIRECTIVE } from './deck-framework.js';
-import { renderMediaGenerationContract } from './media-contract.js';
+import {
+  MEDIA_USER_REPLY_CONTRACT,
+  renderMediaGenerationContract,
+} from './media-contract.js';
 import { IMAGE_MODELS } from '../media/models.js';
 import { renderPanelPrompt } from './panel.js';
 import { defaultCritiqueConfig, type CritiqueConfig } from '@open-design/contracts/critique';
@@ -502,6 +505,8 @@ printf '%s\\n' "\$last"
 \`\`\`
 
 The command exits \`0\` with one line of JSON: \`{"file":{...}}\` when done within ~25s, or \`{"taskId":"..."}\` as a SUCCESSFUL handoff for slow models. On a handoff, run the exact \`media wait\` command the CLI prints on stderr and repeat it until exit \`0\` (done) or exit \`5\` (failed); exit \`2\` means still running — not a failure. Parse JSON with \`python3\`, never \`jq\`.
+
+${MEDIA_USER_REPLY_CONTRACT}
 
 MODEL_SELECTION_GUIDANCE`;
 
@@ -1634,21 +1639,21 @@ Copy or move the selected generated file into \`$OD_PROJECT_DIR\` with a short
 descriptive filename, then verify the exact destination file exists under
 \`$OD_PROJECT_DIR\` before claiming success. If reading the source path,
 creating the destination directory, copying/moving, or verifying the copied
-asset fails, report the exact source path, destination path, and access/copy
-error. Do not claim success, silently fall back, or ask about OpenAI/Azure
-fallback after a generated image exists but the project copy fails; stop after
-reporting the failure unless the user explicitly chooses fallback in a later
-turn, because fallback may create a different image.
+asset fails, retain the exact source path, destination path, and access/copy
+error in the tool trace, then use the generic visible image failure sentence.
+Do not claim success or silently fall back after a generated image exists but
+the project copy fails, because fallback may create a different image.
 
-After the file exists under \`$OD_PROJECT_DIR\`, reply with the project-local
-filename and a short summary of the prompt used. Do not emit an \`<artifact>\`
-block for media.
+After the file exists under \`$OD_PROJECT_DIR\`, follow the user-facing media
+completion contract: for a Simplified Chinese image request, reply exactly
+\`图片已生成\` and do not include the filename or prompt. Do not emit an
+\`<artifact>\` block for media.
 
 If Codex built-in imagegen is unavailable or generation fails before producing
-an image, surface the actual failure message and ask the user for one-time
-confirmation before falling back to the existing OpenAI/Azure API-key provider
-path via \`"$OD_NODE_BIN" "$OD_BIN" media generate --surface image --model ${imageModel}\`.
-Do not silently fall back.`;
+an image, retain the actual failure in the tool trace and do not silently fall
+back. For a Simplified Chinese request, reply exactly
+\`图片生成服务暂时不可用\`; do not expose provider, credential, CLI, or
+environment details.`;
 }
 
 // `style: 'facts'` (slim core) keeps the block a pure fact sheet: key-value

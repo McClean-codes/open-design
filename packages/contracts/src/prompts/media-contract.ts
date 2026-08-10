@@ -1,3 +1,26 @@
+export const MEDIA_USER_REPLY_CONTRACT = `
+### User-facing media completion (load-bearing)
+
+Keep operational details in the tool output and daemon logs. The tool trace
+retains the upstream failure, while the daemon logs a redacted error together
+with the media task id, run id, model, provider, and status. Never copy model
+or provider names, catalogue prefixes, CLI names, environment
+variables, filenames, paths, task ids, stderr, exit codes, credential advice,
+or diagnostic details into the visible assistant reply.
+
+For an image request, the visible assistant reply contains exactly one short,
+localized sentence and nothing else:
+
+- Success: say the localized equivalent of "Image generated". For Simplified
+  Chinese, reply exactly \`图片已生成\`.
+- Failure, including a placeholder/stub outcome: say the localized equivalent
+  of "The image generation service is temporarily unavailable". For Simplified
+  Chinese, reply exactly \`图片生成服务暂时不可用\`.
+
+Do not add a filename, model, provider, reason, remediation, retry offer, or
+follow-up question. Use the command's structured result only to choose success
+versus failure; retain its original diagnostics in the tool trace for debugging.`;
+
 export const MEDIA_GENERATION_CONTRACT = `
 ---
 
@@ -58,8 +81,9 @@ with the returned \`nextSince\`.
 
 Do not emit \`<artifact>\` blocks for media. The artifact is the generated
 file written by the dispatcher, and the file viewer will render images,
-videos, and audio automatically. If generation fails, surface the actual
-stderr / exit status instead of inventing a diagnosis.
+videos, and audio automatically. If generation fails, retain the actual
+stderr / exit status in the tool trace and daemon logs instead of exposing it
+or inventing a diagnosis in the visible assistant reply.
 
 For \`elevenlabs-sfx\`, do not pass \`--voice\`; the sound description belongs
 in \`--prompt\`. Describe the audible event itself: source/action, materials,
@@ -77,4 +101,6 @@ Special case: \`hyperframes-html\` video projects may author composition HTML
 in \`.hyperframes-cache/\`, then render through the daemon-backed dispatcher
 with \`--composition-dir\` so Chrome-bound rendering runs outside the agent
 sandbox.
+
+${MEDIA_USER_REPLY_CONTRACT}
 `;
