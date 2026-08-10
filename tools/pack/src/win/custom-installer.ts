@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { dirname, join, relative } from "node:path";
+import { dirname, join, relative, win32 } from "node:path";
 import { promisify } from "node:util";
 
 import type { ToolPackConfig } from "../config.js";
@@ -99,26 +99,20 @@ function createNsisLangString(
     .join("\n");
 }
 
-function createLauncherRuntimeSyncScript(
-  config: ToolPackConfig,
+export function createLauncherRuntimeSyncNsisScript(
+  channel: string,
+  namespace: string,
   runtimePath: string,
   attemptsPath: string,
   cleanupPath: string,
   helperScriptPath: string,
 ): string {
-  if (config.portable) {
-    return `
-Function SyncLauncherRuntime
-  StrCpy $LauncherRuntimeSyncExitCode "0"
-FunctionEnd
-`;
-  }
   const helperFileName = escapeNsisString(helperScriptPath.split(/[\\/]/).at(-1) ?? "sync-launcher-runtime.ps1");
   const escapedRuntimePath = escapeNsisString(runtimePath);
   const escapedAttemptsPath = escapeNsisString(attemptsPath);
   const escapedCleanupPath = escapeNsisString(cleanupPath);
-  const escapedChannel = escapeNsisString(resolveToolPackLauncherLayout(config).channel);
-  const escapedNamespace = escapeNsisString(config.namespace);
+  const escapedChannel = escapeNsisString(channel);
+  const escapedNamespace = escapeNsisString(namespace);
 
   return `
 Function SyncLauncherRuntime
@@ -141,6 +135,38 @@ done:
   Pop $0
 FunctionEnd
 `;
+}
+
+export function rebasePortableLauncherInstallerPath(
+  launcherRoot: string,
+  targetPath: string,
+): string {
+  const relativePath = win32.relative(launcherRoot, targetPath);
+  if (
+    relativePath.length === 0
+    || relativePath === ".."
+    || relativePath.startsWith(`..${win32.sep}`)
+    || win32.isAbsolute(relativePath)
+  ) {
+    throw new Error(`portable launcher path escapes launcher root: ${targetPath}`);
+  }
+  return win32.join("$APPDATA", PRODUCT_NAME, relativePath);
+}
+
+export function resolveWinInstallerLogPath(
+  portable: boolean,
+  namespace: string,
+  buildLogPath: string,
+): string {
+  if (!portable) return buildLogPath;
+  return win32.join(
+    "$TEMP",
+    PRODUCT_NAME,
+    "installer-logs",
+    "namespaces",
+    sanitizeNamespace(namespace),
+    "nsis.log",
+  );
 }
 
 export function createLauncherRuntimeSyncPowerShellScript(): string {
@@ -420,6 +446,13 @@ if ($ids) {
 async function writeInstallerScript(config: ToolPackConfig, paths: WinPaths, packagedVersion: string): Promise<void> {
   const identity = resolveWinInstallIdentity(config);
   const launcher = resolveToolPackLauncherLayout(config);
+  const launcherRuntimePaths = config.portable
+    ? {
+        attemptsPath: rebasePortableLauncherInstallerPath(launcher.root, launcher.paths.attemptsPath),
+        cleanupPath: rebasePortableLauncherInstallerPath(launcher.root, launcher.paths.cleanupPath),
+        runtimePath: rebasePortableLauncherInstallerPath(launcher.root, launcher.paths.runtimePath),
+      }
+    : launcher.paths;
   const productName = escapeNsisString(identity.displayName);
   const exeName = escapeNsisString(identity.exeName);
   const uninstallerName = escapeNsisString(identity.uninstallerName);
@@ -435,7 +468,9 @@ async function writeInstallerScript(config: ToolPackConfig, paths: WinPaths, pac
   const localUpdateDownloadsRoot = `${localDataRoot}\\updates\\downloads`;
   const localUpdateReleasesRoot = `${localDataRoot}\\updates\\releases`;
   const localUpdateStagingRoot = `${localDataRoot}\\updates\\staging`;
-  const nsisLogPath = escapeNsisString(paths.nsisLogPath);
+  const installerLogPath = resolveWinInstallerLogPath(config.portable, config.namespace, paths.nsisLogPath);
+  const nsisLogDirectory = escapeNsisString(win32.dirname(installerLogPath));
+  const nsisLogPath = escapeNsisString(installerLogPath);
   const runningInstancesScriptPath = join(dirname(paths.installerScriptPath), "running-instances.ps1");
   const launcherRuntimeSyncScriptPath = join(dirname(paths.installerScriptPath), "sync-launcher-runtime.ps1");
 
@@ -555,7 +590,7 @@ Var LX
 Function LogInstallerEvent
   Exch $0
   Push $1
-  CreateDirectory "${escapeNsisString(dirname(paths.nsisLogPath))}"
+  CreateDirectory "${nsisLogDirectory}"
   FileOpen $1 "${nsisLogPath}" a
   IfErrors done
   FileSeek $1 0 END
@@ -593,18 +628,19 @@ Function RemoveInstallTree
   Pop $2
 FunctionEnd
 
-${createLauncherRuntimeSyncScript(
-  config,
-  launcher.paths.runtimePath,
-  launcher.paths.attemptsPath,
-  launcher.paths.cleanupPath,
+${createLauncherRuntimeSyncNsisScript(
+  launcher.channel,
+  config.namespace,
+  launcherRuntimePaths.runtimePath,
+  launcherRuntimePaths.attemptsPath,
+  launcherRuntimePaths.cleanupPath,
   launcherRuntimeSyncScriptPath,
 )}
 
 Function un.LogInstallerEvent
   Exch $0
   Push $1
-  CreateDirectory "${escapeNsisString(dirname(paths.nsisLogPath))}"
+  CreateDirectory "${nsisLogDirectory}"
   FileOpen $1 "${nsisLogPath}" a
   IfErrors done
   FileSeek $1 0 END
