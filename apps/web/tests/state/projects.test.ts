@@ -29,6 +29,7 @@ import {
   publishGeneratedPluginToGitHub,
   resolvedWorkspaceContextForWrite,
   startGeneratedPluginShareTask,
+  uploadPluginFolder,
   waitGeneratedPluginShareTask,
   workspaceProjectMoveErrorCode,
 } from '../../src/state/projects';
@@ -2018,6 +2019,29 @@ describe('moveWorkspaceProject error surfaces (recvqzjnshIlOe)', () => {
       .toBe(true);
     expect(readProjectDisplaySnapshot(projectDisplaySnapshotKey(previousAccountScope))?.dirty)
       .toBe(false);
+  });
+});
+
+describe('plugin upload diagnostics', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves a bounded daemon error code on folder upload failure', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({
+      ok: false,
+      warnings: [],
+      message: 'Plugin manifest is missing at /Users/example/private-plugin',
+      errorCode: 'INVALID_MANIFEST',
+      log: [],
+    }, { status: 400 })));
+
+    await expect(uploadPluginFolder([
+      new File(['readme'], 'README.md', { type: 'text/markdown' }),
+    ])).resolves.toMatchObject({
+      ok: false,
+      errorCode: 'INVALID_MANIFEST',
+    });
   });
 });
 

@@ -156,13 +156,13 @@ export function classifyPluginInstallError(message: string): PluginInstallErrorC
   if (/fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
     return 'FETCH_FAILED';
   }
-  if (/archive|symbolic|hard links?|path-traversal|integrity mismatch|extracted .* exceeds/i.test(message)) {
+  if (/archive|zip|symbolic|hard links?|path-traversal|integrity mismatch|extracted .* exceeds/i.test(message)) {
     return 'INVALID_ARCHIVE';
   }
   if (/manifest|plugin id|installable archive|re-parsing destination/i.test(message)) {
     return 'INVALID_MANIFEST';
   }
-  if (/malformed github|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls/i.test(message)) {
+  if (/files? are required|malformed github|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls/i.test(message)) {
     return 'BAD_REQUEST';
   }
   return 'INTERNAL_ERROR';

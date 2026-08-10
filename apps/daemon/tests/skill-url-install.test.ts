@@ -143,6 +143,72 @@ describe('installSkillFromRemoteSource', () => {
     ]);
   });
 
+  it('tries slash-containing GitHub refs until the selected skill path resolves', async () => {
+    const archive = await archiveFrom(async (root) => {
+      const skillRoot = path.join(root, 'collection-feature-foo', 'skills', 'beta-skill');
+      await mkdir(skillRoot, { recursive: true });
+      await writeFile(
+        path.join(skillRoot, 'SKILL.md'),
+        '---\nname: beta-skill\ndescription: fixture\n---\n\n# Beta workflow\n',
+      );
+    }, ['collection-feature-foo']);
+    const urls: string[] = [];
+
+    const result = await installSkillFromRemoteSource(
+      await tempRoot('od-user-skills-'),
+      'https://github.com/owner/collection/tree/feature/foo/skills/beta-skill',
+      {
+        fetcher: async (url) => {
+          urls.push(url);
+          if (url.endsWith('/tar.gz/feature')) {
+            return {
+              ok: false,
+              status: 404,
+              statusText: 'Not Found',
+              body: null,
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            statusText: 'OK',
+            body: Readable.from(archive),
+          };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, id: 'beta-skill' });
+    expect(urls).toEqual([
+      'https://codeload.github.com/owner/collection/tar.gz/feature',
+      'https://codeload.github.com/owner/collection/tar.gz/feature/foo',
+    ]);
+  });
+
+  it('finds an explicitly selected nested skill below a parent SKILL.md', async () => {
+    const archive = await archiveFrom(async (root) => {
+      const repositoryRoot = path.join(root, 'collection-main');
+      const nestedSkillRoot = path.join(repositoryRoot, 'skills', 'beta-skill');
+      await mkdir(nestedSkillRoot, { recursive: true });
+      await writeFile(
+        path.join(repositoryRoot, 'SKILL.md'),
+        '---\nname: collection-root\ndescription: parent fixture\n---\n\n# Parent workflow\n',
+      );
+      await writeFile(
+        path.join(nestedSkillRoot, 'SKILL.md'),
+        '---\nname: beta-skill\ndescription: nested fixture\n---\n\n# Nested workflow\n',
+      );
+    }, ['collection-main']);
+
+    const result = await installSkillFromRemoteSource(
+      await tempRoot('od-user-skills-'),
+      'https://github.com/owner/collection/tree/main/skills/beta-skill',
+      { fetcher: archiveFetcher(archive) },
+    );
+
+    expect(result).toMatchObject({ ok: true, id: 'beta-skill' });
+  });
+
   it('fails closed when a multi-skill repository has no unique repo-named default', async () => {
     const archive = await archiveFrom(async (root) => {
       for (const name of ['alpha-skill', 'beta-skill']) {

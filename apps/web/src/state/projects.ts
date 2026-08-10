@@ -2174,7 +2174,7 @@ async function postPluginUpload(url: string, form: FormData): Promise<PluginInst
       body: form,
     });
     const json = (await resp.json()) as Partial<PluginInstallOutcome> & {
-      error?: string | { message?: string };
+      error?: string | { code?: unknown; message?: string };
     };
     if (resp.ok && json.ok) {
       return {
@@ -2189,10 +2189,15 @@ async function postPluginUpload(url: string, form: FormData): Promise<PluginInst
       json.message ??
       (typeof json.error === 'string' ? json.error : json.error?.message) ??
       resp.statusText;
+    const errorCode = boundedRequestErrorCode(
+      json.errorCode ?? (typeof json.error === 'object' ? json.error?.code : undefined),
+    );
     return {
       ok: false,
       warnings: json.warnings ?? [],
       message,
+      status: resp.status,
+      ...(errorCode ? { errorCode } : {}),
       log: json.log ?? [],
     };
   } catch (err) {
@@ -2200,6 +2205,7 @@ async function postPluginUpload(url: string, form: FormData): Promise<PluginInst
       ok: false,
       warnings: [],
       message: (err as Error).message,
+      errorCode: 'network_error',
       log: [],
     };
   }

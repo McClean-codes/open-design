@@ -1294,7 +1294,8 @@ export function ExtensionsMarketplace({
           setToast({ message: outcome.message || t('pluginsView.uploadFailed'), tone: 'error' });
           trackResourceResult({
             kind: 'expert_plugin', scope: 'personal', action: 'add', result: 'failed',
-            startedAt, errorCode: 'upload_failed',
+            startedAt,
+            errorCode: resourceActionAnalyticsErrorCode(outcome, 'upload_failed'),
           });
         }
         return;

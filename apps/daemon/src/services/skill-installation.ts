@@ -54,10 +54,14 @@ export interface SkillRemoteInstallOptions {
   allowInstallIdentity?: (identity: { id: string; slug: string }) => boolean | Promise<boolean>;
 }
 
-interface ResolvedSkillSource {
+interface SkillSourceCandidate {
   fetchUrl: string;
   preferredSkillDirectory?: string;
   preferredSkillPath?: string;
+}
+
+interface ResolvedSkillSource {
+  candidates: SkillSourceCandidate[];
 }
 
 function error(
@@ -69,8 +73,9 @@ function error(
 
 /**
  * Resolve the browser URL users copy for one skill inside a multi-skill GitHub
- * repository. Keep the grammar intentionally narrow: one unambiguous ref
- * segment followed by a safe repository-relative folder path.
+ * repository. GitHub does not delimit a slash-containing ref from the folder
+ * path, so return each safe split from shortest to longest ref. Installation
+ * tries them in order until an archive contains the explicitly selected skill.
  */
 function resolveGithubSkillTreeUrl(
   rawSource: string,
@@ -99,29 +104,32 @@ function resolveGithubSkillTreeUrl(
   ) {
     return error('BAD_REQUEST', 'GitHub skill URLs must be public HTTPS URLs without query parameters');
   }
-  const match = /^\/([^/]+)\/([^/]+)\/tree\/([^/]+)\/(.+?)\/?$/.exec(url.pathname);
+  const match = /^\/([^/]+)\/([^/]+)\/tree\/(.+?)\/?$/.exec(url.pathname);
   if (!match) return null;
   try {
     const owner = decodeURIComponent(match[1]!);
     const repo = decodeURIComponent(match[2]!).replace(/\.git$/i, '');
-    const ref = decodeURIComponent(match[3]!);
-    const skillPath = match[4]!
+    const treeParts = match[3]!
       .split('/')
       .filter(Boolean)
       .map((segment) => decodeURIComponent(segment));
     if (
       !GITHUB_SKILL_SEGMENT_RE.test(owner)
       || !GITHUB_SKILL_SEGMENT_RE.test(repo)
-      || !GITHUB_SKILL_SEGMENT_RE.test(ref)
-      || skillPath.length === 0
-      || skillPath.some((segment) => !GITHUB_SKILL_SEGMENT_RE.test(segment))
+      || treeParts.length < 2
+      || treeParts.some((segment) => !GITHUB_SKILL_SEGMENT_RE.test(segment))
     ) {
       return error('BAD_REQUEST', 'GitHub skill tree URL contains an unsupported ref or folder path');
     }
     return {
-      fetchUrl: `https://codeload.github.com/${owner}/${repo}/tar.gz/${encodeURIComponent(ref)}`,
-      preferredSkillDirectory: repo,
-      preferredSkillPath: skillPath.join('/'),
+      candidates: treeParts.slice(0, -1).map((_, index) => {
+        const refParts = treeParts.slice(0, index + 1);
+        return {
+          fetchUrl: `https://codeload.github.com/${owner}/${repo}/tar.gz/${refParts.map(encodeURIComponent).join('/')}`,
+          preferredSkillDirectory: repo,
+          preferredSkillPath: treeParts.slice(index + 1).join('/'),
+        };
+      }),
     };
   } catch {
     return error('BAD_REQUEST', 'GitHub skill tree URL contains invalid encoding');
@@ -146,8 +154,10 @@ function resolveSkillSource(rawSource: string): ResolvedSkillSource | SkillRemot
       return error('BAD_REQUEST', 'Malformed GitHub source; expected github:owner/repo');
     }
     return {
-      fetchUrl: `https://codeload.github.com/${owner}/${repo}/tar.gz/HEAD`,
-      preferredSkillDirectory: repo,
+      candidates: [{
+        fetchUrl: `https://codeload.github.com/${owner}/${repo}/tar.gz/HEAD`,
+        preferredSkillDirectory: repo,
+      }],
     };
   }
   if (source.startsWith('github:')) {
@@ -172,7 +182,7 @@ function resolveSkillSource(rawSource: string): ResolvedSkillSource | SkillRemot
   if (!/\.(?:tar\.gz|tgz)$/i.test(url.pathname)) {
     return error('BAD_REQUEST', 'Only HTTPS .tar.gz or .tgz skill archives are supported');
   }
-  return { fetchUrl: url.toString() };
+  return { candidates: [{ fetchUrl: url.toString() }] };
 }
 
 /**
@@ -251,7 +261,10 @@ async function findSkillRoot(
   preferredSkillPath?: string,
 ): Promise<string | SkillRemoteInstallResult> {
   const rootManifest = path.join(extractRoot, 'SKILL.md');
-  if (await lstat(rootManifest).then((stats) => stats.isFile()).catch(() => false)) {
+  if (
+    !preferredSkillPath
+    && await lstat(rootManifest).then((stats) => stats.isFile()).catch(() => false)
+  ) {
     return extractRoot;
   }
   const candidates: string[] = [];
@@ -265,9 +278,10 @@ async function findSkillRoot(
         `Skill archive contains more than ${MAX_SKILL_SCAN_ENTRIES} entries while locating SKILL.md`,
       );
     }
-    if (entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md')) {
+    const hasManifest = entries.some((entry) => entry.isFile() && entry.name === 'SKILL.md');
+    if (hasManifest) {
       candidates.push(dir);
-      return;
+      if (!preferredSkillPath) return;
     }
     for (const entry of entries) {
       if (entry.isDirectory()) await scan(path.join(dir, entry.name), depth + 1);
@@ -363,17 +377,11 @@ async function readSkillIdentity(
  * traversal and links and enforces the same 50 MiB default cap. Installation
  * is an atomic, fail-closed rename and never overwrites an existing skill.
  */
-export async function installSkillFromRemoteSource(
+async function installSkillSourceCandidate(
   userSkillsRoot: string,
-  rawSource: string,
+  resolved: SkillSourceCandidate,
   options: SkillRemoteInstallOptions = {},
 ): Promise<SkillRemoteInstallResult> {
-  if (typeof rawSource !== 'string' || !rawSource.trim()) {
-    return error('BAD_REQUEST', 'skill source is required');
-  }
-  const resolved = resolveSkillSource(rawSource);
-  if ('ok' in resolved) return resolved;
-
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_BYTES;
   const fetcher = options.fetcher ?? defaultFetcher;
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'od-skill-archive-'));
@@ -504,4 +512,34 @@ export async function installSkillFromRemoteSource(
       await rm(installStageRoot, { recursive: true, force: true }).catch(() => undefined);
     }
   }
+}
+
+function canTryNextSkillSourceCandidate(result: SkillRemoteInstallResult): boolean {
+  if (result.ok) return false;
+  return (
+    result.code === 'FETCH_FAILED' && /failed:\s*404(?:\s|$)/i.test(result.error)
+  ) || (
+    result.code === 'INVALID_MANIFEST'
+    && /does not contain SKILL\.md at/i.test(result.error)
+  );
+}
+
+export async function installSkillFromRemoteSource(
+  userSkillsRoot: string,
+  rawSource: string,
+  options: SkillRemoteInstallOptions = {},
+): Promise<SkillRemoteInstallResult> {
+  if (typeof rawSource !== 'string' || !rawSource.trim()) {
+    return error('BAD_REQUEST', 'skill source is required');
+  }
+  const resolved = resolveSkillSource(rawSource);
+  if ('ok' in resolved) return resolved;
+
+  let result: SkillRemoteInstallResult = error('BAD_REQUEST', 'skill source did not resolve');
+  for (let index = 0; index < resolved.candidates.length; index += 1) {
+    result = await installSkillSourceCandidate(userSkillsRoot, resolved.candidates[index]!, options);
+    if (result.ok || index === resolved.candidates.length - 1) return result;
+    if (!canTryNextSkillSourceCandidate(result)) return result;
+  }
+  return result;
 }
