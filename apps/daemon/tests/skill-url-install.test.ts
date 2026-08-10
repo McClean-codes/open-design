@@ -250,6 +250,32 @@ describe('installSkillFromRemoteSource', () => {
     expect(result).toMatchObject({ ok: true, id: 'beta-skill' });
   });
 
+  it.each([
+    ['a nested suffix decoy', ['vendor', 'skills', 'beta-skill']],
+    ['a case-mismatched path', ['Skills', 'beta-skill']],
+  ] as const)('rejects %s for an explicit GitHub tree path', async (_label, decoyPath) => {
+    const archive = await archiveFrom(async (root) => {
+      const decoyRoot = path.join(root, 'collection-main', ...decoyPath);
+      await mkdir(decoyRoot, { recursive: true });
+      await writeFile(
+        path.join(decoyRoot, 'SKILL.md'),
+        '---\nname: decoy-skill\ndescription: fixture\n---\n\n# Decoy workflow\n',
+      );
+    }, ['collection-main']);
+
+    const result = await installSkillFromRemoteSource(
+      await tempRoot('od-user-skills-'),
+      'https://github.com/owner/collection/tree/main/skills/beta-skill',
+      { fetcher: archiveFetcher(archive) },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'INVALID_MANIFEST',
+      error: 'Skill repository does not contain SKILL.md at beta-skill',
+    });
+  });
+
   it('fails closed when a multi-skill repository has no unique repo-named default', async () => {
     const archive = await archiveFrom(async (root) => {
       for (const name of ['alpha-skill', 'beta-skill']) {

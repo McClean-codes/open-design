@@ -276,10 +276,14 @@ describe('installFromLocalFolder', () => {
 describe('plugin install diagnostics', () => {
   it.each([
     ['Fetch failed: 404 Not Found for https://example.com/plugin.tgz', 'FETCH_FAILED'],
+    ['network boom', 'FETCH_FAILED'],
     ['Archive extraction failed: invalid gzip data', 'INVALID_ARCHIVE'],
     ['Plugin id is not a safe folder name', 'INVALID_MANIFEST'],
     ['Bundled plugin "official" cannot be replaced', 'CONFLICT'],
     ['Malformed github source', 'BAD_REQUEST'],
+    ['Only .tar.gz / .tgz archives are accepted from https sources (got https://example.com/plugin.zip)', 'BAD_REQUEST'],
+    ['folder upload exceeds 50 MiB', 'BAD_REQUEST'],
+    ['Plugin tree exceeds size cap of 1024 bytes', 'BAD_REQUEST'],
   ] as const)('classifies %s as %s', (message, code) => {
     expect(classifyPluginInstallError(message)).toBe(code);
   });
@@ -294,5 +298,24 @@ describe('plugin install diagnostics', () => {
     }
 
     expect(events.at(-1)).toMatchObject({ kind: 'error', code: 'BAD_REQUEST' });
+  });
+
+  it('turns a throwing fetch backend into a coded error event', async () => {
+    const events = [];
+    for await (const event of installPlugin(db, {
+      source: 'https://example.com/plugin.tgz',
+      roots: { userPluginsRoot: pluginsRoot },
+      fetcher: async () => {
+        throw new Error('network boom');
+      },
+    })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({
+      kind: 'error',
+      message: 'network boom',
+      code: 'FETCH_FAILED',
+    });
   });
 });

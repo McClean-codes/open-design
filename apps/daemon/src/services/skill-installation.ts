@@ -304,10 +304,13 @@ async function findSkillRoot(
     );
   }
   if (preferredSkillPath) {
-    const expected = preferredSkillPath.toLowerCase();
     const preferred = candidates.filter((candidate) => {
-      const relative = path.relative(extractRoot, candidate).split(path.sep).join('/').toLowerCase();
-      return relative === expected || relative.endsWith(`/${expected}`);
+      const archiveRelativeParts = path.relative(extractRoot, candidate).split(path.sep);
+      // GitHub codeload archives have exactly one repository wrapper directory
+      // (`repo-ref/`). The browser URL path is relative to the repository root,
+      // so discard only that wrapper and preserve GitHub's case-sensitive path.
+      const repositoryRelative = archiveRelativeParts.slice(1).join('/');
+      return repositoryRelative === preferredSkillPath;
     });
     if (preferred.length === 1) return preferred[0]!;
     if (preferred.length === 0) {

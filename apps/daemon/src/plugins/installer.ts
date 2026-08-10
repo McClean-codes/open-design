@@ -153,16 +153,19 @@ export function classifyPluginInstallError(message: string): PluginInstallErrorC
   if (/cannot be replaced|owned by another workspace member|destination folder already exists/i.test(message)) {
     return 'CONFLICT';
   }
-  if (/fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
+  if (/network|fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
     return 'FETCH_FAILED';
   }
-  if (/archive|zip|symbolic|hard links?|path-traversal|integrity mismatch|extracted .* exceeds/i.test(message)) {
-    return 'INVALID_ARCHIVE';
+  if (/files? are required|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls|exceeds (?:size cap of )?\d+ (?:bytes|mib)|too large/i.test(message)) {
+    return 'BAD_REQUEST';
   }
   if (/manifest|plugin id|installable archive|re-parsing destination/i.test(message)) {
     return 'INVALID_MANIFEST';
   }
-  if (/files? are required|malformed github|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls/i.test(message)) {
+  if (/archive|zip|symbolic|hard links?|path-traversal|integrity mismatch/i.test(message)) {
+    return 'INVALID_ARCHIVE';
+  }
+  if (/malformed github/i.test(message)) {
     return 'BAD_REQUEST';
   }
   return 'INTERNAL_ERROR';
@@ -171,10 +174,20 @@ export function classifyPluginInstallError(message: string): PluginInstallErrorC
 async function* withStableInstallErrorCodes(
   events: AsyncIterable<InstallEvent>,
 ): AsyncGenerator<InstallEvent, void, void> {
-  for await (const event of events) {
-    yield event.kind === 'error' && !event.code
-      ? { ...event, code: classifyPluginInstallError(event.message) }
-      : event;
+  try {
+    for await (const event of events) {
+      yield event.kind === 'error' && !event.code
+        ? { ...event, code: classifyPluginInstallError(event.message) }
+        : event;
+    }
+  } catch (cause) {
+    const message = cause instanceof Error ? cause.message : String(cause);
+    yield {
+      kind: 'error',
+      message,
+      warnings: [],
+      code: classifyPluginInstallError(message),
+    };
   }
 }
 
