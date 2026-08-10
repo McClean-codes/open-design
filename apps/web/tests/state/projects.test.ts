@@ -3,6 +3,7 @@ import {
   applyPlugin,
   cacheTabsLocally,
   contributeGeneratedPluginToOpenDesign,
+  createConversation,
   createDesignSystemProjectFromProject,
   createProject,
   createPluginShareProject,
@@ -78,6 +79,110 @@ function teamWorkspaceContext(
     ...overrides,
   };
 }
+
+describe('createConversation', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps a persisted conversation fork request compact', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({
+      conversation: {
+        id: 'fork-1',
+        projectId: 'project-1',
+        title: 'Fork',
+        createdAt: 2,
+        updatedAt: 2,
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createConversation('project-1', 'Fork', {
+      seedFromConversationId: 'source-1',
+      forkAfterMessageId: 'assistant-1',
+      forkFallbackMessage: {
+        id: 'assistant-1',
+        role: 'assistant',
+        content: 'Done',
+        events: [{ kind: 'raw', line: 'large diagnostic payload' }],
+      },
+    })).resolves.toMatchObject({ id: 'fork-1' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body).toMatchObject({
+      seedFromConversationId: 'source-1',
+      forkAfterMessageId: 'assistant-1',
+    });
+    expect(body.seedMessages).toBeUndefined();
+    expect(body.forkFallbackMessage).toBeUndefined();
+  });
+
+  it('retries an unpersisted fork point with one compact fallback message', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (fetchMock.mock.calls.length === 1) {
+        expect(body.seedMessages).toBeUndefined();
+        expect(body.forkFallbackMessage).toBeUndefined();
+        return Response.json({ error: 'fork message not found' }, { status: 404 });
+      }
+      return Response.json({
+        conversation: {
+          id: 'fork-recovered',
+          projectId: 'project-1',
+          title: 'Fork',
+          createdAt: 2,
+          updatedAt: 2,
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(createConversation('project-1', 'Fork', {
+      seedFromConversationId: 'source-1',
+      forkAfterMessageId: 'assistant-missing',
+      forkFallbackMessage: {
+        id: 'assistant-missing',
+        role: 'assistant',
+        content: 'Partial answer',
+        runId: 'failed-run',
+        runStatus: 'failed',
+        events: [{ kind: 'raw', line: 'large diagnostic payload' }],
+        producedFiles: [],
+      },
+    })).resolves.toMatchObject({ id: 'fork-recovered' });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const retryBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as {
+      seedMessages?: unknown;
+      forkFallbackMessage?: Record<string, unknown>;
+    };
+    expect(retryBody.seedMessages).toBeUndefined();
+    expect(retryBody.forkFallbackMessage).toEqual({
+      id: 'assistant-missing',
+      role: 'assistant',
+      content: 'Partial answer',
+    });
+  });
+
+  it('surfaces the daemon error for an interactive conversation write', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => Response.json({
+      error: {
+        code: 'WORKSPACE_PROJECT_PERMISSION_DENIED',
+        message: 'workspace project mutation is not allowed',
+      },
+    }, { status: 403 })));
+
+    await expect(createConversation('project-1', 'Fork', {
+      seedFromConversationId: 'source-1',
+      forkAfterMessageId: 'assistant-1',
+      throwOnError: true,
+    })).rejects.toMatchObject({
+      message: 'workspace project mutation is not allowed',
+      status: 403,
+    });
+  });
+});
 
 describe('project detail reads', () => {
   afterEach(() => {

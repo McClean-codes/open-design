@@ -944,11 +944,24 @@ export async function deleteProject(
 // ---------- conversations ----------
 
 export class ProjectConversationsHttpError extends Error {
-  constructor(readonly status: number) {
-    super(`conversations ${status}`);
+  constructor(
+    readonly status: number,
+    message = `conversations ${status}`,
+  ) {
+    super(message);
     this.name = 'ProjectConversationsHttpError';
   }
 }
+
+type CreateConversationOptions = {
+  seedFromConversationId?: string | null;
+  forkAfterMessageId?: string | null;
+  sessionMode?: ChatSessionMode;
+  // The one in-memory fork point to retry with when it never reached the DB.
+  forkFallbackMessage?: ChatMessage;
+  workspaceContext?: WorkspaceCollabContext | null;
+  throwOnError?: boolean;
+};
 
 export async function listConversations(
   projectId: string,
@@ -998,17 +1011,7 @@ export async function createConversation(
   // Side Chat: seed the new conversation with another conversation's context
   // by copying its messages. `forkAfterMessageId` narrows that copy to a
   // specific point in the source history.
-  opts?: {
-    seedFromConversationId?: string | null;
-    forkAfterMessageId?: string | null;
-    sessionMode?: ChatSessionMode;
-    // Fork snapshot: the exact in-memory messages to copy (up to the fork
-    // point). Lets the daemon fork from what the user sees even when the fork
-    // point was never persisted (e.g. a run that errored before its assistant
-    // message reached the database).
-    seedMessages?: ChatMessage[];
-    workspaceContext?: WorkspaceCollabContext | null;
-  },
+  opts?: CreateConversationOptions,
 ): Promise<Conversation | null> {
   try {
     const body: CreateConversationRequest = { title };
@@ -1021,29 +1024,60 @@ export async function createConversation(
     if (opts?.forkAfterMessageId) {
       body.forkAfterMessageId = opts.forkAfterMessageId;
     }
-    if (opts?.seedMessages && opts.seedMessages.length > 0) {
-      body.seedMessages = opts.seedMessages;
+    let resp = await postConversation(projectId, body, opts?.workspaceContext);
+    if (!resp.ok) {
+      const message = await readErrorMessage(resp);
+      const fallbackMessage = compactForkFallbackMessage(opts);
+      if (resp.status === 404 && message === 'fork message not found' && fallbackMessage) {
+        resp = await postConversation(
+          projectId,
+          { ...body, forkFallbackMessage: fallbackMessage },
+          opts?.workspaceContext,
+        );
+      } else {
+        throw new ProjectConversationsHttpError(resp.status, message);
+      }
     }
-    const resp = await fetch(
-      `/api/projects/${encodeURIComponent(projectId)}/conversations`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(opts?.workspaceContext
-            ? workspaceProjectHeaders(opts.workspaceContext)
-            : {}),
-        },
-        body: JSON.stringify(body),
-      },
-    );
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      throw new ProjectConversationsHttpError(resp.status, await readErrorMessage(resp));
+    }
     const json = (await resp.json()) as { conversation: Conversation };
     evictConversationsRead(projectId, opts?.workspaceContext);
     return json.conversation;
-  } catch {
+  } catch (error) {
+    if (opts?.throwOnError) throw error;
     return null;
   }
+}
+
+function postConversation(
+  projectId: string,
+  body: CreateConversationRequest,
+  workspaceContext?: WorkspaceCollabContext | null,
+): Promise<Response> {
+  return fetch(
+    `/api/projects/${encodeURIComponent(projectId)}/conversations`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(workspaceContext ? workspaceProjectHeaders(workspaceContext) : {}),
+      },
+      body: JSON.stringify(body),
+    },
+  );
+}
+
+function compactForkFallbackMessage(
+  opts: CreateConversationOptions | undefined,
+): ChatMessage | null {
+  const forkMessage = opts?.forkFallbackMessage;
+  if (!forkMessage) return null;
+  return {
+    id: forkMessage.id,
+    role: forkMessage.role,
+    content: forkMessage.content,
+  };
 }
 
 export async function patchConversation(
