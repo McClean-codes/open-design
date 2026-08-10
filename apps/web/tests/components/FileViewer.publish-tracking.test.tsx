@@ -310,61 +310,72 @@ describe('publish flow analytics', () => {
   // A publish request can start while this viewer is active and settle after the
   // user has switched to another tab. The retained (inert) viewer must stay
   // silent, so the guard has to read the live `workspaceActive` ref rather than
-  // the value the in-flight closure captured at click time.
-  it('stays silent when the viewer goes inactive before the request settles', async () => {
-    let settlePublish: (() => void) | undefined;
-    const publishGate = new Promise<void>((resolve) => {
-      settlePublish = resolve;
-    });
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = typeof input === 'string' ? input : input.toString();
-        if (url.includes('/api/workspace/context')) {
-          return new Response(JSON.stringify({ context: teamWorkspaceContext() }), { status: 200 });
-        }
-        if (url.includes('publish-public')) {
-          if (init?.method === 'POST') {
-            await publishGate;
-            return new Response(
-              JSON.stringify({
-                url: 'https://open-design.ai/p/slug-1',
-                slug: 'slug-1',
-                fileName: 'index.html',
-              }),
-              { status: 200 },
-            );
+  // the value the in-flight closure captured at click time. `FileWorkspace`
+  // retains BOTH viewer chromes, so both copies of the flow need the guard.
+  function inactiveViewerCase(props: ComponentProps<typeof FileViewer>, label: string) {
+    it(`stays silent when the viewer goes inactive before the request settles (${label})`, async () => {
+      let settlePublish: (() => void) | undefined;
+      const publishGate = new Promise<void>((resolve) => {
+        settlePublish = resolve;
+      });
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = typeof input === 'string' ? input : input.toString();
+          if (url.includes('/api/workspace/context')) {
+            return new Response(JSON.stringify({ context: teamWorkspaceContext() }), { status: 200 });
           }
-          return new Response(JSON.stringify({ publication: null }), { status: 200 });
-        }
-        return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
-      }),
-    );
+          if (url.includes('publish-public')) {
+            if (init?.method === 'POST') {
+              await publishGate;
+              return new Response(
+                JSON.stringify({
+                  url: 'https://open-design.ai/p/slug-1',
+                  slug: 'slug-1',
+                  fileName: 'index.html',
+                }),
+                { status: 200 },
+              );
+            }
+            return new Response(JSON.stringify({ publication: null }), { status: 200 });
+          }
+          return new Response(JSON.stringify({ deployments: [] }), { status: 200 });
+        }),
+      );
 
-    const props: ComponentProps<typeof FileViewer> = {
+      const { rerenderWith } = renderProjectFileViewer(teamWorkspaceContext(), props);
+      fireEvent.click(await screen.findByRole('button', { name: /^share$/i }));
+      fireEvent.click(await screen.findByRole('menuitem', { name: PUBLISH_ROW }));
+      expect(trackedEvents('ui_click')).toContainEqual(
+        expect.objectContaining({ element: 'publish_file' }),
+      );
+
+      // The user switches tabs: the viewer stays mounted but retained/inert.
+      rerenderWith({ ...props, workspaceActive: false });
+
+      await act(async () => {
+        settlePublish?.();
+        await publishGate;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(trackedEvents('artifact_publish_result')).toEqual([]);
+    });
+  }
+
+  inactiveViewerCase(
+    {
       projectId: 'project-pub',
       projectKind: 'prototype',
       file: htmlFile(),
       liveHtml: '<html><body><h1>Hello</h1></body></html>',
-    };
-    const { rerenderWith } = renderProjectFileViewer(teamWorkspaceContext(), props);
-    fireEvent.click(await screen.findByRole('button', { name: /^share$/i }));
-    fireEvent.click(await screen.findByRole('menuitem', { name: PUBLISH_ROW }));
-    expect(trackedEvents('ui_click')).toContainEqual(
-      expect.objectContaining({ element: 'publish_file' }),
-    );
-
-    // The user switches tabs: the viewer stays mounted but retained/inert.
-    rerenderWith({ ...props, workspaceActive: false });
-
-    await act(async () => {
-      settlePublish?.();
-      await publishGate;
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-    expect(trackedEvents('artifact_publish_result')).toEqual([]);
-  });
+    },
+    'HtmlViewer',
+  );
+  inactiveViewerCase(
+    { projectId: 'project-pub', projectKind: 'prototype', file: reactComponentFile() },
+    'ReactComponentViewer',
+  );
 
   it('reports the project kind and artifact kind from the ReactComponentViewer copy of the flow', async () => {
     stubFetch();

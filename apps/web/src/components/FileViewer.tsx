@@ -1910,6 +1910,7 @@ export const FileViewer = memo(function FileViewer({
         metricsConsent={metricsConsent}
         installationId={installationId}
         viewerOnly={viewerOnly}
+        workspaceActive={workspaceActive}
       />
     );
   }
@@ -6312,6 +6313,7 @@ function ReactComponentViewer({
   metricsConsent = false,
   installationId,
   viewerOnly = false,
+  workspaceActive = true,
 }: {
   projectId: string;
   projectKind: TrackingProjectKind;
@@ -6325,9 +6327,16 @@ function ReactComponentViewer({
   metricsConsent?: boolean;
   installationId?: string | null;
   viewerOnly?: boolean;
+  workspaceActive?: boolean;
 }) {
   const t = useT();
   const analytics = useAnalytics();
+  // `FileWorkspace` keeps a non-active viewer mounted, so an in-flight publish
+  // can settle after the user has switched away. The ref carries the LIVE value
+  // into those continuations; the captured prop would still read the
+  // render-time `true`.
+  const workspaceActiveRef = useRef(workspaceActive);
+  workspaceActiveRef.current = workspaceActive;
   const { workspaceContext } = useProjectCollabContext();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [source, setSource] = useState<string | null>(null);
@@ -6513,30 +6522,52 @@ function ReactComponentViewer({
     } as const;
   }
 
+  // Retained (inert) viewers must never report analytics — same rule the
+  // HtmlViewer copy of this flow follows. Only the tracking is gated; the
+  // publish/unpublish calls themselves stay unconditional.
+  const firePublishFlowClick = (element: 'publish_file' | 'copy_publish_link') => {
+    if (!workspaceActive) return;
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element,
+      ...publishTrackingIdentity(),
+    });
+  };
+
+  const firePublishResult = (
+    outcome: Pick<
+      ArtifactPublishResultProps,
+      'action' | 'result' | 'error_code' | 'publish_duration_ms'
+    >,
+  ) => {
+    // Read the live ref, not the captured prop: a request can start while this
+    // viewer is active and settle after the user switches tabs.
+    if (!workspaceActiveRef.current) return;
+    trackArtifactPublishResult(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      ...outcome,
+      ...publishTrackingIdentity(),
+    });
+  };
+
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
-    trackShareOptionPopoverClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'share_option_popover',
-      element: 'publish_file',
-      ...publishTrackingIdentity(),
-    });
+    firePublishFlowClick('publish_file');
     const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
-      trackArtifactPublishResult(analytics.track, {
-        page_name: 'artifact',
-        area: 'share_option_popover',
+      firePublishResult({
         action: 'publish',
         result: 'success',
         publish_duration_ms: Math.round(performance.now() - publishStarted),
-        ...publishTrackingIdentity(),
       });
       const current = publicFileIdentityRef.current;
       if (
@@ -6550,14 +6581,11 @@ function ReactComponentViewer({
       setPublishedFileSlug(response.slug);
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
-      trackArtifactPublishResult(analytics.track, {
-        page_name: 'artifact',
-        area: 'share_option_popover',
+      firePublishResult({
         action: 'publish',
         result: 'failed',
         error_code: publishErrorCode(error),
         publish_duration_ms: Math.round(performance.now() - publishStarted),
-        ...publishTrackingIdentity(),
       });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
@@ -6580,13 +6608,10 @@ function ReactComponentViewer({
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
-      trackArtifactPublishResult(analytics.track, {
-        page_name: 'artifact',
-        area: 'share_option_popover',
+      firePublishResult({
         action: 'unpublish',
         result: 'success',
         publish_duration_ms: Math.round(performance.now() - unpublishStarted),
-        ...publishTrackingIdentity(),
       });
       const current = publicFileIdentityRef.current;
       if (
@@ -6600,14 +6625,11 @@ function ReactComponentViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
-      trackArtifactPublishResult(analytics.track, {
-        page_name: 'artifact',
-        area: 'share_option_popover',
+      firePublishResult({
         action: 'unpublish',
         result: 'failed',
         error_code: publishErrorCode(error),
         publish_duration_ms: Math.round(performance.now() - unpublishStarted),
-        ...publishTrackingIdentity(),
       });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
@@ -6619,12 +6641,7 @@ function ReactComponentViewer({
   }
 
   async function copyPublishedFileLink() {
-    trackShareOptionPopoverClick(analytics.track, {
-      page_name: 'artifact',
-      area: 'share_option_popover',
-      element: 'copy_publish_link',
-      ...publishTrackingIdentity(),
-    });
+    firePublishFlowClick('copy_publish_link');
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
