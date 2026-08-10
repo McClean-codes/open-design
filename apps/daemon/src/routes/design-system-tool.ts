@@ -1,5 +1,6 @@
 import type { Express, Request, Response } from 'express';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
 
 import {
   DesignSystemAdherenceRequestSchema,
@@ -23,7 +24,6 @@ import {
   type DesignSystemAdherenceArtifact,
 } from '../design-systems/adherence.js';
 import {
-  readDesignSystemAssets,
   readDesignSystemPullFile,
   resolveDesignSystemRuntime,
 } from '../design-systems/index.js';
@@ -354,12 +354,12 @@ export function registerDesignSystemToolRoutes(
             `artifact set exceeds the ${MAX_ADHERENCE_TOTAL_BYTES}-byte validation limit`,
           );
         }
-        if (!isTextArtifact(file.name, file.mime) || buffer.includes(0)) {
+        if (!isSupportedAdherenceArtifact(file.name) || buffer.includes(0)) {
           return sendApiError(
             res,
             415,
             'UNSUPPORTED_ARTIFACT',
-            `artifact ${artifactPath} must be a text-based UI source file`,
+            `artifact ${artifactPath} must be CSS, HTML, SVG, JSX, TSX, Vue, or Svelte source`,
           );
         }
         artifacts.push({
@@ -370,11 +370,7 @@ export function registerDesignSystemToolRoutes(
         });
       }
 
-      const tokensCss = await readActiveDesignSystemTokens(
-        ctx.paths.DESIGN_SYSTEMS_DIR,
-        userRoot.root,
-        activeDesignSystemId,
-      );
+      const tokensCss = await readRuntimePackageTokens(runtime.packageRoot);
       const response: ValidateDesignSystemAdherenceResponse = {
         designSystemId: activeDesignSystemId,
         runtime: 'structured',
@@ -434,20 +430,16 @@ async function readActiveDesignSystemPullFile(
   );
 }
 
-async function readActiveDesignSystemTokens(
-  builtInRoot: string,
-  userRoot: string,
-  designSystemId: string,
-): Promise<string | undefined> {
-  if (designSystemId.startsWith('user:')) {
-    return (await readDesignSystemAssets(userRoot, designSystemId)).tokensCss;
+async function readRuntimePackageTokens(packageRoot: string): Promise<string | undefined> {
+  try {
+    return await readFile(path.join(packageRoot, 'tokens.css'), 'utf8');
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return undefined;
+    throw error;
   }
-  const builtIn = await readDesignSystemAssets(builtInRoot, designSystemId);
-  if (builtIn.tokensCss !== undefined) return builtIn.tokensCss;
-  return (await readDesignSystemAssets(userRoot, designSystemId)).tokensCss;
 }
 
-function isTextArtifact(filePath: string, mime: string | undefined): boolean {
-  if (mime?.startsWith('text/') === true || mime === 'application/json') return true;
-  return /\.(?:css|html?|js|jsx|json|md|mjs|ts|tsx|vue|svelte|svg)$/iu.test(filePath);
+function isSupportedAdherenceArtifact(filePath: string): boolean {
+  return /\.(?:css|html?|jsx|tsx|vue|svelte|svg)$/iu.test(filePath);
 }

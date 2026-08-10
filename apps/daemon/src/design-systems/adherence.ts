@@ -1,4 +1,5 @@
 import { load } from 'cheerio';
+import postcss, { type Declaration } from 'postcss';
 
 import {
   DESIGN_SYSTEM_ADHERENCE_SCHEMA_VERSION,
@@ -211,7 +212,7 @@ function validateTokenReferences(
   }
 
   const references = collectStyleMatches(artifacts, /var\(\s*(--[A-Za-z0-9_-]+)/gu, 1);
-  const declared = new Set(matchAll(tokensCss ?? '', /(--[A-Za-z0-9_-]+)\s*:/gu, 1));
+  const declared = collectDeclaredTokenNames(tokensCss ?? '');
   const checks: DesignSystemAdherenceCheck[] = [];
   if (declared.size === 0) {
     checks.push({
@@ -270,10 +271,12 @@ function validateUnauthorizedColorLiterals(
   }
 
   const findings = artifacts.flatMap((artifact) =>
-    findColorLiteralsOutsideTokenDefinitions(visualStyleSource(artifact), tokensCss).map((value) => ({
-      path: artifact.path,
-      value,
-    })),
+    visualStyleFragments(artifact).flatMap((fragment) =>
+      findColorLiteralsOutsideTokenDefinitions(fragment, tokensCss).map((value) => ({
+        path: artifact.path,
+        value,
+      })),
+    ),
   );
   if (findings.length === 0) {
     return {
@@ -369,7 +372,7 @@ function selectorUsage(
   const paths: string[] = [];
   for (const artifact of artifacts) {
     if (!looksLikeMarkup(artifact.path, artifact.mime)) continue;
-    const artifactCount = countSelectorMatches(artifact.content, selectors);
+    const artifactCount = countSelectorMatches(artifact, selectors);
     if (artifactCount === 0) continue;
     count += artifactCount;
     paths.push(artifact.path);
@@ -377,7 +380,23 @@ function selectorUsage(
   return { count, paths };
 }
 
-function countSelectorMatches(source: string, selectors: readonly string[]): number {
+function countSelectorMatches(
+  artifact: DesignSystemAdherenceArtifact,
+  selectors: readonly string[],
+): number {
+  if (/\.(?:jsx|tsx)$/iu.test(artifact.path)) {
+    const tags = extractExecutableMarkupTags(artifact.content).filter((tag) => !tag.closing);
+    return tags.filter((tag) => selectors.some((selector) => {
+      const tokens = uniqueByKey(
+        selectorIdentityTokens(selector),
+        (token) => `${token.kind}:${token.value}`,
+      );
+      const executableTag = stripComments(tag.raw);
+      return tokens.length > 0 && tokens.every((token) => identityPattern(token).test(executableTag));
+    })).length;
+  }
+
+  const source = stripComments(artifact.content);
   try {
     const $ = load(source);
     const selectable = selectors.filter((selector) => !selector.includes(':'));
@@ -386,13 +405,9 @@ function countSelectorMatches(source: string, selectors: readonly string[]): num
       if (parsedCount > 0) return parsedCount;
     }
   } catch {
-    // JSX, Vue, or partially generated HTML may not parse as strict selectors.
+    // Vue, Svelte, or partially generated HTML may not parse as strict selectors.
   }
-
-  const tokens = uniqueByKey(selectors.flatMap(selectorIdentityTokens), (token) => `${token.kind}:${token.value}`);
-  if (tokens.length === 0 || !tokens.every((token) => identityPattern(token).test(source))) return 0;
-  const primary = tokens[0]!;
-  return [...source.matchAll(identityPattern(primary, true))].length;
+  return 0;
 }
 
 type SelectorIdentity = { kind: 'class' | 'id' | 'attribute'; value: string };
@@ -439,67 +454,301 @@ function normalizeCssSelector(value: string): string {
   return value.replace(/\s+/gu, ' ').trim();
 }
 
+type StyleFragment = { source: string; inline: boolean };
+
 function findColorLiteralsOutsideTokenDefinitions(
-  source: string,
+  fragment: StyleFragment,
   tokensCss: string | undefined,
 ): string[] {
-  const withoutComments = stripComments(source);
   const activeDefinitions = collectScopedTokenDefinitions(tokensCss ?? '');
-  const withoutTokenDefinitions = withoutComments.replace(/([^{}]+)\{([^{}]*)\}/gu, (block, selector: string, body: string) => {
-    const normalizedSelector = normalizeCssSelector(selector);
-    const filteredBody = body.replace(
-      /(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+);?/gu,
-      (declaration, token: string, value: string) => activeDefinitions.has(tokenDefinitionKey(
-        normalizedSelector,
-        token,
-        value,
-      )) ? '' : declaration,
+  const declarations = collectStyleDeclarations(fragment);
+  if (declarations.length === 0) return findColorSyntaxes(fragment.source);
+
+  return unique(declarations.flatMap((declaration) => {
+    if (declaration.prop.startsWith('--')) {
+      const selector = declarationSelector(declaration);
+      const activeKey = tokenDefinitionKey(selector, declaration.prop, declaration.value);
+      if (activeDefinitions.has(activeKey)) return [];
+    }
+    return findColorSyntaxes(
+      declaration.value,
+      declaration.prop.startsWith('--') || propertyCanContainNamedColor(declaration.prop),
     );
-    return `${selector}{${filteredBody}}`;
-  });
-  const colorPattern = /#[0-9A-Fa-f]{8}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{6}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{4}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{3}(?![0-9A-Fa-f])|\b(?:rgba?|hsla?|lab|lch|oklab|oklch|color)\([^)]*\)/gu;
-  return unique([...withoutTokenDefinitions.matchAll(colorPattern)].map((match) => match[0]!));
+  }));
+}
+
+function collectStyleDeclarations(fragment: StyleFragment): Declaration[] {
+  const source = stripComments(fragment.source);
+  if (source.trim().length === 0) return [];
+  try {
+    const root = postcss.parse(fragment.inline ? `:root { ${source} }` : source);
+    const declarations: Declaration[] = [];
+    root.walkDecls((declaration) => {
+      declarations.push(declaration);
+    });
+    return declarations;
+  } catch {
+    return [];
+  }
+}
+
+const COLOR_FUNCTIONS = new Set([
+  'color',
+  'color-mix',
+  'device-cmyk',
+  'hsl',
+  'hsla',
+  'hwb',
+  'lab',
+  'lch',
+  'light-dark',
+  'oklab',
+  'oklch',
+  'rgb',
+  'rgba',
+]);
+
+const NAMED_COLORS = new Set(`
+  aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue
+  blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk
+  crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki
+  darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen
+  darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue
+  dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite
+  gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki
+  lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan
+  lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen
+  lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen
+  magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen
+  mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream
+  mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid
+  palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum
+  powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown
+  seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen
+  steelblue tan teal thistle tomato transparent turquoise violet wheat white whitesmoke yellow
+  yellowgreen
+`.trim().split(/\s+/u));
+
+function findColorSyntaxes(source: string, includeNamedColors = true): string[] {
+  const searchable = source.replace(/var\(\s*(--[A-Za-z0-9_-]+)/gu, (match, token: string) =>
+    match.replace(token, ' '.repeat(token.length)));
+  const findings: string[] = [];
+  for (const match of searchable.matchAll(/#[0-9A-Fa-f]{8}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{6}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{4}(?![0-9A-Fa-f])|#[0-9A-Fa-f]{3}(?![0-9A-Fa-f])/gu)) {
+    findings.push(match[0]);
+  }
+  for (const match of searchable.matchAll(/\b([A-Za-z][A-Za-z0-9-]*)\s*\(/gu)) {
+    const name = match[1]!.toLowerCase();
+    if (!COLOR_FUNCTIONS.has(name)) continue;
+    const openIndex = match.index + match[0].lastIndexOf('(');
+    const closeIndex = findMatchingParenthesis(searchable, openIndex);
+    findings.push(source.slice(match.index, closeIndex === -1 ? source.length : closeIndex + 1).trim());
+  }
+  if (includeNamedColors) {
+    for (const match of searchable.matchAll(/\b([A-Za-z]+)\b/gu)) {
+      if (NAMED_COLORS.has(match[1]!.toLowerCase())) {
+        findings.push(source.slice(match.index, match.index + match[0].length));
+      }
+    }
+  }
+  return unique(findings);
+}
+
+function propertyCanContainNamedColor(property: string): boolean {
+  const normalized = property.toLowerCase().replace(/-/gu, '');
+  return normalized === 'color'
+    || normalized.endsWith('color')
+    || /^(?:background|border|outline|boxshadow|textshadow|fill|stroke|caret|accent|textdecoration|textemphasis|columnrule|scrollbar|stop|flood|lighting)/u.test(normalized);
+}
+
+function findMatchingParenthesis(source: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | undefined;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (quote !== undefined) {
+      if (character === '\\') index += 1;
+      else if (character === quote) quote = undefined;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === '(') depth += 1;
+    if (character === ')' && --depth === 0) return index;
+  }
+  return -1;
 }
 
 function visualStyleSource(artifact: DesignSystemAdherenceArtifact): string {
-  if (/\.css$/iu.test(artifact.path) || artifact.mime === 'text/css') return artifact.content;
-  if (/\.(?:jsx|tsx|vue|svelte)$/iu.test(artifact.path)) {
-    return componentStyleSource(artifact.content);
+  return visualStyleFragments(artifact).map((fragment) => fragment.source).join('\n');
+}
+
+function visualStyleFragments(artifact: DesignSystemAdherenceArtifact): StyleFragment[] {
+  if (/\.css$/iu.test(artifact.path) || artifact.mime === 'text/css') {
+    return [{ source: artifact.content, inline: false }];
   }
-  if (!/\.(?:html?|svg)$/iu.test(artifact.path) && artifact.mime?.includes('html') !== true) {
-    return '';
+  if (/\.(?:jsx|tsx)$/iu.test(artifact.path)) {
+    return componentStyleFragments(artifact.content);
   }
+  if (!/\.(?:html?|svg|vue|svelte)$/iu.test(artifact.path) && artifact.mime?.includes('html') !== true) {
+    return [];
+  }
+  return markupStyleFragments(artifact.content);
+}
+
+function markupStyleFragments(source: string): StyleFragment[] {
   try {
-    const $ = load(artifact.content);
-    const parts: string[] = [];
+    const $ = load(stripComments(source));
+    const fragments: StyleFragment[] = [];
     $('style').each((_index, element) => {
-      parts.push($(element).text());
+      fragments.push({ source: $(element).text(), inline: false });
     });
-    $('[style], [fill], [stroke], [color], [bgcolor]').each((_index, element) => {
-      for (const attribute of ['style', 'fill', 'stroke', 'color', 'bgcolor']) {
-        const value = $(element).attr(attribute);
-        if (value !== undefined) parts.push(value);
+    $('*').each((_index, element) => {
+      for (const [attribute, value] of Object.entries($(element).attr() ?? {})) {
+        const normalized = attribute.toLowerCase();
+        const isStyle = normalized === 'style'
+          || normalized === ':style'
+          || normalized === 'v-bind:style'
+          || normalized.startsWith('style:');
+        if (!isStyle && !['fill', 'stroke', 'color', 'bgcolor'].includes(normalized)) continue;
+        fragments.push({
+          source: isStyle ? value : `${normalized}: ${value};`,
+          inline: true,
+        });
       }
     });
-    return parts.join('\n');
+    return fragments;
   } catch {
-    return artifact.content;
+    return [];
   }
 }
 
-function componentStyleSource(source: string): string {
-  const withoutComments = stripComments(source);
-  const parts: string[] = [];
-  for (const match of withoutComments.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/giu)) {
-    parts.push(unwrapEmbeddedStyle(match[1]!));
+function componentStyleFragments(source: string): StyleFragment[] {
+  const tags = extractExecutableMarkupTags(source);
+  const fragments: StyleFragment[] = [];
+  for (let index = 0; index < tags.length; index += 1) {
+    const tag = tags[index]!;
+    if (tag.closing || tag.name.toLowerCase() !== 'style') continue;
+    const closing = tags.slice(index + 1).find((candidate) =>
+      candidate.closing && candidate.name.toLowerCase() === 'style');
+    if (closing !== undefined) {
+      fragments.push({
+        source: unwrapEmbeddedStyle(source.slice(tag.end, closing.start)),
+        inline: false,
+      });
+    }
   }
-  for (const match of withoutComments.matchAll(/\bstyle\s*=\s*["']([^"']*)["']/giu)) {
-    parts.push(match[1]!);
+  for (const tag of tags.filter((candidate) => !candidate.closing)) {
+    for (const match of tag.raw.matchAll(/\bstyle\s*=\s*["']([^"']*)["']/giu)) {
+      fragments.push({ source: match[1]!, inline: true });
+    }
+    for (const match of tag.raw.matchAll(/\bstyle\s*=\s*\{\{([\s\S]*?)\}\}/gu)) {
+      fragments.push({ source: match[1]!, inline: true });
+    }
   }
-  for (const match of withoutComments.matchAll(/\bstyle\s*=\s*\{\{([\s\S]*?)\}\}/gu)) {
-    parts.push(match[1]!);
+  return fragments;
+}
+
+type ExecutableMarkupTag = {
+  raw: string;
+  name: string;
+  closing: boolean;
+  start: number;
+  end: number;
+};
+
+function extractExecutableMarkupTags(source: string): ExecutableMarkupTag[] {
+  const tags: ExecutableMarkupTag[] = [];
+  let index = 0;
+  while (index < source.length) {
+    if (source.startsWith('<!--', index)) {
+      index = skipThrough(source, index + 4, '-->');
+      continue;
+    }
+    if (source.startsWith('/*', index)) {
+      index = skipThrough(source, index + 2, '*/');
+      continue;
+    }
+    if (source.startsWith('//', index)) {
+      const newline = source.indexOf('\n', index + 2);
+      index = newline === -1 ? source.length : newline + 1;
+      continue;
+    }
+    const character = source[index]!;
+    if (character === '"' || character === "'" || character === '`') {
+      index = skipQuoted(source, index, character);
+      continue;
+    }
+    if (character !== '<') {
+      index += 1;
+      continue;
+    }
+
+    let cursor = index + 1;
+    const closing = source[cursor] === '/';
+    if (closing) cursor += 1;
+    const nameMatch = /^[A-Za-z][A-Za-z0-9:._-]*/u.exec(source.slice(cursor));
+    if (nameMatch === null) {
+      index += 1;
+      continue;
+    }
+    const name = nameMatch[0];
+    const end = findMarkupTagEnd(source, cursor + name.length);
+    if (end === -1) {
+      index += 1;
+      continue;
+    }
+    tags.push({
+      raw: source.slice(index, end + 1),
+      name,
+      closing,
+      start: index,
+      end: end + 1,
+    });
+    index = end + 1;
   }
-  return parts.join('\n');
+  return tags;
+}
+
+function findMarkupTagEnd(source: string, start: number): number {
+  let braceDepth = 0;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (character === '"' || character === "'" || character === '`') {
+      index = skipQuoted(source, index, character) - 1;
+      continue;
+    }
+    if (source.startsWith('/*', index)) {
+      index = skipThrough(source, index + 2, '*/') - 1;
+      continue;
+    }
+    if (source.startsWith('//', index)) {
+      const newline = source.indexOf('\n', index + 2);
+      index = (newline === -1 ? source.length : newline + 1) - 1;
+      continue;
+    }
+    if (character === '{') braceDepth += 1;
+    else if (character === '}' && braceDepth > 0) braceDepth -= 1;
+    else if (character === '>' && braceDepth === 0) return index;
+  }
+  return -1;
+}
+
+function skipQuoted(source: string, start: number, quote: '"' | "'" | '`'): number {
+  for (let index = start + 1; index < source.length; index += 1) {
+    if (source[index] === '\\') {
+      index += 1;
+      continue;
+    }
+    if (source[index] === quote) return index + 1;
+  }
+  return source.length;
+}
+
+function skipThrough(source: string, start: number, terminator: string): number {
+  const end = source.indexOf(terminator, start);
+  return end === -1 ? source.length : end + terminator.length;
 }
 
 function unwrapEmbeddedStyle(source: string): string {
@@ -511,13 +760,39 @@ function unwrapEmbeddedStyle(source: string): string {
 
 function collectScopedTokenDefinitions(source: string): Set<string> {
   const definitions = new Set<string>();
-  for (const block of stripComments(source).matchAll(/([^{}]+)\{([^{}]*)\}/gu)) {
-    const selector = normalizeCssSelector(block[1]!);
-    for (const declaration of block[2]!.matchAll(/(--[A-Za-z0-9_-]+)\s*:\s*([^;{}]+);?/gu)) {
-      definitions.add(tokenDefinitionKey(selector, declaration[1]!, declaration[2]!));
-    }
+  for (const declaration of parseStylesheetDeclarations(source)) {
+    if (!declaration.prop.startsWith('--')) continue;
+    definitions.add(tokenDefinitionKey(
+      declarationSelector(declaration),
+      declaration.prop,
+      declaration.value,
+    ));
   }
   return definitions;
+}
+
+function collectDeclaredTokenNames(source: string): Set<string> {
+  return new Set(parseStylesheetDeclarations(source)
+    .filter((declaration) => declaration.prop.startsWith('--'))
+    .map((declaration) => declaration.prop));
+}
+
+function parseStylesheetDeclarations(source: string): Declaration[] {
+  try {
+    const declarations: Declaration[] = [];
+    postcss.parse(stripComments(source)).walkDecls((declaration) => {
+      declarations.push(declaration);
+    });
+    return declarations;
+  } catch {
+    return [];
+  }
+}
+
+function declarationSelector(declaration: Declaration): string {
+  return declaration.parent?.type === 'rule'
+    ? normalizeCssSelector(declaration.parent.selector)
+    : '';
 }
 
 function tokenDefinitionKey(selector: string, token: string, value: string): string {
@@ -542,6 +817,11 @@ function hasMarkupAttribute(
   marker: AttributeMarker,
 ): boolean {
   if (!looksLikeMarkup(artifact.path, artifact.mime)) return false;
+  if (/\.(?:jsx|tsx)$/iu.test(artifact.path)) {
+    return extractExecutableMarkupTags(artifact.content)
+      .filter((tag) => !tag.closing)
+      .some((tag) => tagHasAttribute(tag.raw, marker));
+  }
   try {
     const $ = load(stripComments(artifact.content));
     let found = false;
@@ -555,6 +835,17 @@ function hasMarkupAttribute(
   } catch {
     return false;
   }
+}
+
+function tagHasAttribute(tag: string, marker: AttributeMarker): boolean {
+  const name = escapeRegExp(marker.name);
+  const match = new RegExp(
+    `(?:^|\\s)${name}(?:\\s*=\\s*(?:"([^"]*)"|'([^']*)'|\\{\\s*["']([^"']*)["']\\s*\\}))?(?=\\s|/?>)`,
+    'u',
+  ).exec(tag);
+  if (match === null) return false;
+  const value = match[1] ?? match[2] ?? match[3];
+  return marker.value === undefined || value === marker.value;
 }
 
 function stripComments(source: string): string {
