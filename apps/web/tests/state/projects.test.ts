@@ -899,6 +899,26 @@ describe('deleteProject', () => {
       message: 'workspace authority is temporarily unavailable',
     });
   });
+
+  it('treats a structured missing-project response as an idempotent success', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: {
+        code: 'PROJECT_NOT_FOUND',
+        message: 'not found',
+      },
+    }), { status: 404 })));
+
+    await expect(deleteProject('already-deleted', personalWorkspaceContext())).resolves.toBe(true);
+  });
+
+  it('does not hide an unstructured 404 from an incompatible daemon', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(null, { status: 404 })));
+
+    await expect(deleteProject('project-1', personalWorkspaceContext())).rejects.toMatchObject({
+      name: 'ProjectDeleteError',
+      status: 404,
+    });
+  });
 });
 
 // Same gap as deleteProject, found while auditing every client caller of a

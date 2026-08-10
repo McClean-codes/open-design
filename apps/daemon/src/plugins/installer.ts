@@ -62,9 +62,18 @@ export interface InstallErrorEvent {
   kind: 'error';
   message: string;
   warnings: string[];
+  code?: PluginInstallErrorCode;
 }
 
 export type InstallEvent = InstallProgressEvent | InstallSuccessEvent | InstallErrorEvent;
+
+export type PluginInstallErrorCode =
+  | 'BAD_REQUEST'
+  | 'FETCH_FAILED'
+  | 'INVALID_ARCHIVE'
+  | 'INVALID_MANIFEST'
+  | 'CONFLICT'
+  | 'INTERNAL_ERROR';
 
 export interface InstallOptions {
   source: string;
@@ -139,6 +148,36 @@ interface GithubContentsBudget {
   maxBytes: number;
 }
 
+/** Keep installer diagnostics finite so SSE clients never use paths or URLs as analytics keys. */
+export function classifyPluginInstallError(message: string): PluginInstallErrorCode {
+  if (/cannot be replaced|owned by another workspace member|destination folder already exists/i.test(message)) {
+    return 'CONFLICT';
+  }
+  if (/fetch failed|download failed|private address|timed?\s*out|econn|enotfound/i.test(message)) {
+    return 'FETCH_FAILED';
+  }
+  if (/archive|symbolic|hard links?|path-traversal|integrity mismatch|extracted .* exceeds/i.test(message)) {
+    return 'INVALID_ARCHIVE';
+  }
+  if (/manifest|plugin id|installable archive|re-parsing destination/i.test(message)) {
+    return 'INVALID_MANIFEST';
+  }
+  if (/malformed github|only \.tar\.gz|only \.tgz|source folder not found|source path is not a directory|github repository urls/i.test(message)) {
+    return 'BAD_REQUEST';
+  }
+  return 'INTERNAL_ERROR';
+}
+
+async function* withStableInstallErrorCodes(
+  events: AsyncIterable<InstallEvent>,
+): AsyncGenerator<InstallEvent, void, void> {
+  for await (const event of events) {
+    yield event.kind === 'error' && !event.code
+      ? { ...event, code: classifyPluginInstallError(event.message) }
+      : event;
+  }
+}
+
 // Top-level dispatcher. Picks the backend off the source string and yields
 // the same InstallEvent stream regardless of where the bytes came from.
 export async function* installPlugin(
@@ -147,21 +186,21 @@ export async function* installPlugin(
 ): AsyncGenerator<InstallEvent, void, void> {
   const browserGithub = resolveGithubRepositoryUrl(opts.source);
   if (browserGithub.kind === 'invalid') {
-    yield { kind: 'error', message: browserGithub.error, warnings: [] };
+    yield { kind: 'error', message: browserGithub.error, warnings: [], code: 'BAD_REQUEST' };
     return;
   }
   const normalizedOpts = browserGithub.kind === 'repository'
     ? { ...opts, source: browserGithub.source }
     : opts;
   if (normalizedOpts.source.startsWith('github:')) {
-    yield* installFromGithub(db, normalizedOpts);
+    yield* withStableInstallErrorCodes(installFromGithub(db, normalizedOpts));
     return;
   }
   if (HTTPS_SOURCE_RE.test(normalizedOpts.source)) {
-    yield* installFromHttpsArchive(db, normalizedOpts);
+    yield* withStableInstallErrorCodes(installFromHttpsArchive(db, normalizedOpts));
     return;
   }
-  yield* installFromLocalFolder(db, normalizedOpts);
+  yield* withStableInstallErrorCodes(installFromLocalFolder(db, normalizedOpts));
 }
 
 // `github:owner/repo[@ref][/subpath]` → codeload tarball.

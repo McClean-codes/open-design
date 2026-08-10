@@ -9,7 +9,12 @@ import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { migratePlugins } from '../src/plugins/persistence.js';
-import { installFromLocalFolder, installPlugin, uninstallPlugin } from '../src/plugins/installer.js';
+import {
+  classifyPluginInstallError,
+  installFromLocalFolder,
+  installPlugin,
+  uninstallPlugin,
+} from '../src/plugins/installer.js';
 import { listInstalledPlugins } from '../src/plugins/registry.js';
 import { addMarketplace, resolvePluginInMarketplaces } from '../src/plugins/marketplaces.js';
 import type { InstalledPluginRecord } from '@open-design/contracts';
@@ -265,5 +270,29 @@ describe('installFromLocalFolder', () => {
     const [row] = listInstalledPlugins(db);
     expect(row?.marketplaceTrust).toBe('restricted');
     expect(row?.trust).toBe('restricted');
+  });
+});
+
+describe('plugin install diagnostics', () => {
+  it.each([
+    ['Fetch failed: 404 Not Found for https://example.com/plugin.tgz', 'FETCH_FAILED'],
+    ['Archive extraction failed: invalid gzip data', 'INVALID_ARCHIVE'],
+    ['Plugin id is not a safe folder name', 'INVALID_MANIFEST'],
+    ['Bundled plugin "official" cannot be replaced', 'CONFLICT'],
+    ['Malformed github source', 'BAD_REQUEST'],
+  ] as const)('classifies %s as %s', (message, code) => {
+    expect(classifyPluginInstallError(message)).toBe(code);
+  });
+
+  it('adds a stable code to top-level install errors', async () => {
+    const events = [];
+    for await (const event of installPlugin(db, {
+      source: 'https://github.com/owner/repo/issues',
+      roots: { userPluginsRoot: pluginsRoot },
+    })) {
+      events.push(event);
+    }
+
+    expect(events.at(-1)).toMatchObject({ kind: 'error', code: 'BAD_REQUEST' });
   });
 });

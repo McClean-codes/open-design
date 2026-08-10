@@ -117,6 +117,32 @@ describe('installSkillFromRemoteSource', () => {
     ).resolves.toBe('default asset');
   });
 
+  it('installs a GitHub tree URL from the selected folder in a multi-skill repository', async () => {
+    const archive = await archiveFrom(async (root) => {
+      const repositoryRoot = path.join(root, 'collection-release');
+      for (const name of ['alpha-skill', 'beta-skill']) {
+        const skillRoot = path.join(repositoryRoot, 'skills', name);
+        await mkdir(skillRoot, { recursive: true });
+        await writeFile(
+          path.join(skillRoot, 'SKILL.md'),
+          `---\nname: ${name}\ndescription: fixture\n---\n\n# ${name}\n`,
+        );
+      }
+    }, ['collection-release']);
+    const urls: string[] = [];
+
+    const result = await installSkillFromRemoteSource(
+      await tempRoot('od-user-skills-'),
+      'https://github.com/owner/collection/tree/release/skills/beta-skill',
+      { fetcher: archiveFetcher(archive, urls) },
+    );
+
+    expect(result).toMatchObject({ ok: true, id: 'beta-skill' });
+    expect(urls).toEqual([
+      'https://codeload.github.com/owner/collection/tar.gz/release',
+    ]);
+  });
+
   it('fails closed when a multi-skill repository has no unique repo-named default', async () => {
     const archive = await archiveFrom(async (root) => {
       for (const name of ['alpha-skill', 'beta-skill']) {
@@ -159,6 +185,7 @@ describe('installSkillFromRemoteSource', () => {
     'https://downloads.example/skill.zip',
     'github:owner/../repo',
     'https://github.com/owner/repo/issues',
+    'https://github.com/owner/repo/tree/main/skills/../escape',
     'https://owner@github.com/owner/repo',
     'https://github.com/owner/repo?tab=readme',
     'https://github.com.evil/owner/repo',

@@ -965,6 +965,17 @@ export async function deleteProject(
       } catch {
         // Keep the stable HTTP fallback when a legacy daemon returns no JSON.
       }
+      // DELETE is idempotent for the web client. A second tab, a stale project
+      // list, or a retry whose first response was lost can legitimately reach
+      // the daemon after the project row is already gone. Only accept the
+      // daemon's structured PROJECT_NOT_FOUND response here — a generic 404
+      // can still mean the route itself is unavailable on an incompatible
+      // daemon and must remain visible as a failure.
+      if (resp.status === 404 && code === 'PROJECT_NOT_FOUND') {
+        removeCachedTabs(id, workspaceContext);
+        removeDesignBrowserProjectCache(id);
+        return true;
+      }
       throw new ProjectDeleteError(message, resp.status, code);
     }
     // Drop per-project browser caches once the project is gone server-side so
