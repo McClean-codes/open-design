@@ -42,7 +42,6 @@ export interface FreePlanCopy {
 
 export interface PricingLabels {
   heroTitle: string;
-  heroSubtitle: string;
   monthly: string;
   yearly: string;
   yearlySave: string;
@@ -175,7 +174,6 @@ export const BUDGET_VALUES = ['lt_1k', 'usd_1k_5k', 'usd_5k_20k', 'usd_20k_plus'
 const EN: PricingContent = {
   labels: {
     heroTitle: 'Pay only for AI tasks that deliver results',
-    heroSubtitle: 'Credits are used only when an Agent runs or generates images or video. If no result is produced, no credits are deducted. Using tools, navigating the interface, and other product actions do not use additional credits.',
     footnote: 'Prices shown in USD. Checkout, billing, and auto top-up are handled in the {console}. Adjust or cancel your plan anytime.',
     consoleLabel: 'Open Design Cloud console',
     monthly: 'Monthly',
@@ -250,7 +248,6 @@ const EN: PricingContent = {
 const ZH_CN: PricingContent = {
   labels: {
     heroTitle: '只为实际完成的 AI 任务付费',
-    heroSubtitle: '额度只在 Agent 运行或生成图片、视频时消耗；没有产出结果，就不会扣除。工具使用、界面操作及其他产品功能均不额外消耗额度。',
     footnote: '价格以美元计。结账、账单与自动充值均在 {console} 完成。可随时调整或取消套餐。',
     consoleLabel: 'Open Design Cloud 控制台',
     monthly: '月付',
@@ -325,7 +322,6 @@ const ZH_CN: PricingContent = {
 const ZH_TW: PricingContent = {
   labels: {
     heroTitle: '只為實際完成的 AI 任務付費',
-    heroSubtitle: '額度只在 Agent 執行或生成圖片、影片時消耗；沒有產出結果，就不會扣除。使用工具、操作介面及其他產品功能均不會額外消耗額度。',
     footnote: '價格以美元計。結帳、帳單與自動加值皆於 {console} 完成。可隨時調整或取消方案。',
     consoleLabel: 'Open Design Cloud 主控台',
     monthly: '月付',
@@ -400,7 +396,6 @@ const ZH_TW: PricingContent = {
 const ES: PricingContent = {
   labels: {
     heroTitle: 'Paga solo por tareas de IA completadas',
-    heroSubtitle: 'Los créditos solo se consumen cuando un Agent se ejecuta o genera imágenes o vídeo. Si no hay resultado, no se descuentan créditos. Usar herramientas, navegar por la interfaz y otras acciones del producto no consume créditos adicionales.',
     footnote: 'Precios en USD. El pago, la facturación y la recarga automática se gestionan en la {console}. Cambia o cancela tu plan cuando quieras.',
     consoleLabel: 'consola de Open Design Cloud',
     monthly: 'Mensual',
@@ -475,7 +470,6 @@ const ES: PricingContent = {
 const PT_BR: PricingContent = {
   labels: {
     heroTitle: 'Pague apenas por tarefas de IA concluídas',
-    heroSubtitle: 'Os créditos só são consumidos quando um Agent é executado ou gera imagens ou vídeos. Se não houver resultado, nenhum crédito será descontado. Usar ferramentas, navegar pela interface e outras ações do produto não consome créditos adicionais.',
     footnote: 'Preços em USD. Pagamento, faturamento e recarga automática são feitos no {console}. Ajuste ou cancele seu plano quando quiser.',
     consoleLabel: 'console do Open Design Cloud',
     monthly: 'Mensal',
@@ -550,7 +544,6 @@ const PT_BR: PricingContent = {
 const RU: PricingContent = {
   labels: {
     heroTitle: 'Платите только за выполненные задачи ИИ',
-    heroSubtitle: 'Кредиты расходуются только при запуске Agent или генерации изображений и видео. Если результата нет, кредиты не списываются. Использование инструментов, интерфейса и других функций продукта не требует дополнительных кредитов.',
     footnote: 'Цены указаны в USD. Оплата, выставление счетов и автопополнение выполняются в {console}. Изменение или отмена тарифа в любое время.',
     consoleLabel: 'консоли Open Design Cloud',
     monthly: 'Месяц',
@@ -625,7 +618,6 @@ const RU: PricingContent = {
 const FR: PricingContent = {
   labels: {
     heroTitle: 'Payez uniquement pour les tâches IA terminées',
-    heroSubtitle: 'Les crédits sont consommés uniquement lorsqu’un Agent s’exécute ou génère des images ou des vidéos. Si aucun résultat n’est produit, aucun crédit n’est déduit. L’utilisation des outils, de l’interface et des autres fonctions du produit ne consomme pas de crédits supplémentaires.',
     footnote: 'Prix indiqués en USD. Le paiement, la facturation et la recharge automatique se gèrent dans la {console}. Ajustez ou résiliez votre forfait à tout moment.',
     consoleLabel: 'console Open Design Cloud',
     monthly: 'Mensuel',
@@ -700,7 +692,6 @@ const FR: PricingContent = {
 const KO: PricingContent = {
   labels: {
     heroTitle: '완료된 AI 작업에만 비용을 지불하세요',
-    heroSubtitle: '크레딧은 Agent 실행 또는 이미지·영상 생성 시에만 사용됩니다. 결과가 생성되지 않으면 크레딧이 차감되지 않습니다. 도구 사용, 화면 조작 및 기타 제품 기능에는 추가 크레딧이 들지 않습니다.',
     footnote: '가격은 USD 기준입니다. 결제, 청구, 자동 충전은 {console}에서 처리됩니다. 플랜 변경 또는 취소는 언제든 가능합니다.',
     consoleLabel: 'Open Design Cloud 콘솔',
     monthly: '월간',
@@ -775,7 +766,6 @@ const KO: PricingContent = {
 const DE: PricingContent = {
   labels: {
     heroTitle: 'Zahle nur für abgeschlossene KI-Aufgaben',
-    heroSubtitle: 'Credits werden nur verbraucht, wenn ein Agent ausgeführt wird oder Bilder und Videos generiert werden. Entsteht kein Ergebnis, werden keine Credits abgezogen. Die Nutzung von Werkzeugen, der Oberfläche und anderen Produktfunktionen verbraucht keine zusätzlichen Credits.',
     footnote: 'Preise in USD. Checkout, Abrechnung und automatisches Aufladen erfolgen in der {console}. Plan jederzeit anpassen oder kündigen.',
     consoleLabel: 'Open Design Cloud Konsole',
     monthly: 'Monatlich',
@@ -850,7 +840,6 @@ const DE: PricingContent = {
 const JA: PricingContent = {
   labels: {
     heroTitle: '完了した AI タスクにだけ支払う',
-    heroSubtitle: 'クレジットは Agent の実行、または画像・動画の生成時にのみ消費されます。結果が生成されなければクレジットは差し引かれません。ツール、画面操作、その他の製品機能では追加のクレジットを消費しません。',
     footnote: '価格は米ドル表示です。決済・請求・自動チャージは {console} で行います。プランの変更・解約はいつでも可能です。',
     consoleLabel: 'Open Design Cloud コンソール',
     monthly: '月額',
