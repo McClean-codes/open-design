@@ -67,9 +67,11 @@ jobs:
             V="${major}.$((minor+1)).0"
           fi
           # V is now guaranteed to match ^[0-9]+\.[0-9]+\.[0-9]+$
-          echo "version=$V"          >> "$GITHUB_OUTPUT"
-          echo "branch=release/v$V"  >> "$GITHUB_OUTPUT"
-          echo "latest_release=$latest" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$V"
+            echo "branch=release/v$V"
+            echo "latest_release=$latest"
+          } >> "$GITHUB_OUTPUT"
           echo "Cutting v$V (branch release/v$V)"
 
       - name: Check the current release line is published
