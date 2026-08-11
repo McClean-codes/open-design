@@ -130,12 +130,24 @@ export function TemplatePicker({
   useEffect(() => {
     if (!open) return undefined;
     const dismiss = () => setOpen(false);
-    // Capture phase: scroll does not bubble, and the trigger sits inside the
-    // entry shell's own scroll container, not the document scroller.
-    window.addEventListener('scroll', dismiss, { capture: true, passive: true });
+    // Scroll does not bubble, so listen directly to the trigger's ancestors
+    // instead of capturing every scroll through window. The portaled menu is
+    // intentionally outside this chain: scrolling its own long list must not
+    // dismiss it because that does not move the trigger or invalidate anchor.
+    const scrollTargets: EventTarget[] = [window];
+    let ancestor = wrapRef.current?.parentElement ?? null;
+    while (ancestor) {
+      scrollTargets.push(ancestor);
+      ancestor = ancestor.parentElement;
+    }
+    for (const target of scrollTargets) {
+      target.addEventListener('scroll', dismiss, { passive: true });
+    }
     window.addEventListener('resize', dismiss);
     return () => {
-      window.removeEventListener('scroll', dismiss, { capture: true });
+      for (const target of scrollTargets) {
+        target.removeEventListener('scroll', dismiss);
+      }
       window.removeEventListener('resize', dismiss);
     };
   }, [open]);
