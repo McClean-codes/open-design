@@ -348,6 +348,8 @@ export interface DaemonStreamOptions {
 }
 
 export interface DaemonReattachOptions {
+  /** Runtime that owns the reattached run, when persisted with its message. */
+  agentId?: string;
   runId: string;
   projectId?: string | null;
   conversationId?: string | null;
@@ -367,6 +369,7 @@ export const RUNS_CHANGED_EVENT = 'open-design:runs-changed';
 export const DAEMON_RUN_FINISHED_EVENT = 'open-design:daemon-run-finished';
 
 export interface DaemonRunFinishedEventDetail {
+  agentId: string;
   runId: string;
   projectId: string;
   conversationId: string;
@@ -379,6 +382,7 @@ export function publishDaemonRunFinishedEvent(
 ): void {
   if (
     typeof window === 'undefined'
+    || detail.agentId !== 'amr'
     || !detail.runId.trim()
     || !detail.projectId.trim()
     || !detail.conversationId.trim()
@@ -1171,7 +1175,7 @@ async function consumeDaemonRun({
   conversationId,
   workspaceContext,
   publishRunFinishedEvent,
-}: DaemonReattachOptions & { agentId?: string }): Promise<void> {
+}: DaemonReattachOptions): Promise<void> {
   let acc = '';
   let stderrBuf = '';
   let exitCode: number | null = null;
@@ -1485,6 +1489,7 @@ async function consumeDaemonRun({
     }
     if (
       publishRunFinishedEvent
+      && agentId === 'amr'
       && Boolean(projectId?.trim())
       && Boolean(conversationId?.trim())
       && serverDeclaredSuccess
@@ -1493,6 +1498,7 @@ async function consumeDaemonRun({
       && resolvedArtifactCount > 0
     ) {
       publishDaemonRunFinishedEvent({
+        agentId,
         runId,
         projectId: projectId!,
         conversationId: conversationId!,
