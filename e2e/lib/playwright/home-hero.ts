@@ -45,4 +45,3 @@ export async function pickHomeTemplate(page: Page, chipId: string): Promise<void
   await expect(page.getByTestId('home-hero-template-menu')).toHaveCount(0);
   await expect(page.getByTestId('home-hero-template-picker')).toHaveClass(/has-selection/);
 }
-
