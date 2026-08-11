@@ -38,6 +38,10 @@ import {
   serializeStableSections,
   type StableSectionHashes,
 } from './prompts/stable-sections.js';
+import {
+  shouldComposeWindowsPowerShellSkill,
+  WINDOWS_POWERSHELL_SKILL_ID,
+} from './prompts/windows-powershell.js';
 import { emittedRenderableQuestionForm } from './question-form-detect.js';
 import { resolveProjectRoot } from './project-root.js';
 import { OPEN_DESIGN_PLUGIN_ID } from './mcp-observability.js';
@@ -8389,6 +8393,40 @@ export async function startServer({
       }
     }
 
+    // Windows filesystem runs always receive the bundled PowerShell utility
+    // skill in addition to the user's selected design/functional skill. Do
+    // not register its mode, craft, or critique policy: it is a host execution
+    // contract and must not change the project's artifact surface. Registering
+    // only its directory ensures references and the Parser helper are staged
+    // into the project alongside any user-selected skill resources.
+    const executionProfile = executionProfileFromStreamFormat(streamFormat);
+    if (shouldComposeWindowsPowerShellSkill({
+      hostPlatform: process.platform,
+      executionProfile,
+    })) {
+      // Resolve from the bundled root directly. The normal combined registry
+      // intentionally lets user-managed skills shadow built-ins, but a
+      // machine-wide host execution contract must not be replaceable by a
+      // same-name user skill and silently affect every Windows run.
+      const bundledSkills = await listSkills(SKILLS_DIR);
+      const windowsPowerShellSkill = findSkillById(
+        bundledSkills,
+        WINDOWS_POWERSHELL_SKILL_ID,
+      );
+      if (windowsPowerShellSkill) {
+        const hostSkillBlock = [
+          `## Host execution skill — ${windowsPowerShellSkill.name}`,
+          '',
+          windowsPowerShellSkill.body.trim(),
+        ].join('\n');
+        skillBody = skillBody && skillBody.trim().length > 0
+          ? `${skillBody.trim()}\n\n---\n\n${hostSkillBlock}`
+          : hostSkillBlock;
+        skillName ??= windowsPowerShellSkill.name;
+        registerSkillDir(windowsPowerShellSkill.dir);
+      }
+    }
+
     let craftBody;
     let craftSections;
 
@@ -8736,13 +8774,14 @@ export async function startServer({
       mediaExecution,
       byokMediaDefaults,
       streamFormat,
-      executionProfile: executionProfileFromStreamFormat(streamFormat),
+      executionProfile,
       ...(pluginBlock ? { pluginBlock } : {}),
       ...(activeStageBlocks ? { activeStageBlocks } : {}),
       userInstructions,
       freeformDeckSignal,
       mediaHintSignal,
       platformHintSignal,
+      hostPlatform: process.platform,
       // VALIDATION DEFAULT — feat/system-prompt integration branch only.
       // Slim is the default here so packaged beta builds exercise the
       // rewritten charter without env plumbing (the packaged sidecar env

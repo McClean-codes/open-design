@@ -83,6 +83,7 @@ const SECTION_INPUTS = {
     'agentId',
     'includeCodexImagegenOverride',
     'promptCoreVariant',
+    'hostPlatform',
     'runtimeToolPrompt',
   ],
   'client-system': ['clientSystemPrompt'],

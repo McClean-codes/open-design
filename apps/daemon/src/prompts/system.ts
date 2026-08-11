@@ -45,6 +45,7 @@ import {
 } from './media-contract.js';
 import { IMAGE_MODELS } from '../media/models.js';
 import { renderPanelPrompt } from './panel.js';
+import { WINDOWS_POWERSHELL_EXECUTION_CONTRACT } from './windows-powershell.js';
 import { defaultCritiqueConfig, type CritiqueConfig } from '@open-design/contracts/critique';
 import {
   executionProfileFromStreamFormat,
@@ -838,6 +839,10 @@ export interface ComposeInput {
   // `detectPlatformIntentSignal`). ORed with the metadata-based platform
   // gate for PLATFORM_CONTRACTS_BLOCK under slim; absent = metadata only.
   platformHintSignal?: boolean | undefined;
+  // Host OS selected by the daemon. Windows filesystem agents receive a
+  // compact PowerShell command contract; text-artifact/API runs do not have
+  // local command tools and therefore skip it.
+  hostPlatform?: string | undefined;
 }
 
 export function composeSystemPrompt({
@@ -880,6 +885,7 @@ export function composeSystemPrompt({
   promptCoreVariant,
   mediaHintSignal,
   platformHintSignal,
+  hostPlatform,
 }: ComposeInput): string {
   // Slim core collapses the discovery layer + designer charter + their tail
   // overrides into one charter document; the classic stack keeps the legacy
@@ -988,6 +994,10 @@ export function composeSystemPrompt({
     // Slim runs (charter head AND ask head) already composed this first.
     parts.push(API_MODE_OVERRIDE);
     parts.push('\n\n---\n\n');
+  }
+
+  if (hostPlatform === 'win32' && resolvedExecutionProfile === 'filesystem') {
+    parts.push(WINDOWS_POWERSHELL_EXECUTION_CONTRACT, '\n\n---\n\n');
   }
 
   // Ask mode (`chat`) is the deliberately bare conversation mode: the
