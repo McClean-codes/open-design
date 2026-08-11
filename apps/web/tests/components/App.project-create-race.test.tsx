@@ -79,6 +79,10 @@ const projectViewRenameFenceHarness = vi.hoisted(() => ({
   token: null as ProjectRenameFenceToken | null,
 }));
 
+const workspaceTabsHarness = vi.hoisted(() => ({
+  projectIds: new Set<string>(),
+}));
+
 vi.mock('../../src/collab/workspace-events', () => ({
   useWorkspaceInvalidation: vi.fn((
     handlers: Record<string, (payload: any) => void>,
@@ -173,6 +177,7 @@ vi.mock('../../src/components/EntryView', () => ({
             skillId: null,
             designSystemId: null,
             pendingPrompt: 'Build the retained artifact prompt',
+            pendingFiles: [new File(['brief'], 'brief.txt', { type: 'text/plain' })],
             autoSendFirstMessage: true,
             metadata: { kind: 'prototype' },
           })).catch(() => {});
@@ -546,7 +551,14 @@ vi.mock('../../src/components/WorkspaceTabsBar', () => ({
       ))}
     </>
   ),
-  openWorkspaceTab: () => {},
+  openWorkspaceTab: (route: { kind: string; projectId?: string }) => {
+    if (route.kind === 'project' && route.projectId) {
+      workspaceTabsHarness.projectIds.add(route.projectId);
+    }
+  },
+  removeWorkspaceProjectTabs: (projectId: string) => {
+    workspaceTabsHarness.projectIds.delete(projectId);
+  },
 }));
 
 vi.mock('../../src/components/pet/PetOverlay', () => ({
@@ -765,6 +777,7 @@ describe('App project creation routing', () => {
     workspaceInvalidationHarness.handlers.length = 0;
     workspaceInvalidationHarness.onActive.length = 0;
     projectViewRenameFenceHarness.token = null;
+    workspaceTabsHarness.projectIds.clear();
     window.history.replaceState(null, '', '/');
     mockedDaemonIsLive.mockResolvedValue(true);
     mockedFetchAgentsStream.mockResolvedValue([]);
@@ -1262,6 +1275,7 @@ describe('App project creation routing', () => {
     render(<App />);
     fireEvent.click(await screen.findByRole('button', { name: 'Create prompted project' }));
     await screen.findByTestId('project-creation-pending-view');
+    expect(workspaceTabsHarness.projectIds.has(requestedProjectId!)).toBe(true);
 
     creation.reject(new Error('Could not create project'));
 
@@ -1269,7 +1283,43 @@ describe('App project creation routing', () => {
     expect(window.location.pathname).toBe('/');
     expect(screen.queryByTestId('project-creation-pending-view')).toBeNull();
     expect(screen.queryByTestId(`entry-project-${requestedProjectId}`)).toBeNull();
+    expect(workspaceTabsHarness.projectIds.has(requestedProjectId!)).toBe(false);
     expect(screen.getByRole('alert').textContent).toContain('Could not create project');
+  });
+
+  it('releases a persisted project when attachment setup fails after creation', async () => {
+    mockedListProjects.mockResolvedValue([]);
+    mockedUploadProjectFiles.mockRejectedValue(new Error('Attachment upload failed'));
+    const creation = deferred<{
+      project: Project;
+      conversationId: string;
+    }>();
+    let requestedProjectId: string | undefined;
+    mockedCreateProject.mockImplementation((input) => {
+      requestedProjectId = (input as typeof input & { id?: string }).id;
+      return creation.promise;
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create prompted project' }));
+    await screen.findByTestId('project-creation-pending-view');
+
+    creation.resolve({
+      project: {
+        ...freshProject,
+        id: requestedProjectId!,
+        name: 'Persisted prompted project',
+        pendingPrompt: 'Build the retained artifact prompt',
+      },
+      conversationId: 'conv-new',
+    });
+
+    await screen.findByTestId('project-view');
+    expect(screen.getByTestId('project-title').textContent).toBe('Persisted prompted project');
+    expect(window.location.pathname).toBe(`/projects/${requestedProjectId}`);
+    expect(screen.queryByTestId('project-creation-pending-view')).toBeNull();
+    expect(workspaceTabsHarness.projectIds.has(requestedProjectId!)).toBe(true);
+    expect(screen.getByRole('alert').textContent).toContain('Attachment upload failed');
   });
 
   it('stores the plugin-share prompt before its prepared project projection can refresh', async () => {

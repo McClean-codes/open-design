@@ -55,7 +55,11 @@ import { AmrArtifactUpgradeGate } from './components/AmrArtifactUpgradeGate';
 import { AmrArtifactUpgradeHomeCard } from './components/AmrArtifactUpgradeHomeCard';
 import { TooltipLayer } from './components/TooltipLayer';
 import { UpdateDialog } from './components/UpdateDialog';
-import { openWorkspaceTab, WorkspaceTabsBar } from './components/WorkspaceTabsBar';
+import {
+  openWorkspaceTab,
+  removeWorkspaceProjectTabs,
+  WorkspaceTabsBar,
+} from './components/WorkspaceTabsBar';
 import {
   DesignSystemCreationFlow,
   DesignSystemDetailView,
@@ -2965,6 +2969,7 @@ function AppInner() {
         );
         if (optimisticProjectId) {
           clearLocalProject(optimisticProjectId);
+          removeWorkspaceProjectTabs(optimisticProjectId);
           setProjects((current) => current.filter((project) => project.id !== optimisticProjectId));
           setPendingProjectCreation((current) =>
             current?.projectId === optimisticProjectId ? null : current);
@@ -2998,184 +3003,205 @@ function AppInner() {
         );
         return false;
       }
-      const pendingFiles = Array.isArray(input.pendingFiles)
-        ? input.pendingFiles.filter((file): file is File => file instanceof File)
-        : [];
-      // Flip the project onto the user-picked working directory BEFORE
-      // uploading staged Home attachments. `replaceProjectWorkingDir` changes
-      // `metadata.baseDir`, so the project starts reading from the external
-      // folder. If we uploaded first, the staged files would land in the
-      // temporary managed `.od/projects/<id>` root and then silently vanish
-      // from Design Files and the first auto-send context once the working
-      // dir flips. Doing the handoff first means the initial upload lands in
-      // the final tree.
-      const userWorkingDir = metadata?.userWorkingDir;
-      let workingDirHandoffFailed = false;
-      if (userWorkingDir) {
-        try {
-          await replaceProjectWorkingDir(
-            result.project.id,
-            userWorkingDir,
-            input.userWorkingDirToken,
-            createWorkspaceContext,
-          );
-        } catch (err) {
-          // The desktop working-dir token is short-lived (~60s TTL); if the
-          // user lingered on Home or the POST was otherwise rejected, the
-          // handoff fails AFTER the project already exists. Do NOT swallow
-          // this and do NOT proceed: uploading staged attachments or
-          // auto-sending the first message would target the managed
-          // `.od/projects/<id>` root the user did not choose. Mark the
-          // handoff as failed so the upload + auto-send branches below are
-          // skipped, then surface a create-time error so the user can
-          // re-pick the working directory from inside the project.
-          console.warn('Failed to set working directory for new project', userWorkingDir, err);
-          workingDirHandoffFailed = true;
-          setWorkingDirError(
-            `Couldn't apply the chosen folder "${userWorkingDir}". The project was created in the default location — re-pick the working directory from the project before uploading files or sending a message.`,
-          );
-        }
-      }
-      let firstMessageAttachments: ChatAttachment[] = [];
-      if (!workingDirHandoffFailed && pendingFiles.length > 0) {
-        // Home composer attaches stay client-side until submit lands a
-        // project; the actual upload happens here. v2 doc wants one
-        // file_upload_result per surface — `page_name='home'` /
-        // `area='chat_composer'` so it's distinguishable from the
-        // file_manager Upload button and the chat_panel composer.
-        const cohort = deriveUploadCohort(pendingFiles);
-        const uploadResult = await uploadProjectFiles(
-          result.project.id,
-          pendingFiles,
-          undefined,
-          createWorkspaceContext,
-        );
-        firstMessageAttachments = uploadResult.uploaded;
-        const partial = uploadResult.failed.length > 0;
-        if (partial) {
-          console.warn('Some Home attachments failed to upload', uploadResult.failed);
-        }
-        trackFileUploadResult(analytics.track, {
-          page_name: 'home',
-          area: 'chat_composer',
-          project_id: result.project.id,
-          ...cohort,
-          result: partial ? 'failed' : 'success',
-          ...(partial && uploadResult.error
-            ? { error_code: uploadResult.error }
-            : {}),
-        });
-      }
-      trackProjectCreateResult(
-        analytics.track,
-        {
-          page_name: 'home',
-          area: 'new_project',
-          project_source: 'create_button',
-          project_id: result.project.id,
-          project_kind: projectKindFromMetadataToTracking(metadata),
-          fidelity,
-          ...(input.pluginId ? { plugin_id: input.pluginId } : {}),
-          ...(input.pluginType ? { plugin_type: input.pluginType } : {}),
-          result: 'success',
-        },
-        { requestId: input.requestId },
-      );
-      // PluginLoopHome flow: the user already typed (or accepted) the
-      // first message on Home. Mark this project so ProjectView fires
-      // sendMessage(pendingPrompt) once on mount instead of just
-      // pre-filling the composer. Scoped to sessionStorage so a page
-      // reload after the run has started does not refire.
-      if (
-        !workingDirHandoffFailed &&
-        input.autoSendFirstMessage &&
-        (derivedPendingPrompt !== undefined || firstMessageAttachments.length > 0)
-      ) {
-        try {
-          window.sessionStorage.setItem(
-            `od:auto-send-first:${result.project.id}`,
-            '1',
-          );
-          if (derivedPendingPrompt !== undefined) {
-            window.sessionStorage.setItem(
-              `od:auto-send-prompt:${result.project.id}`,
-              derivedPendingPrompt,
-            );
-          } else {
-            window.sessionStorage.removeItem(
-              `od:auto-send-prompt:${result.project.id}`,
-            );
-          }
-          if (input.amrGatePrecheckWitness) {
-            window.sessionStorage.setItem(
-              `od:auto-send-amr-gate-witness:${result.project.id}`,
-              JSON.stringify(input.amrGatePrecheckWitness),
-            );
-          } else {
-            window.sessionStorage.removeItem(
-              `od:auto-send-amr-gate-witness:${result.project.id}`,
-            );
-          }
-          window.sessionStorage.removeItem(
-            `od:auto-send-amr-gate-ok:${result.project.id}`,
-          );
-          if (firstMessageAttachments.length > 0) {
-            window.sessionStorage.setItem(
-              `od:auto-send-attachments:${result.project.id}`,
-              JSON.stringify(firstMessageAttachments),
-            );
-          } else {
-            window.sessionStorage.removeItem(
-              `od:auto-send-attachments:${result.project.id}`,
-            );
-          }
-          if (input.initialRunContext && Object.keys(input.initialRunContext).length > 0) {
-            window.sessionStorage.setItem(
-              `od:auto-send-context:${result.project.id}`,
-              JSON.stringify(input.initialRunContext),
-            );
-          } else {
-            window.sessionStorage.removeItem(
-              `od:auto-send-context:${result.project.id}`,
-            );
-          }
-        } catch {
-          /* sessionStorage may be unavailable (e.g. SSR / private mode); fall
-             back to manual send. */
-        }
-      }
-      // Home recommendation handoff: now that the project exists and its id is
-      // known, stash the onboarding entry keyed by that id. Studio consumes it
-      // by the same id on mount. Keying by id (instead of a single global slot
-      // written before create) removes the race where opening an unrelated
-      // project mid-create could steal the personalized funnel context, and
-      // means a failed/aborted create leaves nothing behind.
-      if (input.onboardingEntry) {
-        // Cache the prefilled seed prompt WITH the entry so the first-prompt
-        // funnel's `has_prefilled_prompt` comparison base survives a
-        // reopen-before-send (project.pendingPrompt is wiped on first mount).
-        stashOnboardingEntryForProject(result.project.id, {
-          ...input.onboardingEntry,
-          ...(derivedPendingPrompt
-            ? { seedPrompt: derivedPendingPrompt.trim() }
-            : {}),
-        });
-      }
       const project = result.appliedPluginSnapshotId
         ? {
             ...result.project,
             appliedPluginSnapshotId: result.appliedPluginSnapshotId,
           }
         : result.project;
-      rememberLocalProject(project.id);
-      flushSync(() => {
-        setProjects((curr) => [
-          project,
-          ...curr.filter((p) => p.id !== project.id),
-        ]);
+      if (optimisticProjectId) {
+        rememberLocalProject(project.id);
+        flushSync(() => {
+          setProjects((curr) => [
+            project,
+            ...curr.filter((candidate) => candidate.id !== project.id),
+          ]);
+        });
+      }
+      try {
+        const pendingFiles = Array.isArray(input.pendingFiles)
+          ? input.pendingFiles.filter((file): file is File => file instanceof File)
+          : [];
+        // Flip the project onto the user-picked working directory BEFORE
+        // uploading staged Home attachments. `replaceProjectWorkingDir` changes
+        // `metadata.baseDir`, so the project starts reading from the external
+        // folder. If we uploaded first, the staged files would land in the
+        // temporary managed `.od/projects/<id>` root and then silently vanish
+        // from Design Files and the first auto-send context once the working
+        // dir flips. Doing the handoff first means the initial upload lands in
+        // the final tree.
+        const userWorkingDir = metadata?.userWorkingDir;
+        let workingDirHandoffFailed = false;
+        if (userWorkingDir) {
+          try {
+            await replaceProjectWorkingDir(
+              result.project.id,
+              userWorkingDir,
+              input.userWorkingDirToken,
+              createWorkspaceContext,
+            );
+          } catch (err) {
+            // The desktop working-dir token is short-lived (~60s TTL); if the
+            // user lingered on Home or the POST was otherwise rejected, the
+            // handoff fails AFTER the project already exists. Do NOT swallow
+            // this and do NOT proceed: uploading staged attachments or
+            // auto-sending the first message would target the managed
+            // `.od/projects/<id>` root the user did not choose. Mark the
+            // handoff as failed so the upload + auto-send branches below are
+            // skipped, then surface a create-time error so the user can
+            // re-pick the working directory from inside the project.
+            console.warn('Failed to set working directory for new project', userWorkingDir, err);
+            workingDirHandoffFailed = true;
+            setWorkingDirError(
+              `Couldn't apply the chosen folder "${userWorkingDir}". The project was created in the default location — re-pick the working directory from the project before uploading files or sending a message.`,
+            );
+          }
+        }
+        let firstMessageAttachments: ChatAttachment[] = [];
+        if (!workingDirHandoffFailed && pendingFiles.length > 0) {
+          // Home composer attaches stay client-side until submit lands a
+          // project; the actual upload happens here. v2 doc wants one
+          // file_upload_result per surface — `page_name='home'` /
+          // `area='chat_composer'` so it's distinguishable from the
+          // file_manager Upload button and the chat_panel composer.
+          const cohort = deriveUploadCohort(pendingFiles);
+          const uploadResult = await uploadProjectFiles(
+            result.project.id,
+            pendingFiles,
+            undefined,
+            createWorkspaceContext,
+          );
+          firstMessageAttachments = uploadResult.uploaded;
+          const partial = uploadResult.failed.length > 0;
+          if (partial) {
+            console.warn('Some Home attachments failed to upload', uploadResult.failed);
+          }
+          trackFileUploadResult(analytics.track, {
+            page_name: 'home',
+            area: 'chat_composer',
+            project_id: result.project.id,
+            ...cohort,
+            result: partial ? 'failed' : 'success',
+            ...(partial && uploadResult.error
+              ? { error_code: uploadResult.error }
+              : {}),
+          });
+        }
+        trackProjectCreateResult(
+          analytics.track,
+          {
+            page_name: 'home',
+            area: 'new_project',
+            project_source: 'create_button',
+            project_id: result.project.id,
+            project_kind: projectKindFromMetadataToTracking(metadata),
+            fidelity,
+            ...(input.pluginId ? { plugin_id: input.pluginId } : {}),
+            ...(input.pluginType ? { plugin_type: input.pluginType } : {}),
+            result: 'success',
+          },
+          { requestId: input.requestId },
+        );
+        // PluginLoopHome flow: the user already typed (or accepted) the
+        // first message on Home. Mark this project so ProjectView fires
+        // sendMessage(pendingPrompt) once on mount instead of just
+        // pre-filling the composer. Scoped to sessionStorage so a page
+        // reload after the run has started does not refire.
+        if (
+          !workingDirHandoffFailed &&
+          input.autoSendFirstMessage &&
+          (derivedPendingPrompt !== undefined || firstMessageAttachments.length > 0)
+        ) {
+          try {
+            window.sessionStorage.setItem(
+              `od:auto-send-first:${result.project.id}`,
+              '1',
+            );
+            if (derivedPendingPrompt !== undefined) {
+              window.sessionStorage.setItem(
+                `od:auto-send-prompt:${result.project.id}`,
+                derivedPendingPrompt,
+              );
+            } else {
+              window.sessionStorage.removeItem(
+                `od:auto-send-prompt:${result.project.id}`,
+              );
+            }
+            if (input.amrGatePrecheckWitness) {
+              window.sessionStorage.setItem(
+                `od:auto-send-amr-gate-witness:${result.project.id}`,
+                JSON.stringify(input.amrGatePrecheckWitness),
+              );
+            } else {
+              window.sessionStorage.removeItem(
+                `od:auto-send-amr-gate-witness:${result.project.id}`,
+              );
+            }
+            window.sessionStorage.removeItem(
+              `od:auto-send-amr-gate-ok:${result.project.id}`,
+            );
+            if (firstMessageAttachments.length > 0) {
+              window.sessionStorage.setItem(
+                `od:auto-send-attachments:${result.project.id}`,
+                JSON.stringify(firstMessageAttachments),
+              );
+            } else {
+              window.sessionStorage.removeItem(
+                `od:auto-send-attachments:${result.project.id}`,
+              );
+            }
+            if (input.initialRunContext && Object.keys(input.initialRunContext).length > 0) {
+              window.sessionStorage.setItem(
+                `od:auto-send-context:${result.project.id}`,
+                JSON.stringify(input.initialRunContext),
+              );
+            } else {
+              window.sessionStorage.removeItem(
+                `od:auto-send-context:${result.project.id}`,
+              );
+            }
+          } catch {
+            /* sessionStorage may be unavailable (e.g. SSR / private mode); fall
+               back to manual send. */
+          }
+        }
+        // Home recommendation handoff: now that the project exists and its id is
+        // known, stash the onboarding entry keyed by that id. Studio consumes it
+        // by the same id on mount. Keying by id (instead of a single global slot
+        // written before create) removes the race where opening an unrelated
+        // project mid-create could steal the personalized funnel context, and
+        // means a failed/aborted create leaves nothing behind.
+        if (input.onboardingEntry) {
+          // Cache the prefilled seed prompt WITH the entry so the first-prompt
+          // funnel's `has_prefilled_prompt` comparison base survives a
+          // reopen-before-send (project.pendingPrompt is wiped on first mount).
+          stashOnboardingEntryForProject(result.project.id, {
+            ...input.onboardingEntry,
+            ...(derivedPendingPrompt
+              ? { seedPrompt: derivedPendingPrompt.trim() }
+              : {}),
+          });
+        }
+        if (!optimisticProjectId) {
+          rememberLocalProject(project.id);
+          flushSync(() => {
+            setProjects((curr) => [
+              project,
+              ...curr.filter((candidate) => candidate.id !== project.id),
+            ]);
+          });
+        }
+      } catch (err) {
+        if (!optimisticProjectId) throw err;
+        const errorCode =
+          err instanceof Error && err.message.trim() ? err.message : 'PROJECT_SETUP_FAILED';
+        console.warn('Failed to finish setting up new project', project.id, err);
+        setProjectCreateError(errorCode);
+      } finally {
         setPendingProjectCreation((current) =>
-          current?.projectId === optimisticProjectId ? null : current);
-      });
+          current?.projectId === optimisticProjectId ? null : current,
+        );
+      }
       const projectRoute = {
         kind: 'project',
         projectId: project.id,

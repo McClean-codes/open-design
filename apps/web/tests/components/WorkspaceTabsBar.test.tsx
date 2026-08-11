@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   openWorkspaceTab,
+  removeWorkspaceProjectTabs,
   WorkspaceTabsBar,
 } from '../../src/components/WorkspaceTabsBar';
 import { navigate, type Route } from '../../src/router';
@@ -425,6 +426,27 @@ describe('WorkspaceTabsBar navigation semantics', () => {
       expect(labels).toHaveLength(2);
       expect(labels.some((label) => label.includes('Home'))).toBe(true);
       expect(labels.some((label) => label.includes('Project Alpha'))).toBe(true);
+    });
+  });
+
+  it('removes a failed provisional project from live and persisted tab state', async () => {
+    render(<WorkspaceTabsBar route={{ kind: 'home', view: 'home' }} projects={[project]} />);
+
+    openWorkspaceTab({ ...projectRoute });
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+    });
+
+    removeWorkspaceProjectTabs(project.id);
+
+    await waitFor(() => {
+      const labels = screen.getAllByRole('tab').map((tab) => tab.textContent ?? '');
+      expect(labels).toHaveLength(1);
+      expect(labels.some((label) => label.includes('Project Alpha'))).toBe(false);
+      const stored = JSON.parse(
+        window.localStorage.getItem('open-design:workspace-tabs:v1') ?? '{}',
+      ) as { tabs?: Array<{ projectId?: string }> };
+      expect(stored.tabs?.some((tab) => tab.projectId === project.id)).toBe(false);
     });
   });
 
