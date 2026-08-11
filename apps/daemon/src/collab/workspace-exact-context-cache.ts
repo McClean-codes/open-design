@@ -176,7 +176,11 @@ export function createWorkspaceExactContextCache(
       const workspaceId = workspaceIdInput?.trim() ?? '';
       options.onInvalidation?.({ source: 'current', reason });
       if (workspaceId) {
-        healthyIdentities.delete(workspaceId);
+        // A thin event dirties the exact snapshot, not the proven health of
+        // the still-open realtime channel. Keep that health grant so a fresh
+        // post-event read can reseat the lease without waiting for a transport
+        // flap. Terminal backend rejection remains a hard health revocation.
+        if (reason === 'auth_reject') healthyIdentities.delete(workspaceId);
         const suffix = `\0${workspaceId}`;
         for (const key of generations.keys()) {
           if (!key.endsWith(suffix)) continue;
@@ -185,7 +189,7 @@ export function createWorkspaceExactContextCache(
         }
         return;
       }
-      healthyIdentities.clear();
+      if (reason === 'auth_reject') healthyIdentities.clear();
       for (const key of generations.keys()) advanceGeneration(key);
       entries.clear();
     },

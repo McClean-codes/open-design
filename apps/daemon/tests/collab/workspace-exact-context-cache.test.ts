@@ -106,4 +106,34 @@ describe('workspace exact context cache', () => {
     });
     expect(onSuppressedRequest).toHaveBeenCalledOnce();
   });
+
+  it('reseats a healthy lease after a routine event invalidation', async () => {
+    let calls = 0;
+    const cache = createWorkspaceExactContextCache({
+      identity: () => 'account-a',
+      provider: {
+        current: async () => null,
+        resolveExact: async ({ workspaceId }) => {
+          calls += 1;
+          return context(workspaceId);
+        },
+      },
+    });
+
+    cache.setRealtimeHealthy('w1', true);
+    await cache.refresh({ workspaceId: 'w1' });
+    expect(cache.cached('w1')).toMatchObject({ workspaceId: 'w1' });
+
+    cache.invalidate('w1', 'event_dirty');
+    expect(cache.cached('w1')).toBeNull();
+    await cache.refresh({ workspaceId: 'w1' });
+
+    expect(calls).toBe(2);
+    expect(cache.cached('w1')).toMatchObject({ workspaceId: 'w1' });
+
+    cache.invalidate('w1', 'auth_reject');
+    await cache.refresh({ workspaceId: 'w1' });
+    expect(calls).toBe(3);
+    expect(cache.cached('w1')).toBeNull();
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createWorkspaceAuthorityHealthCoordinator,
@@ -12,6 +12,10 @@ function deferred() {
   });
   return { promise, resolve };
 }
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 describe('workspace authority health coordinator', () => {
   it('defaults absent modes to adaptive while unknown values use the legacy kill switch', () => {
@@ -83,5 +87,50 @@ describe('workspace authority health coordinator', () => {
 
     expect(directoryStates).toEqual([false, false]);
     expect(billingStates).toEqual([false, false]);
+  });
+
+  it('recovers adaptive polling after a transient catch-up failure', async () => {
+    vi.useFakeTimers();
+    const catchUp = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary directory outage'))
+      .mockResolvedValueOnce(undefined);
+    const states: boolean[] = [];
+    const coordinator = createWorkspaceAuthorityHealthCoordinator({
+      mode: 'adaptive',
+      catchUp,
+      catchUpRetryMs: 10,
+      setDirectoryPollingHealthy: (_workspaceId, healthy) => states.push(healthy),
+      setBillingPollingHealthy: () => undefined,
+    });
+
+    await coordinator.update({ workspaceId: 'w1', healthy: true });
+    expect(states).toEqual([false]);
+
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(catchUp).toHaveBeenCalledTimes(2);
+    expect(states).toEqual([false, false, true]);
+  });
+
+  it('cancels a scheduled catch-up retry when realtime becomes unhealthy', async () => {
+    vi.useFakeTimers();
+    const catchUp = vi.fn().mockRejectedValue(
+      new Error('temporary directory outage'),
+    );
+    const states: boolean[] = [];
+    const coordinator = createWorkspaceAuthorityHealthCoordinator({
+      mode: 'adaptive',
+      catchUp,
+      catchUpRetryMs: 10,
+      setDirectoryPollingHealthy: (_workspaceId, healthy) => states.push(healthy),
+      setBillingPollingHealthy: () => undefined,
+    });
+
+    await coordinator.update({ workspaceId: 'w1', healthy: true });
+    await coordinator.update({ workspaceId: 'w1', healthy: false });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(catchUp).toHaveBeenCalledOnce();
+    expect(states).toEqual([false, false]);
   });
 });
