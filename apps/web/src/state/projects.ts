@@ -591,6 +591,8 @@ function isRetryableWorkspaceWriteFailure(status: number, retryable: boolean): b
 
 export async function createProject(
   input: {
+    /** Optional caller-minted id used for an optimistic route handoff. */
+    id?: string;
     name: string;
     projectLocationId?: string;
     skillId: string | null;
@@ -624,7 +626,7 @@ export async function createProject(
     // The id is minted ONCE and reused across retries: a retryable 503 fails
     // vela's authority check before any row is inserted, so replaying the same
     // client-provided id is idempotent, never a duplicate project.
-    const id = randomUUID();
+    const id = input.id ?? randomUUID();
     for (let attempt = 0; ; attempt += 1) {
       const resp = await fetch('/api/projects', {
         method: 'POST',

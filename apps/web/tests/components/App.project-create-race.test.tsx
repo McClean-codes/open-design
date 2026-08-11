@@ -691,10 +691,12 @@ const existingProject: Project = {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((res) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
     resolve = res;
+    reject = rej;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 function workspaceContextPayload(
@@ -1206,6 +1208,68 @@ describe('App project creation routing', () => {
     expect(window.sessionStorage.getItem('od:auto-send-prompt:project-new')).toBe(
       'Build the retained artifact prompt',
     );
+  });
+
+  it('enters the project preparing surface before Home project creation settles', async () => {
+    mockedListProjects.mockResolvedValue([]);
+    const creation = deferred<{
+      project: Project;
+      conversationId: string;
+    }>();
+    let requestedProjectId: string | undefined;
+    mockedCreateProject.mockImplementation((input) => {
+      requestedProjectId = (input as typeof input & { id?: string }).id;
+      return creation.promise;
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create prompted project' }));
+
+    await screen.findByTestId('project-creation-pending-view');
+    expect(requestedProjectId).toBeTruthy();
+    expect(window.location.pathname).toBe(`/projects/${requestedProjectId}`);
+    expect(screen.getByText('Build the retained artifact prompt')).toBeTruthy();
+    expect(screen.getByText('Preparing...')).toBeTruthy();
+    expect(screen.queryByTestId('entry-home-surface')).toBeNull();
+    expect(screen.queryByTestId('project-view')).toBeNull();
+
+    creation.resolve({
+      project: {
+        ...freshProject,
+        id: requestedProjectId!,
+        name: 'Prompted project',
+        pendingPrompt: 'Build the retained artifact prompt',
+      },
+      conversationId: 'conv-new',
+    });
+
+    await screen.findByTestId('project-view');
+    expect(window.location.pathname).toBe(`/projects/${requestedProjectId}`);
+  });
+
+  it('rolls a failed optimistic Home creation back to the preserved Home surface', async () => {
+    mockedListProjects.mockResolvedValue([]);
+    const creation = deferred<{
+      project: Project;
+      conversationId: string;
+    }>();
+    let requestedProjectId: string | undefined;
+    mockedCreateProject.mockImplementation((input) => {
+      requestedProjectId = (input as typeof input & { id?: string }).id;
+      return creation.promise;
+    });
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create prompted project' }));
+    await screen.findByTestId('project-creation-pending-view');
+
+    creation.reject(new Error('Could not create project'));
+
+    await screen.findByTestId('entry-home-surface');
+    expect(window.location.pathname).toBe('/');
+    expect(screen.queryByTestId('project-creation-pending-view')).toBeNull();
+    expect(screen.queryByTestId(`entry-project-${requestedProjectId}`)).toBeNull();
+    expect(screen.getByRole('alert').textContent).toContain('Could not create project');
   });
 
   it('stores the plugin-share prompt before its prepared project projection can refresh', async () => {

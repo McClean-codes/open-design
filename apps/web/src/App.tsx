@@ -50,6 +50,7 @@ import {
   type ProjectRenameFenceToken,
   type ProjectNameAuthorityResolution,
 } from './components/ProjectView';
+import { ProjectCreationPendingView } from './components/ProjectCreationPendingView';
 import { AmrArtifactUpgradeGate } from './components/AmrArtifactUpgradeGate';
 import { AmrArtifactUpgradeHomeCard } from './components/AmrArtifactUpgradeHomeCard';
 import { TooltipLayer } from './components/TooltipLayer';
@@ -145,6 +146,7 @@ import {
 import { createSilentUpdatePreferenceWriter } from './state/silent-update-preference';
 import { applyAppearanceToDocument } from './state/appearance';
 import { isMacPlatform } from './utils/platform';
+import { randomUUID } from './utils/uuid';
 import { summarizeProjectNameFromPrompt } from './utils/projectName';
 import {
   amrArtifactUpgradeHomeMockOffer,
@@ -234,6 +236,11 @@ type AppCreateProjectInput = Omit<CreateInput, 'metadata'> & {
   linkedDirs?: string[] | null;
   onboardingEntry?: OnboardingEntry;
 };
+
+interface PendingProjectCreation {
+  projectId: string;
+  prompt: string;
+}
 
 const APP_CONFIG_CHANGED_EVENT = 'open-design:app-config-changed';
 const AMR_AGENT_ID = 'amr';
@@ -937,6 +944,7 @@ function AppInner() {
   // this the failure was swallowed and the user believed their folder was in
   // effect while the project actually stayed in the managed root.
   const [workingDirError, setWorkingDirError] = useState<string | null>(null);
+  const [projectCreateError, setProjectCreateError] = useState<string | null>(null);
   const [projectOpenError, setProjectOpenError] = useState<string | null>(null);
   const [deepLinkResolutionFailure, setDeepLinkResolutionFailure] = useState<{
     projectId: string;
@@ -1002,6 +1010,8 @@ function AppInner() {
     Record<string, DesignSystemGenerationJob>
   >({});
   const [projects, setProjects] = useState<Project[]>([]);
+  const [pendingProjectCreation, setPendingProjectCreation] =
+    useState<PendingProjectCreation | null>(null);
   const [appliedProjectListWitness, setAppliedProjectListWitness] = useState<{
     scopeKey: string;
     generation: number;
@@ -2843,6 +2853,7 @@ function AppInner() {
       const creationSource: 'blank' | 'template' | 'zip' | 'folder' =
         kind === 'template' ? 'template' : 'blank';
       let createWorkspaceContext: WorkspaceCollabContext | null = null;
+      let optimisticProjectId: string | null = null;
       let result;
       try {
         const executionConfig = configRef.current;
@@ -2874,7 +2885,52 @@ function AppInner() {
         ) {
           throw new Error('AMR_WORKSPACE_GATE_STALE');
         }
+        // Home already accepted the run (including its balance gate), so move
+        // into the project frame immediately. The id is client-owned and the
+        // daemon already accepts that exact id for idempotent retries. Keep the
+        // real ProjectView unmounted until the response settles; the pending
+        // surface is deliberately read-free so an unpersisted project cannot
+        // fan out unauthorized conversation/file/presence requests.
+        if (input.autoSendFirstMessage) {
+          optimisticProjectId = randomUUID();
+          const now = Date.now();
+          const optimisticProject: Project = {
+            id: optimisticProjectId,
+            name: input.name.trim(),
+            skillId: input.skillId,
+            designSystemId: input.designSystemId,
+            createdAt: now,
+            updatedAt: now,
+            ...(derivedPendingPrompt ? { pendingPrompt: derivedPendingPrompt } : {}),
+            ...(metadata ? { metadata } : {}),
+            ...(input.appliedPluginSnapshotId
+              ? { appliedPluginSnapshotId: input.appliedPluginSnapshotId }
+              : {}),
+            ...(createWorkspaceContext?.workspaceId
+              ? { workspaceId: createWorkspaceContext.workspaceId }
+              : {}),
+          };
+          rememberLocalProject(optimisticProjectId);
+          flushSync(() => {
+            setPendingProjectCreation({
+              projectId: optimisticProjectId!,
+              prompt: derivedPendingPrompt ?? '',
+            });
+            setProjects((current) => [
+              optimisticProject,
+              ...current.filter((project) => project.id !== optimisticProjectId),
+            ]);
+          });
+          const optimisticRoute = {
+            kind: 'project',
+            projectId: optimisticProjectId,
+            fileName: null,
+          } as const;
+          openWorkspaceTab(optimisticRoute);
+          navigate(optimisticRoute);
+        }
         result = await createProject({
+          ...(optimisticProjectId ? { id: optimisticProjectId } : {}),
           name: input.name,
           skillId: input.skillId,
           designSystemId: input.designSystemId,
@@ -2907,6 +2963,20 @@ function AppInner() {
           },
           { requestId: input.requestId },
         );
+        if (optimisticProjectId) {
+          clearLocalProject(optimisticProjectId);
+          setProjects((current) => current.filter((project) => project.id !== optimisticProjectId));
+          setPendingProjectCreation((current) =>
+            current?.projectId === optimisticProjectId ? null : current);
+          if (
+            routeRef.current.kind === 'project'
+            && routeRef.current.projectId === optimisticProjectId
+          ) {
+            navigate({ kind: 'home', view: 'home' });
+          }
+          setProjectCreateError(errorCode);
+          return false;
+        }
         throw err;
       }
       if (!result) {
@@ -3103,17 +3173,25 @@ function AppInner() {
           project,
           ...curr.filter((p) => p.id !== project.id),
         ]);
+        setPendingProjectCreation((current) =>
+          current?.projectId === optimisticProjectId ? null : current);
       });
       const projectRoute = {
         kind: 'project',
         projectId: project.id,
         fileName: null,
       } as const;
-      openWorkspaceTab(projectRoute);
-      navigate(projectRoute);
+      // The Home auto-send path already owns this route from the optimistic
+      // handoff. Do not re-navigate after persistence: if the user deliberately
+      // backed out while creation finished, reopening the project would steal
+      // focus. Non-optimistic creation paths retain the existing navigation.
+      if (!optimisticProjectId) {
+        openWorkspaceTab(projectRoute);
+        navigate(projectRoute);
+      }
       return true;
     },
-    [analytics.track, rememberLocalProject],
+    [analytics.track, clearLocalProject, rememberLocalProject],
   );
 
   const handleCreateProjectFromDesignSystem = useCallback(
@@ -4848,6 +4926,10 @@ function AppInner() {
   } else if (route.kind === 'home' && route.view === 'settings') {
     appMain = renderSettingsSurface('page');
   } else if (route.kind === 'project') {
+    const pendingCreation =
+      activeProject && pendingProjectCreation?.projectId === activeProject.id
+        ? pendingProjectCreation
+        : null;
     const routeSurfaceState = projectRouteSurfaceState({
       projectsLoading,
       hasActiveProject: activeProject !== null,
@@ -4857,7 +4939,16 @@ function AppInner() {
           ? deepLinkResolutionFailure.failure
           : undefined,
     });
-    if (
+    if (pendingCreation && activeProject) {
+      appMain = (
+        <ProjectCreationPendingView
+          project={activeProject}
+          prompt={pendingCreation.prompt}
+          agentId={config.agentId}
+          onBack={handleBack}
+        />
+      );
+    } else if (
       routeSurfaceState === 'loading-projects'
       || routeSurfaceState === 'resolving-deep-link'
       || (
@@ -5178,6 +5269,14 @@ function AppInner() {
           message={workingDirError}
           role="alert"
           onDismiss={() => setWorkingDirError(null)}
+        />
+      ) : null}
+      {projectCreateError ? (
+        <Toast
+          message={projectCreateError}
+          role="alert"
+          tone="error"
+          onDismiss={() => setProjectCreateError(null)}
         />
       ) : null}
       {projectOpenError ? (
