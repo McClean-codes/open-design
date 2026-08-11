@@ -1072,7 +1072,7 @@ process.stdin.on("end", () => {
 
   it("[P2] closes packaged-leaf coverage without duplicating the broad E2E lane", async () => {
     const workflow = await readFile(ciWorkflowPath, "utf8");
-    const workspaceUnit = sectionBetween(workflow, "  workspace_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const workspaceUnit = sectionBetween(workflow, "  workspace_unit_tests:", "  daemon_unit_tests:");
 
     expect(workspaceUnit).toContain(`if [ "\${{ needs.scopes.outputs.tools_pack_tests_required }}" = "true" ]; then
             pnpm --filter @open-design/desktop build
@@ -1251,7 +1251,7 @@ process.stdin.on("end", () => {
     const runners = sectionBetween(workflow, "  runners:", "  scopes:");
     const scopes = sectionBetween(workflow, "  scopes:", "  static_gate:");
     const staticGate = sectionBetween(workflow, "  static_gate:", "  preflight:");
-    const workspaceUnitTests = sectionBetween(workflow, "  workspace_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const workspaceUnitTests = sectionBetween(workflow, "  workspace_unit_tests:", "  daemon_unit_tests:");
     const daemonUnitTests = sectionBetween(workflow, "  daemon_unit_tests:", "  windows_tools_pack_payload_tests:");
     const webWorkspaceTests = sectionBetween(workflow, "  web_workspace_tests:", "  e2e_vitest:");
     const e2eVitest = sectionBetween(workflow, "  e2e_vitest:", "  playwright_critical:");
@@ -1361,6 +1361,34 @@ process.stdin.on("end", () => {
     expect(workflow).not.toContain("needs.runners.outputs.blacksmith_default");
   });
 
+  it.each([
+    {
+      name: "workspace runner assertions",
+      workflowPath: ciWorkflowPath,
+      jobStart: "  workspace_unit_tests:",
+      jobEnd: "  daemon_unit_tests:",
+      marker: "fromJSON(needs.runners.outputs.runs_on).workspace_unit",
+    },
+    {
+      name: "Functional E2E commit pin",
+      workflowPath: releasePrereleaseWorkflowPath,
+      jobStart: "  functional_e2e:",
+      jobEnd: "  daemon_unit_tests:",
+      marker: "ref: ${{ needs.metadata.outputs.commit }}",
+    },
+  ])("[P1] keeps $name bounded to its owning job", async ({
+    workflowPath,
+    jobStart,
+    jobEnd,
+    marker,
+  }) => {
+    const workflow = await readFile(workflowPath, "utf8");
+    const owningJob = sectionBetween(workflow, jobStart, jobEnd);
+    const mutated = workflow.replace(owningJob, owningJob.replaceAll(marker, "regressed-marker"));
+
+    expect(sectionBetween(mutated, jobStart, jobEnd)).not.toContain(marker);
+  });
+
   it("[P2] caps Playwright concurrency independently from build concurrency", async () => {
     const action = await readFile(configureCiParallelismActionPath, "utf8");
 
@@ -1459,7 +1487,7 @@ process.stdin.on("end", () => {
       readFile(uiExtendedMainWorkflowPath, "utf8"),
     ]);
 
-    const gate = sectionBetween(prerelease, "  functional_e2e:", "  verify:");
+    const gate = sectionBetween(prerelease, "  functional_e2e:", "  daemon_unit_tests:");
     expect(gate).toContain("needs: metadata");
     expect(gate).toContain("uses: ./.github/workflows/ui-extended-main.yml");
     expect(gate).toContain("ref: ${{ needs.metadata.outputs.commit }}");

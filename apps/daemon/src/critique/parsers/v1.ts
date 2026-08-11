@@ -562,16 +562,21 @@ function normalizeMustFixTarget(text: string): string {
 function hasRequiredDebateDisagreement(
   roundMustFixes: ReadonlyMap<PanelistRole, readonly string[]>,
 ): boolean {
-  const criticTargets = (roundMustFixes.get('critic') ?? [])
-    .map(normalizeMustFixTarget)
-    .filter(Boolean);
-  const specialistTargets = (['brand', 'a11y', 'copy'] as const)
-    .flatMap((role) => roundMustFixes.get(role) ?? [])
-    .map(normalizeMustFixTarget)
-    .filter(Boolean);
-  return criticTargets.some(
-    (criticTarget) => specialistTargets.some((target) => target !== criticTarget),
+  const criticTargets = new Set(
+    (roundMustFixes.get('critic') ?? [])
+      .map(normalizeMustFixTarget)
+      .filter(Boolean),
   );
+  const specialistTargets = new Set(
+    (['brand', 'a11y', 'copy'] as const)
+      .flatMap((role) => roundMustFixes.get(role) ?? [])
+      .map(normalizeMustFixTarget)
+      .filter(Boolean),
+  );
+  return criticTargets.size > 0
+    && specialistTargets.size > 0
+    && (criticTargets.size !== specialistTargets.size
+      || [...criticTargets].some((target) => !specialistTargets.has(target)));
 }
 
 function parseAttrs(s: string): Record<string, string> {
