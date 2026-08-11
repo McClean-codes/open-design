@@ -1464,10 +1464,23 @@ export function ChatPane({
     !!retryAssistant?.resumable &&
     !!retryAssistant?.agentId &&
     retryAssistant.agentId === config?.agentId;
+  // `error` is a shared escape hatch for both run failures and unrelated
+  // pane errors (conversation load, audio, artifact persistence). A run error
+  // also lives durably on its assistant message. Once a later turn succeeds,
+  // the old global string can race or survive long enough to otherwise render
+  // a stale recovery card at the bottom of the conversation. Treat a global
+  // error that is already owned by an older assistant message as history; keep
+  // genuinely current non-run errors visible. When the latest run itself
+  // failed, its persisted event is the authoritative raw diagnostic.
+  const historicalRunError = useMemo(
+    () => !retryAssistant && isPersistedAssistantRunError(displayMessages, error),
+    [displayMessages, error, retryAssistant],
+  );
+  const currentGlobalError = historicalRunError ? null : error;
   // Prefer a case-specific message (AMR auth / balance) over the raw upstream
-  // string; fall back to the live global error (also covers conversation-load
-  // / audio errors) then the persisted run error so a reload still shows it.
-  const rawError = error ?? failedRunErrorEvent?.detail ?? null;
+  // string; fall back to a current pane-level error when the failed message has
+  // no persisted error event of its own.
+  const rawError = failedRunErrorEvent?.detail ?? currentGlobalError ?? null;
   // Friendly agent name for {agent} interpolation in failure copy (e.g. the
   // sign-in messages). Falls back to a neutral word when unreadable, never null.
   const failedAgentLabel =
@@ -4447,6 +4460,24 @@ export function retryableAssistantMessage(
   if (!last || last.role !== 'assistant') return null;
   if (last.id !== lastAssistantId) return null;
   return isRetryableAssistantTerminalFailure(last) ? last : null;
+}
+
+function isPersistedAssistantRunError(
+  messages: ChatMessage[],
+  error: string | null,
+): boolean {
+  const target = error?.trim();
+  if (!target) return false;
+  return messages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      (message.events ?? []).some(
+        (event) =>
+          event.kind === 'status' &&
+          event.label === 'error' &&
+          event.detail?.trim() === target,
+      ),
+  );
 }
 
 export function isAssistantMessageStreaming(

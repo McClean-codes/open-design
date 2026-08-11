@@ -341,6 +341,94 @@ describe('ChatPane streaming state', () => {
       .toBeNull();
   });
 
+  it('hides a stale run-recovery card after a later assistant run succeeds', () => {
+    const restartError = 'Run interrupted because the daemon restarted.';
+    const messages: ChatMessage[] = [
+      { id: 'user-1', role: 'user', content: 'Build the report', createdAt: 0 },
+      {
+        id: 'assistant-failed',
+        role: 'assistant',
+        content: 'I started the report.',
+        createdAt: 1,
+        endedAt: 2,
+        runStatus: 'failed',
+        events: [
+          {
+            kind: 'status',
+            label: 'error',
+            detail: restartError,
+            code: 'DAEMON_RESTARTED',
+          },
+        ],
+      },
+      { id: 'user-2', role: 'user', content: 'Continue', createdAt: 3 },
+      {
+        id: 'assistant-succeeded',
+        role: 'assistant',
+        content: 'The report is complete.',
+        createdAt: 4,
+        endedAt: 5,
+        runStatus: 'succeeded',
+      },
+    ];
+
+    const { container } = render(
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={messages}
+        streaming={false}
+        error={restartError}
+        projectId="project-1"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        conversations={conversations}
+        activeConversationId="conv-1"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={projectMetadata}
+      />,
+    );
+
+    expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeNull();
+  });
+
+  it('keeps a current non-run error visible after an assistant run succeeds', () => {
+    const messages: ChatMessage[] = [
+      { id: 'user-1', role: 'user', content: 'Build the report', createdAt: 0 },
+      {
+        id: 'assistant-succeeded',
+        role: 'assistant',
+        content: 'The report is complete.',
+        createdAt: 1,
+        endedAt: 2,
+        runStatus: 'succeeded',
+      },
+    ];
+
+    const { container } = render(
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={messages}
+        streaming={false}
+        error="Could not load the conversation."
+        projectId="project-1"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        conversations={conversations}
+        activeConversationId="conv-1"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={projectMetadata}
+      />,
+    );
+
+    expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeTruthy();
+  });
+
   it.each(['no_result', 'delivery_failed'] as const)(
     'exposes retry for a %s delivery failure',
     (resultDeliveryState) => {
