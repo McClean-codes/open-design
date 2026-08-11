@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -18,6 +19,7 @@ import {
 } from "../lib/playwright/suites.ts";
 
 const execFileAsync = promisify(execFile);
+const jqBin = process.platform !== "win32" && existsSync("/usr/bin/jq") ? "/usr/bin/jq" : "jq";
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(e2eRoot);
 const ciWorkflowPath = join(workspaceRoot, ".github", "workflows", "ci.yml");
@@ -181,7 +183,7 @@ function extractValidateGateJqPrograms(workflow: string): { failures: string; re
 
 function runValidateGateJq(program: string, needs: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile("jq", ["-r", program], { encoding: "utf8" }, (error, stdout, stderr) => {
+    const child = execFile(jqBin, ["-r", program], { encoding: "utf8" }, (error, stdout, stderr) => {
       if (error) {
         reject(Object.assign(error, { stdout, stderr }));
         return;
@@ -1380,7 +1382,7 @@ process.stdin.on("end", () => {
       name: "Functional E2E commit pin",
       workflowPath: releasePrereleaseWorkflowPath,
       jobStart: "  functional_e2e:",
-      jobEnd: "  daemon_unit_tests:",
+      jobEnd: "  e2e_vitest:",
       marker: "ref: ${{ needs.metadata.outputs.commit }}",
     },
   ])("[P1] keeps $name bounded to its owning job", async ({
@@ -1494,11 +1496,17 @@ process.stdin.on("end", () => {
       readFile(uiExtendedMainWorkflowPath, "utf8"),
     ]);
 
-    const gate = sectionBetween(prerelease, "  functional_e2e:", "  daemon_unit_tests:");
+    const gate = sectionBetween(prerelease, "  functional_e2e:", "  e2e_vitest:");
     expect(gate).toContain("needs: metadata");
     expect(gate).toContain("uses: ./.github/workflows/ui-extended-main.yml");
     expect(gate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
     expect(gate).toContain("suite: full");
+
+    const e2eVitestGate = sectionBetween(prerelease, "  e2e_vitest:", "  daemon_unit_tests:");
+    expect(e2eVitestGate).toContain("needs: metadata");
+    expect(e2eVitestGate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    expect(e2eVitestGate).toContain("playwright install --with-deps chromium");
+    expect(e2eVitestGate).toContain("pnpm --filter @open-design/e2e test");
 
     const daemonGate = sectionBetween(prerelease, "  daemon_unit_tests:", "  verify:");
     expect(daemonGate).toContain("shard: [1, 2, 3, 4]");
@@ -1516,14 +1524,16 @@ process.stdin.on("end", () => {
       ["  build_linux:", "  publish:"],
     ] as const) {
       const buildJob = sectionBetween(prerelease, start, end);
-      expect(buildJob).toContain("needs: [metadata, functional_e2e, daemon_unit_tests, verify]");
+      expect(buildJob).toContain("needs: [metadata, functional_e2e, e2e_vitest, daemon_unit_tests, verify]");
       expect(buildJob).toContain("ref: ${{ needs.metadata.outputs.commit }}");
     }
 
     const publish = sectionBetween(prerelease, "  publish:", "  cleanup_partial_release_assets:");
     expect(publish).toContain("- functional_e2e");
+    expect(publish).toContain("- e2e_vitest");
     expect(publish).toContain("- daemon_unit_tests");
     expect(publish).toContain("needs.functional_e2e.result == 'success'");
+    expect(publish).toContain("needs.e2e_vitest.result == 'success'");
     expect(publish).toContain("needs.daemon_unit_tests.result == 'success'");
     expect(publish).toContain("ref: ${{ needs.metadata.outputs.commit }}");
   });
@@ -1770,7 +1780,7 @@ process.stdin.on("end", () => {
     expect(releaseStableWorkflow).not.toMatch(/namespaces\/release-stable(?:-intel|-win|-linux)?\b/);
 
     expectChannelWorkflowNamespaces(releasePreviewWorkflow, "preview", { hasLinuxSmoke: false });
-    expectChannelWorkflowNamespaces(releasePrereleaseWorkflow, "prerelease", { hasLinuxSmoke: false });
+    expectChannelWorkflowNamespaces(releasePrereleaseWorkflow, "prerelease", { hasLinuxSmoke: true });
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-win");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-x64");
@@ -2263,8 +2273,12 @@ process.stdin.on("end", () => {
     const workflowCall = sectionBetween(prerelease, "  workflow_call:", "permissions:");
     expect(workflowCall).toContain("mac_arm64_smoke_result:");
     expect(workflowCall).toContain("value: ${{ jobs.build_mac.outputs.smoke_result }}");
+    expect(workflowCall).toContain("mac_x64_smoke_result:");
+    expect(workflowCall).toContain("value: ${{ jobs.build_mac_intel.outputs.smoke_result }}");
     expect(workflowCall).toContain("win_x64_smoke_result:");
     expect(workflowCall).toContain("value: ${{ jobs.build_win.outputs.smoke_result }}");
+    expect(workflowCall).toContain("linux_x64_smoke_result:");
+    expect(workflowCall).toContain("value: ${{ jobs.build_linux.outputs.smoke_result }}");
 
     const macJob = sectionBetween(prerelease, "  build_mac:", "  build_mac_intel:");
     const macSmoke = sectionBetween(
@@ -2275,6 +2289,18 @@ process.stdin.on("end", () => {
     expect(macJob).toContain("outputs:\n      smoke_result: ${{ steps.mac_smoke.outcome }}");
     expect(macSmoke).toContain("id: mac_smoke");
     expect(macSmoke).toContain("continue-on-error: true");
+
+    const macX64Job = sectionBetween(prerelease, "  build_mac_intel:", "  build_win:");
+    const macX64Smoke = sectionBetween(
+      macX64Job,
+      "      - name: Smoke prerelease mac_x64 packaged runtime",
+      "      - name: Write mac_x64 release report",
+    );
+    expect(macX64Job).toContain("outputs:\n      smoke_result: ${{ steps.mac_x64_smoke.outcome }}");
+    expect(macX64Smoke).toContain("id: mac_x64_smoke");
+    expect(macX64Smoke).toContain("continue-on-error: true");
+    expect(macX64Smoke).toContain("pnpm exec tsx scripts/release-smoke.ts mac specs/mac.spec.ts");
+    expect(macX64Job).toContain("RELEASE_SMOKE_MODE: core");
 
     const winJob = sectionBetween(prerelease, "  build_win:", "  build_linux:");
     const winSmokeFixture = sectionBetween(
@@ -2295,18 +2321,39 @@ process.stdin.on("end", () => {
       winJob.indexOf("Publish windows prerelease platform"),
     );
 
+    const linuxJob = sectionBetween(prerelease, "  build_linux:", "  publish:");
+    const linuxSmoke = sectionBetween(
+      linuxJob,
+      "      - name: Smoke prerelease linux AppImage runtime",
+      "      - name: Upload linux e2e spec report",
+    );
+    expect(linuxJob).toContain("outputs:\n      smoke_result: ${{ steps.linux_smoke.outcome }}");
+    expect(linuxSmoke).toContain("id: linux_smoke");
+    expect(linuxSmoke).toContain("continue-on-error: true");
+    expect(linuxSmoke).toContain('OD_PACKAGED_E2E_LINUX_APPIMAGE: "1"');
+    expect(linuxSmoke).toContain("xvfb-run -a pnpm test specs/linux.spec.ts");
+    expect(linuxJob.indexOf("Smoke prerelease linux AppImage runtime")).toBeLessThan(
+      linuxJob.indexOf("Publish linux prerelease platform"),
+    );
+
     const notifyJob = notify.slice(notify.indexOf("  notify:"));
     expect(notifyJob).toContain("MAC_ARM64_SMOKE_RESULT: ${{ needs.build.outputs.mac_arm64_smoke_result }}");
+    expect(notifyJob).toContain("MAC_X64_SMOKE_RESULT: ${{ needs.build.outputs.mac_x64_smoke_result }}");
     expect(notifyJob).toContain("WIN_X64_SMOKE_RESULT: ${{ needs.build.outputs.win_x64_smoke_result }}");
+    expect(notifyJob).toContain("LINUX_X64_SMOKE_RESULT: ${{ needs.build.outputs.linux_x64_smoke_result }}");
     expect(notifyJob).toContain("MAC_ARM64_URL: ${{ needs.build.outputs.mac_arm64_url }}");
     expect(notifyJob).toContain("WIN_URL: ${{ needs.build.outputs.win_url }}");
     expect(notifyJob).toContain("tools/release/src/notifications/feishu.ts");
     expect(notifyJob).not.toContain("tools/release/src/notifications/feishu-notice.ts");
 
     expect(feishuCard).toContain('optional("MAC_ARM64_SMOKE_RESULT")');
+    expect(feishuCard).toContain('optional("MAC_X64_SMOKE_RESULT")');
     expect(feishuCard).toContain('optional("WIN_X64_SMOKE_RESULT")');
+    expect(feishuCard).toContain('optional("LINUX_X64_SMOKE_RESULT")');
     expect(feishuCard).toContain("Windows x64 smoke 失败");
     expect(feishuCard).toContain("macOS arm64 smoke 失败");
+    expect(feishuCard).toContain("macOS Intel smoke 失败");
+    expect(feishuCard).toContain("Linux x64 smoke 失败");
     expect(feishuCard).toContain("产物已继续发布，可通过下方链接下载");
     expect(feishuCard).toContain(
       'template: smokeFailures.length > 0 || releaseState === "partial" ? "orange"',
@@ -2336,6 +2383,27 @@ process.stdin.on("end", () => {
       "https://releases.example/mac.dmg",
       "https://releases.example/windows.exe",
     ]);
+  });
+
+  it("[P1] reports Intel macOS and Linux prerelease smoke failures on the download card", async () => {
+    const payload = await renderFeishuBuildCard({
+      LINUX_URL: "https://releases.example/open-design.AppImage",
+      LINUX_X64_SMOKE_RESULT: "failure",
+      MAC_INTEL_URL: "https://releases.example/mac-intel.dmg",
+      MAC_X64_SMOKE_RESULT: "failure",
+    });
+    const card = payload.card as {
+      elements: Array<{ text?: { content?: string } }>;
+      header: { template?: string; title?: { content?: string } };
+    };
+
+    expect(card.header).toMatchObject({
+      template: "orange",
+      title: { content: expect.stringContaining("macOS Intel smoke 失败、Linux x64 smoke 失败") },
+    });
+    expect(card.elements.map((element) => element.text?.content).filter(Boolean)).toContain(
+      "**Smoke 告警**\n- macOS Intel smoke 失败\n- Linux x64 smoke 失败\n\n产物已继续发布，可通过下方链接下载。",
+    );
   });
 
   it("[P1] keeps download actions on a partial beta card without claiming latest promotion", async () => {

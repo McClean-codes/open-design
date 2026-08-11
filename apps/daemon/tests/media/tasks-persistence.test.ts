@@ -10,6 +10,8 @@ import {
   reconcileMediaTasksOnBoot,
   updateMediaTask,
 } from '../../src/media/tasks.js';
+import { TASK_TTL_AFTER_DONE_MS } from '../../src/media/task-store.js';
+import { resolveChatToolTokenTtlMs } from '../../src/tool-tokens.js';
 
 function freshDb(): Database.Database {
   const db = new Database(':memory:');
@@ -30,6 +32,10 @@ function freshDb(): Database.Database {
 }
 
 describe('media task persistence', () => {
+  it('retains terminal tasks beyond the longest default AMR polling token window', () => {
+    expect(TASK_TTL_AFTER_DONE_MS).toBeGreaterThan(resolveChatToolTokenTtlMs(30 * 60 * 1000));
+  });
+
   let db: Database.Database;
 
   beforeEach(() => {

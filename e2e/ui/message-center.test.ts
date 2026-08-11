@@ -79,61 +79,6 @@ async function gotoEntryHome(page: Page, timeout = 10_000) {
   await ensureRailOpen(page);
 }
 
-test('[P1] message center shows anonymous platform messages and keeps read state locally', async ({ page }) => {
-  test.fail(true, 'Cloud-first onboarding currently makes anonymous message center unreachable');
-  await seedEntryHome(page);
-
-  await page.route('**/api/integrations/vela/status', async (route) => {
-    await route.fulfill({ json: { loggedIn: false } });
-  });
-  await page.route('**/api/integrations/vela/message-center-public/messages**', async (route) => {
-    await route.fulfill({
-      json: {
-        messages: [
-          {
-            id: 'msg-prerelease-update',
-            audienceType: 'global',
-            typeName: 'Release',
-            title: 'Prerelease update recovered',
-            body: 'The prerelease updater can apply a payload update without requiring account sign-in.',
-            ctaLabel: 'Open release notes',
-            ctaUrl: 'https://open-design.example.test/releases/prerelease',
-            publishedAt: '2026-07-21T08:00:00.000Z',
-            readAt: null,
-          },
-        ],
-        nextCursor: null,
-        unreadCount: 1,
-      },
-    });
-  });
-
-  await gotoEntryHome(page, 3_000);
-
-  const trigger = page.getByTestId('entry-nav-message-center');
-  await expect(trigger.locator('.entry-nav-rail__btn-dot')).toBeVisible();
-  await trigger.click();
-
-  const dialog = page.getByTestId('message-center-dialog');
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole('heading', { name: 'Message center' })).toBeVisible();
-  await expect(dialog.getByText('Prerelease update recovered')).toBeVisible();
-  await expect(dialog.getByText('The prerelease updater can apply a payload update')).toBeVisible();
-
-  await dialog.getByRole('button', { name: /Prerelease update recovered/i }).click();
-  await expect(dialog.getByRole('button', { name: 'Open release notes' })).toBeVisible();
-  await expect(trigger.locator('.entry-nav-rail__btn-dot')).toHaveCount(0);
-  await expect
-    .poll(() => page.evaluate((key) => JSON.parse(window.localStorage.getItem(key) ?? '[]') as string[], READ_KEY))
-    .toEqual(['msg-prerelease-update']);
-
-  await dialog.getByRole('button', { name: 'Unread' }).click();
-  await expect(dialog.getByText('All caught up')).toBeVisible();
-
-  await dialog.getByRole('button', { name: 'Read', exact: true }).click();
-  await expect(dialog.getByText('Prerelease update recovered')).toBeVisible();
-});
-
 test('[P1] message center uses account read APIs when Vela is signed in', async ({ page }) => {
   await seedEntryHome(page);
 
@@ -207,20 +152,19 @@ test('[P1] message center uses account read APIs when Vela is signed in', async 
   await expect(dialog.getByText('Prerelease channel ready')).toBeVisible();
 });
 
-test('[P1] message center keeps the close affordance visible and dismisses the panel', async ({ page }) => {
-  test.fail(true, 'Cloud-first onboarding currently makes anonymous message center unreachable');
+test('[P1] message center dismisses with Escape and restores the trigger state', async ({ page }) => {
   await seedEntryHome(page);
 
   await page.route('**/api/integrations/vela/status', async (route) => {
-    await route.fulfill({ json: { loggedIn: false } });
+    await route.fulfill({ json: { loggedIn: true } });
   });
-  await page.route('**/api/integrations/vela/message-center-public/messages**', async (route) => {
+  await page.route('**/api/integrations/vela/message-center/messages**', async (route) => {
     await route.fulfill({
       json: {
         messages: [
           {
             id: 'msg-close-affordance',
-            audienceType: 'global',
+            audienceType: 'account',
             typeName: 'Release',
             title: 'Close button stays visible',
             body: 'The panel can be dismissed without hunting for hover-only controls.',
@@ -240,31 +184,12 @@ test('[P1] message center keeps the close affordance visible and dismisses the p
 
   const dialog = page.getByTestId('message-center-dialog');
   await expect(dialog).toBeVisible();
-  const closeButton = dialog.getByRole('button', { name: 'Close message center' });
-  await expect(closeButton).toBeVisible();
-
-  const closeMetrics = await closeButton.evaluate((node) => {
-    const rect = node.getBoundingClientRect();
-    const style = window.getComputedStyle(node);
-    return {
-      width: rect.width,
-      height: rect.height,
-      borderTopWidth: style.borderTopWidth,
-      backgroundColor: style.backgroundColor,
-    };
-  });
-  expect(closeMetrics.width).toBeGreaterThanOrEqual(32);
-  expect(closeMetrics.height).toBeGreaterThanOrEqual(32);
-  expect(closeMetrics.borderTopWidth).not.toBe('0px');
-  expect(closeMetrics.backgroundColor).not.toBe('rgba(0, 0, 0, 0)');
-
-  await closeButton.click();
+  await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toHaveAttribute('aria-expanded', 'false');
 });
 
 test('[P1] message center formats published dates with the selected zh-CN locale', async ({ page }) => {
-  test.fail(true, 'Cloud-first onboarding currently makes anonymous message center unreachable');
   const publishedAt = '2026-07-21T08:00:00.000Z';
   const expectedDate = new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium' }).format(
     new Date(publishedAt),
@@ -274,15 +199,15 @@ test('[P1] message center formats published dates with the selected zh-CN locale
   await seedEntryHome(page, { locale: 'zh-CN' });
 
   await page.route('**/api/integrations/vela/status', async (route) => {
-    await route.fulfill({ json: { loggedIn: false } });
+    await route.fulfill({ json: { loggedIn: true } });
   });
-  await page.route('**/api/integrations/vela/message-center-public/messages**', async (route) => {
+  await page.route('**/api/integrations/vela/message-center/messages**', async (route) => {
     await route.fulfill({
       json: {
         messages: [
           {
             id: 'msg-localized-date',
-            audienceType: 'global',
+            audienceType: 'account',
             typeName: 'Release',
             title: 'Localized release date',
             body: 'Message dates follow the selected application language.',

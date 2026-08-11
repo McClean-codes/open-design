@@ -149,7 +149,9 @@ jobs:
           CHANGELOG_FILE: ${{ steps.changelog.outputs.file }}
           BUILD_STATE: ${{ needs.build.result }}
           MAC_ARM64_SMOKE_RESULT: ${{ needs.build.outputs.mac_arm64_smoke_result }}
+          MAC_X64_SMOKE_RESULT: ${{ needs.build.outputs.mac_x64_smoke_result }}
           WIN_X64_SMOKE_RESULT: ${{ needs.build.outputs.win_x64_smoke_result }}
+          LINUX_X64_SMOKE_RESULT: ${{ needs.build.outputs.linux_x64_smoke_result }}
           MAC_ARM64_URL: ${{ needs.build.outputs.mac_arm64_url }}
           MAC_INTEL_URL: ${{ needs.build.outputs.mac_intel_url }}
           WIN_URL: ${{ needs.build.outputs.win_url }}

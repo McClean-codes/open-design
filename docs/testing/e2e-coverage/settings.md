@@ -4,7 +4,7 @@
 
 - Execution mode 页面
 - Memory 页面
-- Automations / Orbit 页面
+- Orbit 内部组件契约（当前无产品入口）
 - Language 页面
 - Pets 页面
 - Integrations 的 Skills 标签页
@@ -107,17 +107,15 @@
 | SET-071 | BYOK 页面 `Test` 按钮只有必填字段可用后才允许测试，并会展示 provider 连接测试结果 | `SettingsDialog.execution.test.tsx` |
 | SET-072 | Local CLI 页面 `Test` 按钮会使用当前选中的已安装 agent 发起连接测试，并展示 agent 响应结果 | `SettingsDialog.execution.test.tsx` |
 | SET-073 | Appearance 支持 preset accent color 和自定义色值，切换时实时预览并自动保存 `accentColor` | `SettingsDialog.execution.test.tsx` |
-| SET-074 | Orbit 页面在没有可用 connector 时锁定 Run / 开关 / 时间 / 模板控件，并通过 gate CTA 跳转到 Connectors | `SettingsDialog.orbit.test.tsx` |
-| SET-075 | Orbit 页面在 connector 可用后支持切换 daily summary、修改 run time、切换 prompt template，并自动保存 schedule 配置 | `SettingsDialog.orbit.test.tsx` |
-| SET-076 | Orbit 页面展示最近一次运行收据、统计计数、live artifact 入口，并支持复制 markdown 结果 | `SettingsDialog.orbit.test.tsx` |
+| SET-074 | 无产品入口的 Orbit 内部组件在没有可用 connector 时锁定 Run / 开关 / 时间 / 模板控件，并通过 gate CTA 跳转到 Connectors | `SettingsDialog.orbit.test.tsx` |
+| SET-075 | 无产品入口的 Orbit 内部组件在 connector 可用后支持切换 daily summary、修改 run time、切换 prompt template，并自动保存 schedule 配置 | `SettingsDialog.orbit.test.tsx` |
+| SET-076 | 无产品入口的 Orbit 内部组件展示最近一次运行收据、统计计数、live artifact 入口，并支持复制 markdown 结果 | `SettingsDialog.orbit.test.tsx` |
 | SET-077 | Memory 页面默认展示新的三分区 source tabs：`Add manually / Learn from chats / Import from apps`，并保留手动新增入口 | `settings-memory-routines.test.ts` |
 | SET-078 | Memory 页面会展示 `Saved memory` 统计、type filters、extractions 管理按钮和 `Memory tree` 结构摘要 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
 | SET-079 | 手动新建 memory 后，条目会立即出现，并在关闭后重开设置时继续可见 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
 | SET-080 | 关闭 memory injection 后，会展示 disabled banner，并在重开设置时保持关闭状态 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
 | SET-081 | `Learn from chats` 开关会持久化 `chatExtractionEnabled`，重开 Memory 页面后保持一致 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
 | SET-082 | 手动创建 memory 失败时，编辑器保持打开，用户已输入内容不会丢失 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
-| SET-083 | Automations 主页面支持创建 automation、Run now，并在列表内展示最近一次运行入口 | `settings-memory-routines.test.ts` |
-| SET-084 | Automations 创建失败时，modal 保持打开并回显错误，不会误写入列表 | `settings-memory-routines.test.ts` |
 | SET-085 | `Import from apps` 页面支持通过 `Manage` 跳到 `Connectors`，并在重开后保留 connector authorization pending 状态 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
 | SET-086 | `Import from apps` 支持 connected app 的选择、扫描、失败诊断、`Suggested memories` 保存，以及 `Saved memory` extraction 的 `Refresh / Clear` 管理 | `settings-memory-routines.test.ts`, `MemorySection.test.tsx` |
 | SET-087 | `Import from apps` 支持 connector OAuth 完成后的回流：pending app 会在授权回调后变成 connected，并可立即继续扫描生成 suggested memories | `settings-memory-routines.test.ts` |

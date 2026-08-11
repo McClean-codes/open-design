@@ -29,8 +29,8 @@
 `.github/workflows/ui-extended-main.yml` 的 `workflow_dispatch` 手动选择
 `p0`、`p0p1` 或 `full`。
 
-以 `main@a0474c540` 为审计基线，当前 Functional Playwright 清单为
-**412 tests / 43 files**。数字只用于说明本轮审计范围，不作为永久冻结的门槛。
+以 `main@f252ac324` 为审计基线，当前 Functional Playwright 清单为
+**414 tests / 44 files**。数字只用于说明本轮审计范围，不作为永久冻结的门槛。
 
 ## 当前优先级执行方式
 
@@ -129,6 +129,24 @@ Playwright 资源场景现在支持显式 contract：
   - 确认 quick-switcher 场景保留预期的 per-project file sets
   - 确认 mixed artifact / file workspace 在 reload 后仍然完整
 
+### 7. Prerelease 精确提交与包体信号
+
+`release-prerelease.yml` 现在会在 `metadata.outputs.commit` 上重新运行完整
+E2E Vitest，各平台打包和最终 publish 都依赖该门禁。这避免了广义
+daemon/API 回归只在 PR 的某个早期 SHA 跑过，但未在实际 prerelease commit 上复验。
+
+打包后 smoke 已覆盖 macOS arm64、macOS Intel、Windows x64 和可选的
+Linux x64 AppImage。Smoke 保持 advisory，不会因单一包体回归失败阻断产物发布；
+四个平台的失败都会在飞书下载卡中显示。
+
+### 8. 长耗时 media run 生命周期
+
+AMR run 的 tool token TTL 现在至少覆盖完整 inactivity timeout，并保留
+15 分钟收尾窗口；30 分钟 media run 因此会获得 45 分钟 token。终态
+media task 保留时间同步提高到 60 分钟，避免 token 仍有效时 task 已被清理。
+daemon 单测锁定这两个不变式，AMR 系统 E2E 还会校验真实 run start 事件
+暴露的 token deadline。
+
 ## 现在信号明显变强的能力面
 
 最近这轮补强后，下列区域的自动化信号都更硬了：
@@ -158,12 +176,14 @@ Playwright 资源场景现在支持显式 contract：
   `real-daemon-run.test.ts` 中保留一条 `[P1]` `fixme` 记录该缺口。
 - Connectors / MCP 没有无条件可达的导航入口，因此
   `visual-navigation.test.ts` 中两条视觉场景仍为显式 `skip`。
-- PR #6475 之后 anonymous Local Agent/BYOK 和 signed-out 深链会被强制重定向到
-  Cloud onboarding；`amr-onboarding.test.ts` 中 8 条 Functional P0 和
-  `visual-entry.test.ts` 中 1 条 Visual P2 目前以 expected failure 记录该产品缺口。
-- 同一 Cloud-first 回归还使 anonymous message center 不可达；
-  `message-center.test.ts` 中 3 条用 expected failure 保留公共消息、已读状态和
-  refresh 行为契约。
+- Signed-out 产品契约已统一为 Cloud 登录门禁：Home、Community、Projects、
+  Design Systems、Plugins、Integrations 和 Settings 深链都会收敛到
+  `/onboarding`，登录前不展示 Local Agent/BYOK。`amr-onboarding.test.ts` 已将旧的
+  8 条 expected failure 迁移为正向 P0 认证边界用例，`visual-entry.test.ts` 也直接验证
+  当前登录页。
+- Anonymous message center 不再是可达产品面；旧 anonymous case 已删除。
+  `message-center.test.ts` 保留 signed-in account API 的已读同步、Escape 关闭和
+  zh-CN 日期格式覆盖。
 - Settings 中 Design Systems 的内容仍然存在，但 #5517 删除了导航入口（#6706）；本地导入、
   rename 和错误恢复 3 条 P1 以 expected failure 记录“能力存在但不可达”。
 - Media provider key 可以在 Settings 保存、重开和从 daemon reload，但返回 Projects
@@ -189,6 +209,9 @@ Playwright 资源场景现在支持显式 contract：
 - Run analytics v4 已有失败卡到 Retry 成功的 UI 恢复闭环，但尚缺真实
   `/api/runs` line-protocol、真实 PostHog dot-path 查询和新旧字段样本对账；详见
   [`../../../specs/current/run-analytics-v4-test-plan.md`](../../../specs/current/run-analytics-v4-test-plan.md)。
+- Media 长任务已覆盖 token/task 生命周期边界，但仍缺一条从 UI 发起 run、
+  agent 调用 media tool、daemon 调用 fake Vela、轮询终态并校验产物文件的完整
+  跨层自动化闭环。
 - Functional UI 只覆盖 Chromium desktop；安装器交互和历史版本升级的人工边界见
   [`../updater-lifecycle.md`](../updater-lifecycle.md)。
 
@@ -228,6 +251,7 @@ pnpm --filter @open-design/e2e exec playwright test -c playwright.config.ts ui/a
 - 优先修复 Media provider → New Project 的 config 同步和 Plan 首次生成 auto-open
 - 恢复 Design Systems / plugin authoring 的可达 UI 入口，再解除对应 expected failure
 - 修复 #548 resize hitbox、inline workspace mention 删除同步和 system-theme live update
+- 补一条 fake Vela 驱动的 UI → run → media tool → task 终态 → artifact 跨层闭环
 - 补齐 run analytics v4 的本地 receiver、真实 PostHog 查询与样本对账
 - 为 Community 搜索提供真实产品行为后再补搜索 E2E
 - 每补完一批，就做一次 grouped validation

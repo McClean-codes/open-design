@@ -82,11 +82,7 @@ test('[P0] @critical onboarding lets AMR Cloud sign in and complete setup after 
   });
 });
 
-test('[P0] signed-out onboarding keeps Local Agent and BYOK available without Cloud authorization', async ({ page }) => {
-  test.fail(
-    true,
-    'PR #6475 currently hides anonymous Local Agent and BYOK behind Cloud sign-in.',
-  );
+test('[P0] signed-out onboarding requires Cloud authorization before model source selection', async ({ page }) => {
   const config = await wireOnboardingMocks(page, {
     amrAvailable: true,
     initialLoggedIn: false,
@@ -96,13 +92,14 @@ test('[P0] signed-out onboarding keeps Local Agent and BYOK available without Cl
   await seedOnboardingConfig(page, config);
   await gotoOnboarding(page);
 
-  // Cloud sign-in is optional. Anonymous users must still be able to choose a
-  // local agent or BYOK, matching the product's offline / self-hosted contract.
+  // Execution-source selection belongs behind Cloud identity. Signed-out
+  // users see only the login gate; Local Agent and BYOK become available
+  // after authentication resolves.
   const primary = cloudPrimaryButton(page);
   await expect(primary).toBeVisible();
   await expect(primary).toHaveText(/Sign in to Open Design|登录 Open Design/i);
-  await expect(page.getByRole('button', { name: /Local (coding )?agent/i })).toBeVisible();
-  await expect(page.getByRole('button', { name: /Bring Your Own Key/i })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Local (coding )?agent/i })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Bring Your Own Key/i })).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__amrOnboardingLoginCalls ?? 0)).toBe(0);
 });
 
@@ -457,11 +454,7 @@ test('[P0] active Cloud sign-out clears execution setup, preserves unrelated pre
   });
 });
 
-test('[P0] signed-out users can open Home directly without completing onboarding', async ({ page }) => {
-  test.fail(
-    true,
-    'PR #6475 currently redirects anonymous Home access to onboarding.',
-  );
+test('[P0] signed-out users are redirected from Home to Cloud sign-in', async ({ page }) => {
   const config = await wireOnboardingMocks(page, {
     amrAvailable: true,
     initialLoggedIn: false,
@@ -473,24 +466,22 @@ test('[P0] signed-out users can open Home directly without completing onboarding
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await waitForLoadingToClear(page);
   await dismissPrivacyDialog(page);
-  await expect(page).toHaveURL(/\/$/);
-  await expect(page.getByTestId('home-hero-input')).toBeVisible({ timeout: T.long });
+  await expect(page).toHaveURL(/\/onboarding$/);
+  await expect(connectLandingHeading(page)).toBeVisible();
+  await expect(cloudPrimaryButton(page)).toHaveText(/Sign in to Open Design|登录 Open Design/i);
+  await expect(page.getByTestId('home-hero-input')).toHaveCount(0);
   await expect.poll(() => page.evaluate(() => window.__amrOnboardingLoginCalls ?? 0)).toBe(0);
 });
 
 for (const destination of [
-  { name: 'Community', path: '/community', selector: '[data-testid="entry-nav-community"]' },
-  { name: 'Projects', path: '/projects', selector: '[data-testid="entry-view-projects"][data-active="true"]' },
-  { name: 'Design Systems', path: '/design-systems', selector: '[data-testid="entry-view-design-systems"][data-active="true"]' },
-  { name: 'Plugins', path: '/plugins', selector: '[data-testid="entry-view-plugins"][data-active="true"]' },
-  { name: 'Integrations', path: '/integrations', selector: '.integrations-view' },
-  { name: 'Settings', path: '/settings', selector: '.settings-page-surface' },
+  { name: 'Community', path: '/community' },
+  { name: 'Projects', path: '/projects' },
+  { name: 'Design Systems', path: '/design-systems' },
+  { name: 'Plugins', path: '/plugins' },
+  { name: 'Integrations', path: '/integrations' },
+  { name: 'Settings', path: '/settings' },
 ] as const) {
-  test(`[P0] signed-out users can open ${destination.name} directly`, async ({ page }) => {
-    test.fail(
-      true,
-      `PR #6475 currently redirects anonymous ${destination.name} access to onboarding.`,
-    );
+  test(`[P0] signed-out users are redirected from ${destination.name} to Cloud sign-in`, async ({ page }) => {
     const config = await wireOnboardingMocks(page, {
       amrAvailable: true,
       initialLoggedIn: false,
@@ -502,8 +493,9 @@ for (const destination of [
     await waitForLoadingToClear(page);
     await dismissPrivacyDialog(page);
 
-    await expect(page).toHaveURL(new RegExp(`${destination.path}$`));
-    await expect(page.locator(destination.selector)).toBeVisible({ timeout: T.long });
+    await expect(page).toHaveURL(/\/onboarding$/);
+    await expect(connectLandingHeading(page)).toBeVisible();
+    await expect(cloudPrimaryButton(page)).toHaveText(/Sign in to Open Design|登录 Open Design/i);
     await expect.poll(() => page.evaluate(() => window.__amrOnboardingLoginCalls ?? 0)).toBe(0);
   });
 }

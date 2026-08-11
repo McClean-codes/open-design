@@ -38,7 +38,11 @@ export interface MediaTaskSnapshot {
   error?: MediaTaskRow['error'];
 }
 
-export const TASK_TTL_AFTER_DONE_MS = 10 * 60 * 1000;
+// A completed task must remain recoverable for longer than the longest
+// run-scoped tool-token polling window. Slow agent turns can otherwise finish
+// generation successfully, then lose the durable task result before the agent
+// reaches `media wait`.
+export const TASK_TTL_AFTER_DONE_MS = 60 * 60 * 1000;
 const MEDIA_TERMINAL_STATUSES = new Set<MediaTaskStatus>(['done', 'failed', 'interrupted']);
 
 export function createMediaTaskStore(db: Database.Database): {

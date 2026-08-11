@@ -379,8 +379,8 @@ test('[P1] entry top navigation matches the current home tab structure', async (
   await expect(page.locator('.entry-nav-rail__group').getByTestId('entry-nav-design-systems')).toBeVisible();
   await expect(page.locator('.entry-nav-rail__group').getByTestId('entry-nav-plugins')).toBeVisible();
   // #5517's rail dropped the "+ New project", Projects, Automations and
-  // Integrations destinations. New project is now the Projects view's own CTA,
-  // and Automations / Integrations keep their routes without a rail entry.
+  // Integrations destinations. New project is now the Projects view's own CTA;
+  // the removed destinations must not reappear as rail controls.
   await expect(page.getByTestId('entry-nav-new-project')).toHaveCount(0);
   await expect(page.getByTestId('entry-nav-projects')).toHaveCount(0);
   await expect(page.getByTestId('entry-nav-tasks')).toHaveCount(0);

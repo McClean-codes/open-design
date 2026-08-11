@@ -1,6 +1,17 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 export const DEFAULT_TOOL_TOKEN_TTL_MS = 15 * 60 * 1000;
+export const CHAT_TOOL_TOKEN_TTL_BUFFER_MS = 15 * 60 * 1000;
+
+export function resolveChatToolTokenTtlMs(inactivityTimeoutMs: number): number {
+  if (!Number.isFinite(inactivityTimeoutMs) || inactivityTimeoutMs < 0) {
+    throw new RangeError(`inactivityTimeoutMs must be a non-negative finite number, got ${String(inactivityTimeoutMs)}`);
+  }
+  return Math.max(
+    DEFAULT_TOOL_TOKEN_TTL_MS,
+    inactivityTimeoutMs + CHAT_TOOL_TOKEN_TTL_BUFFER_MS,
+  );
+}
 
 // Capability key for the parameterized media wait route. Token grants cannot
 // enumerate a task id that is created after the grant is minted.

@@ -172,7 +172,6 @@
 - Plugin authoring 只说不做、没有产物
 - 评论模式下预览不再刷新
 - diagnostics 导出丢主日志
-- automations 新建后顺序/摘要不稳定
 - connector pending / degraded / reconnect 状态错乱
 - design systems 导入、重命名、发布和删除 fallback 回归
 
@@ -269,11 +268,6 @@ pnpm exec playwright test -c playwright.config.ts ui/design-systems-manager.test
   - error pill
   - 无 `Disconnect`
 - 当前 UI 不保证 degraded 卡片一定有 `is-locked`
-
-### Automations
-
-- 保存后的排序规则当前是 `createdAt` 倒序
-- row summary 稳定展示的是 `target` 与 `last-run status`
 
 ### Design systems
 

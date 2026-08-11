@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CHAT_TOOL_TOKEN_TTL_BUFFER_MS,
   CHAT_TOOL_ENDPOINTS,
   CHAT_TOOL_OPERATIONS,
+  DEFAULT_TOOL_TOKEN_TTL_MS,
   MEDIA_TASK_WAIT_TOOL_ENDPOINT,
+  resolveChatToolTokenTtlMs,
   ToolTokenRegistry,
 } from '../src/tool-tokens.js';
 
@@ -12,6 +15,16 @@ afterEach(() => {
 });
 
 describe('run-scoped tool tokens', () => {
+  it('keeps chat tokens alive beyond the runtime inactivity window', () => {
+    const thirtyMinutes = 30 * 60 * 1000;
+
+    expect(resolveChatToolTokenTtlMs(0)).toBe(DEFAULT_TOOL_TOKEN_TTL_MS);
+    expect(resolveChatToolTokenTtlMs(thirtyMinutes)).toBe(
+      thirtyMinutes + CHAT_TOOL_TOKEN_TTL_BUFFER_MS,
+    );
+    expect(() => resolveChatToolTokenTtlMs(Number.NaN)).toThrow(/inactivityTimeoutMs/);
+  });
+
   it('mints isolated tokens for concurrent runs under the same project', () => {
     const registry = new ToolTokenRegistry();
     const first = registry.mint({ runId: 'run-1', projectId: 'project-a', nowMs: 1_000 });
