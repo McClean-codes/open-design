@@ -1085,6 +1085,19 @@ process.stdin.on("end", () => {
           fi`);
   });
 
+  it("[P1] runs the complete daemon suite in four required shards", async () => {
+    const workflow = await readFile(ciWorkflowPath, "utf8");
+    const daemonTests = sectionBetween(workflow, "  daemon_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const validate = sectionBetween(workflow, "  validate:", "  runtime_summary:");
+
+    expect(daemonTests).toContain("if: ${{ needs.scopes.outputs.daemon_tests_required == 'true' }}");
+    expect(daemonTests).toContain("fail-fast: false");
+    expect(daemonTests).toContain("shard: [1, 2, 3, 4]");
+    expect(daemonTests).toContain("pnpm --filter @open-design/daemon test --shard=${{ matrix.shard }}/4");
+    expect(validate).toContain("- daemon_unit_tests");
+    expect(validate).toContain('when($out.daemon_tests_required == "true"; ["daemon_unit_tests"])');
+  });
+
   it("[P2] skips the critical fallback for pure packaged-leaf changes and stays fail-closed elsewhere", async () => {
     const hot = { inputs: { ci_mode: "hot" } };
 
@@ -1239,6 +1252,7 @@ process.stdin.on("end", () => {
     const scopes = sectionBetween(workflow, "  scopes:", "  static_gate:");
     const staticGate = sectionBetween(workflow, "  static_gate:", "  preflight:");
     const workspaceUnitTests = sectionBetween(workflow, "  workspace_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const daemonUnitTests = sectionBetween(workflow, "  daemon_unit_tests:", "  windows_tools_pack_payload_tests:");
     const webWorkspaceTests = sectionBetween(workflow, "  web_workspace_tests:", "  e2e_vitest:");
     const e2eVitest = sectionBetween(workflow, "  e2e_vitest:", "  playwright_critical:");
     const preflight = sectionBetween(workflow, "  preflight:", "  workspace_unit_tests:");
@@ -1256,6 +1270,8 @@ process.stdin.on("end", () => {
     expect(staticGate).toContain("fromJSON(needs.runners.outputs.runs_on).control");
     expect(workspaceUnitTests).toContain("fromJSON(needs.runners.outputs.runs_on).workspace_unit");
     expect(workspaceUnitTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).workspace_unit)");
+    expect(daemonUnitTests).toContain("fromJSON(needs.runners.outputs.runs_on).workspace_unit");
+    expect(daemonUnitTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).workspace_unit)");
     expect(webWorkspaceTests).toContain("fromJSON(needs.runners.outputs.runs_on).js_hot");
     expect(webWorkspaceTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).js_hot)");
     expect(webWorkspaceTests).not.toContain('"od-persistent-ci"');
@@ -1431,6 +1447,11 @@ process.stdin.on("end", () => {
     expect(gate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
     expect(gate).toContain("suite: full");
 
+    const daemonGate = sectionBetween(prerelease, "  daemon_unit_tests:", "  verify:");
+    expect(daemonGate).toContain("shard: [1, 2, 3, 4]");
+    expect(daemonGate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    expect(daemonGate).toContain("pnpm --filter @open-design/daemon test --shard=${{ matrix.shard }}/4");
+
     expect(functionalE2e).toContain("workflow_call:");
     expect(functionalE2e).not.toContain("schedule:");
     expect(functionalE2e).toContain("ref: ${{ inputs.ref || github.sha }}");
@@ -1442,13 +1463,15 @@ process.stdin.on("end", () => {
       ["  build_linux:", "  publish:"],
     ] as const) {
       const buildJob = sectionBetween(prerelease, start, end);
-      expect(buildJob).toContain("needs: [metadata, functional_e2e, verify]");
+      expect(buildJob).toContain("needs: [metadata, functional_e2e, daemon_unit_tests, verify]");
       expect(buildJob).toContain("ref: ${{ needs.metadata.outputs.commit }}");
     }
 
     const publish = sectionBetween(prerelease, "  publish:", "  cleanup_partial_release_assets:");
     expect(publish).toContain("- functional_e2e");
+    expect(publish).toContain("- daemon_unit_tests");
     expect(publish).toContain("needs.functional_e2e.result == 'success'");
+    expect(publish).toContain("needs.daemon_unit_tests.result == 'success'");
     expect(publish).toContain("ref: ${{ needs.metadata.outputs.commit }}");
   });
 

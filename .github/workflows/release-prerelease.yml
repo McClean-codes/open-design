@@ -222,6 +222,34 @@ jobs:
     with:
       ref: ${{ needs.metadata.outputs.commit }}
       suite: full
+  daemon_unit_tests:
+    name: Daemon tests (${{ matrix.shard }}/4)
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v5
+        with:
+          version: 10.33.2
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run daemon test shard
+        env:
+          OD_WATCHER_TEST_DEBUG: "1"
+        run: pnpm --filter @open-design/daemon test --shard=${{ matrix.shard }}/4
   verify:
     name: Verify build (typecheck + tests)
     needs: metadata
@@ -252,7 +280,7 @@ jobs:
         run: pnpm guard
   build_mac:
     name: Build prerelease mac arm64
-    needs: [metadata, functional_e2e, verify]
+    needs: [metadata, functional_e2e, daemon_unit_tests, verify]
     runs-on: macos-14
     outputs:
       smoke_result: ${{ steps.mac_smoke.outcome }}
@@ -636,7 +664,7 @@ jobs:
           retention-days: 1
   build_mac_intel:
     name: Build prerelease mac intel x64
-    needs: [metadata, functional_e2e, verify]
+    needs: [metadata, functional_e2e, daemon_unit_tests, verify]
     runs-on: macos-15-intel
     env:
       GH_TOKEN: ${{ github.token }}
@@ -902,7 +930,7 @@ jobs:
           retention-days: 1
   build_win:
     name: Build prerelease win x64
-    needs: [metadata, functional_e2e, verify]
+    needs: [metadata, functional_e2e, daemon_unit_tests, verify]
     runs-on: windows-latest
     outputs:
       smoke_result: ${{ steps.win_smoke.outcome }}
@@ -1169,7 +1197,7 @@ jobs:
           retention-days: 1
   build_linux:
     name: Build prerelease linux x64
-    needs: [metadata, functional_e2e, verify]
+    needs: [metadata, functional_e2e, daemon_unit_tests, verify]
     if: ${{ vars.ENABLE_STABLE_LINUX == 'true' }}
     runs-on: ubuntu-latest
     env:
@@ -1242,6 +1270,7 @@ jobs:
     needs:
       - metadata
       - functional_e2e
+      - daemon_unit_tests
       - verify
       - build_mac
       - build_mac_intel
@@ -1253,6 +1282,7 @@ jobs:
         !cancelled() &&
         needs.metadata.result == 'success' &&
         needs.functional_e2e.result == 'success' &&
+        needs.daemon_unit_tests.result == 'success' &&
         needs.verify.result == 'success' &&
         needs.build_mac.result == 'success' &&
         needs.build_mac_intel.result == 'success' &&

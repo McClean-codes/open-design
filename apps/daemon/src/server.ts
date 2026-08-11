@@ -13954,6 +13954,7 @@ export async function startServer({
   return await new Promise((resolve, reject) => {
     let daemonShutdownStarted = false;
     const cleanupDaemonBackgroundWork = () => {
+      telemetry.disposeFatalHandlers();
       composioConnectorProvider.stopCatalogRefreshLoop();
       orbitService.stop();
       routineService?.stop();

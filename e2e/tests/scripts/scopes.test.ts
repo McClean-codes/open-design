@@ -846,45 +846,13 @@ test("the consumption guard folds repository paths while allowing sandbox fixtur
   assert.deepEqual(prose, []);
 });
 
-test("the consumption guard requires the narrow daemon test command to be exclusive", async () => {
-  const { daemonTestInvocationsFromWorkflow, workflowRunsOnlyAllowedDaemonTest } = await import(
-    "../../../scripts/check-certain-exempt-consumption.ts"
-  );
-  const narrowCommand =
-    "pnpm --filter @open-design/daemon exec vitest run -c vitest.config.ts tests/project-watchers.test.ts";
-  const narrowOnly = `
-jobs:
-  daemon_tests:
-    steps:
-      - name: Daemon workspace tests
-        run: ${narrowCommand}
-`;
-  assert.deepEqual(daemonTestInvocationsFromWorkflow(narrowOnly), [narrowCommand]);
-  assert.equal(workflowRunsOnlyAllowedDaemonTest(narrowOnly), true);
-
-  for (const broaderCommand of [
-    "pnpm --filter @open-design/daemon test",
-    "pnpm -F @open-design/daemon test",
-    "pnpm --filter=@open-design/daemon test",
-    "pnpm --dir apps/daemon test",
-    "pnpm -C apps/daemon test",
-    "pnpm --filter @open-design/daemon run test",
-    "pnpm --silent --filter @open-design/daemon test",
-    "pnpm -r --filter @open-design/daemon test",
-  ]) {
-    const narrowPlusBroader = `${narrowOnly}
-      - name: Full daemon suite
-        run: ${broaderCommand}
-`;
-    const expectedBroaderInvocation = broaderCommand.includes("run test")
-      ? "pnpm --filter @open-design/daemon run test"
-      : "pnpm --filter @open-design/daemon test";
-    assert.deepEqual(daemonTestInvocationsFromWorkflow(narrowPlusBroader), [
-      narrowCommand,
-      expectedBroaderInvocation,
-    ]);
-    assert.equal(workflowRunsOnlyAllowedDaemonTest(narrowPlusBroader), false);
-  }
+test("the adapter documentation is daemon-core because daemon tests consume it", async () => {
+  const { evaluateScopeOutputs } = await import("../../../scripts/scopes.ts");
+  const plan = evaluateScopeOutputs(["docs/agent-adapters.md"], "certain", {
+    deriveWorkspaceValidationFromTestScopes: true,
+  });
+  assert.equal(plan.outputs.daemon_tests_required, true);
+  assert.deepEqual(plan.decisions[0]?.matchedRules, ["certain-daemon-core"]);
 });
 
 test("the rule table classifies every file: no path escapes both fallbacks", async () => {
