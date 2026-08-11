@@ -14,8 +14,9 @@ function deferred() {
 }
 
 describe('workspace authority health coordinator', () => {
-  it('defaults unknown and absent modes to the legacy kill switch', () => {
-    expect(resolveWorkspaceAuthorityCacheMode(undefined)).toBe('legacy');
+  it('defaults absent modes to adaptive while unknown values use the legacy kill switch', () => {
+    expect(resolveWorkspaceAuthorityCacheMode(undefined)).toBe('adaptive');
+    expect(resolveWorkspaceAuthorityCacheMode('  ')).toBe('adaptive');
     expect(resolveWorkspaceAuthorityCacheMode('unexpected')).toBe('legacy');
     expect(resolveWorkspaceAuthorityCacheMode(' OBSERVE ')).toBe('observe');
     expect(resolveWorkspaceAuthorityCacheMode('adaptive')).toBe('adaptive');
