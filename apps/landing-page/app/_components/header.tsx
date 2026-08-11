@@ -562,6 +562,16 @@ export function Header({
           </ul>
         </nav>
         <div className='nav-side'>
+          {locale === 'zh' ? (
+            <a
+              className='nav-community-cta'
+              href={FEISHU}
+              {...ext}
+              data-community-cta
+            >
+              飞书社群
+            </a>
+          ) : null}
           {localeSwitcher ? (
             <details className='locale-switch nav-locale-switch' data-locale-switch>
               <summary

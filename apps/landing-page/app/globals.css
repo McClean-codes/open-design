@@ -1131,6 +1131,34 @@ a.nav-mega-col-head.is-active {
   top: calc(100% + var(--nav-flyout-gap, 12px));
   right: 0;
 }
+.nav-community-cta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 14px;
+  border: 1px solid color-mix(in srgb, var(--coral) 76%, var(--ink));
+  border-radius: 999px;
+  background: var(--coral);
+  box-shadow: 0 5px 14px color-mix(in srgb, var(--coral) 24%, transparent);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  text-decoration: none;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+.nav-community-cta:hover {
+  background: var(--coral-soft);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--coral) 32%, transparent);
+  transform: translateY(-1px);
+}
+.nav-community-cta:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 3px;
+}
 .nav-cta {
   display: inline-flex;
   align-items: center;
