@@ -6241,8 +6241,12 @@ export function ProjectView({
   }, [project.id]);
 
   const enqueueChatSend = useCallback((item: QueuedChatSend) => {
+    if (queuedChatSendsRef.current.some((candidate) => candidate.id === item.id)) {
+      return false;
+    }
     const next = [...queuedChatSendsRef.current, item];
     commitQueuedChatSends(next);
+    return true;
   }, [commitQueuedChatSends]);
 
   const removeQueuedChatSend = useCallback((id: string) => {
@@ -6306,9 +6310,13 @@ export function ProjectView({
     meta?: ProjectChatSendMeta;
     prompt: string;
   }) => {
-    const queuedMeta = stripQueueOnlyFromMeta(input.meta);
-    enqueueChatSend({
-      id: randomUUID(),
+    const clientRequestId = input.meta?.clientRequestId ?? randomUUID();
+    const queuedMeta = stripQueueOnlyFromMeta({
+      ...(input.meta ?? {}),
+      clientRequestId,
+    });
+    const enqueued = enqueueChatSend({
+      id: clientRequestId,
       conversationId: input.conversationId,
       prompt: input.prompt,
       attachments: input.attachments,
@@ -6316,6 +6324,7 @@ export function ProjectView({
       ...(queuedMeta === undefined ? {} : { meta: queuedMeta }),
       createdAt: Date.now(),
     });
+    if (!enqueued) return;
     if (input.commentAttachments.length > 0) {
       const reservedCommentIds = new Set(
         input.commentAttachments
@@ -6358,6 +6367,11 @@ export function ProjectView({
     ) => {
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
+      const clientRequestId = meta?.clientRequestId ?? randomUUID();
+      meta = {
+        ...(meta ?? {}),
+        clientRequestId,
+      };
       const runSessionMode = meta?.sessionMode ?? activeSessionMode;
       const retryTarget = meta?.retryOfAssistantId
         ? resolveRetryTarget(messages, meta.retryOfAssistantId)
@@ -7644,7 +7658,7 @@ export function ProjectView({
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
-          clientRequestId: randomUUID(),
+          clientRequestId,
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
@@ -7819,7 +7833,7 @@ export function ProjectView({
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
-          clientRequestId: randomUUID(),
+          clientRequestId,
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
@@ -11555,7 +11569,15 @@ function loadQueuedChatSends(projectId: string): QueuedChatSend[] {
     const raw = window.localStorage.getItem(queuedChatSendsStorageKey(projectId));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isQueuedChatSend).slice(0, 100);
+    const seenIds = new Set<string>();
+    return parsed
+      .filter(isQueuedChatSend)
+      .filter((item) => {
+        if (seenIds.has(item.id)) return false;
+        seenIds.add(item.id);
+        return true;
+      })
+      .slice(0, 100);
   } catch {
     return [];
   }
