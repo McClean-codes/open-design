@@ -177,6 +177,7 @@ export function Header({
   const href = (path: string) => localizedHref(path, locale);
   const homeBrandHref = brandHref === '/' ? href('/') : brandHref;
   const productMenuCopy = getHeaderProductMenuCopy(locale);
+  const usesFeishuCommunity = locale === 'zh' || locale === 'zh-tw';
 
   return (
     <header className='nav' data-od-id='nav'>
@@ -562,16 +563,19 @@ export function Header({
           </ul>
         </nav>
         <div className='nav-side'>
-          {locale === 'zh' ? (
-            <a
-              className='nav-community-cta'
-              href={FEISHU}
-              {...ext}
-              data-community-cta
-            >
-              飞书社群
-            </a>
-          ) : null}
+          <a
+            className='nav-community-cta'
+            href={usesFeishuCommunity ? FEISHU : DISCORD}
+            {...ext}
+            data-community-cta
+            data-community-platform={usesFeishuCommunity ? 'feishu' : 'discord'}
+          >
+            {locale === 'zh'
+              ? '飞书社群'
+              : locale === 'zh-tw'
+                ? '飛書社群'
+                : 'Discord'}
+          </a>
           {localeSwitcher ? (
             <details className='locale-switch nav-locale-switch' data-locale-switch>
               <summary
