@@ -180,6 +180,19 @@ describe('parseHubWorkspaceEvent', () => {
     });
     expect(event).not.toHaveProperty('resourceStatus');
   });
+
+  it('parses additive workspace member changes without confusing the subject with the caller', () => {
+    expect(
+      parseHubWorkspaceEvent(
+        '{"type":"workspace-members-changed","workspaceId":"w1","memberId":"m1","memberChange":"removed"}',
+      ),
+    ).toEqual({
+      type: 'workspace-members-changed',
+      workspaceId: 'w1',
+      memberId: 'm1',
+      memberChange: 'removed',
+    });
+  });
 });
 
 describe('startHubEventsSubscriber', () => {
@@ -258,6 +271,62 @@ describe('startHubEventsSubscriber', () => {
     ]);
   });
 
+  it('reports strict authority health only with roster capability and a gap-free listener', async () => {
+    const health: boolean[] = [];
+    let resolveUnhealthy!: () => void;
+    const unhealthy = new Promise<void>((resolve) => {
+      resolveUnhealthy = resolve;
+    });
+
+    subscriber = startHubEventsSubscriber({
+      resolveEndpoint: async () => ({
+        url: 'https://hub/events',
+        headers: {},
+        workspaceId: 'w1',
+      }),
+      onEvent: () => undefined,
+      onAuthorityHealthChange: (state) => {
+        health.push(state.healthy);
+        if (health.length === 3) resolveUnhealthy();
+      },
+      fetchImpl: async () => sseResponse([
+        'event: ready\ndata: {"workspaceId":"w1","capabilities":["workspace-member-events-v1","workspace-event-listener-status-v1"],"listenerEpoch":"listener-a","listenerHealth":"healthy","sourceGap":false}\n\n',
+        'event: heartbeat\ndata: {"listenerEpoch":"listener-a","listenerHealth":"healthy","sourceGap":false}\n\n',
+        'event: source-status\ndata: {"listenerEpoch":"listener-a","listenerHealth":"healthy","sourceGap":true}\n\n',
+      ], { holdOpen: true }),
+    });
+
+    await unhealthy;
+    expect(health).toEqual([false, true, false]);
+  });
+
+  it('keeps adaptive authority unhealthy when an old server omits roster capability', async () => {
+    let resolveHealth!: () => void;
+    const observed = new Promise<boolean>((resolve) => {
+      resolveHealth = () => resolve(false);
+    });
+    let actual = true;
+
+    subscriber = startHubEventsSubscriber({
+      resolveEndpoint: async () => ({
+        url: 'https://hub/events',
+        headers: {},
+        workspaceId: 'w1',
+      }),
+      onEvent: () => undefined,
+      onAuthorityHealthChange: ({ healthy }) => {
+        actual = healthy;
+        resolveHealth();
+      },
+      fetchImpl: async () => sseResponse([
+        'event: ready\ndata: {"workspaceId":"w1","capabilities":["workspace-event-listener-status-v1"],"listenerEpoch":"listener-a","listenerHealth":"healthy","sourceGap":false}\n\n',
+      ], { holdOpen: true }),
+    });
+
+    await observed;
+    expect(actual).toBe(false);
+  });
+
   it('delivers workspace-events and reports connected state', async () => {
     const events: unknown[] = [];
     const states: string[] = [];
@@ -282,6 +351,69 @@ describe('startHubEventsSubscriber', () => {
     ]);
     expect(states).toEqual(['connected']);
     expect(subscriber.connected()).toBe(true);
+  });
+
+  it('reports terminal access revocation only after exact-scope ready verification', async () => {
+    const revocations: unknown[] = [];
+    let resolveRevoked!: () => void;
+    const revoked = new Promise<void>((resolve) => {
+      resolveRevoked = resolve;
+    });
+
+    subscriber = startHubEventsSubscriber({
+      resolveEndpoint: async () => ({
+        url: 'https://hub/events',
+        headers: {},
+        workspaceId: 'w1',
+      }),
+      onEvent: () => undefined,
+      onAccessRevoked: (revocation) => {
+        revocations.push(revocation);
+        resolveRevoked();
+      },
+      backoffMinMs: 1_000_000,
+      fetchImpl: async () => sseResponse([
+        'event: ready\ndata: {"workspaceId":"w1","capabilities":["workspace-member-events-v1"]}\n\n',
+        'event: access-revoked\ndata: {"reason":"member-removed"}\n\n',
+      ], { holdOpen: true }),
+    });
+
+    await revoked;
+    expect(revocations).toEqual([
+      { workspaceId: 'w1', reason: 'member-removed' },
+    ]);
+    await vi.waitFor(() => expect(subscriber?.connected()).toBe(false));
+  });
+
+  it('backs terminal revocation reconnects off to the maximum interval', async () => {
+    let fetches = 0;
+    let resolveRevoked!: () => void;
+    const revoked = new Promise<void>((resolve) => {
+      resolveRevoked = resolve;
+    });
+    subscriber = startHubEventsSubscriber({
+      resolveEndpoint: async () => ({
+        url: 'https://hub/events',
+        headers: {},
+        workspaceId: 'w1',
+      }),
+      onEvent: () => undefined,
+      onAccessRevoked: () => resolveRevoked(),
+      backoffMinMs: 1,
+      backoffMaxMs: 50,
+      fetchImpl: async () => {
+        fetches += 1;
+        return sseResponse([
+          'event: ready\ndata: {"workspaceId":"w1","capabilities":["workspace-member-events-v1"]}\n\n',
+          'event: access-revoked\ndata: {"reason":"member-removed"}\n\n',
+        ], { holdOpen: true });
+      },
+    });
+
+    await revoked;
+    expect(fetches).toBe(1);
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(fetches).toBe(1);
   });
 
   it('fires onReconnect only from the second successful connect on', async () => {
@@ -547,6 +679,7 @@ describe('startHubEventsSubscriber', () => {
   it('reports a ready workspace mismatch and never runs connection catch-up', async () => {
     const onConnect = vi.fn();
     const onDrop = vi.fn();
+    const states: string[] = [];
     subscriber = startHubEventsSubscriber({
       resolveEndpoint: async () => ({
         url: 'https://hub/events',
@@ -556,6 +689,7 @@ describe('startHubEventsSubscriber', () => {
       onEvent: () => undefined,
       onConnect,
       onDrop,
+      onStateChange: (state) => states.push(state),
       backoffMinMs: 1_000_000,
       fetchImpl: async () =>
         sseResponse(['event: ready\ndata: {"workspaceId":"w2"}\n\n'], { holdOpen: true }),
@@ -570,6 +704,7 @@ describe('startHubEventsSubscriber', () => {
       });
     });
     expect(onConnect).not.toHaveBeenCalled();
+    expect(states).toEqual([]);
   });
 
 

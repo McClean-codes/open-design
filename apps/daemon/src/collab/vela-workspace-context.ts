@@ -566,6 +566,7 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
   cached: () => Promise<WorkspaceDirectoryFetchResult>;
   read: () => Promise<WorkspaceDirectoryFetchResult>;
   fresh: () => Promise<WorkspaceDirectoryFetchResult>;
+  invalidate: () => void;
   refreshAfterMutation: () => Promise<WorkspaceDirectoryFetchResult>;
 } {
   const fetchDirectory =
@@ -575,26 +576,52 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
   const now = options.now ?? Date.now;
   const cached = new Map<
     string,
-    { expiresAt: number; result: WorkspaceDirectoryFetchResult }
+    {
+      generation: number;
+      expiresAt: number;
+      result: WorkspaceDirectoryFetchResult;
+    }
   >();
-  const inFlight = new Map<string, Promise<WorkspaceDirectoryFetchResult>>();
+  const inFlight = new Map<
+    string,
+    {
+      generation: number;
+      request: Promise<WorkspaceDirectoryFetchResult>;
+    }
+  >();
+  const generations = new Map<string, number>();
+
+  const generationFor = (identity: string): number =>
+    generations.get(identity) ?? 0;
+
+  const invalidateIdentity = (identity: string): void => {
+    generations.set(identity, generationFor(identity) + 1);
+    cached.delete(identity);
+  };
 
   const start = (
     identity: string,
   ): Promise<WorkspaceDirectoryFetchResult> => {
+    const generation = generationFor(identity);
     const pending = inFlight.get(identity);
-    if (pending) return pending;
+    if (pending?.generation === generation) return pending.request;
     const request = fetchDirectory()
       .then((result) => {
-        if (result.ok) {
-          cached.set(identity, { expiresAt: now() + ttlMs, result });
+        if (result.ok && generationFor(identity) === generation) {
+          cached.set(identity, {
+            generation,
+            expiresAt: now() + ttlMs,
+            result,
+          });
         }
         return result;
       })
       .finally(() => {
-        if (inFlight.get(identity) === request) inFlight.delete(identity);
+        if (inFlight.get(identity)?.request === request) {
+          inFlight.delete(identity);
+        }
       });
-    inFlight.set(identity, request);
+    inFlight.set(identity, { generation, request });
     return request;
   };
 
@@ -602,7 +629,11 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
     cached: () => {
       const identity = identityKey();
       const cachedEntry = cached.get(identity);
-      if (cachedEntry && now() < cachedEntry.expiresAt) {
+      if (
+        cachedEntry
+        && cachedEntry.generation === generationFor(identity)
+        && now() < cachedEntry.expiresAt
+      ) {
         return Promise.resolve(cachedEntry.result);
       }
       cached.delete(identity);
@@ -611,20 +642,25 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
     read: () => {
       const identity = identityKey();
       const cachedEntry = cached.get(identity);
-      if (cachedEntry && now() < cachedEntry.expiresAt) {
+      if (
+        cachedEntry
+        && cachedEntry.generation === generationFor(identity)
+        && now() < cachedEntry.expiresAt
+      ) {
         return Promise.resolve(cachedEntry.result);
       }
       return start(identity);
     },
     fresh: () => start(identityKey()),
+    invalidate: () => invalidateIdentity(identityKey()),
     refreshAfterMutation: async () => {
       // A read that started before the remote mutation can still be in flight
       // after the mutation commits. Drain it, then deliberately start another
       // fetch so the settled lease is based on post-mutation authority.
       const identity = identityKey();
-      const pending = inFlight.get(identity);
+      const pending = inFlight.get(identity)?.request;
       if (pending) await pending.catch(() => undefined);
-      cached.delete(identity);
+      invalidateIdentity(identity);
       return start(identityKey());
     },
   };

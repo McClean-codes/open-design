@@ -42,6 +42,9 @@ export interface WorkspaceInvalidationPollerDeps {
   ) => void;
   /** Poll cadence; defaults to 15s (matches the web team-projects/members poll). */
   pollIntervalMs?: number;
+  /** While the exact-workspace realtime stream is proven healthy, keep a
+   *  bounded authoritative poll floor instead of running every base tick. */
+  realtimePollFloorMs?: number;
   /** Ask the daemon recovery coordinator to inspect locally missing team
    * projects. This is a fire-and-forget request: a slow recovery must never
    * block workspace context, catalog, or member polling. `projects` is the
@@ -123,6 +126,8 @@ function membersSignature(members: CollabCloudMemberDirectoryEntry[]): string {
 export interface WorkspaceInvalidationPoller {
   /** Run one diff cycle (context → team reads → emit on change). */
   pollOnce(): Promise<void>;
+  /** Enable the slower poll floor only after strict realtime health is proven. */
+  setRealtimeHealthy(healthy: boolean): void;
   start(): void;
   stop(): void;
 }
@@ -131,11 +136,17 @@ export function createWorkspaceInvalidationPoller(
   deps: WorkspaceInvalidationPollerDeps,
 ): WorkspaceInvalidationPoller {
   const pollIntervalMs = deps.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+  const realtimePollFloorMs = Math.max(
+    pollIntervalMs,
+    deps.realtimePollFloorMs ?? 60_000,
+  );
   const recoveryFloorIntervalMs =
     deps.recoveryFloorIntervalMs ?? DEFAULT_RECOVERY_FLOOR_INTERVAL_MS;
   const now = deps.now ?? Date.now;
   let timer: NodeJS.Timeout | null = null;
   let running = false;
+  let realtimeHealthy = false;
+  let lastPollStartedAt: number | null = null;
   let recoveryWorkspaceId: string | null = null;
   let recoveryRequestedAt: number | null = null;
 
@@ -183,6 +194,7 @@ export function createWorkspaceInvalidationPoller(
 
   async function pollOnce(): Promise<void> {
     const observedAt = now();
+    lastPollStartedAt = observedAt;
     const context = await deps.getWorkspaceContext().catch((error) => {
       deps.onError?.(error);
       return null;
@@ -237,6 +249,13 @@ export function createWorkspaceInvalidationPoller(
 
   function tick(): void {
     if (running) return;
+    if (
+      realtimeHealthy &&
+      lastPollStartedAt != null &&
+      now() - lastPollStartedAt < realtimePollFloorMs
+    ) {
+      return;
+    }
     running = true;
     void pollOnce()
       .catch((error) => deps.onError?.(error))
@@ -247,6 +266,13 @@ export function createWorkspaceInvalidationPoller(
 
   return {
     pollOnce,
+    setRealtimeHealthy(healthy): void {
+      const wasHealthy = realtimeHealthy;
+      realtimeHealthy = healthy;
+      // Losing realtime authority is a fail-open-for-freshness transition:
+      // resume the 15s fallback immediately rather than waiting for its timer.
+      if (wasHealthy && !healthy) tick();
+    },
     start(): void {
       if (timer) return;
       timer = setInterval(tick, pollIntervalMs);

@@ -143,6 +143,32 @@ describe('collab context routes', () => {
     })).body).toEqual({ context: TEAM_CONTEXT_PARSED });
   });
 
+  it('uses the settled read verifier for the pure context GET without changing its body', async () => {
+    const fetchWorkspaceDirectory = vi.fn(async () => {
+      throw new Error('fresh directory should not run');
+    });
+    const verifyWorkspaceReadAuthority = vi.fn(async () => ({
+      ok: true as const,
+      context: TEAM_CONTEXT_PARSED,
+    }));
+    const api = await startContextServer({
+      fetchWorkspaceDirectory,
+      verifyWorkspaceReadAuthority,
+    });
+    await api.req('/api/workspace/context', {
+      method: 'PUT',
+      body: TEAM_CONTEXT,
+    });
+
+    const response = await api.req('/api/workspace/context', {
+      headers: TEAM_HEADERS,
+    });
+
+    expect(response).toEqual({ status: 200, body: { context: TEAM_CONTEXT_PARSED } });
+    expect(verifyWorkspaceReadAuthority).toHaveBeenCalledTimes(1);
+    expect(fetchWorkspaceDirectory).not.toHaveBeenCalled();
+  });
+
   it('observes authoritative workspace size without sending names or member identity', async () => {
     const observeWorkspace = vi.fn();
     const api = await startContextServer({
@@ -501,6 +527,64 @@ describe('workspace billing routes', () => {
       balanceUsd: '7.89',
       billingScopeVersion: 2,
     });
+  });
+
+  it('uses strict cached authority for billing without a redundant directory preflight', async () => {
+    const fetchWorkspaceDirectory = vi.fn(async () => {
+      throw new Error('directory should remain cold');
+    });
+    const readCachedWorkspaceAuthority = vi.fn(() => ({
+      ...TEAM_CONTEXT_PARSED,
+      workspaceMemberId: 'member-1',
+    }));
+    const api = await startContextServer({
+      fetchWorkspaceDirectory,
+      readCachedWorkspaceAuthority,
+      fetchBilling: async () => null,
+      fetchWorkspaceBalance: async () => ({
+        workspaceId: 'wm-1',
+        workspaceMemberId: 'member-1',
+        balanceUsd: '7.89',
+        billingScopeVersion: 2,
+        expiresAt: null,
+        updatedAt: '2026-07-27T00:00:00Z',
+      }),
+    });
+
+    const response = await api.req(
+      '/api/workspace/billing?scope=workspace&workspaceId=wm-1',
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body.workspaceBalance).toMatchObject({
+      workspaceId: 'wm-1',
+      workspaceMemberId: 'member-1',
+      balanceUsd: '7.89',
+    });
+    expect(readCachedWorkspaceAuthority).toHaveBeenCalledTimes(1);
+    expect(fetchWorkspaceDirectory).not.toHaveBeenCalled();
+  });
+
+  it('does not let a cached non-active workspace bypass the legacy billing gate', async () => {
+    const fetchWorkspaceDirectory = vi.fn(async () => ({
+      ok: true as const,
+      items: [{ ...TEAM_DIRECTORY_ITEM, lifecycleState: 'locked' as const }],
+    }));
+    const api = await startContextServer({
+      fetchWorkspaceDirectory,
+      readCachedWorkspaceAuthority: () => ({
+        ...TEAM_CONTEXT_PARSED,
+        lifecycleState: 'locked',
+      }),
+    });
+
+    const response = await api.req(
+      '/api/workspace/billing?scope=workspace&workspaceId=wm-1',
+    );
+
+    expect(response.status).toBe(403);
+    expect(response.body).toEqual({ error: 'workspace_not_authorized' });
+    expect(fetchWorkspaceDirectory).toHaveBeenCalledTimes(1);
   });
 
   it('returns a Personal Workspace balance only after exact directory authorization', async () => {
@@ -940,8 +1024,8 @@ describe('workspace billing routes', () => {
       workspaceRuntime: {
         workspaceId: 'wm-1',
         workspaceMemberId: 'member-1',
-        status: 'error',
-        errorCode: 'workspace_billing_scope_mismatch',
+        status: 'access-revoked',
+        errorCode: 'workspace_not_authorized',
       },
     });
   });

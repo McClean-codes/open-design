@@ -204,6 +204,9 @@ export interface RegisterPluginRoutesDeps {
     removeProjectDir(projectsRoot: string, projectId: string): Promise<unknown>;
   };
   fetchProjectCreationWorkspaceDirectory?: () => Promise<WorkspaceDirectoryFetchResult>;
+  /** Settled, TTL-bounded authority for the pure Plugin catalog read. */
+  verifyWorkspaceReadAuthority?: VerifyWorkspaceRequestAuthority;
+  /** Fresh authority for mutations and non-catalog reads. */
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority;
   conversations: {
     insertConversation(db: SqliteDbLike, conversation: unknown): unknown;
@@ -374,10 +377,12 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
   const resolveWorkspaceAuthority = async (
     req: Request,
     res: Response,
+    verifyAuthority: VerifyWorkspaceRequestAuthority | undefined =
+      deps.verifyWorkspaceRequestAuthority,
   ): Promise<WorkspaceCollabContext | null | undefined> => {
     const authority = await resolveOptionalWorkspaceRequestAuthority(
       req,
-      deps.verifyWorkspaceRequestAuthority,
+      verifyAuthority,
     );
     if (!authority.ok) {
       helpers.sendApiError(
@@ -447,7 +452,7 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
     return binding.visibility === 'team'
       || binding.createdByWorkspaceMemberId === authority.workspaceMemberId;
   };
-  app.get('/api/plugins', async (req, res) => { try { const authority = await resolveWorkspaceAuthority(req, res); if (authority === undefined) return; const visible = await plugins.listInstalledPlugins(db, authority?.workspaceId ?? null, authority?.workspaceMemberId ?? null); res.json({ plugins: helpers.applyBakedPreviews(visible, helpers.PLUGIN_PREVIEWS_DIR) }); } catch (err) { res.status(500).json({ error: String(err) }); } });
+  app.get('/api/plugins', async (req, res) => { try { const authority = await resolveWorkspaceAuthority(req, res, deps.verifyWorkspaceReadAuthority ?? deps.verifyWorkspaceRequestAuthority); if (authority === undefined) return; const visible = await plugins.listInstalledPlugins(db, authority?.workspaceId ?? null, authority?.workspaceMemberId ?? null); res.json({ plugins: helpers.applyBakedPreviews(visible, helpers.PLUGIN_PREVIEWS_DIR) }); } catch (err) { res.status(500).json({ error: String(err) }); } });
   // Keep this static route before /api/plugins/:id; Express matches in
   // registration order and would otherwise interpret "stats" as a plugin id.
   app.get('/api/plugins/stats', async (req, res) => {
