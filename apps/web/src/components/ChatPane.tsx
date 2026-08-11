@@ -1486,9 +1486,9 @@ export function ChatPane({
   );
   const currentGlobalError = historicalRunError ? null : error;
   // Prefer a case-specific message (AMR auth / balance) over the raw upstream
-  // string; fall back to a current pane-level error when the failed message has
-  // no persisted error event of its own.
-  const rawError = failedRunErrorEvent?.detail ?? currentGlobalError ?? null;
+  // string; otherwise keep a current pane-level error ahead of the persisted
+  // failed-run detail. Historical run errors were already removed above.
+  const rawError = currentGlobalError ?? failedRunErrorEvent?.detail ?? null;
   // Friendly agent name for {agent} interpolation in failure copy (e.g. the
   // sign-in messages). Falls back to a neutral word when unreadable, never null.
   const failedAgentLabel =
