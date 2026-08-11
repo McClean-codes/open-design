@@ -814,6 +814,10 @@ import {
 import { createPersistentSyncCache } from './collab/persistent-sync-cache.js';
 import { createSwrCache } from './collab/swr-cache.js';
 import {
+  COLLAB_VELA_FANOUT_CONCURRENCY,
+  ConcurrencyGate,
+} from './collab/concurrency-gate.js';
+import {
   createTeamResourceListCache,
   invalidateTeamResourceListingCaches,
 } from './collab/team-resource-list-cache.js';
@@ -5733,6 +5737,15 @@ export async function startServer({
       },
     },
   );
+  // ONE materialization budget for the whole daemon, not one per resource kind.
+  // Design systems, plugins, and skills are three separate listing caches that
+  // a single client poll refreshes together, so a gate owned by each cache
+  // would bound each kind on its own and let the real peak reach the cap times
+  // three. The gate lives here, at the composition root, because here is the
+  // only place that can see all three.
+  const teamResourceMaterializationGate = new ConcurrencyGate(
+    COLLAB_VELA_FANOUT_CONCURRENCY,
+  );
   const cachedTeamResourceList = (
     share: TeamResourceShareService,
     sync?: (
@@ -5743,6 +5756,7 @@ export async function startServer({
     createTeamResourceListCache({
       share,
       ...(sync ? { sync } : {}),
+      gate: teamResourceMaterializationGate,
       invalidateSharedCommand: (workspaceId) =>
         sharedTeamResourcesCommand.invalidate(workspaceId),
     });

@@ -5,7 +5,10 @@
 // the workspace instead of the machine. These specs pin the peak.
 
 import { describe, expect, it, vi } from 'vitest';
-import { COLLAB_VELA_FANOUT_CONCURRENCY } from '../src/collab/concurrency-gate.js';
+import {
+  COLLAB_VELA_FANOUT_CONCURRENCY,
+  ConcurrencyGate,
+} from '../src/collab/concurrency-gate.js';
 import { createTeamResourceListCache } from '../src/collab/team-resource-list-cache.js';
 import { CollabPublishScheduler } from '../src/collab/publish-scheduler.js';
 import type {
@@ -67,6 +70,33 @@ async function settle(probe: ReturnType<typeof concurrencyProbe>, rounds: number
 }
 
 describe('shared team resource materialization fan-out', () => {
+  it('holds the cap across every resource kind refreshing together', async () => {
+    // The three listing surfaces are separate caches, and one client poll
+    // refreshes all of them. A gate owned per cache would bound each kind on
+    // its own and let the daemon's real peak reach cap x 3.
+    const probe = concurrencyProbe();
+    const gate = new ConcurrencyGate(COLLAB_VELA_FANOUT_CONCURRENCY);
+    const kinds = ['design_system', 'plugin', 'skill'].map(() =>
+      createTeamResourceListCache({
+        share: { sharedResources: async () => sharedResources(20) } as never,
+        sync: () => probe.run(),
+        gate,
+        invalidateSharedCommand: () => {},
+      }),
+    );
+
+    const reading = Promise.all(kinds.map((list) => list(SCOPE)));
+    for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+
+    const peakBeforeAnySettles = probe.peak;
+    await settle(probe, 20 * kinds.length + 2);
+    const listings = await reading;
+
+    expect(listings.flatMap((listing) => listing.ids)).toHaveLength(60);
+    expect(peakBeforeAnySettles).toBeLessThanOrEqual(COLLAB_VELA_FANOUT_CONCURRENCY);
+    expect(probe.peak).toBeLessThanOrEqual(COLLAB_VELA_FANOUT_CONCURRENCY);
+  });
+
   it('never materializes more shared resources at once than the vela fan-out cap', async () => {
     const RESOURCE_COUNT = 60;
     const probe = concurrencyProbe();
@@ -75,6 +105,7 @@ describe('shared team resource materialization fan-out', () => {
         sharedResources: async () => sharedResources(RESOURCE_COUNT),
       } as never,
       sync: () => probe.run(),
+      gate: new ConcurrencyGate(COLLAB_VELA_FANOUT_CONCURRENCY),
       invalidateSharedCommand: () => {},
     });
 
@@ -102,6 +133,7 @@ describe('shared team resource materialization fan-out', () => {
       sync: async (resource) => {
         seen.push(resource.id);
       },
+      gate: new ConcurrencyGate(COLLAB_VELA_FANOUT_CONCURRENCY),
       invalidateSharedCommand: () => {},
     });
 
@@ -120,6 +152,7 @@ describe('shared team resource materialization fan-out', () => {
       sync: async (resource) => {
         if (resource.id === 'user:res-3') throw new Error('pull failed');
       },
+      gate: new ConcurrencyGate(COLLAB_VELA_FANOUT_CONCURRENCY),
       invalidateSharedCommand: () => {},
     });
 

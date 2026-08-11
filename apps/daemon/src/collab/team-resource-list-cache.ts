@@ -1,8 +1,4 @@
-import {
-  COLLAB_VELA_FANOUT_CONCURRENCY,
-  ConcurrencyGate,
-  mapWithGate,
-} from './concurrency-gate.js';
+import { ConcurrencyGate, mapWithGate } from './concurrency-gate.js';
 import { createSwrCache } from './swr-cache.js';
 import type {
   TeamResourceRequestScope,
@@ -74,6 +70,17 @@ export interface TeamResourceListCacheOptions {
   ) => Promise<void>;
   /** Drops the `vela resource shared` command cache the listing was read through. */
   invalidateSharedCommand: (workspaceId: string) => void;
+  /**
+   * The materialization gate, owned by the composition root and SHARED by every
+   * resource kind.
+   *
+   * It has to be injected rather than built here. The three listing surfaces —
+   * design systems, plugins, skills — are separate caches that a single client
+   * poll refreshes together, so a gate built per cache bounds each kind
+   * independently and the daemon's real peak becomes the cap times the number
+   * of kinds. The bound only means anything if all three draw from one budget.
+   */
+  gate: ConcurrencyGate;
 }
 
 /**
@@ -83,13 +90,8 @@ export interface TeamResourceListCacheOptions {
 export function createTeamResourceListCache(
   options: TeamResourceListCacheOptions,
 ): TeamResourceListCache {
-  const { share, sync, invalidateSharedCommand } = options;
+  const { share, sync, invalidateSharedCommand, gate } = options;
   const listings = new Map<string, ReturnType<typeof createSwrCache<TeamResourceListing>>>();
-  // One gate per listing, shared across every principal reading it: the cap
-  // bounds this daemon's concurrent transfers for this resource kind, so two
-  // members of the same workspace refreshing at once must contend for the same
-  // slots rather than each getting a full fan-out of their own.
-  const gate = new ConcurrencyGate(COLLAB_VELA_FANOUT_CONCURRENCY);
   const materialize = async (
     scope: TeamResourceRequestScope,
     readOptions?: TeamResourceSharedReadOptions,
