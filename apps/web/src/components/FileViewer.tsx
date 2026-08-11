@@ -28,6 +28,7 @@ import {
 import {
   anonymizeArtifactId,
   artifactKindToTracking,
+  type ArtifactPublishResultProps,
   type TrackingFileVersionSource,
   type TrackingArtifactKind,
   type TrackingProjectKind,
@@ -36,6 +37,7 @@ import {
 import { useAnalytics } from '../analytics/provider';
 import { exportErrorCode } from '../analytics/export-error-code';
 import { deployErrorCode } from '../analytics/deploy-error-code';
+import { publishErrorCode } from '../analytics/publish-error-code';
 import {
   reportPreviewIframeMessage,
   subscribePreviewIframeMessages,
@@ -44,6 +46,7 @@ import {
 import {
   trackArtifactExportResult,
   trackArtifactDeployResult,
+  trackArtifactPublishResult,
   trackArtifactHeaderClick,
   trackArtifactToolbarClick,
   trackCommentPopoverClick,
@@ -614,6 +617,7 @@ const htmlPreviewZoomState = new Map<string, { zoom: number; zoomMode: 'auto' | 
 // canvas-grow recovery in the auto-fit effect fires.
 const MAX_CACHED_PREVIEW_CONTENT_WIDTHS = 128;
 const PREVIEW_CONTENT_WIDTH_CACHE_VERSION = 2;
+const SRC_DOC_ACTIVATION_RECOVERY_TIMEOUT_MS = 1500;
 let previewContentMeasurementDocumentEpochSequence = 0;
 let previewContentMeasurementHostInstanceSequence = 0;
 let previewTransportGenerationSequence = 0;
@@ -1896,6 +1900,7 @@ export const FileViewer = memo(function FileViewer({
     return (
       <ReactComponentViewer
         projectId={projectId}
+        projectKind={projectKind}
         file={file}
         onOpenFileReplacing={onOpenFileReplacing}
         projectName={projectName}
@@ -1906,6 +1911,7 @@ export const FileViewer = memo(function FileViewer({
         metricsConsent={metricsConsent}
         installationId={installationId}
         viewerOnly={viewerOnly}
+        workspaceActive={workspaceActive}
       />
     );
   }
@@ -6297,6 +6303,7 @@ function ReactModulePointer({
 
 function ReactComponentViewer({
   projectId,
+  projectKind,
   file,
   onOpenFileReplacing,
   projectName,
@@ -6307,8 +6314,10 @@ function ReactComponentViewer({
   metricsConsent = false,
   installationId,
   viewerOnly = false,
+  workspaceActive = true,
 }: {
   projectId: string;
+  projectKind: TrackingProjectKind;
   file: ProjectFile;
   onOpenFileReplacing?: (openName: string, closeName: string) => void;
   projectName?: string;
@@ -6319,8 +6328,16 @@ function ReactComponentViewer({
   metricsConsent?: boolean;
   installationId?: string | null;
   viewerOnly?: boolean;
+  workspaceActive?: boolean;
 }) {
   const t = useT();
+  const analytics = useAnalytics();
+  // `FileWorkspace` keeps a non-active viewer mounted, so an in-flight publish
+  // can settle after the user has switched away. The ref carries the LIVE value
+  // into those continuations; the captured prop would still read the
+  // render-time `true`.
+  const workspaceActiveRef = useRef(workspaceActive);
+  workspaceActiveRef.current = workspaceActive;
   const { workspaceContext } = useProjectCollabContext();
   const [mode, setMode] = useState<'preview' | 'source'>('preview');
   const [source, setSource] = useState<string | null>(null);
@@ -6489,16 +6506,70 @@ function ReactComponentViewer({
     // render as unpublished.
   }, [projectId, file.name, canPublishPublic, viewerOnly]);
 
+  // Shared identity fields for the publish-flow events (ReactComponentViewer copy).
+  // `artifactKindToTracking` only recognises HTML through the renderer id — a React
+  // component's `file.kind` is `code`, which would degrade to `unknown` — and this
+  // viewer is reached only through the `react-component` renderer match, so its
+  // renderer identity is a constant.
+  function publishTrackingIdentity() {
+    return {
+      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
+      artifact_kind: artifactKindToTracking({
+        rendererId: 'react-component',
+        fileKind: file.kind ?? null,
+      }),
+      project_id: projectId,
+      project_kind: projectKind,
+    } as const;
+  }
+
+  // Retained (inert) viewers must never report analytics — same rule the
+  // HtmlViewer copy of this flow follows. Only the tracking is gated; the
+  // publish/unpublish calls themselves stay unconditional.
+  const firePublishFlowClick = (element: 'publish_file' | 'copy_publish_link') => {
+    if (!workspaceActive) return;
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element,
+      ...publishTrackingIdentity(),
+    });
+  };
+
+  const firePublishResult = (
+    outcome: Pick<
+      ArtifactPublishResultProps,
+      'action' | 'result' | 'error_code' | 'publish_duration_ms'
+    >,
+  ) => {
+    // Read the live ref, not the captured prop: a request can start while this
+    // viewer is active and settle after the user switches tabs.
+    if (!workspaceActiveRef.current) return;
+    trackArtifactPublishResult(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      ...outcome,
+      ...publishTrackingIdentity(),
+    });
+  };
+
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    firePublishFlowClick('publish_file');
+    const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
+      firePublishResult({
+        action: 'publish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -6511,6 +6582,12 @@ function ReactComponentViewer({
       setPublishedFileSlug(response.slug);
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
+      firePublishResult({
+        action: 'publish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -6526,11 +6603,17 @@ function ReactComponentViewer({
     const requestFileName = file.name;
     const requestSlug = publishedFileSlug;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    const unpublishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
+      firePublishResult({
+        action: 'unpublish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -6543,6 +6626,12 @@ function ReactComponentViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
+      firePublishResult({
+        action: 'unpublish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -6553,6 +6642,7 @@ function ReactComponentViewer({
   }
 
   async function copyPublishedFileLink() {
+    firePublishFlowClick('copy_publish_link');
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -7842,16 +7932,71 @@ function HtmlViewer({
     sourceAuthorizationScopeKey,
   ]);
 
+  // Shared identity fields for the publish-flow events (HtmlViewer copy).
+  // `artifactKindToTracking` only recognises HTML through the renderer id — an HTML
+  // artifact's `file.kind` is `html`, which would degrade to `unknown` — and this
+  // viewer is reached only through the `html` / `deck-html` renderer matches, which
+  // is exactly what the `isDeck` prop is derived from.
+  function publishTrackingIdentity() {
+    return {
+      artifact_id: anonymizeArtifactId({ projectId, fileName: file.name }),
+      artifact_kind: artifactKindToTracking({
+        rendererId: isDeck ? 'deck-html' : 'html',
+        fileKind: file.kind ?? null,
+      }),
+      project_id: projectId,
+      project_kind: projectKind,
+    } as const;
+  }
+
+  // Background (inert) HtmlViewer instances must never report analytics, same
+  // as every other emission site in this component. Only the tracking is
+  // gated — the publish/unpublish calls themselves stay unconditional.
+  const firePublishFlowClick = (element: 'publish_file' | 'copy_publish_link') => {
+    if (!workspaceActive) return;
+    trackShareOptionPopoverClick(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      element,
+      ...publishTrackingIdentity(),
+    });
+  };
+
+  const firePublishResult = (
+    outcome: Pick<
+      ArtifactPublishResultProps,
+      'action' | 'result' | 'error_code' | 'publish_duration_ms'
+    >,
+  ) => {
+    // Read the live ref, not the captured prop: a publish/unpublish request can
+    // start while this viewer is active and settle after the user switches tabs,
+    // and the in-flight continuation still holds the render-time `true`.
+    if (!workspaceActiveRef.current) return;
+    trackArtifactPublishResult(analytics.track, {
+      page_name: 'artifact',
+      area: 'share_option_popover',
+      ...outcome,
+      ...publishTrackingIdentity(),
+    });
+  };
+
   async function publishCurrentFilePublic() {
     if (viewerOnly || publishingPublicFile) return;
     const requestProjectId = projectId;
     const requestFileName = file.name;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    firePublishFlowClick('publish_file');
+    const publishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       const response = await publishProjectFilePublic(requestProjectId, requestFileName, workspaceContext);
+      firePublishResult({
+        action: 'publish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -7864,6 +8009,12 @@ function HtmlViewer({
       setPublishedFileSlug(response.slug);
     } catch (error) {
       console.warn('[FileViewer] failed to publish public file', error);
+      firePublishResult({
+        action: 'publish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - publishStarted),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -7879,11 +8030,17 @@ function HtmlViewer({
     const requestFileName = file.name;
     const requestSlug = publishedFileSlug;
     const requestSeq = ++publicFileRequestSeqRef.current;
+    const unpublishStarted = performance.now();
     setPublishingPublicFile(true);
     setPublishLinkFeedback(null);
     setPublishFailureKey(null);
     try {
       await unpublishProjectFilePublic(requestProjectId, requestFileName, requestSlug, workspaceContext);
+      firePublishResult({
+        action: 'unpublish',
+        result: 'success',
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+      });
       const current = publicFileIdentityRef.current;
       if (
         publicFileRequestSeqRef.current !== requestSeq ||
@@ -7896,6 +8053,12 @@ function HtmlViewer({
       setPublishedFileSlug('');
     } catch (error) {
       console.warn('[FileViewer] failed to unpublish public file', error);
+      firePublishResult({
+        action: 'unpublish',
+        result: 'failed',
+        error_code: publishErrorCode(error),
+        publish_duration_ms: Math.round(performance.now() - unpublishStarted),
+      });
       if (publicFileRequestSeqRef.current === requestSeq) {
         setPublishLinkFeedback('failed');
         setPublishFailureKey(publicFilePublishFailureKey(error));
@@ -7906,6 +8069,7 @@ function HtmlViewer({
   }
 
   async function copyPublishedFileLink() {
+    firePublishFlowClick('copy_publish_link');
     let ok = false;
     try {
       if (publishedFileUrl && typeof navigator !== 'undefined' && navigator.clipboard) {
@@ -10080,6 +10244,26 @@ function HtmlViewer({
   const lazySrcDocTransport = useMemo(() => buildLazySrcdocTransport(), []);
   const [srcDocTransportResetKey, setSrcDocTransportResetKey] = useState(0);
   const [srcDocShellReady, setSrcDocShellReady] = useState(false);
+  const srcDocRecoveryAttemptedGenerationRef = useRef<string | null>(null);
+  const [srcDocRecoveryGeneration, setSrcDocRecoveryGeneration] = useState<string | null>(null);
+  const recoverUnacknowledgedSrcDocTransport = useCallback((generation: string) => {
+    if (
+      !workspaceActiveRef.current
+      || expectedSrcDocTransportGenerationRef.current !== generation
+    ) {
+      return;
+    }
+    const frame = srcDocPreviewIframeRef.current;
+    const ready = readySrcDocTransportRef.current;
+    if (frame && ready?.frame === frame && ready.generation === generation) return;
+    if (srcDocRecoveryAttemptedGenerationRef.current === generation) return;
+    srcDocRecoveryAttemptedGenerationRef.current = generation;
+    readySrcDocTransportRef.current = null;
+    activatedSrcDocTransportHtmlRef.current = null;
+    setSrcDocShellReady(false);
+    setSrcDocRecoveryGeneration(generation);
+    setSrcDocTransportResetKey((key) => key + 1);
+  }, []);
   // Sticky once the srcDoc iframe has materialized the real artifact for the
   // first time (i.e. the first entry into Mark/Edit/Comment/Inspect). Until
   // then the srcDoc iframe stays on the lazy shell — so passive preview never
@@ -10148,6 +10332,32 @@ function HtmlViewer({
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, [replayPreviewBridgeModes, workspaceActive]);
+  // React can commit a fresh `srcdoc` attribute while Chromium aborts the
+  // corresponding about:srcdoc navigation. The host then believes the latest
+  // revision is applied, but the iframe stays on its old/empty document until
+  // Code -> Preview happens to remount it. Every real srcDoc carries an exact
+  // generation ACK; if the active frame never acknowledges that generation,
+  // retry through the small lazy shell automatically; Chromium can commit that
+  // shell even when it aborts a large direct srcDoc navigation, after which the
+  // existing ready handshake safely document.write's the latest HTML. One
+  // fallback per generation avoids a loop when an authored document is
+  // fundamentally unable to execute scripts.
+  useEffect(() => {
+    if (!workspaceActive || mode !== 'preview' || useUrlLoadPreview || !srcDoc) return;
+    const generation = srcDocTransportGeneration;
+    if (srcDocRecoveryAttemptedGenerationRef.current === generation) return;
+    const timeout = window.setTimeout(() => {
+      recoverUnacknowledgedSrcDocTransport(generation);
+    }, SRC_DOC_ACTIVATION_RECOVERY_TIMEOUT_MS);
+    return () => window.clearTimeout(timeout);
+  }, [
+    mode,
+    recoverUnacknowledgedSrcDocTransport,
+    srcDoc,
+    srcDocTransportGeneration,
+    useUrlLoadPreview,
+    workspaceActive,
+  ]);
   useEffect(() => {
     if (!workspaceActive) return;
     function onMessage(ev: MessageEvent) {
@@ -10172,7 +10382,8 @@ function HtmlViewer({
   // re-entering a mode is an instant visibility swap rather than a re-mount +
   // re-load. Direct-mount path (no #2361/#2791 postMessage race).
   const useLazySrcDocTransport =
-    !manualEditRequiresSrcDoc && !captureModeActive && useUrlLoadPreview && !srcDocMaterialized;
+    srcDocRecoveryGeneration === srcDocTransportGeneration
+    || (!manualEditRequiresSrcDoc && !captureModeActive && useUrlLoadPreview && !srcDocMaterialized);
   // Park on a static "loop detected" document once the guard reports a runaway
   // redirect. A self-redirecting artifact is forced onto the srcDoc iframe by
   // `needsRedirectGuard`, so swapping this content is the reliable stop — the
@@ -10318,6 +10529,25 @@ function HtmlViewer({
     }, '*');
     return true;
   }, [srcDoc, srcDocTransportGeneration]);
+  function verifyLoadedSrcDocTransport(target: HTMLIFrameElement | null) {
+    if (!target || target !== srcDocPreviewIframeRef.current) return;
+    const generation = srcDocTransportGeneration;
+    if (!useUrlLoadPreview && srcDoc) {
+      // `load` may belong to a provisional about:blank/about:srcdoc document.
+      // Drop any earlier ACK and require the document that actually completed
+      // this load to answer the generation probe. This closes the window where
+      // a provisional document announces from its head and is then aborted.
+      readySrcDocTransportRef.current = null;
+    }
+    target.contentWindow?.postMessage({
+      type: 'od:srcdoc-transport-ready-probe',
+      generation,
+    }, '*');
+    if (useUrlLoadPreview || !srcDoc) return;
+    window.setTimeout(() => {
+      recoverUnacknowledgedSrcDocTransport(generation);
+    }, SRC_DOC_ACTIVATION_RECOVERY_TIMEOUT_MS);
+  }
   useEffect(() => {
     if (useUrlLoadPreview) {
       activatedSrcDocTransportHtmlRef.current = null;
@@ -15590,10 +15820,7 @@ function HtmlViewer({
                           }
                           if (useLazySrcDocTransport) setSrcDocShellReady(true);
                           activateLoadedSrcDocTransport(frame);
-                          frame?.contentWindow?.postMessage({
-                            type: 'od:srcdoc-transport-ready-probe',
-                            generation: srcDocTransportGeneration,
-                          }, '*');
+                          verifyLoadedSrcDocTransport(frame);
                           dcViewportRestoreAtRef.current = Date.now();
                           frame?.contentWindow?.postMessage({
                             type: '__dc_set_viewport',
