@@ -57,16 +57,20 @@ function readMetadataRecord(value: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function finish(force: boolean, reason: string): void {
-  console.log(`[daily-beta] force: ${force ? "true" : "false"} (${reason})`);
+function finish(force: boolean, promote: boolean, reason: string, releaseVersion = ""): void {
+  console.log(
+    `[daily-beta] force: ${force ? "true" : "false"}; promote: ${promote ? "true" : "false"} (${reason})`,
+  );
   setOutput("force", force ? "true" : "false");
+  setOutput("promote", promote ? "true" : "false");
   setOutput("reason", reason);
+  setOutput("release_version", releaseVersion);
 }
 
 const buildRef = requiredEnv("BUILD_REF");
 if (buildRef !== "main") {
   console.log(`[daily-beta] recovery disabled for non-main ref ${buildRef}`);
-  finish(false, "non-main-ref");
+  finish(false, true, "non-main-ref");
   process.exit(0);
 }
 
@@ -80,7 +84,7 @@ const response = await fetch(metadataUrl, {
   redirect: "error",
 });
 if (response.status === 404) {
-  finish(false, "beta-metadata-missing");
+  finish(false, true, "beta-metadata-missing");
   process.exit(0);
 }
 if (!response.ok) fail(`beta metadata request failed with HTTP ${response.status}`);
@@ -97,14 +101,16 @@ const githubRecord = typeof github === "object" && github != null && !Array.isAr
 const branch = typeof githubRecord.branch === "string" ? githubRecord.branch.trim() : "";
 
 if (compareReleaseBaseVersions(betaBase, packagedBase) <= 0) {
-  finish(false, "beta-not-ahead");
+  finish(false, true, "beta-not-ahead");
   process.exit(0);
 }
 if (branch.length === 0 || branch === "main") {
-  finish(false, "ahead-beta-owned-by-main-or-unknown");
+  finish(false, true, "ahead-beta-owned-by-main-or-unknown");
   process.exit(0);
 }
 
 console.log(`[daily-beta] recovering shared beta from foreign branch ${branch}`);
 console.log(`[daily-beta] packaged ${packagedVersion} is behind shared beta base ${baseVersion}`);
-finish(true, "foreign-ahead-beta");
+const runNumber = requiredEnv("GITHUB_RUN_NUMBER");
+if (!/^[1-9]\d*$/.test(runNumber)) fail(`GITHUB_RUN_NUMBER must be a positive integer; got ${runNumber}`);
+finish(true, false, "foreign-ahead-beta", `${packagedVersion}-beta.${runNumber}`);
