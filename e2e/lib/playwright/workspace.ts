@@ -23,15 +23,17 @@ export async function expectAllProjectFilesInactive(page: Page): Promise<void> {
 export async function clickDeckNextSlide(page: Page): Promise<void> {
   await revealDeckNavigation(page);
   const button = page.locator('button[aria-label="Next slide"]:visible');
+  await expect(button).toBeVisible();
   await expect(button).toBeEnabled();
-  await button.click({ force: true });
+  await button.click();
 }
 
 export async function clickDeckPreviousSlide(page: Page): Promise<void> {
   await revealDeckNavigation(page);
   const button = page.locator('button[aria-label="Previous slide"]:visible');
+  await expect(button).toBeVisible();
   await expect(button).toBeEnabled();
-  await button.click({ force: true });
+  await button.click();
 }
 
 async function revealDeckNavigation(page: Page): Promise<void> {
