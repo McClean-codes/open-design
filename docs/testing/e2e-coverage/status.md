@@ -24,8 +24,10 @@
 当前策略是明确的：继续增强 `extended` 的信号，但不把 `critical` 变成一个越来越慢的大杂烩。
 
 合并门禁按 P0 domain 拆分运行；完整 Functional UI 套件由
-`.github/workflows/ui-extended-main.yml` 每晚定时运行，也可以用
-`workflow_dispatch` 手动选择 `p0`、`p0p1` 或 `full`。
+`release-prerelease.yml` 在 prerelease 元数据解析出精确构建 commit 后调用，
+并作为各平台打包与发布前的阻断门禁。也可以通过
+`.github/workflows/ui-extended-main.yml` 的 `workflow_dispatch` 手动选择
+`p0`、`p0p1` 或 `full`。
 
 以 `main@a0474c540` 为审计基线，当前 Functional Playwright 清单为
 **412 tests / 43 files**。数字只用于说明本轮审计范围，不作为永久冻结的门槛。

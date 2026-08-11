@@ -42,8 +42,8 @@ These invariants complement the coverage posture in
 this section is the source of truth for how a UI test must be written to stay
 green under the sharded full pool.
 
-The `ui-extended-main` full pool (nightly schedule, or `workflow_dispatch`
-with `suite=full`)
+The `ui-extended-main` full pool (the prerelease gate at its resolved build
+commit, or `workflow_dispatch` with `suite=full`)
 executes every non-visual functional shade in one generically sharded matrix
 (`visual-*.test.ts` is excluded by the config's `testIgnore` and runs in its
 own lane): arbitrary P0/P1/P2 interleavings, contiguous shard slices that
@@ -53,7 +53,7 @@ start mid-file, an isolated tools-dev runtime per Playwright worker
 that runs the whole non-visual `ui` suite together — every P1/P2 shade, plus
 any P0 case whose file has not been enrolled in `uiP0Groups` or the
 `playwright_critical` file matrix. A `[P0]`/`@critical` tag alone does not
-enroll a new file, so topology validation and the nightly pool are both
+enroll a new file, so topology validation and the prerelease full pool are both
 required backstops. Two order hazards then hide from
 narrower runs: within-file interleaving (the tests of one file racing under
 fully-parallel workers) and cross-file carry-over (the worker-scoped tools-dev

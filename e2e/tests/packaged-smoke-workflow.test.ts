@@ -1381,7 +1381,7 @@ process.stdin.on("end", () => {
     expect(staticGate).toContain("run: actionlint -color");
   });
 
-  it("[P2] keeps visual ownership and generic full UI sharding explicit", async () => {
+  it("[P2] keeps visual ownership and reusable full UI sharding explicit", async () => {
     const playwrightConfig = await readFile(playwrightConfigPath, "utf8");
     const benchmarkWorkflow = await readFile(uiExtendedMainWorkflowPath, "utf8");
     const extendedP0 = sectionBetween(benchmarkWorkflow, "  ui_p0:", "  ui_extended:");
@@ -1395,8 +1395,11 @@ process.stdin.on("end", () => {
       .sort();
 
     expect(playwrightConfig).toContain("testIgnore: 'visual-*.test.ts'");
-    expect(benchmarkWorkflow).toContain("  schedule:");
-    expect(benchmarkWorkflow).toContain('github.event_name == \'schedule\'');
+    expect(benchmarkWorkflow).toContain("  workflow_call:");
+    expect(benchmarkWorkflow).toContain('description: "Exact git ref to validate. Prerelease passes its resolved build commit."');
+    expect(benchmarkWorkflow).toContain("ref: ${{ inputs.ref || github.sha }}");
+    expect(benchmarkWorkflow).not.toContain("  schedule:");
+    expect(benchmarkWorkflow).not.toContain("github.event_name == 'schedule'");
     expect(benchmarkWorkflow).not.toContain("layout:");
     expect(benchmarkWorkflow).toContain("run-ui-group critical-extras");
     expect(benchmarkWorkflow).toContain("Preserve project-runtime domain artifact");
@@ -1404,6 +1407,7 @@ process.stdin.on("end", () => {
     expect(extendedP0Names).toEqual(uiP0CiMatrix.map((entry) => entry.name));
     expect(benchmarkWorkflow).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_p0");
     expect(fullUi).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_hot");
+    expect(fullUi).toContain("inputs.suite == 'full'");
     expect(fullUi).toContain("shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]");
     expect(fullUi).toContain('OD_PLAYWRIGHT_FULLY_PARALLEL: "1"');
     expect(fullUi).not.toContain("OD_PLAYWRIGHT_WORKERS");
@@ -1413,6 +1417,39 @@ process.stdin.on("end", () => {
     expect(fullUi).not.toContain("matrix.files");
     expect(fullUi).not.toContain("--grep");
     expect(fullUiFiles).toEqual([]);
+  });
+
+  it("[P1] gates prerelease packaging on full Functional E2E at the resolved build commit", async () => {
+    const [prerelease, functionalE2e] = await Promise.all([
+      readFile(releasePrereleaseWorkflowPath, "utf8"),
+      readFile(uiExtendedMainWorkflowPath, "utf8"),
+    ]);
+
+    const gate = sectionBetween(prerelease, "  functional_e2e:", "  verify:");
+    expect(gate).toContain("needs: metadata");
+    expect(gate).toContain("uses: ./.github/workflows/ui-extended-main.yml");
+    expect(gate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    expect(gate).toContain("suite: full");
+
+    expect(functionalE2e).toContain("workflow_call:");
+    expect(functionalE2e).not.toContain("schedule:");
+    expect(functionalE2e).toContain("ref: ${{ inputs.ref || github.sha }}");
+
+    for (const [start, end] of [
+      ["  build_mac:", "  build_mac_intel:"],
+      ["  build_mac_intel:", "  build_win:"],
+      ["  build_win:", "  build_linux:"],
+      ["  build_linux:", "  publish:"],
+    ] as const) {
+      const buildJob = sectionBetween(prerelease, start, end);
+      expect(buildJob).toContain("needs: [metadata, functional_e2e, verify]");
+      expect(buildJob).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    }
+
+    const publish = sectionBetween(prerelease, "  publish:", "  cleanup_partial_release_assets:");
+    expect(publish).toContain("- functional_e2e");
+    expect(publish).toContain("needs.functional_e2e.result == 'success'");
+    expect(publish).toContain("ref: ${{ needs.metadata.outputs.commit }}");
   });
 
   it("[P2] rejects duplicate file assignments across UI P0 shards", () => {
