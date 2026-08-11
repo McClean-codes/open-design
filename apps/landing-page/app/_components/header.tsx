@@ -22,6 +22,7 @@ import type { SolutionPageKey } from '../solution-pages-i18n/types';
 const REPO = 'https://github.com/nexu-io/open-design';
 const REPO_DISCUSSIONS = `${REPO}/discussions`;
 const DISCORD = 'https://discord.gg/mHAjSMV6gz';
+const FEISHU = 'https://od.kokiai.net/community/website';
 const X_PROFILE = 'https://x.com/OpenDesignHQ';
 
 // Open Design Cloud endpoints for the header account module.
@@ -496,7 +497,8 @@ export function Header({
 
             {/* Community — Contributors / Ambassadors / Moderators / Events. These
                 pages are now localized Astro routes, so link through `href()`
-                to keep visitors on their language variant. */}
+                to keep visitors on their language variant. Discord and Feishu
+                open their respective community spaces in a new tab. */}
             <li className='has-dropdown'>
               <a
                 href={href('/community/')}
@@ -535,6 +537,11 @@ export function Header({
                 <li>
                   <a href={DISCORD} {...ext}>
                     <span className='dropdown-name'>Discord</span>
+                  </a>
+                </li>
+                <li>
+                  <a href={FEISHU} {...ext}>
+                    <span className='dropdown-name'>Feishu</span>
                   </a>
                 </li>
                 <li>
