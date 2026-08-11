@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useId, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { Button, Input, Select } from '@open-design/components';
 import { CenteredLoader } from './Loading';
@@ -4589,7 +4589,18 @@ export function CommentSidePanel({
   }
 
   return (
-    <aside id={panelId} className="comment-side-panel" data-testid="comment-side-panel" aria-label={commentsLabel}>
+    <aside
+      id={panelId}
+      className="comment-side-panel"
+      data-testid="comment-side-panel"
+      aria-label={commentsLabel}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !onDismiss) return;
+        event.preventDefault();
+        event.stopPropagation();
+        onDismiss();
+      }}
+    >
       <div className="comment-side-header">
         <div className="comment-side-title">
           <RemixIcon name="message-3-line" size={15} />
@@ -7806,6 +7817,7 @@ function HtmlViewer({
   // surface_view impression can carry entry_from.
   const [toolbarMoreOpen, setToolbarMoreOpen] = useState(false);
   const toolbarMoreRef = useRef<HTMLDivElement | null>(null);
+  const toolbarMoreTriggerRef = useRef<HTMLButtonElement | null>(null);
   useDismissOnOutsideInteraction(toolbarMoreOpen, toolbarMoreRef, () => setToolbarMoreOpen(false));
   const [versionModalOpen, setVersionModalOpen] = useState<false | 'toolbar' | 'more_menu'>(false);
   const [exportReadyNudge, setExportReadyNudge] = useState(false);
@@ -8166,6 +8178,9 @@ function HtmlViewer({
   const [urlPreviewFirstLoadPending, setUrlPreviewFirstLoadPending] = useState(false);
   const [boardMode, setBoardMode] = useState(false);
   const [commentPanelOpen, setCommentPanelOpen] = useState(false);
+  const commentPanelToggleRef = useRef<HTMLButtonElement | null>(null);
+  const commentPanelReturnFocusRef = useRef<HTMLElement | null>(null);
+  const pendingCommentPanelFocusRef = useRef<HTMLElement | null>(null);
   const [commentCreateMode, setCommentCreateMode] = useState(false);
   const [boardTool, setBoardTool] = useState<BoardTool>('inspect');
   const [inspectMode, setInspectMode] = useState(false);
@@ -8540,7 +8555,7 @@ function HtmlViewer({
   useEffect(() => () => {
     onCommentModeChange?.(false);
   }, [onCommentModeChange]);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!commentPanelOpen || !commentPortalId) {
       setCommentPortalHost(null);
       return;
@@ -8560,6 +8575,15 @@ function HtmlViewer({
       setCommentPortalHost(null);
     };
   }, [commentPanelOpen, commentPortalId]);
+  useLayoutEffect(() => {
+    if (commentPanelOpen) return;
+    const target = pendingCommentPanelFocusRef.current;
+    if (!target) return;
+    pendingCommentPanelFocusRef.current = null;
+    const fallback = commentPanelToggleRef.current ?? toolbarMoreTriggerRef.current;
+    const next = target.isConnected ? target : fallback;
+    next?.focus();
+  }, [commentPanelOpen]);
   const capturePreviewScrollPosition = useCallback(() => {
     const host = previewBodyRef.current;
     let frameLeft = 0;
@@ -8872,7 +8896,11 @@ function HtmlViewer({
   const [commentSidePanelCollapsed, setCommentSidePanelCollapsed] = useState(false);
   const [strokePoints, setStrokePoints] = useState<StrokePoint[]>([]);
   const previewStateKey = `${projectId}:${file.name}`;
-  const localCommentSideDockActive = commentPanelOpen && !commentPortalHost;
+  // A configured portal is an overlay contract from the first render, even
+  // before the host DOM node has been resolved. Keying this on the async host
+  // lookup briefly treated the panel as a local dock, shrinking the preview by
+  // 320px for one frame before the fixed card appeared.
+  const localCommentSideDockActive = commentPanelOpen && !commentPortalId;
   const boardPreviewCanvasSize = commentPreviewCanvasSize(previewBodySize, {
     boardMode: localCommentSideDockActive,
     sidePanelCollapsed: commentSidePanelCollapsed,
@@ -13172,7 +13200,8 @@ function HtmlViewer({
     activateComment();
   }
 
-  function activateCommentCreateTool() {
+  function activateCommentCreateTool(returnFocusTarget?: HTMLElement | null) {
+    if (returnFocusTarget) commentPanelReturnFocusRef.current = returnFocusTarget;
     fireArtifactToolbarClick('comment');
     capturePreviewScrollPosition();
     if (boardMode && commentCreateMode) {
@@ -13201,6 +13230,17 @@ function HtmlViewer({
       return;
     }
     activateCommentCreate();
+  }
+
+  function dismissFloatingCommentPanel() {
+    pendingCommentPanelFocusRef.current =
+      commentPanelReturnFocusRef.current
+      ?? commentPanelToggleRef.current
+      ?? toolbarMoreTriggerRef.current;
+    setCommentPanelOpen(false);
+    setCommentCreateMode(false);
+    setBoardMode(false);
+    clearBoardComposer();
   }
 
   function activateManualEditTool() {
@@ -14490,14 +14530,7 @@ function HtmlViewer({
       // reopens the panel. (Closing only the panel left create/board mode on,
       // so the next toolbar click spent itself turning those off.) The local
       // dock keeps its collapse-to-rail behaviour.
-      onDismiss={commentPortalHost
-        ? () => {
-            setCommentPanelOpen(false);
-            setCommentCreateMode(false);
-            setBoardMode(false);
-            clearBoardComposer();
-          }
-        : undefined}
+      onDismiss={commentPortalHost ? dismissFloatingCommentPanel : undefined}
       onToggleSelect={(commentId) => {
         setSelectedSideCommentIds((current) => {
           const next = new Set(current);
@@ -14844,6 +14877,7 @@ function HtmlViewer({
               </button>
               <span className="viewer-toolbar-tool-divider" aria-hidden />
               <button
+                ref={commentPanelToggleRef}
                 type="button"
                 className={`viewer-action viewer-comment-count-trigger viewer-comment-toggle od-tooltip${boardMode && commentCreateMode ? ' active' : ''}`}
                 data-testid="comment-panel-toggle"
@@ -14852,7 +14886,7 @@ function HtmlViewer({
                 title={t('chat.tabComments')}
                 aria-label={`${t('chat.tabComments')} (${visibleSideComments.length})`}
                 aria-pressed={boardMode && commentCreateMode}
-                onClick={activateCommentCreateTool}
+                onClick={(event) => activateCommentCreateTool(event.currentTarget)}
               >
                 <RemixIcon name="message-3-line" size={15} />
                 <span className="viewer-comment-count" aria-hidden>{visibleSideComments.length}</span>
@@ -14903,6 +14937,7 @@ function HtmlViewer({
           ) : null}
           <div className="viewer-toolbar-more" ref={toolbarMoreRef}>
             <button
+              ref={toolbarMoreTriggerRef}
               type="button"
               className="viewer-action viewer-action-icon od-tooltip"
               aria-label={t('nextStep.more')}
@@ -15030,7 +15065,7 @@ function HtmlViewer({
                       className={`viewer-toolbar-more-item${boardMode && commentCreateMode ? ' active' : ''}`}
                       role="menuitem"
                       onClick={() => {
-                        activateCommentCreateTool();
+                        activateCommentCreateTool(toolbarMoreTriggerRef.current);
                         setToolbarMoreOpen(false);
                       }}
                     >

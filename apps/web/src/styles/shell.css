@@ -2409,6 +2409,11 @@ a.avatar-item:visited {
   background: var(--bg-panel);
   box-shadow: var(--shadow-lg);
 }
+/* The portal target is pre-mounted so opening comments never waits a frame
+   for parent state. An empty host must be visually and interactively absent. */
+.comment-float-host:empty {
+  display: none;
+}
 /* Collapsed: the host steps back to a bare frame around the 42px rail — the
    rail brings its own pill chrome, and it sizes off the host's height, so
    only the width and the card decoration come off here. */

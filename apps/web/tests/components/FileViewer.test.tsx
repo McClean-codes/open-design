@@ -8058,6 +8058,49 @@ describe('FileViewer tweaks toolbar', () => {
     fireEvent.click(screen.getByTestId('comment-panel-toggle'));
 
     expect(container.querySelector('.comment-preview-layer > .comment-side-panel')).toBeNull();
+    expect(screen.getByTestId('comment-preview-layout').className).not.toContain(
+      'comment-preview-layer-with-side-dock',
+    );
+  });
+
+  it('closes a floating comment card in one action and restores focus for button and Escape dismissals', async () => {
+    const portalId = 'project-comments-float';
+    render(
+      <>
+        <div id={portalId} data-testid="comment-float-host" />
+        <FileViewer
+          projectId="project-1"
+          projectKind="prototype"
+          file={htmlPreviewFile()}
+          liveHtml='<html><body><main data-od-id="hero">Hero</main></body></html>'
+          commentPortalId={portalId}
+        />
+      </>,
+    );
+
+    const trigger = screen.getByTestId('comment-panel-toggle');
+    fireEvent.click(trigger);
+
+    const firstDismiss = await screen.findByRole('button', { name: /hide comments/i });
+    firstDismiss.focus();
+    fireEvent.click(firstDismiss);
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('comment-side-panel')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
+
+    // The close path must also clear create/board mode: one click reopens the
+    // floating card instead of being consumed by a stale pressed state.
+    fireEvent.click(trigger);
+    const secondDismiss = await screen.findByRole('button', { name: /hide comments/i });
+    secondDismiss.focus();
+    fireEvent.keyDown(secondDismiss, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('comment-side-panel')).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+    });
   });
 
   it('shows the open comment count beside the comments icon', () => {

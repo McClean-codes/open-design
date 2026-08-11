@@ -2,8 +2,8 @@
 // Design system picker. The trigger shows the currently-selected project-type
 // template (default "None"); clicking it opens a list menu BELOW the trigger:
 // compact icon + name rows (no descriptions, at most 12 kinds — per product),
-// the selected row carries a check, and a leading Clear row resets the
-// selection (back to None).
+// and the selected row carries a check. Selection is sticky until another row
+// is chosen.
 //
 // Selection is the existing `activeChipId`: picking a row calls `onPick(chip)`
 // (the same handler the rail uses). Clearing the selected type was removed.
@@ -22,7 +22,7 @@ interface Props {
   // a rail card updates the pill. Cleared on rail-leave → reverts to None.
   previewChipId?: string | null;
   // Disables opening the dropdown (initial plugin load only). The dropdown
-  // stays reachable during a pending apply so the user can still clear/switch.
+  // stays reachable during a pending apply so the user can still switch.
   disabled?: boolean;
   // Disables picking a *new* template while an apply is in flight (mirrors the
   // rail's per-card guard); opening + close remain available.

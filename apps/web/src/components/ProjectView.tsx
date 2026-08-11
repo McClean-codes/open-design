@@ -10982,17 +10982,15 @@ export function ProjectView({
             state (per product: 任何状态下评论卡片都在这个位置). It used to dock
             inside the chat column, which put it in a different place —  and
             made it invisible in full-screen preview, where that column is
-            hidden. Exactly one element ever carries
-            `commentInspectorPortalId`: FileViewer resolves the portal host by
-            id. */}
-        {commentInspectorActive ? (
-          <div
-            id={commentInspectorPortalId}
-            className="comment-float-host"
-            aria-label="Comments"
-            data-testid="comment-float-host"
-          />
-        ) : null}
+            hidden. Keep the empty host mounted so FileViewer can resolve its
+            portal before opening; `:empty` hides all chrome and hit testing
+            until the localized comment panel is portaled in. Exactly one
+            element ever carries `commentInspectorPortalId`. */}
+        <div
+          id={commentInspectorPortalId}
+          className="comment-float-host"
+          data-testid="comment-float-host"
+        />
         {!workspaceFocused ? (
           <div
             className="split-resize-handle"
