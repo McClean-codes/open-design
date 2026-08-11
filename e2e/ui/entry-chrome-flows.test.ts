@@ -1316,7 +1316,15 @@ test('[P0] @critical home hero attachment input stages files, enables submit, an
 
   const input = page.getByTestId('home-hero-file-input');
   const submit = page.getByTestId('home-hero-submit');
-  await expect(submit).toBeEnabled();
+  // Fresh Home now locks submit until its default deck route has resolved.
+  // Under the grouped CI pool that catalogue binding can outlive Playwright's
+  // default assertion timeout, so wait on the user-visible routed state before
+  // checking the attachment lifecycle rather than racing the seed effect.
+  await expect(page.getByTestId('home-hero-template-trigger')).toContainText(
+    /Slide deck|幻灯片|投影片/i,
+    { timeout: T.long },
+  );
+  await expect(submit).toBeEnabled({ timeout: T.long });
 
   await input.setInputFiles({
     name: 'brief.txt',
