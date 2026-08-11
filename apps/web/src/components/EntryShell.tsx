@@ -106,7 +106,6 @@ import { AmrBalanceDialog } from './AmrBalanceDialog';
 import { AmrLowBalanceDialog, type AmrLowBalanceDecision } from './AmrLowBalanceDialog';
 import {
   amrBalanceGateScopeForWorkspaceContext,
-  amrBalanceGateScopesMatch,
   checkAmrBalanceGate,
   retryUnavailableAmrBalanceGate,
   type AmrBalanceGateScope,
@@ -135,9 +134,12 @@ import {
   notifyWorkspaceBillingRefresh,
   notifyWorkspaceContextRefresh,
   currentWorkspaceAccountGeneration,
+  type CurrentWorkspaceContextReadWitness,
+  resolveCurrentWorkspaceContextReadWitness,
   useTeamProjects,
   useWorkspaceBillingResponse,
   useWorkspaceContext,
+  workspaceContextReadWitnessFromState,
   workspaceBillingBalanceUsd,
   workspaceBillingSummaryForContext,
 } from '../collab/useWorkspaceContext';
@@ -615,6 +617,8 @@ export function EntryShell({
   );
   const workspaceContextRef = useRef(workspaceContext);
   workspaceContextRef.current = workspaceContext;
+  const workspaceContextStateRef = useRef(workspaceContextState);
+  workspaceContextStateRef.current = workspaceContextState;
   const workspaceBillingResponse = useWorkspaceBillingResponse();
   // Plan and money are both workspace-scoped questions, so both go through a
   // context-partitioned projection. `response.summary` on its own is an ACCOUNT
@@ -1287,13 +1291,24 @@ export function EntryShell({
     // in ProjectView.handleSend.
     let amrGatePrecheckWitness: AmrBalanceGateScope | undefined;
     if (config.mode === 'daemon' && config.agentId === 'amr') {
-      // Awaiting the wallet or either dialog can outlive a workspace switch.
-      // Re-run once against the latest exact workspace/member authority; if it
-      // changes again, fail closed instead of reusing a stale decision.
+      // The membership directory contains every field needed to scope billing
+      // and project creation. It lands before the richer Workspace projection
+      // on a cold start and is shared with that projection through one
+      // generation-keyed request, so submission does not wait on unrelated
+      // plan/seat/display metadata.
       for (let workspaceAttempt = 0; workspaceAttempt < 2; workspaceAttempt += 1) {
-        const gateScope = amrBalanceGateScopeForWorkspaceContext(
-          workspaceContextRef.current,
-        );
+        let workspaceWitness: CurrentWorkspaceContextReadWitness | null =
+          workspaceContextReadWitnessFromState(workspaceContextStateRef.current);
+        if (!workspaceWitness) {
+          try {
+            workspaceWitness = await resolveCurrentWorkspaceContextReadWitness();
+          } catch {
+            return false;
+          }
+        }
+        if (!workspaceWitness.isStillCurrent()) continue;
+        const gateScope = amrBalanceGateScopeForWorkspaceContext(workspaceWitness.context);
+        if (!gateScope) return false;
         let gate = await retryUnavailableAmrBalanceGate(
           () => checkAmrBalanceGate(gateScope),
         );
@@ -1331,10 +1346,7 @@ export function EntryShell({
             if (decision !== 'proceed') return 'blocked' as const;
           }
         }
-        const currentScope = amrBalanceGateScopeForWorkspaceContext(
-          workspaceContextRef.current,
-        );
-        if (!amrBalanceGateScopesMatch(gateScope, currentScope)) continue;
+        if (!workspaceWitness.isStillCurrent()) continue;
         amrGatePrecheckWitness = gateScope;
         break;
       }

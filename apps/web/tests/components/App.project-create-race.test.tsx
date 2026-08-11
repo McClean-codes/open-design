@@ -1268,6 +1268,60 @@ describe('App project creation routing', () => {
     },
   );
 
+  it('creates from the directory identity while the richer Workspace context is still loading', async () => {
+    const context = workspaceContext('ws-cold-create', 'wm-cold-create');
+    const richContextRead = deferred<Response>();
+    mockedLoadConfig.mockReturnValue({
+      ...baseConfig,
+      mode: 'daemon',
+      agentId: 'amr',
+    });
+    mockedListProjects.mockResolvedValue([]);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const pathname = new URL(String(input), 'http://d.local').pathname;
+        if (pathname.endsWith('/integrations/vela/status')) {
+          return new Response(JSON.stringify({
+            loggedIn: true,
+            profile: 'default',
+            user: { id: 'account-team-member' },
+            configPath: '/test/vela.json',
+          }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        if (pathname.endsWith('/workspace/directory')) {
+          return new Response(
+            JSON.stringify(workspaceDirectoryFixture([context])),
+            { status: 200, headers: { 'content-type': 'application/json' } },
+          );
+        }
+        if (pathname.endsWith('/workspace/context')) return richContextRead.promise;
+        return new Response('{}', {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    );
+
+    render(<App />);
+    await screen.findByText('true', { selector: '[data-testid="amr-login-status"]' });
+    fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
+
+    await waitFor(() => {
+      expect(mockedCreateProject).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceContext: expect.objectContaining({
+            workspaceId: 'ws-cold-create',
+            workspaceMemberId: 'wm-cold-create',
+          }),
+        }),
+      );
+    });
+  });
+
   it.each([
     ['Local CLI', 'loading', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
     ['BYOK', 'unavailable', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],

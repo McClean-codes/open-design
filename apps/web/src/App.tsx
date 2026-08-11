@@ -111,6 +111,7 @@ import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
+  type CurrentWorkspaceContextReadWitness,
   resolveBoundProjectWorkspaceContext,
   resolveCurrentWorkspaceContextReadWitness,
   useWorkspaceBilling,
@@ -2851,20 +2852,28 @@ function AppInner() {
           && executionConfig.agentId === AMR_AGENT_ID;
         const isExplicitlySignedOut =
           amrLoginStatusRef.current?.loggedIn === false;
-        createWorkspaceContext = resolvedWorkspaceContextForWrite(
-          workspaceContextStateRef.current,
-          {
-            // Local/BYOK may create without AMR Workspace authority only after
-            // the independent login read explicitly proves there is no AMR
-            // identity. An unknown or signed-in identity can still own a Team
-            // Workspace whose directory read is merely slow/unavailable, so
-            // executor selection must not silently turn that Team project into
-            // an unscoped Personal one. Unsupported/settled no-workspace states
-            // already retain their explicit compatibility behavior below.
-            unavailablePolicy:
-              !usesAmrCloud && isExplicitlySignedOut ? 'unscoped' : 'reject',
-          },
-        );
+        const unavailablePolicy: 'unscoped' | 'reject' =
+          !usesAmrCloud && isExplicitlySignedOut ? 'unscoped' : 'reject';
+        let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
+        try {
+          createWorkspaceContext = resolvedWorkspaceContextForWrite(
+            workspaceContextStateRef.current,
+            { unavailablePolicy },
+          );
+        } catch {
+          // Project creation needs only the exact directory-backed Workspace /
+          // member identity. The daemon re-verifies that claim atomically
+          // before binding the project, so waiting for the richer context here
+          // is a redundant client lock. This read shares the shell's in-flight
+          // directory request and normally adds no network roundtrip.
+          workspaceWitness = await resolveCurrentWorkspaceContextReadWitness();
+          if (!workspaceWitness.isStillCurrent() || !workspaceWitness.context) {
+            throw new Error(
+              'Workspace context is unavailable. Try again when workspace sync finishes.',
+            );
+          }
+          createWorkspaceContext = workspaceWitness.context;
+        }
         if (
           input.amrGatePrecheckWitness &&
           !amrBalanceGateScopesMatch(
@@ -2872,6 +2881,9 @@ function AppInner() {
             amrBalanceGateScopeForWorkspaceContext(createWorkspaceContext),
           )
         ) {
+          throw new Error('AMR_WORKSPACE_GATE_STALE');
+        }
+        if (workspaceWitness && !workspaceWitness.isStillCurrent()) {
           throw new Error('AMR_WORKSPACE_GATE_STALE');
         }
         result = await createProject({

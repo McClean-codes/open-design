@@ -3,6 +3,16 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+const workspaceContextMock = vi.hoisted(() => ({
+  state: {
+    context: null,
+    resourceReadIdentity: null,
+    loading: false,
+    identityChangePending: false,
+    failure: 'unsupported' as 'unsupported' | 'unavailable' | undefined,
+  },
+}));
+
 vi.mock('../../src/components/home-hero/PlaceholderCarousel', () => ({
   PlaceholderCarousel: () => null,
 }));
@@ -11,11 +21,7 @@ vi.mock('../../src/collab/useWorkspaceContext', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/collab/useWorkspaceContext')>();
   return {
     ...actual,
-    useWorkspaceContext: () => ({
-      context: null,
-      loading: false,
-      failure: 'unsupported' as const,
-    }),
+    useWorkspaceContext: () => workspaceContextMock.state,
   };
 });
 
@@ -69,6 +75,13 @@ afterEach(() => {
   cleanup();
   window.localStorage.clear();
   window.sessionStorage.clear();
+  workspaceContextMock.state = {
+    context: null,
+    resourceReadIdentity: null,
+    loading: false,
+    identityChangePending: false,
+    failure: 'unsupported',
+  };
 });
 
 describe('HomeView media composer options', () => {
@@ -433,6 +446,33 @@ describe('HomeView media composer options', () => {
     })));
   });
 
+  it('re-applies the selected plugin from directory identity while rich context is loading', async () => {
+    const fetchMock = stubFetch();
+    const onSubmit = vi.fn();
+    const props = homeProps({ onSubmit });
+    const view = render(<HomeView {...props} />);
+
+    await clickHomeRailChip('video');
+    await setHomePrompt('Create a directory-scoped launch teaser.');
+    workspaceContextMock.state = {
+      context: null,
+      resourceReadIdentity: null,
+      loading: true,
+      identityChangePending: false,
+      failure: undefined,
+    };
+    view.rerender(<HomeView {...props} />);
+    await submitHome();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const scopedApply = fetchMock.mock.calls.filter(([url, init]) => (
+      typeof url === 'string'
+      && url.includes('/api/plugins/od-media-generation/apply')
+      && new Headers(init?.headers).get('x-od-workspace-id') === 'workspace-cold'
+    )).at(-1);
+    expect(scopedApply).toBeTruthy();
+  });
+
   it('preserves od-media-generation required inputs when applying media chips', async () => {
     const fetchMock = stubFetch();
     renderHome();
@@ -485,6 +525,20 @@ function stubFetch(options: { elevenLabsVoices?: Array<{ voiceId: string; name: 
     }
     if (typeof url === 'string' && url === '/api/mcp/servers') {
       return json({ servers: [], templates: [] });
+    }
+    if (typeof url === 'string' && url === '/api/workspace/directory') {
+      return json({
+        items: [{
+          workspaceId: 'workspace-cold',
+          workspaceName: 'Cold workspace',
+          workspaceType: 'team',
+          workspaceMemberId: 'member-cold',
+          role: 'member',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }],
+        activeWorkspaceId: null,
+      });
     }
     if (typeof url === 'string' && url.includes('/apply')) {
       const pluginId = url.split('/api/plugins/')[1]?.split('/apply')[0] ?? 'od-media-generation';

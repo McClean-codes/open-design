@@ -22,6 +22,14 @@ vi.mock('../../src/providers/daemon', () => ({
 
 const mockedFetch = vi.mocked(fetchAmrWalletSnapshot);
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 function snapshot(overrides: Partial<AmrWalletSnapshot> = {}): AmrWalletSnapshot {
   return {
     status: 'available',
@@ -270,11 +278,14 @@ describe('checkAmrBalanceGate', () => {
     });
   });
 
-  it('gates a team run from its explicit workspace balance, not the healthy account balance', async () => {
-    mockedFetch.mockResolvedValue(snapshot({ balanceUsd: '247.50' }));
+  it('starts the authoritative workspace request in parallel with the account snapshot', async () => {
+    const accountRead = deferred<AmrWalletSnapshot>();
+    mockedFetch.mockReturnValue(accountRead.promise);
+    let workspaceReadStarted = false;
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL) => {
+        workspaceReadStarted = true;
         expect(input.toString()).toBe(
           '/api/workspace/billing?scope=workspace&workspaceId=ws-team-a&freshness=authoritative',
         );
@@ -313,15 +324,20 @@ describe('checkAmrBalanceGate', () => {
       }),
     );
 
-    const result = await checkAmrBalanceGate({
+    const pendingResult = checkAmrBalanceGate({
       workspaceType: 'team',
       workspaceId: 'ws-team-a',
       workspaceMemberId: 'wm-a',
     });
+    await Promise.resolve();
+    expect(workspaceReadStarted).toBe(true);
+    accountRead.resolve(snapshot({ balanceUsd: '247.50' }));
+    const result = await pendingResult;
     expect(result.kind).toBe('soft');
     if (result.kind === 'soft') {
       expect(result.snapshot.balanceUsd).toBe('1.25');
     }
+    expect(mockedFetch).toHaveBeenCalledTimes(1);
   });
 
   it('does not authorize a positive balance from a daemon that cannot prove an authoritative read', async () => {

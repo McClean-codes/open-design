@@ -95,8 +95,11 @@ import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry'
 import { workspaceContextLinkedDirs } from './workspace-context';
 import {
   currentWorkspaceAccountGeneration,
+  type CurrentWorkspaceContextReadWitness,
+  resolveCurrentWorkspaceContextReadWitness,
   useTeamProjects,
   useWorkspaceContext,
+  workspaceContextReadWitnessFromState,
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
@@ -1362,13 +1365,7 @@ export function HomeView({
     applyRequestId?: number,
   ): Promise<ApplyResult | null> {
     setPendingApplyId(record.id);
-    let writeWorkspaceContext;
-    try {
-      if (workspaceContextState.identityChangePending) {
-        throw new Error('workspace identity change pending');
-      }
-      writeWorkspaceContext = resolvedWorkspaceContextForWrite(workspaceContextState);
-    } catch {
+    function clearPendingApply() {
       if (
         applyRequestId === undefined
         || activePluginApplyRequestRef.current === applyRequestId
@@ -1376,20 +1373,37 @@ export function HomeView({
         setPendingApplyId(null);
         setPendingChipId(null);
       }
-      setError(
-        'Workspace context is unavailable. Try again when workspace sync finishes.',
-      );
-      return null;
+    }
+    let writeWorkspaceContext;
+    let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
+    try {
+      if (workspaceContextState.identityChangePending) {
+        throw new Error('workspace identity change pending');
+      }
+      writeWorkspaceContext = resolvedWorkspaceContextForWrite(workspaceContextState);
+    } catch {
+      try {
+        workspaceWitness = workspaceContextReadWitnessFromState(workspaceContextState)
+          ?? await resolveCurrentWorkspaceContextReadWitness();
+      } catch {
+        workspaceWitness = null;
+      }
+      if (!workspaceWitness?.isStillCurrent()) {
+        clearPendingApply();
+        setError(
+          'Workspace context is unavailable. Try again when workspace sync finishes.',
+        );
+        return null;
+      }
+      writeWorkspaceContext = workspaceWitness.context;
     }
     const result = await applyPlugin(record.id, {
       locale,
       inputs,
       workspaceContext: writeWorkspaceContext,
     });
-    if (applyRequestId === undefined || activePluginApplyRequestRef.current === applyRequestId) {
-      setPendingApplyId(null);
-      setPendingChipId(null);
-    }
+    clearPendingApply();
+    if (workspaceWitness && !workspaceWitness.isStillCurrent()) return null;
     return result;
   }
 

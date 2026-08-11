@@ -353,25 +353,11 @@ export interface CurrentWorkspaceContextReadWitness {
   isStillCurrent: () => boolean;
 }
 
-/**
- * Resolve the Workspace selected by this browser tab from the account
- * directory, without waiting for the shell's richer `/workspace/context`
- * projection to commit to React state.
- *
- * This is an authorization witness, not a display cache: the directory read
- * verifies the exact Workspace/member pair and the returned lifetime closes
- * over both the account/context generation and the tab-local selection. A
- * concurrent sign-in or Workspace switch therefore invalidates an in-flight
- * project action before it may commit.
- */
-export async function resolveCurrentWorkspaceContextReadWitness(
-  options: { fresh?: boolean } = {},
-): Promise<CurrentWorkspaceContextReadWitness> {
-  const requestToken = workspaceContextRequestToken;
-  const accountGeneration = currentWorkspaceAccountGeneration();
-  const directory = await readWorkspaceDirectoryForCurrentGeneration(options);
-  const selected = chooseWorkspaceForTab(directory.items ?? []);
-  const context = selected ? workspaceContextFromDirectoryItem(selected) : null;
+function createCurrentWorkspaceContextReadWitness(
+  context: WorkspaceCollabContext | null,
+  requestToken: string,
+  accountGeneration: number,
+): CurrentWorkspaceContextReadWitness {
   const selectedWorkspaceId = context?.workspaceId ?? null;
   const selectedWorkspaceMemberId = context?.workspaceMemberId ?? null;
   return {
@@ -388,6 +374,52 @@ export async function resolveCurrentWorkspaceContextReadWitness(
         : currentSelection === null;
     },
   };
+}
+
+/**
+ * Reuse the identity last established by the directory-backed shell state.
+ * This is the steady-state submit path: no new directory request is needed.
+ * The witness protects the client from local account/selection races; mutation
+ * routes still perform the final authorization check in the daemon.
+ */
+export function workspaceContextReadWitnessFromState(
+  state: Pick<WorkspaceContextState, 'resourceReadIdentity'>,
+): CurrentWorkspaceContextReadWitness | null {
+  const identity = state.resourceReadIdentity;
+  if (!identity || identity.generation !== workspaceContextRequestToken) return null;
+  const witness = createCurrentWorkspaceContextReadWitness(
+    identity.context,
+    identity.generation,
+    currentWorkspaceAccountGeneration(),
+  );
+  return witness.isStillCurrent() ? witness : null;
+}
+
+/**
+ * Resolve the Workspace selected by this browser tab from the account
+ * directory, without waiting for the shell's richer `/workspace/context`
+ * projection to commit to React state.
+ *
+ * This is a client-side selection witness, not the final authorization check:
+ * the directory read identifies the exact Workspace/member pair and the
+ * returned lifetime closes over both the account/context generation and the
+ * tab-local selection. A concurrent sign-in or Workspace switch therefore
+ * invalidates an in-flight project action before it may commit; mutation
+ * routes independently re-authorize the claimed pair in the daemon.
+ */
+export async function resolveCurrentWorkspaceContextReadWitness(
+  options: { fresh?: boolean } = {},
+): Promise<CurrentWorkspaceContextReadWitness> {
+  const requestToken = workspaceContextRequestToken;
+  const accountGeneration = currentWorkspaceAccountGeneration();
+  const directory = await readWorkspaceDirectoryForCurrentGeneration(options);
+  const selected = chooseWorkspaceForTab(directory.items ?? []);
+  const context = selected ? workspaceContextFromDirectoryItem(selected) : null;
+  return createCurrentWorkspaceContextReadWitness(
+    context,
+    requestToken,
+    accountGeneration,
+  );
 }
 
 // Last successfully-resolved workspace context, kept at module scope so it

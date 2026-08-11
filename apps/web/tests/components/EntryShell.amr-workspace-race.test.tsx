@@ -117,6 +117,84 @@ describe('EntryShell AMR workspace precheck race', () => {
     resetTeamProjectsCache();
   });
 
+  it('starts the team gate from the directory identity without waiting for rich context', async () => {
+    window.history.replaceState(null, '', '/');
+    const workspace = teamContext('workspace-cold', 'member-cold');
+    const contextRead = deferred<Response>();
+    let directoryReads = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspace/directory')) {
+        directoryReads += 1;
+        return jsonResponse(workspaceDirectoryFixture([workspace]));
+      }
+      if (url.endsWith('/api/workspace/context')) return contextRead.promise;
+      if (url.includes('/api/workspace/billing?')) {
+        return jsonResponse({ summary: null, workspaceBalance: null });
+      }
+      if (url.endsWith('/api/workspace/projects/team')) {
+        return jsonResponse({ projects: [] });
+      }
+      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+      return jsonResponse({});
+    }) as typeof fetch;
+    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
+    const onCreateProject = vi.fn(async () => true);
+
+    render(
+      <I18nProvider initial="en">
+        <EntryShell
+          skills={[]}
+          designTemplates={[]}
+          designSystems={[]}
+          projects={[]}
+          templates={[]}
+          promptTemplates={[]}
+          defaultDesignSystemId={null}
+          connectors={[]}
+          connectorsLoading={false}
+          config={amrConfig()}
+          agents={[amrAgent()]}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiProtocolChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onConfigPersist={vi.fn()}
+          onRefreshAgents={vi.fn(() => [amrAgent()])}
+          onCreateProject={onCreateProject}
+          onCreatePluginShareProject={vi.fn()}
+          onImportClaudeDesign={vi.fn()}
+          onOpenProject={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onDeleteProject={vi.fn()}
+          onRenameProject={vi.fn()}
+          onChangeDefaultDesignSystem={vi.fn()}
+          onPersistComposioKey={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onCompleteOnboarding={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(directoryReads).toBe(1));
+    setHomeHeroPrompt('Create a launch poster without waiting for account chrome.');
+    fireEvent.click(await screen.findByTestId('home-hero-submit'));
+
+    await waitFor(() => {
+      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+        workspaceType: 'team',
+        workspaceId: 'workspace-cold',
+        workspaceMemberId: 'member-cold',
+      });
+    });
+    await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
+  });
+
   it('keeps one Home submit loading until a transient team billing read recovers', async () => {
     window.history.replaceState(null, '', '/');
     const workspace = teamContext('workspace-a', 'member-a');
