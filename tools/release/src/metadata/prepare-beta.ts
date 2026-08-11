@@ -28,6 +28,7 @@ type ParsedBetaVersion = {
 };
 
 type ParsedBetaMetadata = ParsedBetaVersion & {
+  branch: string;
   source: "metadata-json";
 };
 
@@ -99,6 +100,10 @@ function parseBetaMetadataJson(value: string): ParsedBetaMetadata {
   const betaVersion = readStringField(record, "releaseVersion") ?? readStringField(record, "betaVersion");
   const betaNumber = readNumberField(record, "releaseNumber") ?? readNumberField(record, "betaNumber");
   const baseVersion = readStringField(record, "baseVersion");
+  const github = record.github;
+  const branch = typeof github === "object" && github != null && !Array.isArray(github)
+    ? readStringField(github as Record<string, unknown>, "branch") ?? ""
+    : "";
 
   if (betaVersion != null) {
     const beta = parseBetaVersion(betaVersion, "beta metadata.json");
@@ -108,7 +113,7 @@ function parseBetaMetadataJson(value: string): ParsedBetaMetadata {
     if (betaNumber != null && betaNumber !== beta.betaNumber) {
       fail(`beta metadata.json releaseNumber ${betaNumber} does not match releaseVersion ${beta.betaVersion}`);
     }
-    return { ...beta, source: "metadata-json" };
+    return { ...beta, branch, source: "metadata-json" };
   }
 
   if (baseVersion == null || betaNumber == null) {
@@ -120,7 +125,7 @@ function parseBetaMetadataJson(value: string): ParsedBetaMetadata {
     fail(`beta metadata.json baseVersion must be x.y.z; got ${baseVersion}`);
   }
 
-  return { ...parseBetaParts(baseVersion, String(betaNumber)), source: "metadata-json" };
+  return { ...parseBetaParts(baseVersion, String(betaNumber)), branch, source: "metadata-json" };
 }
 
 function parseStableMetadataJson(value: string): ParsedStableVersion {
@@ -277,6 +282,8 @@ function readBooleanEnv(name: string): boolean {
 const packagedVersion = await readPackagedVersion();
 const packagedParsed = parseReleaseBaseVersion(packagedVersion) ?? fail(`invalid packaged version: ${packagedVersion}`);
 const force = readBooleanEnv("OPEN_DESIGN_RELEASE_FORCE") || readBooleanEnv("RELEASE_FORCE");
+const recoverForeignBeta = readBooleanEnv("OPEN_DESIGN_RECOVER_FOREIGN_BETA")
+  && process.env.GITHUB_REF_NAME === "main";
 
 let latestStable: ParsedStableVersion | null = null;
 const stableMetadataUrl = process.env.OPEN_DESIGN_STABLE_METADATA_URL;
@@ -316,7 +323,7 @@ if (metadataUrl == null || metadataUrl.length === 0) {
 validateHttpsUrl(metadataUrl, "OPEN_DESIGN_BETA_METADATA_URL");
 
 let betaNumber = 1;
-let latestBeta: ParsedBetaVersion | null = null;
+let latestBeta: (ParsedBetaVersion & { branch: string }) | null = null;
 let stateSource = "beta metadata.json";
 const latestMetadataJson = await fetchOptionalHttpsText(metadataUrl);
 if (latestMetadataJson == null) {
@@ -327,6 +334,7 @@ if (latestMetadataJson == null) {
     baseVersion: packagedVersion,
     betaNumber: 0,
     betaVersion: `${packagedVersion}-beta.0`,
+    branch: "",
   };
   stateSource = "missing beta metadata.json fallback beta.0";
   console.log("[release-beta] beta metadata.json: not found; using beta.0 fallback");
@@ -344,12 +352,18 @@ if (latestBeta != null) {
 
   const ordering = compareReleaseBaseVersions(packagedParsed, existingBase);
   if (ordering < 0) {
-    if (!force) {
+    const foreignBranchRecovery = recoverForeignBeta && beta.branch.length > 0 && beta.branch !== "main";
+    if (!force && !foreignBranchRecovery) {
       fail(`packaged base version ${packagedVersion} regressed below current beta base version ${beta.baseVersion}`);
     }
-    console.warn(
-      `[release-beta] force enabled: ignoring current beta base version ${beta.baseVersion} for packaged base version ${packagedVersion}`,
-    );
+    if (foreignBranchRecovery) {
+      console.warn(`[release-beta] recovering shared beta from foreign branch ${beta.branch}`);
+      stateSource = `${stateSource} (foreign branch ${beta.branch} ignored by daily main recovery)`;
+    } else {
+      console.warn(
+        `[release-beta] force enabled: ignoring current beta base version ${beta.baseVersion} for packaged base version ${packagedVersion}`,
+      );
+    }
   }
 
   if (ordering === 0) {

@@ -1907,6 +1907,94 @@ process.stdin.on("end", () => {
     }
   });
 
+  it("[P1] lets the daily main build recover a shared beta advanced by a feature branch", async () => {
+    const packagedVersion = await readPackagedVersion();
+    const objects: Record<string, unknown> = {
+      "stable/latest/metadata.json": { channel: "stable", stableVersion: "0.18.1" },
+      "beta/latest/metadata.json": {
+        baseVersion: "0.19.0",
+        channel: "beta",
+        github: { branch: "feat/standalone-closure" },
+        releaseNumber: 9,
+        releaseVersion: "0.19.0-beta.9",
+      },
+    };
+    const fixture = await startStablePrereleaseMetadataServer(objects);
+    const runnerTemp = await mkdtemp(join(tmpdir(), "od-release-beta-foreign-recovery-"));
+    const outputPath = join(runnerTemp, "outputs.txt");
+    const baseEnv = {
+      ...process.env,
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_REF_NAME: "main",
+      GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
+      OPEN_DESIGN_BETA_METADATA_URL: `${fixture.origin}/beta/latest/metadata.json`,
+      OPEN_DESIGN_STABLE_METADATA_URL: `${fixture.origin}/stable/latest/metadata.json`,
+    };
+
+    try {
+      const blocked = await execFileAsync(
+        process.execPath,
+        ["--experimental-strip-types", releaseBetaScriptPath],
+        { cwd: workspaceRoot, env: baseEnv, maxBuffer: 1024 * 1024 },
+      ).then(
+        () => "",
+        (error: unknown) => {
+          const failed = error as { stderr?: string; stdout?: string };
+          return `${failed.stdout ?? ""}${failed.stderr ?? ""}`;
+        },
+      );
+      expect(blocked).toContain(
+        `packaged base version ${packagedVersion} regressed below current beta base version 0.19.0`,
+      );
+
+      const recovered = await execFileAsync(
+        process.execPath,
+        ["--experimental-strip-types", releaseBetaScriptPath],
+        {
+          cwd: workspaceRoot,
+          env: { ...baseEnv, OPEN_DESIGN_RECOVER_FOREIGN_BETA: "1" },
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      expect(recovered.stderr).toContain(
+        "[release-beta] recovering shared beta from foreign branch feat/standalone-closure",
+      );
+      expect(await readFile(outputPath, "utf8")).toContain(`beta_version=${packagedVersion}-beta.1`);
+    } finally {
+      await fixture.close();
+      await rm(runnerTemp, { force: true, recursive: true });
+    }
+  });
+
+  it("[P1] keeps shared beta publication main-owned while feature refs stay dogfood-only", async () => {
+    const [betaWorkflow, dailyWorkflow] = await Promise.all([
+      readFile(releaseBetaWorkflowPath, "utf8"),
+      readFile(notifyDailyFeishuWorkflowPath, "utf8"),
+    ]);
+    const metadataJob = sectionBetween(betaWorkflow, "  metadata:", "  build_mac_arm64:");
+    const publisherGuard = sectionBetween(
+      metadataJob,
+      "- name: Validate shared beta publisher",
+      "- name: Capture previous beta commit",
+    );
+
+    expect(betaWorkflow).toContain(
+      "RELEASE_BRANCH: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}",
+    );
+    expect(publisherGuard).toContain("if: ${{ inputs.publish }}");
+    expect(publisherGuard).toContain('built_sha="$(git rev-parse HEAD)"');
+    expect(publisherGuard).toContain(
+      'main_sha="$(git ls-remote origin refs/heads/main | awk \'{print $1}\')"',
+    );
+    expect(publisherGuard).toContain('[ "$built_sha" != "$main_sha" ]');
+    expect(publisherGuard).toContain("publish=false");
+    expect(metadataJob).toContain(
+      "OPEN_DESIGN_RECOVER_FOREIGN_BETA: ${{ inputs.recover_foreign_beta && '1' || '' }}",
+    );
+    expect(dailyWorkflow).toContain("recover_foreign_beta: true");
+  });
+
   it("[P2] daily beta resolve defaults to main and preserves the ref override", async () => {
     // Beta is the daily R&D channel and must track the development tip (main).
     // Selecting the highest-semver release/vX.Y.Z branch stalls the build: once
@@ -1934,6 +2022,32 @@ process.stdin.on("end", () => {
     expect(workflow).toContain("  notify_failure:");
     expect(workflow).toContain("if: ${{ always() && needs.build.result == 'failure' }}");
     expect(workflow).toContain("tools/release/src/notifications/feishu-notice.ts");
+  });
+
+  it("[P1] skips the scheduled minor cut until the highest release branch is published stable", async () => {
+    const workflow = await readFile(cutReleaseWorkflowPath, "utf8");
+    const gate = sectionBetween(
+      workflow,
+      "- name: Check the current release line is published",
+      "- name: Bail out if the branch already exists",
+    );
+
+    expect(gate).toContain("GITHUB_EVENT_NAME: ${{ github.event_name }}");
+    expect(gate).toContain("LATEST_RELEASE: ${{ steps.ver.outputs.latest_release }}");
+    expect(gate).toContain('[ "$GITHUB_EVENT_NAME" != "schedule" ]');
+    expect(gate).toContain('gh release view "open-design-v$LATEST_RELEASE"');
+    expect(gate).toContain("--jq '(.isDraft or .isPrerelease) | not'");
+    expect(gate).toContain('echo "ready=false" >> "$GITHUB_OUTPUT"');
+    expect(gate).toContain('echo "ready=true" >> "$GITHUB_OUTPUT"');
+
+    for (const step of [
+      "Bail out if the branch already exists",
+      "Create branch + bump version + push",
+      "Create backport label",
+      "Notify Feishu that the branch was cut",
+    ]) {
+      expect(workflow).toContain(`- name: ${step}\n        if: steps.gate.outputs.ready == 'true'`);
+    }
   });
 
   it("[P1] keeps the metadata-independent prerelease Windows smoke advisory to release cuts", async () => {

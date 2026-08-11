@@ -194,6 +194,11 @@ on:
         required: false
         type: boolean
         default: false
+      recover_foreign_beta:
+        description: "Allow current main to recover beta/latest after a historical non-main publish."
+        required: false
+        type: boolean
+        default: false
       release_version:
         required: false
         type: string
@@ -330,7 +335,7 @@ env:
   #
   # Secrets read here: VELA_WEB_URL_FEATURE_TEST, VELA_WEB_URL_TEST.
   OD_VELA_WEB_URL: ${{ inputs.amr_profile == 'feature-test' && secrets.VELA_WEB_URL_FEATURE_TEST || inputs.amr_profile == 'test' && secrets.VELA_WEB_URL_TEST || '' }}
-  RELEASE_BRANCH: ${{ github.ref_name }}
+  RELEASE_BRANCH: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}
   RELEASE_REPOSITORY: ${{ github.repository }}
   RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
   RELEASE_RUN_ID: ${{ github.run_id }}
@@ -376,6 +381,21 @@ jobs:
       - name: Resolve built commit
         run: echo "BUILT_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      - name: Validate shared beta publisher
+        if: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          built_sha="$(git rev-parse HEAD)"
+          main_sha="$(git ls-remote origin refs/heads/main | awk '{print $1}')"
+          if [ -z "$main_sha" ]; then
+            echo "Could not resolve the current main commit; refusing shared beta publication." >&2
+            exit 1
+          fi
+          if [ "$built_sha" != "$main_sha" ]; then
+            echo "Shared beta publication is restricted to the current main commit ($main_sha); got $built_sha. Re-run this ref with publish=false for dogfood artifacts." >&2
+            exit 1
+          fi
+
       - name: Capture previous beta commit
         id: prev
         run: |
@@ -419,6 +439,7 @@ jobs:
         env:
           GITHUB_SHA: ${{ env.BUILT_SHA }}
           GITHUB_REF_NAME: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}
+          OPEN_DESIGN_RECOVER_FOREIGN_BETA: ${{ inputs.recover_foreign_beta && '1' || '' }}
           OPEN_DESIGN_RELEASE_FORCE: ${{ inputs.force && '1' || '' }}
         run: pnpm exec tools-release prepare beta
 

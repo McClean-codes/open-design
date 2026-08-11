@@ -67,6 +67,7 @@ jobs:
     with:
       enable_mac_arm64: true
       enable_win_x64: true
+      recover_foreign_beta: true
       ref: ${{ needs.resolve.outputs.ref }}
 
   notify:
