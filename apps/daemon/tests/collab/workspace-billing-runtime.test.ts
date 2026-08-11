@@ -736,11 +736,13 @@ describe('WorkspaceBillingRuntimeCoordinator', () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     let calls = 0;
+    const onPollSuppressed = vi.fn();
     const runtime = createWorkspaceBillingRuntimeCoordinator({
       pollIntervalMs: 10,
       softTtlMs: 10,
       hardTtlMs: 40,
       realtimePollFloorMs: 100,
+      onPollSuppressed,
       fetchProjection: async () => {
         calls += 1;
         return projection('workspace-a', 'member-a', String(calls));
@@ -752,6 +754,7 @@ describe('WorkspaceBillingRuntimeCoordinator', () => {
     await vi.advanceTimersByTimeAsync(99);
     await runtime.read(KEY_A);
     expect(calls).toBe(1);
+    expect(onPollSuppressed).toHaveBeenCalledTimes(9);
 
     await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(calls).toBe(2));

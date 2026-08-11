@@ -562,11 +562,25 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
   identityKey?: () => string;
   ttlMs?: number;
   now?: () => number;
+  onDecision?: (input: {
+    source: 'cache' | 'directory';
+    reason: 'cold' | 'lease_hit' | 'lease_expired' | 'in_flight' | 'fresh';
+    outcome: 'allow' | 'deny' | 'unavailable' | 'fallback';
+    ageMs?: number;
+  }) => void;
+  onSuppressedRequest?: (input: {
+    source: 'directory';
+    reason: 'lease_hit' | 'in_flight';
+  }) => void;
+  onInvalidation?: (input: {
+    source: 'cache';
+    reason: 'mutation' | 'event_dirty' | 'auth_reject' | 'catch_up';
+  }) => void;
 } = {}): {
   cached: () => Promise<WorkspaceDirectoryFetchResult>;
   read: () => Promise<WorkspaceDirectoryFetchResult>;
   fresh: () => Promise<WorkspaceDirectoryFetchResult>;
-  invalidate: () => void;
+  invalidate: (reason?: 'event_dirty' | 'auth_reject' | 'catch_up') => void;
   refreshAfterMutation: () => Promise<WorkspaceDirectoryFetchResult>;
 } {
   const fetchDirectory =
@@ -599,12 +613,22 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
     cached.delete(identity);
   };
 
+  const recordDecision = (
+    input: Parameters<NonNullable<typeof options.onDecision>>[0],
+  ): void => {
+    options.onDecision?.(input);
+  };
+
   const start = (
     identity: string,
+    reason: 'cold' | 'lease_expired' | 'fresh',
   ): Promise<WorkspaceDirectoryFetchResult> => {
     const generation = generationFor(identity);
     const pending = inFlight.get(identity);
-    if (pending?.generation === generation) return pending.request;
+    if (pending?.generation === generation) {
+      options.onSuppressedRequest?.({ source: 'directory', reason: 'in_flight' });
+      return pending.request;
+    }
     const request = fetchDirectory()
       .then((result) => {
         if (result.ok && generationFor(identity) === generation) {
@@ -614,7 +638,20 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
             result,
           });
         }
+        recordDecision({
+          source: 'directory',
+          reason,
+          outcome: result.ok ? 'allow' : 'unavailable',
+        });
         return result;
+      })
+      .catch((error) => {
+        recordDecision({
+          source: 'directory',
+          reason,
+          outcome: 'unavailable',
+        });
+        throw error;
       })
       .finally(() => {
         if (inFlight.get(identity)?.request === request) {
@@ -634,9 +671,19 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
         && cachedEntry.generation === generationFor(identity)
         && now() < cachedEntry.expiresAt
       ) {
+        const ageMs = Math.max(0, ttlMs - (cachedEntry.expiresAt - now()));
+        recordDecision({
+          source: 'cache',
+          reason: 'lease_hit',
+          outcome: 'allow',
+          ageMs,
+        });
+        options.onSuppressedRequest?.({ source: 'directory', reason: 'lease_hit' });
         return Promise.resolve(cachedEntry.result);
       }
+      const reason = cachedEntry ? 'lease_expired' : 'cold';
       cached.delete(identity);
+      recordDecision({ source: 'cache', reason, outcome: 'fallback' });
       return Promise.resolve({ ok: false, items: [] });
     },
     read: () => {
@@ -647,12 +694,25 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
         && cachedEntry.generation === generationFor(identity)
         && now() < cachedEntry.expiresAt
       ) {
+        const ageMs = Math.max(0, ttlMs - (cachedEntry.expiresAt - now()));
+        recordDecision({
+          source: 'cache',
+          reason: 'lease_hit',
+          outcome: 'allow',
+          ageMs,
+        });
+        options.onSuppressedRequest?.({ source: 'directory', reason: 'lease_hit' });
         return Promise.resolve(cachedEntry.result);
       }
-      return start(identity);
+      const reason = cachedEntry ? 'lease_expired' : 'cold';
+      cached.delete(identity);
+      return start(identity, reason);
     },
-    fresh: () => start(identityKey()),
-    invalidate: () => invalidateIdentity(identityKey()),
+    fresh: () => start(identityKey(), 'fresh'),
+    invalidate: (reason = 'event_dirty') => {
+      invalidateIdentity(identityKey());
+      options.onInvalidation?.({ source: 'cache', reason });
+    },
     refreshAfterMutation: async () => {
       // A read that started before the remote mutation can still be in flight
       // after the mutation commits. Drain it, then deliberately start another
@@ -661,7 +721,8 @@ export function createWorkspaceDirectoryAuthorityBroker(options: {
       const pending = inFlight.get(identity)?.request;
       if (pending) await pending.catch(() => undefined);
       invalidateIdentity(identity);
-      return start(identityKey());
+      options.onInvalidation?.({ source: 'cache', reason: 'mutation' });
+      return start(identityKey(), 'fresh');
     },
   };
 }

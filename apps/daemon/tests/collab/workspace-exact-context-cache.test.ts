@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { WorkspaceCollabContext } from '@open-design/contracts';
 
 import { createWorkspaceExactContextCache } from '../../src/collab/workspace-exact-context-cache.js';
@@ -77,5 +77,33 @@ describe('workspace exact context cache', () => {
     await old;
     cache.setRealtimeHealthy('w1', true);
     expect(cache.cached('w1')).toBeNull();
+  });
+
+  it('reports a healthy lease hit as one suppressed current request', async () => {
+    let now = 1_000;
+    const onDecision = vi.fn();
+    const onSuppressedRequest = vi.fn();
+    const cache = createWorkspaceExactContextCache({
+      identity: () => 'account-a',
+      now: () => now,
+      onDecision,
+      onSuppressedRequest,
+      provider: {
+        current: async () => null,
+        resolveExact: async ({ workspaceId }) => context(workspaceId),
+      },
+    });
+
+    await cache.refresh({ workspaceId: 'w1' });
+    cache.setRealtimeHealthy('w1', true);
+    now += 250;
+    expect(cache.cached('w1')).toMatchObject({ workspaceId: 'w1' });
+    expect(onDecision).toHaveBeenLastCalledWith({
+      source: 'cache',
+      reason: 'lease_hit',
+      outcome: 'allow',
+      ageMs: 250,
+    });
+    expect(onSuppressedRequest).toHaveBeenCalledOnce();
   });
 });

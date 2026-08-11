@@ -15,6 +15,11 @@ export interface WorkspaceAuthorityHealthCoordinatorOptions {
   setDirectoryPollingHealthy(workspaceId: string, healthy: boolean): void;
   setBillingPollingHealthy(workspaceId: string, healthy: boolean): void;
   setContextCachingHealthy?(workspaceId: string, healthy: boolean): void;
+  onDecision?: (input: {
+    source: 'sse';
+    reason: 'mode_disabled' | 'unhealthy' | 'catch_up' | 'healthy';
+    outcome: 'allow' | 'unavailable' | 'fallback';
+  }) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -48,6 +53,11 @@ export function createWorkspaceAuthorityHealthCoordinator(
 
       if (options.mode !== 'adaptive' || !input.healthy) {
         setHealthy(workspaceId, false);
+        options.onDecision?.({
+          source: 'sse',
+          reason: input.healthy ? 'mode_disabled' : 'unhealthy',
+          outcome: 'fallback',
+        });
         return;
       }
 
@@ -57,11 +67,21 @@ export function createWorkspaceAuthorityHealthCoordinator(
       try {
         await options.catchUp(workspaceId);
       } catch (error) {
+        options.onDecision?.({
+          source: 'sse',
+          reason: 'catch_up',
+          outcome: 'unavailable',
+        });
         options.onError?.(error);
         return;
       }
       if (generations.get(workspaceId) !== generation) return;
       setHealthy(workspaceId, true);
+      options.onDecision?.({
+        source: 'sse',
+        reason: 'healthy',
+        outcome: 'allow',
+      });
     },
   };
 }

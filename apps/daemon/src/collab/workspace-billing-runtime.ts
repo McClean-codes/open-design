@@ -96,6 +96,9 @@ export interface WorkspaceBillingRuntimeCoordinatorOptions {
   maxRefreshStartsPerWindow?: number;
   refreshStartWindowMs?: number;
   onInterestSetChange?: (interests: WorkspaceBillingRuntimeKey[]) => void;
+  /** Bounded observability hook; one callback equals one billing projection
+   * refresh avoided by the strict realtime safety floor. */
+  onPollSuppressed?: () => void;
 }
 
 interface ClientInterest {
@@ -487,6 +490,7 @@ export class WorkspaceBillingRuntimeCoordinator {
         entry.observedAt != null &&
         this.scheduler.now() - entry.observedAt < this.realtimePollFloorMs
       ) {
+        this.options.onPollSuppressed?.();
         continue;
       }
       this.markStatus(entry, hasProjection(entry) ? 'stale' : 'loading', reason);

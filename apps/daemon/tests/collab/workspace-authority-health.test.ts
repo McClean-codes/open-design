@@ -41,11 +41,13 @@ describe('workspace authority health coordinator', () => {
   it('enables adaptive polling only after catch-up completes', async () => {
     const gate = deferred();
     const states: boolean[] = [];
+    const onDecision = vi.fn();
     const coordinator = createWorkspaceAuthorityHealthCoordinator({
       mode: 'adaptive',
       catchUp: () => gate.promise,
       setDirectoryPollingHealthy: (_workspaceId, healthy) => states.push(healthy),
       setBillingPollingHealthy: () => undefined,
+      onDecision,
     });
 
     const update = coordinator.update({ workspaceId: 'w1', healthy: true });
@@ -53,6 +55,11 @@ describe('workspace authority health coordinator', () => {
     gate.resolve();
     await update;
     expect(states).toEqual([false, true]);
+    expect(onDecision).toHaveBeenCalledWith({
+      source: 'sse',
+      reason: 'healthy',
+      outcome: 'allow',
+    });
   });
 
   it('cannot re-enable adaptive polling from a catch-up that lost its health generation', async () => {

@@ -58,6 +58,9 @@ export interface WorkspaceInvalidationPollerDeps {
   recoveryFloorIntervalMs?: number;
   /** Injectable wall clock for deterministic recovery-floor tests. */
   now?: () => number;
+  /** Bounded observability hook; one callback equals one upstream poll cycle
+   * avoided by the strict realtime safety floor. */
+  onPollSuppressed?: () => void;
   onError?: (error: unknown) => void;
 }
 
@@ -254,6 +257,7 @@ export function createWorkspaceInvalidationPoller(
       lastPollStartedAt != null &&
       now() - lastPollStartedAt < realtimePollFloorMs
     ) {
+      deps.onPollSuppressed?.();
       return;
     }
     running = true;

@@ -64,6 +64,7 @@ function harness(initial: {
     workspaceId: string;
     projects: readonly TeamProject[];
   }) => void | Promise<void>;
+  onPollSuppressed?: () => void;
 }): Harness {
   const h: Harness = {
     emitted: [],
@@ -101,6 +102,9 @@ function harness(initial: {
       h.emittedWorkspaceIds.push(context?.workspaceId ?? null);
     },
     onError: (error) => h.errors.push(error),
+    ...(initial.onPollSuppressed
+      ? { onPollSuppressed: initial.onPollSuppressed }
+      : {}),
     ...(initial.pollIntervalMs != null
       ? { pollIntervalMs: initial.pollIntervalMs }
       : {}),
@@ -465,9 +469,11 @@ describe('workspace invalidation poller', () => {
   it('uses the realtime poll floor only while healthy and resumes immediately on disconnect', async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
+    const onPollSuppressed = vi.fn();
     const h = harness({
       pollIntervalMs: 10,
       realtimePollFloorMs: 100,
+      onPollSuppressed,
     });
 
     try {
@@ -478,6 +484,7 @@ describe('workspace invalidation poller', () => {
       h.poller.setRealtimeHealthy(true);
       await vi.advanceTimersByTimeAsync(99);
       expect(h.contextCalls).toBe(1);
+      expect(onPollSuppressed).toHaveBeenCalledTimes(9);
       await vi.advanceTimersByTimeAsync(1);
       expect(h.contextCalls).toBe(2);
 

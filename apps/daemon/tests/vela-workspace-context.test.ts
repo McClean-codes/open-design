@@ -234,6 +234,38 @@ describe('createCachedWorkspaceDirectoryFetcher', () => {
     reads[1]!.resolve({ ok: true, items: [] });
     await expect(accountB).resolves.toEqual({ ok: true, items: [] });
   });
+
+  it('reports directory lease hits and mutation invalidation without identity labels', async () => {
+    let now = 1_000;
+    const onDecision = vi.fn();
+    const onSuppressedRequest = vi.fn();
+    const onInvalidation = vi.fn();
+    const broker = createWorkspaceDirectoryAuthorityBroker({
+      now: () => now,
+      ttlMs: 5_000,
+      fetchDirectory: async () => ({ ok: true, items: [] }),
+      onDecision,
+      onSuppressedRequest,
+      onInvalidation,
+    });
+
+    await broker.read();
+    now += 250;
+    await broker.read();
+    expect(onDecision).toHaveBeenLastCalledWith({
+      source: 'cache',
+      reason: 'lease_hit',
+      outcome: 'allow',
+      ageMs: 250,
+    });
+    expect(onSuppressedRequest).toHaveBeenCalledOnce();
+
+    await broker.refreshAfterMutation();
+    expect(onInvalidation).toHaveBeenCalledWith({
+      source: 'cache',
+      reason: 'mutation',
+    });
+  });
 });
 
 describe('createFreshWorkspaceDirectoryFetcher', () => {

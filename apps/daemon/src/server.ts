@@ -784,6 +784,13 @@ import {
   resolveWorkspaceAuthorityCacheMode,
 } from './collab/workspace-authority-health.js';
 import {
+  recordWorkspaceAuthorityDecision,
+  recordWorkspaceAuthorityInvalidation,
+  recordWorkspaceAuthorityRealtimeTransition,
+  recordWorkspaceAuthorityRevocationClear,
+  recordWorkspaceAuthoritySuppressedRequest,
+} from './metrics/workspace-authority.js';
+import {
   createWorkspaceHubSubscriptionManager,
   type WorkspaceHubSubscriptionManager,
 } from './collab/workspace-hub-subscriptions.js';
@@ -3015,6 +3022,18 @@ export async function startServer({
       if (result.ok) workspaceTypes.learn(result.items);
       return result;
     },
+    onDecision: (input) => recordWorkspaceAuthorityDecision({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
+    onSuppressedRequest: (input) => recordWorkspaceAuthoritySuppressedRequest({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
+    onInvalidation: (input) => recordWorkspaceAuthorityInvalidation({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
   });
   const fetchWorkspaceDirectory = workspaceDirectoryAuthority.read;
   const fetchFreshMutationWorkspaceDirectory =
@@ -3263,6 +3282,18 @@ export async function startServer({
   const workspaceExactContextCache = createWorkspaceExactContextCache({
     provider: workspaceContext,
     identity: () => velaWorkspaceDirectoryIdentity(),
+    onDecision: (input) => recordWorkspaceAuthorityDecision({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
+    onSuppressedRequest: (input) => recordWorkspaceAuthoritySuppressedRequest({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
+    onInvalidation: (input) => recordWorkspaceAuthorityInvalidation({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
   });
   const workspaceContextProvider = workspaceExactContextCache.provider;
   const cachedWorkspaceContextForRequest = (
@@ -4749,8 +4780,8 @@ export async function startServer({
       }
     },
     onAccessRevoked: ({ workspaceId }) => {
-      workspaceDirectoryAuthority.invalidate();
-      workspaceExactContextCache.invalidate(workspaceId);
+      workspaceDirectoryAuthority.invalidate('auth_reject');
+      workspaceExactContextCache.invalidate(workspaceId, 'auth_reject');
     },
     onStateChange: (state) => {
       // The request that created a runtime already receives this state in its
@@ -4769,6 +4800,11 @@ export async function startServer({
         interests.map((interest) => interest.workspaceId),
       );
     },
+    onPollSuppressed: () => recordWorkspaceAuthoritySuppressedRequest({
+      mode: workspaceAuthorityCacheMode,
+      source: 'billing',
+      reason: 'safety_floor',
+    }),
   });
   /**
    * Warm or revalidate both digest faces for one exact directory-verified
@@ -4876,6 +4912,11 @@ export async function startServer({
         },
         onTeamProjectsObserved: ({ workspaceId: observedWorkspaceId }) =>
           proactiveContentPull.advanceRecoveryFloor(observedWorkspaceId),
+        onPollSuppressed: () => recordWorkspaceAuthoritySuppressedRequest({
+          mode: workspaceAuthorityCacheMode,
+          source: 'directory',
+          reason: 'safety_floor',
+        }),
         onError: (error) =>
           console.warn(
             `[od] workspace ${workspaceId} invalidation recovery error:`,
@@ -4898,8 +4939,12 @@ export async function startServer({
     catchUp: async (workspaceId) => {
       // A healthy transport is not enough to suppress legacy polling. First
       // cross a fresh directory boundary and close the exact Workspace gap.
-      workspaceDirectoryAuthority.invalidate();
-      const exactContext = await workspaceExactContextCache.refresh({ workspaceId });
+      workspaceDirectoryAuthority.invalidate('catch_up');
+      workspaceExactContextCache.invalidate(workspaceId, 'catch_up');
+      const exactContext = await workspaceExactContextCache.refresh(
+        { workspaceId },
+        'catch_up',
+      );
       if (!exactContext || exactContext.workspaceId !== workspaceId) {
         throw new Error('exact workspace catch-up was unavailable');
       }
@@ -4916,6 +4961,10 @@ export async function startServer({
       workspaceBillingRuntime.setRealtimeHealthy(workspaceId, healthy),
     setContextCachingHealthy: (workspaceId, healthy) =>
       workspaceExactContextCache.setRealtimeHealthy(workspaceId, healthy),
+    onDecision: (input) => recordWorkspaceAuthorityDecision({
+      mode: workspaceAuthorityCacheMode,
+      ...input,
+    }),
     onError: (error) => {
       console.warn(
         '[od] workspace authority catch-up failed; retaining legacy polling:',
@@ -4980,7 +5029,21 @@ export async function startServer({
       }
       console.info(`[od] hub events channel ${state}`);
     },
-    onAuthorityHealthChange: ({ workspaceId, healthy }) => {
+    onAuthorityHealthChange: ({
+      workspaceId,
+      healthy,
+      capabilities,
+      listenerStatus,
+    }) => {
+      recordWorkspaceAuthorityRealtimeTransition({
+        mode: workspaceAuthorityCacheMode,
+        healthy,
+        memberEvents: capabilities.includes('workspace-member-events-v1'),
+        listenerStatus: capabilities.includes(
+          'workspace-event-listener-status-v1',
+        ),
+        sourceGap: listenerStatus?.sourceGap === true,
+      });
       void workspaceAuthorityHealth.update({
         workspaceId: workspaceId ?? subscribedWorkspaceId,
         healthy,
@@ -5015,6 +5078,7 @@ export async function startServer({
       );
     },
     onAccessRevoked: ({ workspaceId, reason }) => {
+      const revocationReceivedAt = performance.now();
       const exactWorkspaceId = workspaceId ?? subscribedWorkspaceId;
       console.info(
         `[od] hub workspace access revoked workspaceId=${exactWorkspaceId} reason=${reason ?? 'unknown'}`,
@@ -5023,14 +5087,21 @@ export async function startServer({
         exactWorkspaceId,
         () => pollWorkspaceInvalidationForWorkspace(exactWorkspaceId),
         () => {
-          workspaceDirectoryAuthority.invalidate();
-          workspaceExactContextCache.invalidate(exactWorkspaceId);
+          workspaceDirectoryAuthority.invalidate('auth_reject');
+          workspaceExactContextCache.invalidate(
+            exactWorkspaceId,
+            'auth_reject',
+          );
         },
         (revokedWorkspaceId) =>
           workspaceBillingRuntime.revokeWorkspace(
             revokedWorkspaceId,
             'vela-access-revoked',
           ),
+      );
+      recordWorkspaceAuthorityRevocationClear(
+        workspaceAuthorityCacheMode,
+        performance.now() - revocationReceivedAt,
       );
     },
     onEvent: (event) => {
@@ -5189,8 +5260,11 @@ export async function startServer({
             eventWorkspaceId,
             () => pollWorkspaceInvalidationForWorkspace(subscribedWorkspaceId),
             () => {
-              workspaceDirectoryAuthority.invalidate();
-              workspaceExactContextCache.invalidate(eventWorkspaceId);
+              workspaceDirectoryAuthority.invalidate('event_dirty');
+              workspaceExactContextCache.invalidate(
+                eventWorkspaceId,
+                'event_dirty',
+              );
             },
           );
           // Revalidate exact membership before the next billing projection.
@@ -5203,8 +5277,11 @@ export async function startServer({
             eventWorkspaceId,
             () => pollWorkspaceInvalidationForWorkspace(subscribedWorkspaceId),
             () => {
-              workspaceDirectoryAuthority.invalidate();
-              workspaceExactContextCache.invalidate(eventWorkspaceId);
+              workspaceDirectoryAuthority.invalidate('event_dirty');
+              workspaceExactContextCache.invalidate(
+                eventWorkspaceId,
+                'event_dirty',
+              );
             },
           );
           // A role update or removal changes both authorization and the

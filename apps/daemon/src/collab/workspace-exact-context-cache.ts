@@ -9,16 +9,34 @@ export interface WorkspaceExactContextCacheOptions {
   identity(): string;
   realtimeTtlMs?: number;
   now?: () => number;
+  onDecision?: (input: {
+    source: 'cache' | 'current';
+    reason: 'cold' | 'lease_hit' | 'lease_expired' | 'catch_up';
+    outcome: 'allow' | 'deny' | 'unavailable' | 'fallback';
+    ageMs?: number;
+  }) => void;
+  onSuppressedRequest?: (input: {
+    source: 'current';
+    reason: 'lease_hit';
+  }) => void;
+  onInvalidation?: (input: {
+    source: 'current';
+    reason: 'event_dirty' | 'auth_reject' | 'catch_up' | 'unhealthy';
+  }) => void;
 }
 
 export interface WorkspaceExactContextCache {
   provider: WorkspaceContextProvider;
   refresh(
     request: WorkspaceContextRequest & { workspaceId: string },
+    reason?: 'cold' | 'lease_expired' | 'catch_up',
   ): Promise<WorkspaceCollabContext | null>;
   cached(workspaceId: string): WorkspaceCollabContext | null;
   setRealtimeHealthy(workspaceId: string, healthy: boolean): void;
-  invalidate(workspaceId?: string): void;
+  invalidate(
+    workspaceId?: string,
+    reason?: 'event_dirty' | 'auth_reject' | 'catch_up',
+  ): void;
 }
 
 interface Entry {
@@ -50,16 +68,27 @@ export function createWorkspaceExactContextCache(
 
   const refresh = async (
     request: WorkspaceContextRequest & { workspaceId: string },
+    reason: 'cold' | 'lease_expired' | 'catch_up' = 'cold',
   ): Promise<WorkspaceCollabContext | null> => {
     const workspaceId = request.workspaceId.trim();
     if (!workspaceId || !options.provider.resolveExact) return null;
     const key = currentKey(workspaceId);
     if (!generations.has(key)) generations.set(key, 0);
     const generation = generations.get(key) ?? 0;
-    const context = await options.provider.resolveExact({
-      ...request,
-      workspaceId,
-    });
+    let context: WorkspaceCollabContext | null;
+    try {
+      context = await options.provider.resolveExact({
+        ...request,
+        workspaceId,
+      });
+    } catch (error) {
+      options.onDecision?.({
+        source: 'current',
+        reason,
+        outcome: 'unavailable',
+      });
+      throw error;
+    }
     if (
       context &&
       context.workspaceId === workspaceId &&
@@ -67,6 +96,13 @@ export function createWorkspaceExactContextCache(
     ) {
       entries.set(key, { context, observedAt: now() });
     }
+    options.onDecision?.({
+      source: 'current',
+      reason,
+      // The provider intentionally collapses signed-out, denied, and transport
+      // failures to null. Do not manufacture a deny label without evidence.
+      outcome: context ? 'allow' : 'unavailable',
+    });
     return context;
   };
 
@@ -76,7 +112,31 @@ export function createWorkspaceExactContextCache(
     if (!workspaceId || healthyIdentities.get(workspaceId) !== identity) return null;
     const key = cacheKey(identity, workspaceId);
     const entry = entries.get(key);
-    if (!entry || now() - entry.observedAt >= realtimeTtlMs) return null;
+    if (!entry) {
+      options.onDecision?.({
+        source: 'cache',
+        reason: 'cold',
+        outcome: 'fallback',
+      });
+      return null;
+    }
+    const ageMs = Math.max(0, now() - entry.observedAt);
+    if (ageMs >= realtimeTtlMs) {
+      options.onDecision?.({
+        source: 'cache',
+        reason: 'lease_expired',
+        outcome: 'fallback',
+        ageMs,
+      });
+      return null;
+    }
+    options.onDecision?.({
+      source: 'cache',
+      reason: 'lease_hit',
+      outcome: 'allow',
+      ageMs,
+    });
+    options.onSuppressedRequest?.({ source: 'current', reason: 'lease_hit' });
     return entry.context;
   };
 
@@ -87,7 +147,7 @@ export function createWorkspaceExactContextCache(
           resolveExact: async (
             request: WorkspaceContextRequest & { workspaceId: string },
           ): Promise<WorkspaceCollabContext | null> =>
-            cached(request.workspaceId) ?? refresh(request),
+            cached(request.workspaceId) ?? refresh(request, 'cold'),
         }
       : {}),
   };
@@ -103,6 +163,7 @@ export function createWorkspaceExactContextCache(
         healthyIdentities.set(workspaceId, options.identity());
         return;
       }
+      options.onInvalidation?.({ source: 'current', reason: 'unhealthy' });
       healthyIdentities.delete(workspaceId);
       const suffix = `\0${workspaceId}`;
       for (const key of generations.keys()) {
@@ -111,8 +172,9 @@ export function createWorkspaceExactContextCache(
         entries.delete(key);
       }
     },
-    invalidate(workspaceIdInput): void {
+    invalidate(workspaceIdInput, reason = 'event_dirty'): void {
       const workspaceId = workspaceIdInput?.trim() ?? '';
+      options.onInvalidation?.({ source: 'current', reason });
       if (workspaceId) {
         healthyIdentities.delete(workspaceId);
         const suffix = `\0${workspaceId}`;
