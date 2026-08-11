@@ -43,6 +43,28 @@ export type AmrBalanceGateResult =
   | { kind: 'hard'; reason: 'signed_out'; snapshot: AmrWalletSnapshot }
   | { kind: 'soft'; snapshot: AmrWalletSnapshot };
 
+export const HOME_AMR_BALANCE_RETRY_DELAYS_MS = [400, 1_200] as const;
+
+/**
+ * Home has no project queue to hold a send while a cold Workspace billing
+ * projection catches up. Give that transient state a small, bounded recovery
+ * window before returning control to the composer. Only `unavailable` is
+ * retried; definitive allow/soft/hard decisions are never delayed.
+ */
+export async function retryUnavailableAmrBalanceGate(
+  check: () => Promise<AmrBalanceGateResult>,
+): Promise<AmrBalanceGateResult> {
+  let result = await check();
+  for (const delayMs of HOME_AMR_BALANCE_RETRY_DELAYS_MS) {
+    if (result.kind !== 'unavailable') return result;
+    await new Promise<void>((resolve) => {
+      globalThis.setTimeout(resolve, delayMs);
+    });
+    result = await check();
+  }
+  return result;
+}
+
 export interface AmrBalanceGateScope {
   workspaceType: 'personal' | 'team';
   workspaceId: string;

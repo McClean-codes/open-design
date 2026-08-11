@@ -496,6 +496,51 @@ describe('HomeView prompt handoff', () => {
     window.sessionStorage.clear();
   });
 
+  it('keeps the existing sending state visible and preserves the draft when submit fails', async () => {
+    let resolveSubmit: (accepted: boolean) => void = () => undefined;
+    const submitResult = new Promise<boolean>((resolve) => {
+      resolveSubmit = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async (url) => {
+      if (typeof url === 'string' && url === '/api/plugins') {
+        return new Response(JSON.stringify({ plugins: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+    stubAnimationFrame();
+
+    render(
+      <HomeView
+        projects={[]}
+        onSubmit={() => submitResult}
+        onOpenProject={() => undefined}
+        onViewAllProjects={() => undefined}
+      />,
+    );
+
+    await setPromptAndSettle('Create an image of a quiet reading room.');
+    fireEvent.click(screen.getByTestId('home-hero-submit'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('true');
+    });
+    expect(homeHeroPromptValue()).toBe('Create an image of a quiet reading room.');
+
+    await act(async () => {
+      resolveSubmit(false);
+      await submitResult;
+    });
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Failed to start the run. Make sure the daemon is reachable, then try again.',
+    );
+    expect(homeHeroPromptValue()).toBe('Create an image of a quiet reading room.');
+    expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('false');
+  });
+
   it('keeps creation types actionable while an expired plugin cache refreshes after a project round trip', async () => {
     let resolveRefresh: (response: Response) => void = () => undefined;
     const refreshResponse = new Promise<Response>((resolve) => {

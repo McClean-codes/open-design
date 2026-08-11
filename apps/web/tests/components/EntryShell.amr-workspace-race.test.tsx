@@ -107,6 +107,7 @@ describe('EntryShell AMR workspace precheck race', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     globalThis.fetch = originalFetch;
     globalThis.ResizeObserver = originalResizeObserver;
@@ -114,6 +115,100 @@ describe('EntryShell AMR workspace precheck race', () => {
     resetWorkspaceContextCache();
     resetWorkspaceBillingCache();
     resetTeamProjectsCache();
+  });
+
+  it('keeps one Home submit loading until a transient team billing read recovers', async () => {
+    window.history.replaceState(null, '', '/');
+    const workspace = teamContext('workspace-a', 'member-a');
+    let contextReads = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspace/directory')) {
+        return jsonResponse(workspaceDirectoryFixture([workspace]));
+      }
+      if (url.endsWith('/api/workspace/context')) {
+        contextReads += 1;
+        return jsonResponse({ context: workspace });
+      }
+      if (url.includes('/api/workspace/billing?')) {
+        return jsonResponse({ summary: null, workspaceBalance: null });
+      }
+      if (url.endsWith('/api/workspace/projects/team')) {
+        return jsonResponse({ projects: [] });
+      }
+      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    mockedCheckAmrBalanceGate
+      .mockResolvedValueOnce({ kind: 'unavailable' })
+      .mockResolvedValueOnce({ kind: 'unavailable' })
+      .mockResolvedValueOnce({ kind: 'allow' });
+    const onCreateProject = vi.fn(async () => true);
+
+    render(
+      <I18nProvider initial="en">
+        <EntryShell
+          skills={[]}
+          designTemplates={[]}
+          designSystems={[]}
+          projects={[]}
+          templates={[]}
+          promptTemplates={[]}
+          defaultDesignSystemId={null}
+          connectors={[]}
+          connectorsLoading={false}
+          config={amrConfig()}
+          agents={[amrAgent()]}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiProtocolChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onConfigPersist={vi.fn()}
+          onRefreshAgents={vi.fn(() => [amrAgent()])}
+          onCreateProject={onCreateProject}
+          onCreatePluginShareProject={vi.fn()}
+          onImportClaudeDesign={vi.fn()}
+          onOpenProject={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onDeleteProject={vi.fn()}
+          onRenameProject={vi.fn()}
+          onChangeDefaultDesignSystem={vi.fn()}
+          onPersistComposioKey={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onCompleteOnboarding={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(contextReads).toBeGreaterThan(0));
+    const submitButton = await screen.findByTestId('home-hero-submit');
+    setHomeHeroPrompt('Create an image of a quiet reading room.');
+    vi.useFakeTimers();
+    fireEvent.click(submitButton);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('true');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(400);
+    });
+    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledTimes(2);
+    expect(onCreateProject).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_200);
+    });
+    expect(mockedCheckAmrBalanceGate).toHaveBeenCalledTimes(3);
+    expect(onCreateProject).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a locally signed-in account in syncing state while Cloud is unavailable', async () => {

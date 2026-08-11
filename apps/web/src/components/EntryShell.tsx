@@ -108,6 +108,7 @@ import {
   amrBalanceGateScopeForWorkspaceContext,
   amrBalanceGateScopesMatch,
   checkAmrBalanceGate,
+  retryUnavailableAmrBalanceGate,
   type AmrBalanceGateScope,
 } from '../runtime/amr-balance-gate';
 import { isPaidAmrPlan, resolveAmrPlan } from '../runtime/amr-low-balance-plan';
@@ -1293,7 +1294,9 @@ export function EntryShell({
         const gateScope = amrBalanceGateScopeForWorkspaceContext(
           workspaceContextRef.current,
         );
-        let gate = await checkAmrBalanceGate(gateScope);
+        let gate = await retryUnavailableAmrBalanceGate(
+          () => checkAmrBalanceGate(gateScope),
+        );
         // Hard blocks hold THIS submit open: the dialog resolves 'retry' when
         // its blocking condition clears (sign-in completed, recharge landed)
         // and the gate re-runs, so the task auto-continues through the normal
@@ -1310,9 +1313,11 @@ export function EntryShell({
           });
           setAmrBalanceGateBlock(null);
           if (decision === 'dismiss') return 'blocked' as const;
-          gate = await checkAmrBalanceGate(gateScope);
+          gate = await retryUnavailableAmrBalanceGate(
+            () => checkAmrBalanceGate(gateScope),
+          );
         }
-        if (gate.kind === 'unavailable') return 'blocked' as const;
+        if (gate.kind === 'unavailable') return false;
         if (gate.kind === 'soft') {
           // Hold THIS submit while the reminder waits for a decision; 'proceed'
           // resumes the same create-and-run below, so HomeView's normal accept
@@ -1334,7 +1339,7 @@ export function EntryShell({
         break;
       }
       if (!amrGatePrecheckWitness) {
-        return 'blocked' as const;
+        return false;
       }
     }
     const summarizedName = summarizeProjectNameFromPrompt(payload.prompt);
