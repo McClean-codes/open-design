@@ -194,11 +194,6 @@ on:
         required: false
         type: boolean
         default: false
-      recover_foreign_beta:
-        description: "Allow current main to recover beta/latest after a historical non-main publish."
-        required: false
-        type: boolean
-        default: false
       release_version:
         required: false
         type: string
@@ -439,7 +434,6 @@ jobs:
         env:
           GITHUB_SHA: ${{ env.BUILT_SHA }}
           GITHUB_REF_NAME: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}
-          OPEN_DESIGN_RECOVER_FOREIGN_BETA: ${{ inputs.recover_foreign_beta && '1' || '' }}
           OPEN_DESIGN_RELEASE_FORCE: ${{ inputs.force && '1' || '' }}
         run: pnpm exec tools-release prepare beta
 

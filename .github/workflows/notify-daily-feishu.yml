@@ -44,6 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       ref: ${{ steps.pick.outputs.ref }}
+      force: ${{ steps.recovery.outputs.force }}
     steps:
       - name: Pick build ref (main, or override)
         id: pick
@@ -59,6 +60,30 @@ jobs:
           echo "using default ref: main"
           echo "ref=main" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout workflow helper
+        uses: actions/checkout@v6.0.2
+        with:
+          path: workflow-source
+
+      - name: Checkout build ref for recovery check
+        uses: actions/checkout@v6.0.2
+        with:
+          ref: ${{ steps.pick.outputs.ref }}
+          path: build-source
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - name: Resolve foreign beta recovery
+        id: recovery
+        env:
+          BUILD_REF: ${{ steps.pick.outputs.ref }}
+          OPEN_DESIGN_BETA_METADATA_URL: ${{ vars.CLOUDFLARE_R2_RELEASES_PUBLIC_ORIGIN }}/beta/latest/metadata.json
+          PACKAGED_PACKAGE_JSON_PATH: build-source/apps/packaged/package.json
+        run: node --experimental-strip-types workflow-source/.github/scripts/release/resolve-daily-beta-recovery.ts
+
   build:
     name: Build beta from main
     needs: resolve
@@ -67,7 +92,7 @@ jobs:
     with:
       enable_mac_arm64: true
       enable_win_x64: true
-      recover_foreign_beta: true
+      force: ${{ needs.resolve.outputs.force == 'true' }}
       ref: ${{ needs.resolve.outputs.ref }}
 
   notify:

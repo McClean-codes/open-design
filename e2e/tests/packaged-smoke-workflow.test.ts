@@ -57,6 +57,13 @@ const bakePreviewsReleaseWorkflowPath = join(
 const finalizeReleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "finalize-release.yml");
 const handoffScriptPath = join(workspaceRoot, ".github", "scripts", "handoff.py");
 const releaseBetaWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-beta.yml");
+const dailyBetaRecoveryScriptPath = join(
+  workspaceRoot,
+  ".github",
+  "scripts",
+  "release",
+  "resolve-daily-beta-recovery.ts",
+);
 const releaseBetaSelfHostedWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-beta-s.yml");
 const releasePreviewWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-preview.yml");
 const releasePrereleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-prerelease.yml");
@@ -1910,7 +1917,6 @@ process.stdin.on("end", () => {
   it("[P1] lets the daily main build recover a shared beta advanced by a feature branch", async () => {
     const packagedVersion = await readPackagedVersion();
     const objects: Record<string, unknown> = {
-      "stable/latest/metadata.json": { channel: "stable", stableVersion: "0.18.1" },
       "beta/latest/metadata.json": {
         baseVersion: "0.19.0",
         channel: "beta",
@@ -1924,43 +1930,40 @@ process.stdin.on("end", () => {
     const outputPath = join(runnerTemp, "outputs.txt");
     const baseEnv = {
       ...process.env,
+      BUILD_REF: "main",
       GITHUB_OUTPUT: outputPath,
-      GITHUB_REF_NAME: "main",
-      GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
       NODE_TLS_REJECT_UNAUTHORIZED: "0",
       OPEN_DESIGN_BETA_METADATA_URL: `${fixture.origin}/beta/latest/metadata.json`,
-      OPEN_DESIGN_STABLE_METADATA_URL: `${fixture.origin}/stable/latest/metadata.json`,
+      PACKAGED_VERSION: packagedVersion,
     };
 
     try {
-      const blocked = await execFileAsync(
-        process.execPath,
-        ["--experimental-strip-types", releaseBetaScriptPath],
-        { cwd: workspaceRoot, env: baseEnv, maxBuffer: 1024 * 1024 },
-      ).then(
-        () => "",
-        (error: unknown) => {
-          const failed = error as { stderr?: string; stdout?: string };
-          return `${failed.stdout ?? ""}${failed.stderr ?? ""}`;
-        },
-      );
-      expect(blocked).toContain(
-        `packaged base version ${packagedVersion} regressed below current beta base version 0.19.0`,
-      );
-
       const recovered = await execFileAsync(
         process.execPath,
-        ["--experimental-strip-types", releaseBetaScriptPath],
+        ["--experimental-strip-types", dailyBetaRecoveryScriptPath],
         {
           cwd: workspaceRoot,
-          env: { ...baseEnv, OPEN_DESIGN_RECOVER_FOREIGN_BETA: "1" },
+          env: baseEnv,
           maxBuffer: 1024 * 1024,
         },
       );
-      expect(recovered.stderr).toContain(
-        "[release-beta] recovering shared beta from foreign branch feat/standalone-closure",
+      expect(recovered.stdout).toContain(
+        "[daily-beta] recovering shared beta from foreign branch feat/standalone-closure",
       );
-      expect(await readFile(outputPath, "utf8")).toContain(`beta_version=${packagedVersion}-beta.1`);
+      expect(await readFile(outputPath, "utf8")).toContain("force=true");
+
+      await writeFile(outputPath, "", "utf8");
+      const featureBuild = await execFileAsync(
+        process.execPath,
+        ["--experimental-strip-types", dailyBetaRecoveryScriptPath],
+        {
+          cwd: workspaceRoot,
+          env: { ...baseEnv, BUILD_REF: "feat/standalone-closure" },
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      expect(featureBuild.stdout).toContain("[daily-beta] recovery disabled for non-main ref");
+      expect(await readFile(outputPath, "utf8")).toContain("force=false");
     } finally {
       await fixture.close();
       await rm(runnerTemp, { force: true, recursive: true });
@@ -1989,10 +1992,10 @@ process.stdin.on("end", () => {
     );
     expect(publisherGuard).toContain('[ "$built_sha" != "$main_sha" ]');
     expect(publisherGuard).toContain("publish=false");
-    expect(metadataJob).toContain(
-      "OPEN_DESIGN_RECOVER_FOREIGN_BETA: ${{ inputs.recover_foreign_beta && '1' || '' }}",
-    );
-    expect(dailyWorkflow).toContain("recover_foreign_beta: true");
+    expect(betaWorkflow).not.toContain("recover_foreign_beta");
+    expect(betaWorkflow).not.toContain("OPEN_DESIGN_RECOVER_FOREIGN_BETA");
+    expect(dailyWorkflow).toContain("resolve-daily-beta-recovery.ts");
+    expect(dailyWorkflow).toContain("force: ${{ needs.resolve.outputs.force == 'true' }}");
   });
 
   it("[P2] daily beta resolve defaults to main and preserves the ref override", async () => {
@@ -2009,6 +2012,7 @@ process.stdin.on("end", () => {
     // builds main, and the workflow_dispatch override is still propagated.
     const workflow = await readFile(notifyDailyFeishuWorkflowPath, "utf8");
     const resolveJob = sectionBetween(workflow, "  resolve:", "\n  build:");
+    expect(resolveJob).toContain("force: ${{ steps.recovery.outputs.force }}");
     // Override path: workflow_dispatch ref is wired in and forwarded verbatim.
     expect(resolveJob).toContain("OVERRIDE_REF: ${{ inputs.ref }}");
     expect(resolveJob).toContain('echo "ref=$OVERRIDE_REF" >> "$GITHUB_OUTPUT"');
