@@ -520,6 +520,10 @@ interface Props {
   streaming: boolean;
   loading?: boolean;
   error: string | null;
+  // Identifies a pane-level error produced by an assistant run. This lets the
+  // pane distinguish a stale run error from a later failure with identical
+  // canonical text; non-run errors leave the source undefined.
+  errorSourceAssistantId?: string | null;
   projectId: string | null;
   sessionMode?: ChatSessionMode;
   onSessionModeChange?: (mode: ChatSessionMode) => void;
@@ -875,6 +879,7 @@ export function ChatPane({
   viewerOnly = false,
   queuedItems = [],
   error,
+  errorSourceAssistantId,
   projectId,
   sessionMode = 'design',
   onSessionModeChange,
@@ -1464,17 +1469,20 @@ export function ChatPane({
     !!retryAssistant?.resumable &&
     !!retryAssistant?.agentId &&
     retryAssistant.agentId === config?.agentId;
-  // `error` is a shared escape hatch for both run failures and unrelated
-  // pane errors (conversation load, audio, artifact persistence). A run error
-  // also lives durably on its assistant message. Once a later turn succeeds,
-  // the old global string can race or survive long enough to otherwise render
-  // a stale recovery card at the bottom of the conversation. Treat a global
-  // error that is already owned by an older assistant message as history; keep
-  // genuinely current non-run errors visible. When the latest run itself
-  // failed, its persisted event is the authoritative raw diagnostic.
+  // `error` is a shared escape hatch for both run failures and unrelated pane
+  // errors. A run error also lives durably on its assistant message. Suppress
+  // it only when its exact source assistant owns the persisted diagnostic and
+  // a later assistant has succeeded; canonical error text alone cannot prove
+  // ownership because a new run can fail with the same detail.
   const historicalRunError = useMemo(
-    () => !retryAssistant && isPersistedAssistantRunError(displayMessages, error),
-    [displayMessages, error, retryAssistant],
+    () =>
+      !retryAssistant &&
+      isRecoveredAssistantRunError(
+        displayMessages,
+        error,
+        errorSourceAssistantId,
+      ),
+    [displayMessages, error, errorSourceAssistantId, retryAssistant],
   );
   const currentGlobalError = historicalRunError ? null : error;
   // Prefer a case-specific message (AMR auth / balance) over the raw upstream
@@ -4462,21 +4470,28 @@ export function retryableAssistantMessage(
   return isRetryableAssistantTerminalFailure(last) ? last : null;
 }
 
-function isPersistedAssistantRunError(
+function isRecoveredAssistantRunError(
   messages: ChatMessage[],
   error: string | null,
+  sourceAssistantId: string | null | undefined,
 ): boolean {
   const target = error?.trim();
-  if (!target) return false;
-  return messages.some(
+  if (!target || !sourceAssistantId) return false;
+  const sourceIndex = messages.findIndex(
     (message) =>
-      message.role === 'assistant' &&
-      (message.events ?? []).some(
-        (event) =>
-          event.kind === 'status' &&
-          event.label === 'error' &&
-          event.detail?.trim() === target,
-      ),
+      message.role === 'assistant' && message.id === sourceAssistantId,
+  );
+  if (sourceIndex < 0) return false;
+  const source = messages[sourceIndex]!;
+  const ownsPersistedError = (source.events ?? []).some(
+    (event) =>
+      event.kind === 'status' &&
+      event.label === 'error' &&
+      event.detail?.trim() === target,
+  );
+  if (!ownsPersistedError) return false;
+  return messages.slice(sourceIndex + 1).some(
+    (message) => message.role === 'assistant' && message.runStatus === 'succeeded',
   );
 }
 

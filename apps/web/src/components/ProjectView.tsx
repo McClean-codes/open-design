@@ -2192,7 +2192,29 @@ export function ProjectView({
   useEffect(() => {
     if (!streaming) setLiveToolInput((prev) => (Object.keys(prev).length ? {} : prev));
   }, [streaming]);
-  const [error, setError] = useState<string | null>(null);
+  const [paneError, setPaneError] = useState<{
+    message: string;
+    sourceAssistantId: string | null;
+  } | null>(null);
+  const error = paneError?.message ?? null;
+  const errorSourceAssistantId = paneError?.sourceAssistantId ?? null;
+  const setError = useCallback((next: SetStateAction<string | null>) => {
+    setPaneError((current) => {
+      const currentMessage = current?.message ?? null;
+      const message = typeof next === 'function' ? next(currentMessage) : next;
+      if (message == null) return null;
+      return {
+        message,
+        sourceAssistantId:
+          typeof next === 'function' && message === currentMessage
+            ? current?.sourceAssistantId ?? null
+            : null,
+      };
+    });
+  }, []);
+  const setRunError = useCallback((message: string, sourceAssistantId: string) => {
+    setPaneError({ message, sourceAssistantId });
+  }, []);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [filesRefresh, setFilesRefresh] = useState(0);
   const filesRefreshRequestKeyRef = useRef(0);
@@ -5698,7 +5720,7 @@ export function ProjectView({
               textBuffer.cancel();
               unregisterTextBuffer();
               if (runMayFinalize) {
-                setError(err.message);
+                setRunError(err.message, message.id);
                 appendAssistantErrorEvent(message.id, err.message, errorCode, failure);
                 updateMessageById(
                   message.id,
@@ -6006,7 +6028,7 @@ export function ProjectView({
               !supersededRunsRef.current.has(controller);
             if ((err as Error).name !== 'AbortError' && runMayFinalize) {
               const msg = err instanceof Error ? err.message : String(err);
-              setError(msg);
+              setRunError(msg, message.id);
               appendAssistantErrorEvent(message.id, msg);
               updateMessageById(
                 message.id,
@@ -7360,7 +7382,7 @@ export function ProjectView({
           textBuffer.cancel();
           cancelSendTextBuffer();
           if (runMayFinalize) {
-            setError(err.message);
+            setRunError(err.message, assistantId);
             appendAssistantErrorEvent(assistantId, err.message, errorCode, failure);
             updateAssistant((prev) => ({
               ...prev,
@@ -9263,6 +9285,8 @@ export function ProjectView({
 	            sendDisabled: currentConversationSendDisabled,
             queuedItems: currentConversationQueuedItems,
             error: conversationLoadError ?? error,
+            errorSourceAssistantId:
+              conversationLoadError ? null : errorSourceAssistantId,
             onSend: handleComposerSend,
             onRetry: handleRetry,
             onStop: handleStop,
@@ -9282,6 +9306,7 @@ export function ProjectView({
 	      currentConversationLoading,
 	      currentConversationControlStreaming,
       error,
+      errorSourceAssistantId,
       handleAssistantFeedback,
       handleRetry,
       handleComposerSend,
@@ -10729,6 +10754,9 @@ export function ProjectView({
               }
               queuedItems={currentConversationQueuedItems}
               error={conversationLoadError ?? error}
+              errorSourceAssistantId={
+                conversationLoadError ? null : errorSourceAssistantId
+              }
               projectId={project.id}
               sessionMode={activeSessionMode}
               onSessionModeChange={handleActiveConversationSessionModeChange}

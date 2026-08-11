@@ -378,6 +378,7 @@ describe('ChatPane streaming state', () => {
         messages={messages}
         streaming={false}
         error={restartError}
+        errorSourceAssistantId="assistant-failed"
         projectId="project-1"
         projectFiles={[]}
         onEnsureProject={async () => 'project-1'}
@@ -392,6 +393,61 @@ describe('ChatPane streaming state', () => {
     );
 
     expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeNull();
+  });
+
+  it('keeps a repeated current daemon-restart error visible before its failure is persisted', () => {
+    const restartError = 'Run interrupted because the daemon restarted.';
+    const messages: ChatMessage[] = [
+      { id: 'user-1', role: 'user', content: 'Build the report', createdAt: 0 },
+      {
+        id: 'assistant-failed',
+        role: 'assistant',
+        content: 'I started the report.',
+        createdAt: 1,
+        endedAt: 2,
+        runStatus: 'failed',
+        events: [
+          {
+            kind: 'status',
+            label: 'error',
+            detail: restartError,
+            code: 'DAEMON_RESTARTED',
+          },
+        ],
+      },
+      { id: 'user-2', role: 'user', content: 'Continue', createdAt: 3 },
+      {
+        id: 'assistant-succeeded',
+        role: 'assistant',
+        content: 'The report is complete.',
+        createdAt: 4,
+        endedAt: 5,
+        runStatus: 'succeeded',
+      },
+      { id: 'user-3', role: 'user', content: 'Make one more change', createdAt: 6 },
+    ];
+
+    const { container } = render(
+      <ChatPane
+        projectKindForTracking="prototype"
+        messages={messages}
+        streaming={false}
+        error={restartError}
+        errorSourceAssistantId="assistant-current"
+        projectId="project-1"
+        projectFiles={[]}
+        onEnsureProject={async () => 'project-1'}
+        onSend={vi.fn()}
+        onStop={vi.fn()}
+        conversations={conversations}
+        activeConversationId="conv-1"
+        onSelectConversation={vi.fn()}
+        onDeleteConversation={vi.fn()}
+        projectMetadata={projectMetadata}
+      />,
+    );
+
+    expect(container.querySelector('[data-user-action-card="run-recovery"]')).toBeTruthy();
   });
 
   it('keeps a current non-run error visible after an assistant run succeeds', () => {
