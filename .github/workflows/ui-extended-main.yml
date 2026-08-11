@@ -37,8 +37,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate_inputs:
+    name: Validate inputs
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Validate suite
+        env:
+          SUITE: ${{ inputs.suite }}
+        run: |
+          case "$SUITE" in
+            p0|p0p1|full) ;;
+            *)
+              echo "Unsupported suite: $SUITE. Expected p0, p0p1, or full." >&2
+              exit 1
+              ;;
+          esac
+
   p0_runners:
     name: Resolve UI runner profiles
+    needs: [validate_inputs]
     if: ${{ github.repository == 'nexu-io/open-design' }}
     runs-on: ubuntu-24.04
     outputs:
@@ -58,7 +76,7 @@ jobs:
 
   ui_p0:
     name: UI P0 (${{ matrix.name }})
-    needs: [p0_runners]
+    needs: [validate_inputs, p0_runners]
     if: ${{ github.repository == 'nexu-io/open-design' && inputs.suite != 'full' }}
     runs-on: ${{ fromJSON(needs.p0_runners.outputs.runs_on).ui_p0 }}
     timeout-minutes: 45
@@ -144,6 +162,7 @@ jobs:
 
   ui_extended:
     name: UI P1 (${{ matrix.name }})
+    needs: [validate_inputs]
     if: ${{ github.repository == 'nexu-io/open-design' && inputs.suite == 'p0p1' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -200,7 +219,7 @@ jobs:
 
   ui_full:
     name: Full UI (shard ${{ matrix.shard }}/12)
-    needs: [p0_runners]
+    needs: [validate_inputs, p0_runners]
     if: ${{ github.repository == 'nexu-io/open-design' && inputs.suite == 'full' }}
     runs-on: ${{ fromJSON(needs.p0_runners.outputs.runs_on).ui_hot }}
     timeout-minutes: 20

@@ -2,7 +2,11 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import ts from "typescript";
 
-import { CERTAIN_EXEMPT_EXACT, CERTAIN_EXEMPT_PREFIXES } from "./scopes.ts";
+import {
+  CERTAIN_DAEMON_CORE_EXACT,
+  CERTAIN_EXEMPT_EXACT,
+  CERTAIN_EXEMPT_PREFIXES,
+} from "./scopes.ts";
 
 // Guard for the certain-tier exempt core in `scripts/scopes.ts` (rule
 // `certain-exempt-surface`; methodology in `specs/current/ci.md`).
@@ -71,10 +75,6 @@ const allowedConsumers = new Map<string, string>([
     "file-kind classifier input; the LICENSE literal is never resolved or opened",
   ],
   [
-    "apps/daemon/tests/runtimes/trae-cli.test.ts",
-    "docs/agent-adapters.md is explicitly classified as daemon core, so every change to the consumed document runs the daemon suite",
-  ],
-  [
     "apps/web/tests/components/ChatPane.imported-folder-artifacts.test.tsx",
     "imported-project artifact fixture paths rendered from in-memory test data",
   ],
@@ -104,10 +104,27 @@ const allowedConsumers = new Map<string, string>([
   ],
 ]);
 
+// Content dependencies whose producers are classified into the same certain
+// lane as their consumers. Unlike allowedConsumers, these exceptions are
+// exact producer/consumer pairs so another exempt read in the same file still
+// fails closed.
+const allowedConsumerTargets = new Map<string, ReadonlyMap<string, string>>([
+  [
+    "apps/daemon/tests/runtimes/trae-cli.test.ts",
+    new Map([
+      [
+        CERTAIN_DAEMON_CORE_EXACT[0],
+        "the exact consumed document is daemon core, so producer and consumer run the same suite",
+      ],
+    ]),
+  ],
+]);
+
 type ConsumptionViolation = {
   filePath: string;
   lineNumber: number;
   literal: string;
+  repositoryTarget: string;
 };
 
 function toRepositoryPath(filePath: string): string {
@@ -212,6 +229,7 @@ export function collectCertainExemptConsumptionFromSource(
             filePath: repositoryPath,
             lineNumber: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
             literal: candidate.display,
+            repositoryTarget: candidate.path,
           });
           return;
         }
@@ -222,6 +240,17 @@ export function collectCertainExemptConsumptionFromSource(
 
   visit(sourceFile);
   return violations;
+}
+
+export function collectDisallowedCertainExemptConsumptionFromSource(
+  repositoryPath: string,
+  source: string,
+): ConsumptionViolation[] {
+  if (allowedConsumers.has(repositoryPath)) return [];
+  const allowedTargets = allowedConsumerTargets.get(repositoryPath);
+  return collectCertainExemptConsumptionFromSource(repositoryPath, source).filter(
+    (violation) => !allowedTargets?.has(violation.repositoryTarget),
+  );
 }
 
 async function collectCheckedFiles(directory: string): Promise<string[]> {
@@ -257,9 +286,8 @@ export async function checkCertainExemptConsumption(): Promise<boolean> {
 
   for (const root of checkedRoots) {
     for (const repositoryPath of await collectCheckedFiles(path.join(repoRoot, root))) {
-      if (allowedConsumers.has(repositoryPath)) continue;
       const source = await readFile(path.join(repoRoot, repositoryPath), "utf8");
-      violations.push(...collectCertainExemptConsumptionFromSource(repositoryPath, source));
+      violations.push(...collectDisallowedCertainExemptConsumptionFromSource(repositoryPath, source));
     }
   }
 

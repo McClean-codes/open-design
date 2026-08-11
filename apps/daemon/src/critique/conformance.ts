@@ -150,6 +150,7 @@ export async function runAdapterConformance(
   // round's closes (lefarcen P2 on PR #1316 follow-up).
   const closedRolesByRound = new Map<number, Set<string>>();
   const roundScores = new Map<number, RoleScores>();
+  const computedCompositesByRound = new Map<number, number>();
   const roundMustFixCounts = new Map<number, number>();
   const weights = params.weights ?? defaultCritiqueConfig().weights;
   // Captured SHIP event details. Set on the first SHIP the parser
@@ -210,6 +211,7 @@ export async function runAdapterConformance(
           roundScores.get(event.round) ?? {},
           weights,
         );
+        computedCompositesByRound.set(event.round, computedComposite);
         const computedMustFix = roundMustFixCounts.get(event.round) ?? 0;
         if (
           Math.abs(event.composite - computedComposite) > COMPOSITE_TOLERANCE
@@ -230,6 +232,19 @@ export async function runAdapterConformance(
         // `parser_warning` (e.g. duplicate_ship) still tightens the
         // classification to degraded.
         shipEvent = event;
+        const computedComposite = computedCompositesByRound.get(event.round);
+        if (
+          computedComposite !== undefined
+          && Math.abs(event.composite - computedComposite) > COMPOSITE_TOLERANCE
+        ) {
+          events.push({
+            type: 'parser_warning',
+            runId: params.runId,
+            kind: 'composite_mismatch',
+            position: 0,
+          });
+          parserWarningSeen = true;
+        }
       }
     }
   } catch (err) {

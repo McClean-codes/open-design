@@ -529,6 +529,31 @@ describe('adapter conformance harness (Phase 10)', () => {
         (event) => event.type === 'parser_warning' && event.kind === 'composite_mismatch',
       )).toBe(true);
     });
+
+    it('classifies a SHIP composite mismatch after a correct ROUND_END as degraded', async () => {
+      async function* fixture(): AsyncIterable<string> {
+        yield `<CRITIQUE_RUN version="1" maxRounds="1" threshold="8" scale="10">
+          <ROUND n="1">
+            <PANELIST role="designer"><ARTIFACT mime="text/html"><![CDATA[<p>v1</p>]]></ARTIFACT></PANELIST>
+            <PANELIST role="critic" score="9"></PANELIST>
+            <PANELIST role="brand" score="9"></PANELIST>
+            <PANELIST role="a11y" score="9"></PANELIST>
+            <PANELIST role="copy" score="9"></PANELIST>
+            <ROUND_END n="1" composite="9" must_fix="0" decision="ship"><REASON>ship</REASON></ROUND_END>
+          </ROUND>
+          <SHIP round="1" composite="2" status="shipped"><ARTIFACT mime="text/html"><![CDATA[<p>final</p>]]></ARTIFACT><SUMMARY>done</SUMMARY></SHIP>
+        </CRITIQUE_RUN>`;
+      }
+      const outcome = await runAdapterConformance({
+        adapterId: 'synthetic-ship-composite-mismatch',
+        runId: 'run-ship-composite-mismatch',
+        source: fixture(),
+      });
+      expect(outcome.kind).toBe('degraded');
+      expect(outcome.events.some(
+        (event) => event.type === 'parser_warning' && event.kind === 'composite_mismatch',
+      )).toBe(true);
+    });
     // duplicate_ship is covered by the dedicated post-SHIP conformance case
     // above, where the harness must continue draining after the first SHIP.
   });

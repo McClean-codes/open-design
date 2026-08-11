@@ -846,6 +846,21 @@ test("the consumption guard folds repository paths while allowing sandbox fixtur
   assert.deepEqual(prose, []);
 });
 
+test("the consumption guard exempts only the promoted adapter document for its daemon consumer", async () => {
+  const { collectDisallowedCertainExemptConsumptionFromSource } = await import(
+    "../../../scripts/check-certain-exempt-consumption.ts"
+  );
+  const violations = collectDisallowedCertainExemptConsumptionFromSource(
+    "apps/daemon/tests/runtimes/trae-cli.test.ts",
+    [
+      `await readRepoFile("docs/agent-adapters.md");`,
+      `await readRepoFile("docs/other.md");`,
+    ].join("\n"),
+  );
+
+  assert.deepEqual(violations.map((violation) => violation.literal), ["docs/other.md"]);
+});
+
 test("the adapter documentation is daemon-core because daemon tests consume it", async () => {
   const { evaluateScopeOutputs } = await import("../../../scripts/scopes.ts");
   const plan = evaluateScopeOutputs(["docs/agent-adapters.md"], "certain", {

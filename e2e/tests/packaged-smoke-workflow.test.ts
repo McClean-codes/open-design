@@ -1435,6 +1435,24 @@ process.stdin.on("end", () => {
     expect(fullUiFiles).toEqual([]);
   });
 
+  it("[P1] rejects unsupported reusable Functional E2E suite values before running suites", async () => {
+    const workflow = await readFile(uiExtendedMainWorkflowPath, "utf8");
+    const validation = sectionBetween(workflow, "  validate_inputs:", "  p0_runners:");
+    const p0Runners = sectionBetween(workflow, "  p0_runners:", "  ui_p0:");
+    const uiP0 = sectionBetween(workflow, "  ui_p0:", "  ui_extended:");
+    const uiP1 = sectionBetween(workflow, "  ui_extended:", "  ui_full:");
+    const uiFull = workflow.slice(workflow.indexOf("  ui_full:"));
+
+    expect(validation).toContain('case "$SUITE" in');
+    expect(validation).toContain("p0|p0p1|full) ;;");
+    expect(validation).toContain("Unsupported suite:");
+    expect(validation).toContain("exit 1");
+    expect(p0Runners).toContain("needs: [validate_inputs]");
+    expect(uiP0).toContain("needs: [validate_inputs, p0_runners]");
+    expect(uiP1).toContain("needs: [validate_inputs]");
+    expect(uiFull).toContain("needs: [validate_inputs, p0_runners]");
+  });
+
   it("[P1] gates prerelease packaging on full Functional E2E at the resolved build commit", async () => {
     const [prerelease, functionalE2e] = await Promise.all([
       readFile(releasePrereleaseWorkflowPath, "utf8"),
