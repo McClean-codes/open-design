@@ -4,6 +4,14 @@ import { supportedModels } from '../../src/components/NewProjectPanel';
 import { AUDIO_MODELS_BY_KIND, IMAGE_MODELS, VIDEO_MODELS } from '../../src/media/models';
 
 describe('NewProjectPanel image provider visibility', () => {
+  it('shows Vela image and video models without exposing Codex image models', () => {
+    const imageModels = supportedModels('image', IMAGE_MODELS);
+    const videoModels = supportedModels('video', VIDEO_MODELS);
+    expect(imageModels.some((model) => model.provider === 'vela')).toBe(true);
+    expect(videoModels.some((model) => model.provider === 'vela')).toBe(true);
+    expect(imageModels.map((model) => String(model.provider))).not.toContain('codex');
+  });
+
   it('shows Nano Banana in supported image models', () => {
     const models = supportedModels('image', IMAGE_MODELS);
     expect(models.some((model) => model.provider === 'nanobanana')).toBe(true);
