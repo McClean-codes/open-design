@@ -25,6 +25,14 @@
  * only "fast" because it borrowed unboundedly from the machine and the hub.
  * 8 matches the bound the hub already puts on its own per-request fan-out
  * (MAX_BLOB_INSPECTION_CONCURRENCY), so neither side is the surprise.
+ *
+ * This is a per-SITE budget, and there are two sites: materializing shared
+ * resources (one gate at the composition root, shared by all three listing
+ * kinds) and publishing dirty projects (the scheduler's own). They stay
+ * separate because pulls and pushes run in opposite directions with different
+ * latency sensitivity — a big listing refresh should not delay a teammate's
+ * publish. The honest daemon-wide worst case from these two sites is therefore
+ * 8 pulls + 8 pushes, not 8 total.
  */
 export const COLLAB_VELA_FANOUT_CONCURRENCY = 8;
 
