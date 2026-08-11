@@ -41,6 +41,11 @@ export function TypePillRow({ chips, activeChipId, disabled, labelFor, onPick }:
   const visible = chips.slice(0, MAX_PILLS);
   const pinned = visible.filter((chip) => PINNED_PILL_IDS.includes(chip.id));
   const flowing = visible.filter((chip) => !PINNED_PILL_IDS.includes(chip.id));
+  const measurementSignature = [
+    ...flowing.map((chip) => `${chip.id}:${labelFor(chip.id)}`),
+    ...pinned.map((chip) => `${chip.id}:${labelFor(chip.id)}`),
+    `more:${t('common.all')}`,
+  ].join('\0');
   // How many flowing pills render inline; the rest go to the 全部 popover.
   const [fitCount, setFitCount] = useState(flowing.length);
 
@@ -75,10 +80,11 @@ export function TypePillRow({ chips, activeChipId, disabled, labelFor, onPick }:
     if (typeof ResizeObserver === 'undefined') return undefined;
     const observer = new ResizeObserver(measure);
     observer.observe(wrap);
-    observer.observe(probe);
+    observer.observe(tail);
+    for (const child of probe.children) observer.observe(child);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flowing.length, pinned.length]);
+  }, [flowing.length, pinned.length, measurementSignature]);
 
   // Dismiss the popover on outside press / Escape.
   useEffect(() => {

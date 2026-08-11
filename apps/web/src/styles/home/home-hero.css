@@ -2306,30 +2306,15 @@
   color: var(--home-hero-submit-fg);
   box-shadow: none;
 }
-/* Top-center pill toast (per product): the composer error floats centered
-   under the chrome instead of sitting inline below the example cards. Fixed
-   positioning pulls it out of flow, so the surrounding layout is unchanged. */
 .home-hero__error {
-  position: fixed;
-  /* Rides the top chrome row itself (the ⌂ / badge / avatar band, 52px):
-     centered in that strip rather than floating below it. */
-  top: 7px;
-  /* Centered via auto margins, NOT translateX: entrance.css's
-     od-fade-slide-down (fill: both) owns this element's transform and would
-     override a translate-based centering. */
-  left: 0;
-  right: 0;
-  margin-inline: auto;
-  z-index: 1900;
-  width: max-content;
-  max-width: min(720px, calc(100vw - 48px));
   color: var(--red);
   font-size: 13px;
   background: var(--red-bg);
   border: 1px solid var(--red-border);
-  padding: 10px 20px;
-  border-radius: var(--radius-pill);
-  box-shadow: var(--shadow-md);
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  max-width: 720px;
+  width: 100%;
 }
 
 .home-hero-confirm__backdrop {
