@@ -318,6 +318,12 @@ export interface TurnInfo {
 export interface ReportContext {
   installationId: string | null;
   projectId: string;
+  /**
+   * Workspace the run's project is bound to, when any. Traces carried no
+   * workspace identity at all before this — only `userId = installationId`
+   * (device-level) — so per-team eval slicing was impossible.
+   */
+  workspaceId?: string | null;
   conversationId: string;
   agentId?: string;
   run: RunSummary;
@@ -544,6 +550,7 @@ function truncate(value: string | undefined, maxBytes: number): string | undefin
 
 function buildTagList(ctx: ReportContext): string[] {
   const tags = ['open-design', `project:${ctx.projectId}`];
+  if (ctx.workspaceId) tags.push(`workspace:${ctx.workspaceId}`);
   if (ctx.agentId) tags.push(`agent:${ctx.agentId}`);
   if (ctx.turn?.model) tags.push(`model:${ctx.turn.model}`);
   if (ctx.turn?.skillId) tags.push(`skill:${ctx.turn.skillId}`);
@@ -1606,6 +1613,7 @@ export function buildTracePayload(ctx: ReportContext): unknown[] {
       ? (ctx.manifestCompleteness ?? 'unavailable')
       : undefined,
     projectId: ctx.projectId || undefined,
+    workspaceId: ctx.workspaceId || undefined,
     agent: ctx.agentId,
     model: ctx.turn?.model,
     reasoning: ctx.turn?.reasoning,

@@ -204,6 +204,13 @@ export interface AnalyticsService {
     appVersion: string;
     properties: Record<string, unknown>;
     insertId: string;
+    /**
+     * PostHog group association (currently only `workspace`). Passing it lets
+     * daemon-side events be aggregated per Workspace exactly like the web-side
+     * events that already ship `$groups` — without it, run/project volume
+     * cannot be attributed to a team workspace at all.
+     */
+    groups?: Record<string, string>;
   }): Promise<void>;
   /**
    * Safety / reliability events (renderer crashes, daemon uncaught errors,
@@ -295,7 +302,7 @@ export function createAnalyticsService(args: {
   client.on?.('error', () => undefined);
 
   return {
-    capture: async ({ eventName, context, appVersion, properties, insertId }) => {
+    capture: async ({ eventName, context, appVersion, properties, insertId, groups }) => {
       // Defense-in-depth consent re-check. The route handler already gates
       // on header presence, but a future header leak or a Settings toggle
       // mid-request would still let events through without this. Reading
@@ -353,6 +360,7 @@ export function createAnalyticsService(args: {
             // from being counted twice.
             $insert_id: insertId,
           },
+          ...(groups && Object.keys(groups).length ? { groups } : {}),
         });
       } catch {
         // Swallowed by design; capture failures must never propagate.

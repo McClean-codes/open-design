@@ -2032,7 +2032,20 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
               ? 'mark'
               : 'chat'
           : undefined;
+      // Workspace attribution: a run inherits the Workspace its project is
+      // bound to (persisted binding, resolved above). Without this the run
+      // volume of a team workspace cannot be separated from personal usage.
+      const runWorkspaceProps: Record<string, unknown> = preparedWorkspaceScope
+        ? {
+            workspace_key: preparedWorkspaceScope.workspaceId,
+            workspace_scope: preparedWorkspaceScope.source,
+          }
+        : { workspace_scope: 'unbound' };
+      const runWorkspaceGroups = preparedWorkspaceScope
+        ? { workspace: preparedWorkspaceScope.workspaceId }
+        : undefined;
       const baseProps: Record<string, unknown> = {
+        ...runWorkspaceProps,
         page_name: isDesignSystemRun ? 'design_system_project' : 'chat_panel',
         area: isDesignSystemRun ? 'design_system_generation' : 'chat_composer',
         ...configureGlobals,
@@ -2154,6 +2167,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         appVersion: design.getAppVersion(),
         properties: baseProps,
         insertId: runInsertId,
+        ...(runWorkspaceGroups ? { groups: runWorkspaceGroups } : {}),
       });
       design.runs.wait(run).then(async (status: TerminalRunStatus) => {
         const appCfgAtFinish = await readAppConfig(RUNTIME_DATA_DIR).catch(
@@ -2606,6 +2620,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
           appVersion: design.getAppVersion(),
           properties: finishedProperties,
           insertId: `${runInsertId}-finish`,
+          ...(runWorkspaceGroups ? { groups: runWorkspaceGroups } : {}),
         }));
         design.runs.markAnalyticsCompleted?.(run);
       }).catch(() => {});

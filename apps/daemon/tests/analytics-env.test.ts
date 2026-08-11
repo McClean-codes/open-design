@@ -95,6 +95,58 @@ describe('analytics telemetry environment', () => {
     });
   });
 
+  it('forwards the workspace group so daemon events aggregate per Workspace', async () => {
+    posthogCapture.mockReset();
+    const dataDir = await mkdtemp(path.join(tmpdir(), 'od-analytics-groups-'));
+    await writeFile(path.join(dataDir, 'app-config.json'), JSON.stringify({
+      installationId: 'install-1',
+      telemetry: { metrics: true },
+    }));
+    const { createAnalyticsService } = await import('../src/analytics.js');
+    const analytics = createAnalyticsService({
+      dataDir,
+      env: { POSTHOG_KEY: 'phc_test', OD_TELEMETRY_ENV: 'local_development' },
+    });
+
+    const context = {
+      deviceId: 'device-1',
+      sessionId: 'session-1',
+      clientType: 'web' as const,
+      locale: 'en',
+      requestId: null,
+    };
+    analytics.capture({
+      eventName: 'run_created',
+      appVersion: '1.2.3',
+      context,
+      insertId: 'insert-ws',
+      properties: { workspace_key: 'ws-team-1' },
+      groups: { workspace: 'ws-team-1' },
+    });
+    await vi.waitFor(() => {
+      expect(posthogCapture).toHaveBeenCalled();
+    });
+    expect(posthogCapture.mock.calls[0]?.[0]).toMatchObject({
+      event: 'run_created',
+      groups: { workspace: 'ws-team-1' },
+      properties: { workspace_key: 'ws-team-1' },
+    });
+
+    // Personal (unbound) runs must not carry an empty `groups` key.
+    posthogCapture.mockReset();
+    analytics.capture({
+      eventName: 'run_created',
+      appVersion: '1.2.3',
+      context,
+      insertId: 'insert-personal',
+      properties: { workspace_scope: 'unbound' },
+    });
+    await vi.waitFor(() => {
+      expect(posthogCapture).toHaveBeenCalled();
+    });
+    expect(posthogCapture.mock.calls[0]?.[0]).not.toHaveProperty('groups');
+  });
+
   it('updates a workspace group only when analytics consent is enabled', async () => {
     posthogGroupIdentify.mockReset();
     const dataDir = await mkdtemp(path.join(tmpdir(), 'od-analytics-group-'));

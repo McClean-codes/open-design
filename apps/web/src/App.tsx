@@ -8,6 +8,7 @@ import {
   trackProjectCreateResult,
 } from './analytics/events';
 import { deriveUploadCohort } from './analytics/upload-tracking';
+import { workspaceAnalyticsDimensions } from './analytics/workspace';
 import { setPendingDesignSystemCreateEntry } from './analytics/ds-create-entry';
 import { detectClientType } from './analytics/identity';
 import {
@@ -2902,6 +2903,7 @@ function AppInner() {
             project_id: null,
             project_kind: projectKindFromMetadataToTracking(metadata),
             fidelity,
+            ...workspaceAnalyticsDimensions(createWorkspaceContext),
             result: 'failed',
             error_code: errorCode,
           },
@@ -2921,6 +2923,7 @@ function AppInner() {
             fidelity,
             ...(input.pluginId ? { plugin_id: input.pluginId } : {}),
             ...(input.pluginType ? { plugin_type: input.pluginType } : {}),
+            ...workspaceAnalyticsDimensions(createWorkspaceContext),
             result: 'failed',
             error_code: 'CREATE_REQUEST_FAILED',
           },
@@ -3007,6 +3010,7 @@ function AppInner() {
           fidelity,
           ...(input.pluginId ? { plugin_id: input.pluginId } : {}),
           ...(input.pluginType ? { plugin_type: input.pluginType } : {}),
+          ...workspaceAnalyticsDimensions(createWorkspaceContext),
           result: 'success',
         },
         { requestId: input.requestId },

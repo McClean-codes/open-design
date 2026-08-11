@@ -20,7 +20,7 @@ import {
 
 import { agentCliEnvForAgent, readAppConfig } from './app-config.js';
 import type { AppVersionInfo } from './app-version.js';
-import { listMessages } from './db.js';
+import { getWorkspaceProjectByProjectId, listMessages } from './db.js';
 import { normalizeOpenDesignTelemetryRelayUrl } from './integrations/telemetry-relay.js';
 import {
   deriveLangfuseDeliveryState,
@@ -1120,6 +1120,20 @@ export async function reportRunCompletedFromDaemon(
       prefs,
       ...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
     } satisfies Parameters<typeof buildTraceObjectManifests>[0];
+    // Resolve the project's Workspace binding once per report. A failure here
+    // must never block telemetry, so it degrades to "no workspace tag".
+    let workspaceIdForTrace: string | null = null;
+    if (run.projectId) {
+      try {
+        const bound = getWorkspaceProjectByProjectId(
+          db as Parameters<typeof getWorkspaceProjectByProjectId>[0],
+          run.projectId,
+        ) as { workspaceId?: string } | undefined;
+        workspaceIdForTrace = bound?.workspaceId ?? null;
+      } catch {
+        workspaceIdForTrace = null;
+      }
+    }
     const buildContext = (
       finalManifests: FinalTraceSafeManifests,
       traceObjectSummary = buildTraceObjectSummary({
@@ -1129,6 +1143,7 @@ export async function reportRunCompletedFromDaemon(
     ): ReportContext => ({
       installationId,
       projectId: run.projectId ?? '',
+      ...(workspaceIdForTrace ? { workspaceId: workspaceIdForTrace } : {}),
       conversationId: run.conversationId ?? '',
       ...(run.agentId ? { agentId: run.agentId } : {}),
       run: {

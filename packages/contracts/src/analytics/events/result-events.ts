@@ -10,6 +10,7 @@ import type {
   AnalyticsPublisherClass,
   TrackingRuntimeType,
 } from '../public-params.js';
+import type { TrackingWorkspaceDimensions } from './workspace.js';
 import type { ReleaseChannel } from '@open-design/release';
 import type { ArtifactOriginEntrySurface, ArtifactOriginStatus } from '../../api/files.js';
 import type { TrackingDesignSystemEditSurface, TrackingDesignSystemKind, TrackingDesignSystemLengthBucket, TrackingDesignSystemOrigin, TrackingDesignSystemRunEntryFrom } from './design-systems.js';
@@ -42,7 +43,10 @@ export interface MediaGenerationResultProps {
   used_stub_fallback: boolean;
 }
 
-export interface ProjectCreateResultProps {
+// Workspace dimensions ride along so a created project can be attributed to
+// the Workspace it landed in. Without them "how much gets produced inside a
+// team workspace" is unanswerable — the event carries no workspace identity.
+export interface ProjectCreateResultProps extends TrackingWorkspaceDimensions {
   page_name: 'home';
   area: 'new_project';
   project_source: TrackingProjectSource;

@@ -1070,6 +1070,26 @@ describe('buildTracePayload', () => {
     ]);
   });
 
+  it('tags the trace with its Workspace when the project is workspace-bound', () => {
+    const batch = buildTracePayload(makeCtx({ workspaceId: 'ws-team-1' }));
+    expect((batch[0] as any).body.tags).toEqual([
+      'open-design',
+      'project:proj-1',
+      'workspace:ws-team-1',
+      'agent:claude',
+    ]);
+    expect((batch[0] as any).body.metadata.workspaceId).toBe('ws-team-1');
+  });
+
+  it('omits the workspace tag for unbound (personal) projects', () => {
+    const batch = buildTracePayload(makeCtx());
+    expect((batch[0] as any).body.tags).not.toContain('workspace:ws-team-1');
+    expect(
+      ((batch[0] as any).body.tags as string[]).some((t) => t.startsWith('workspace:')),
+    ).toBe(false);
+    expect((batch[0] as any).body.metadata.workspaceId).toBeUndefined();
+  });
+
   it('adds turn-level tags (model / skill / DS) and runtime tags (os / client)', () => {
     const batch = buildTracePayload(
       makeCtx({
