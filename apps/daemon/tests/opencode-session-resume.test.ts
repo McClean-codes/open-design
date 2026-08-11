@@ -288,7 +288,7 @@ describe('opencode native session resume', () => {
     const { bin, logPath } = await writeHighContextOpencode(
       binDir,
       'opencode-low-context-rollover',
-      10_000,
+      18_000,
     );
 
     clearTelemetryEnv();
@@ -309,15 +309,20 @@ describe('opencode native session resume', () => {
         id: model,
         label: model,
         metadata: {
-          contextWindowTokens: 16_384,
+          contextWindowTokens: 24_576,
           maxOutputTokens: 4_096,
         },
       },
     ];
     try {
       const conversationId = await createConversation(started.url);
-      expect((await sendRunAndWait(started.url, conversationId, 'first request', model)).status)
-        .toBe('succeeded');
+      const turn1 = await sendRunAndWait(
+        started.url,
+        conversationId,
+        'first request',
+        model,
+      );
+      expect(turn1).toMatchObject({ status: 'succeeded', errorCode: null });
 
       const transcript = Array.from({ length: 8 }, (_, index) => [
         `## ${index % 2 === 0 ? 'user' : 'assistant'}`,
