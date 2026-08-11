@@ -18,6 +18,7 @@ export const CHAT_TOOL_ENDPOINTS = [
   MEDIA_TASK_WAIT_TOOL_ENDPOINT,
   '/api/tools/library/search',
   '/api/tools/library/apply',
+  '/api/tools/export',
 ] as const;
 
 export const CHAT_TOOL_OPERATIONS = [
@@ -31,6 +32,7 @@ export const CHAT_TOOL_OPERATIONS = [
   'media:generate',
   'library:search',
   'library:apply',
+  'export:render',
 ] as const;
 
 export type ToolEndpoint = (typeof CHAT_TOOL_ENDPOINTS)[number] | (string & {});

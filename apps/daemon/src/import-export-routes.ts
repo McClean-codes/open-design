@@ -5,7 +5,10 @@ import os from 'node:os';
 import { readFile, rm } from 'node:fs/promises';
 import { isBlocked as isBlockedSystemDir } from './linked-dirs.js';
 import type { RouteDeps } from './server-context.js';
-import type { AuthorizeProjectRequest } from './collab/project-request-authority.js';
+import type {
+  AuthorizeProjectRequest,
+  AuthorizeProjectToolRequest,
+} from './collab/project-request-authority.js';
 import {
   InlineAssetsLimitError,
   MAX_INLINE_OWNER_BYTES,
@@ -519,8 +522,9 @@ export function registerImportRoutes(app: Express, ctx: RegisterImportRoutesDeps
 
 }
 
-export interface RegisterProjectExportRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'node' | 'ids' | 'projectStore' | 'exports' | 'projectFiles' | 'validation'> {
+export interface RegisterProjectExportRoutesDeps extends RouteDeps<'db' | 'http' | 'paths' | 'node' | 'ids' | 'auth' | 'projectStore' | 'exports' | 'projectFiles' | 'validation'> {
   authorizeProjectRequest: AuthorizeProjectRequest;
+  authorizeProjectToolRequest: AuthorizeProjectToolRequest;
 }
 
 export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectExportRoutesDeps) {
@@ -532,6 +536,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
   const { getProject } = ctx.projectStore;
   const { listFiles, readProjectFile, resolveProjectFilePath } = ctx.projectFiles;
   const { isSafeId } = ctx.validation;
+  const { authorizeToolRequest, requestProjectOverride } = ctx.auth;
   const {
     buildProjectArchive,
     buildBatchArchive,
@@ -556,6 +561,38 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         ? { mode: 'read', allowNavigationQuery: true }
         : { mode: 'read' },
     );
+  }
+
+  // The generic `ExportRequest` body is shared by the browser-facing project
+  // route and the agent-facing tool route, so parse it once. Keeping the two
+  // routes on one parser is what stops the agent path from silently drifting
+  // into different deck / image / version semantics than the UI.
+  function screenshotExportRequest(body: any):
+    | { ok: true; format: 'pptx' | 'pdf' | 'image'; body: Record<string, unknown> }
+    | { ok: false; message: string } {
+    const { fileName, title, deck, format, imageFormat, width, height, versionId } = body || {};
+    if (typeof fileName !== 'string' || fileName.length === 0) {
+      return { ok: false, message: 'fileName required' };
+    }
+    if (!isExportFormat(format)) {
+      return { ok: false, message: 'invalid export format' };
+    }
+    return {
+      ok: true,
+      format,
+      body: {
+        fileName,
+        // pptx is deck-only (handleScreenshotExport forces it); pdf/image honor the
+        // caller's deck flag when one is supplied. Omitted stays omitted so the
+        // renderer can auto-detect deck artifacts.
+        ...(typeof deck === 'boolean' ? { deck } : {}),
+        ...(typeof imageFormat === 'string' ? { imageFormat } : {}),
+        ...(width != null ? { width } : {}),
+        ...(height != null ? { height } : {}),
+        ...(typeof title === 'string' ? { title } : {}),
+        ...(typeof versionId === 'string' ? { versionId } : {}),
+      },
+    };
   }
 
   function isNoSlideDeckRenderError(rendered: { ok: boolean; error?: string }): boolean {
@@ -1140,26 +1177,37 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
   // handleScreenshotExport owns validation, the 404/400/422 error mapping, and
   // scratch-dir cleanup.
   app.post('/api/projects/:id/export', async (req, res) => {
-    const { fileName, title, deck, format, imageFormat, width, height, versionId } = req.body || {};
-    if (typeof fileName !== 'string' || fileName.length === 0) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'fileName required');
-    }
-    if (!isExportFormat(format)) {
-      return sendApiError(res, 400, 'BAD_REQUEST', 'invalid export format');
-    }
+    const parsed = screenshotExportRequest(req.body);
+    if (!parsed.ok) return sendApiError(res, 400, 'BAD_REQUEST', parsed.message);
     if (!await authorizeExportRead(req, res)) return;
-    await handleScreenshotExport(res, format, req.params.id, {
-      fileName,
-      // pptx is deck-only (handleScreenshotExport forces it); pdf/image honor the
-      // caller's deck flag when one is supplied. Omitted stays omitted so the
-      // renderer can auto-detect deck artifacts.
-      ...(typeof deck === 'boolean' ? { deck } : {}),
-      ...(typeof imageFormat === 'string' ? { imageFormat } : {}),
-      ...(width != null ? { width } : {}),
-      ...(height != null ? { height } : {}),
-      ...(typeof title === 'string' ? { title } : {}),
-      ...(typeof versionId === 'string' ? { versionId } : {}),
-    });
+    await handleScreenshotExport(res, parsed.format, req.params.id, parsed.body);
+  });
+
+  // Agent-facing counterpart of the route above, mirroring the media pair
+  // (`/api/projects/:id/media/generate` + `/api/tools/media/generate`).
+  //
+  // The project route authorizes with the caller's `x-od-workspace-*` headers,
+  // which only the web client can produce. An agent has no workspace identity
+  // to assert — the daemon injects `OD_TOOL_TOKEN` and `OD_PROJECT_ID` and
+  // nothing else — so on a workspace-bound project every agent export failed
+  // closed with WORKSPACE_CONTEXT_REQUIRED, including the preview render the
+  // system prompt tells the model to run before it reports visual work as
+  // checked. Here the token is the authentication and the project's own
+  // persisted workspace binding is the authority, so no header is needed and
+  // the caller still cannot reach a project its run was not minted for.
+  app.post('/api/tools/export', async (req, res) => {
+    const grant = authorizeToolRequest(req, res, 'export:render');
+    if (!grant) return;
+    const suppliedProjectId = req.body?.projectId;
+    if (requestProjectOverride(suppliedProjectId, grant.projectId)) {
+      return sendApiError(res, 403, 'FORBIDDEN', 'projectId is derived from the tool token', {
+        details: { suppliedProjectId },
+      });
+    }
+    const parsed = screenshotExportRequest(req.body);
+    if (!parsed.ok) return sendApiError(res, 400, 'BAD_REQUEST', parsed.message);
+    if (!await ctx.authorizeProjectToolRequest(res, grant.projectId, { mode: 'read' })) return;
+    await handleScreenshotExport(res, parsed.format, grant.projectId, parsed.body);
   });
 
   // Export endpoint: serves an HTML body with every same-project

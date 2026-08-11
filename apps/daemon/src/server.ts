@@ -7523,7 +7523,9 @@ export async function startServer({
     exports: projectExportDeps,
     projectFiles: projectFileDeps,
     validation: validationDeps,
+    auth: authDeps,
     authorizeProjectRequest,
+    authorizeProjectToolRequest,
   });
   registerProjectFileRoutes(app, {
     db,

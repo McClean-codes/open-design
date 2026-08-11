@@ -432,7 +432,8 @@ reachable; otherwise the command reports that the renderer is unavailable.
 Formats:  ${EXPORT_FORMATS.join(', ')}
 
 Options:
-  --project <id>           Project id (required)
+  --project <id>           Project id (required; defaults to OD_PROJECT_ID, and
+                           is derived from OD_TOOL_TOKEN inside an agent run)
   --format <fmt>           One of: ${EXPORT_FORMATS.join(' | ')} (required)
   --out <path>             Write the file here (defaults to the suggested name)
   --image-format <fmt>     png | jpeg (for --format image)
@@ -466,7 +467,11 @@ async function runExport(args) {
   const file = flags.file || pos[0];
   const projectId = flags.project || process.env.OD_PROJECT_ID;
   const format = flags.format;
-  if (!file || !projectId || !format) {
+  // An agent run is authenticated by the tool token the daemon injected, which
+  // already pins the project — it has no workspace identity to assert and does
+  // not need one. Everyone else addresses a project explicitly.
+  const token = process.env.OD_TOOL_TOKEN;
+  if (!file || !format || (!projectId && !token)) {
     printExportHelp();
     process.exit(2);
   }
@@ -483,7 +488,7 @@ async function runExport(args) {
     process.exit(2);
   }
   const base = await cliDaemonBaseUrl(flags);
-  const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags) ?? {};
+  const workspaceHeaders = token ? {} : workspaceHeadersFromExplicitFlags(flags) ?? {};
   // All three formats rasterize through the desktop screenshot renderer so the
   // CLI matches the UI exactly. In particular `pdf` uses `/export/pdf-image`
   // (one raster page per deck slide / per viewport for a page) — NOT the generic
@@ -509,12 +514,22 @@ async function runExport(args) {
     ...(format === 'image' && flags['image-format'] ? { imageFormat: flags['image-format'] } : {}),
     ...(flags.title ? { title: flags.title } : {}),
   });
+  // The tool route takes one generic endpoint with `format` in the body and
+  // resolves the project from the token grant; the project route splits by
+  // format in the path. Both land on the same screenshot renderer.
+  const url = token
+    ? `${base}/api/tools/export`
+    : `${base}/api/projects/${encodeURIComponent(projectId)}/${exportPath}`;
   let resp;
   try {
-    resp = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/${exportPath}`, {
+    resp = await fetch(url, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...workspaceHeaders },
-      body: JSON.stringify(requestBody),
+      headers: {
+        'content-type': 'application/json',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...workspaceHeaders,
+      },
+      body: JSON.stringify(token ? { ...requestBody, format } : requestBody),
     });
   } catch (err) {
     surfaceFetchError(err, base);

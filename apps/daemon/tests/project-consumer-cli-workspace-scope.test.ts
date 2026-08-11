@@ -100,7 +100,7 @@ beforeAll(async () => {
         });
         return;
       }
-      if (request.url.includes('/export/')) {
+      if (request.url.includes('/export/') || request.url === '/api/tools/export') {
         res.writeHead(200, {
           'content-type': 'image/png',
           'content-disposition': 'attachment; filename="artifact.png"',
@@ -373,6 +373,38 @@ describe('project consumer CLI explicit Workspace fixture matrix', () => {
       }
     });
   }
+
+  it('routes an agent export through the tool token instead of workspace headers', async () => {
+    requests = [];
+    const result = await runCli(
+      [
+        'export',
+        'index.html',
+        '--format',
+        'image',
+        '--out',
+        path.join(outputDir, 'export-tool-token.png'),
+        '--daemon-url',
+        baseUrl,
+      ],
+      {
+        OD_PROJECT_ID: 'bound-project',
+        OD_TOOL_TOKEN: 'tool-proof',
+      },
+    );
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]?.url).toBe('/api/tools/export');
+    expect(requests[0]?.headers.authorization).toBe('Bearer tool-proof');
+    expect(requests[0]?.headers['x-od-workspace-id']).toBeUndefined();
+    // The tool endpoint is format-generic, so the format rides in the body
+    // rather than the path the project route splits on.
+    expect(JSON.parse(requests[0]?.body ?? '{}')).toMatchObject({
+      fileName: 'index.html',
+      format: 'image',
+    });
+  });
 
   it('retains the authorized tool token through media polling', async () => {
     requests = [];
