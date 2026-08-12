@@ -122,6 +122,7 @@ describe('EntryShell AMR workspace precheck race', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
     cleanup();
     globalThis.fetch = originalFetch;
     globalThis.ResizeObserver = originalResizeObserver;
@@ -131,8 +132,18 @@ describe('EntryShell AMR workspace precheck race', () => {
     resetTeamProjectsCache();
   });
 
-  it('starts the team gate from the directory identity without waiting for rich context', async () => {
+  it('starts the team gate from in-memory directory identity when sessionStorage is unavailable', async () => {
     window.history.replaceState(null, '', '/');
+    const originalStorageGetItem = Storage.prototype.getItem;
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function getItem(
+      this: Storage,
+      key,
+    ) {
+      if (key === 'od.workspaceSelection.v1') {
+        throw new DOMException('Storage is unavailable', 'SecurityError');
+      }
+      return originalStorageGetItem.call(this, key);
+    });
     const workspace = teamContext('workspace-cold', 'member-cold');
     const contextRead = deferred<Response>();
     let directoryReads = 0;
@@ -207,6 +218,7 @@ describe('EntryShell AMR workspace precheck race', () => {
       });
     });
     await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
+    expect(directoryReads).toBe(1);
   });
 
   it('opens the existing sign-in gate when the confirmed directory is empty', async () => {

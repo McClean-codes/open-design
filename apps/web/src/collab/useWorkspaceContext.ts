@@ -367,11 +367,15 @@ function createCurrentWorkspaceContextReadWitness(
         workspaceContextRequestToken !== requestToken
         || currentWorkspaceAccountGeneration() !== accountGeneration
       ) return false;
-      const currentSelection = readWorkspaceSelection();
+      const currentSelection = readWorkspaceSelectionResult();
+      // The directory-backed identity remains authoritative in memory when a
+      // privacy-restricted browser disables sessionStorage. An available
+      // store still guards explicit tab selection changes below.
+      if (!currentSelection.available) return true;
       return context
-        ? currentSelection?.workspaceId === selectedWorkspaceId
-          && currentSelection.workspaceMemberId === selectedWorkspaceMemberId
-        : currentSelection === null;
+        ? currentSelection.selection?.workspaceId === selectedWorkspaceId
+          && currentSelection.selection.workspaceMemberId === selectedWorkspaceMemberId
+        : currentSelection.selection === null;
     },
   };
 }
@@ -439,10 +443,20 @@ interface WorkspaceSelection {
   workspaceMemberId: string;
 }
 
-function readWorkspaceSelection(): WorkspaceSelection | null {
-  if (typeof window === 'undefined') return null;
+type WorkspaceSelectionRead =
+  | { available: true; selection: WorkspaceSelection | null }
+  | { available: false; selection: null };
+
+function readWorkspaceSelectionResult(): WorkspaceSelectionRead {
+  if (typeof window === 'undefined') return { available: true, selection: null };
+  let storedSelection: string | null;
   try {
-    const raw = JSON.parse(window.sessionStorage.getItem(WORKSPACE_SELECTION_SESSION_KEY) ?? 'null') as {
+    storedSelection = window.sessionStorage.getItem(WORKSPACE_SELECTION_SESSION_KEY);
+  } catch {
+    return { available: false, selection: null };
+  }
+  try {
+    const raw = JSON.parse(storedSelection ?? 'null') as {
       workspaceId?: unknown;
       workspaceMemberId?: unknown;
     } | null;
@@ -450,12 +464,19 @@ function readWorkspaceSelection(): WorkspaceSelection | null {
       typeof raw?.workspaceId === 'string' ? raw.workspaceId.trim() : '';
     const workspaceMemberId =
       typeof raw?.workspaceMemberId === 'string' ? raw.workspaceMemberId.trim() : '';
-    return workspaceId && workspaceMemberId
-      ? { workspaceId, workspaceMemberId }
-      : null;
+    return {
+      available: true,
+      selection: workspaceId && workspaceMemberId
+        ? { workspaceId, workspaceMemberId }
+        : null,
+    };
   } catch {
-    return null;
+    return { available: true, selection: null };
   }
+}
+
+function readWorkspaceSelection(): WorkspaceSelection | null {
+  return readWorkspaceSelectionResult().selection;
 }
 
 function writeWorkspaceSelection(selection: WorkspaceSelection | null): void {
