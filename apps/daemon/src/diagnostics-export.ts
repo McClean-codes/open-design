@@ -32,22 +32,24 @@ import { collectBrowserUseDiscoveryFacts } from './browser/index.js';
 import { readRecentApiFailures } from './http/api-failure-journal.js';
 import { readVelaLoginStatus } from './integrations/vela.js';
 
-interface ResolvedAgentHomes {
+interface ResolvedDiagnosticsAgentEnvironment {
   amrOpenCodeHome: string | null;
+  amrConfiguredEnv: Record<string, string>;
   claudeConfigDir: string | null;
   codexHome: string | null;
   openCodeXdgDataHome: string | null;
 }
 
-// Resolve each agent CLI's effective home (OPENCODE_TEST_HOME / CLAUDE_CONFIG_DIR
-// / CODEX_HOME) exactly as a real run would, by running the live
-// `spawnEnvForAgent` resolver over the user's app-config overrides. This makes
-// the diagnostics sweep honor `agentCliEnv.<agent>.*` relocations instead of
-// only looking under the hardcoded defaults, and cannot drift from the spawn
-// path. Returns nulls on any failure; the collector then falls back to defaults.
-async function resolveAgentHomes(dataDir: string | null | undefined): Promise<ResolvedAgentHomes> {
-  const empty: ResolvedAgentHomes = {
+// Resolve agent diagnostics inputs through the same Settings → spawn-environment
+// helpers used by the daemon's process launcher. This keeps login status and log
+// discovery aligned with the environment that the daemon passes to each agent.
+// Returns empty values on failure so collectors can fall back to their defaults.
+async function resolveDiagnosticsAgentEnvironment(
+  dataDir: string | null | undefined,
+): Promise<ResolvedDiagnosticsAgentEnvironment> {
+  const empty: ResolvedDiagnosticsAgentEnvironment = {
     amrOpenCodeHome: null,
+    amrConfiguredEnv: {},
     claudeConfigDir: null,
     codexHome: null,
     openCodeXdgDataHome: null,
@@ -67,6 +69,7 @@ async function resolveAgentHomes(dataDir: string | null | undefined): Promise<Re
     };
     return {
       amrOpenCodeHome: clean(envFor('amr').OPENCODE_TEST_HOME),
+      amrConfiguredEnv: agentCliEnvForAgent(appConfig.agentCliEnv, 'amr'),
       claudeConfigDir: clean(envFor('claude').CLAUDE_CONFIG_DIR),
       codexHome: clean(envFor('codex').CODEX_HOME),
       // OpenCode resolves its data/log dir from XDG_DATA_HOME; sandbox mode
@@ -226,7 +229,7 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
     try {
       const versionInfo = await readCurrentAppVersionInfo().catch(() => null);
       const home = homedir();
-      const agentHomes = await resolveAgentHomes(options.dataDir);
+      const agentEnvironment = await resolveDiagnosticsAgentEnvironment(options.dataDir);
       const browserUse = collectBrowserUseDiscoveryFacts();
       const runEventSources = await buildRunEventLogSources(options.runsDir);
       const sources = [
@@ -235,10 +238,10 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
         ...(await buildAgentCliLogSources({
           homeDir: home,
           dataDir: options.dataDir ?? null,
-          amrOpenCodeHome: agentHomes.amrOpenCodeHome,
-          claudeConfigDir: agentHomes.claudeConfigDir,
-          codexHome: agentHomes.codexHome,
-          xdgDataHome: agentHomes.openCodeXdgDataHome ?? process.env.XDG_DATA_HOME ?? null,
+          amrOpenCodeHome: agentEnvironment.amrOpenCodeHome,
+          claudeConfigDir: agentEnvironment.claudeConfigDir,
+          codexHome: agentEnvironment.codexHome,
+          xdgDataHome: agentEnvironment.openCodeXdgDataHome ?? process.env.XDG_DATA_HOME ?? null,
         })),
       ];
       const username = safeUsername();
@@ -291,7 +294,10 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
             daemon: { reachable: true },
             amr: (() => {
               try {
-                const status = readVelaLoginStatus();
+                const status = readVelaLoginStatus(
+                  process.env,
+                  agentEnvironment.amrConfiguredEnv,
+                );
                 return {
                   profile: status.profile,
                   loggedIn: status.loggedIn,
