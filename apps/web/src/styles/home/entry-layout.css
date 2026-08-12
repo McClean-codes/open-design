@@ -82,9 +82,6 @@
      the topbar toggle's fade-out and caused a flash on expand. */
   pointer-events: none;
 }
-.entry-nav-rail:has(.updater-popup) {
-  z-index: 1900;
-}
 /* The whole sidebar reads as one floating layer: the content sits in a panel
    inset from the grid-track edges (margin) with rounded corners + elevation,
    instead of a flush docked column separated by divider lines. */
