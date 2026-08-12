@@ -597,12 +597,14 @@ export function EntryShell({
   const route = useRoute();
   const view: EntryViewKind = route.kind === 'home' ? route.view : 'home';
   useEffect(() => {
-    // The entry shell is the authenticated Home surface. A definitive
-    // signed-out result returns it to the Cloud identity gate while leaving
-    // the saved model source untouched for passive reauthentication.
-    if (amrLoggedIn !== false || view === 'onboarding') return;
+    // Only Open Design Cloud requires a Cloud identity. Local CLI and BYOK
+    // remain usable without signing in, so their Home surface must not be
+    // replaced by the Cloud identity gate when the independent AMR status
+    // read settles signed out.
+    const usesAmrCloud = config.mode === 'daemon' && config.agentId === 'amr';
+    if (!usesAmrCloud || amrLoggedIn !== false || view === 'onboarding') return;
     navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-  }, [amrLoggedIn, view]);
+  }, [amrLoggedIn, config.agentId, config.mode, view]);
   // The one shared workspace context. Any non-null context is a real workspace
   // (personal or team); workspace surfaces gate on B's permission bits, not on
   // workspaceType.
@@ -1308,7 +1310,6 @@ export function EntryShell({
         }
         if (!workspaceWitness.isStillCurrent()) continue;
         const gateScope = amrBalanceGateScopeForWorkspaceContext(workspaceWitness.context);
-        if (!gateScope) return false;
         let gate = await retryUnavailableAmrBalanceGate(
           () => checkAmrBalanceGate(gateScope),
         );

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import {
   buildWorkspacePermissions,
   buildWorkspaceSeatSummary,
@@ -28,6 +28,20 @@ vi.mock('../../src/runtime/amr-balance-gate', async (importOriginal) => {
     checkAmrBalanceGate: vi.fn(),
   };
 });
+
+vi.mock('../../src/components/AmrBalanceDialog', () => ({
+  AmrBalanceDialog: ({
+    reason,
+    onClose,
+  }: {
+    reason: 'insufficient' | 'signed_out';
+    onClose: () => void;
+  }) => (
+    <div data-testid="amr-balance-dialog" data-reason={reason}>
+      <button type="button" onClick={onClose}>Close gate</button>
+    </div>
+  ),
+}));
 
 const mockedCheckAmrBalanceGate = vi.mocked(checkAmrBalanceGate);
 const originalFetch = globalThis.fetch;
@@ -193,6 +207,90 @@ describe('EntryShell AMR workspace precheck race', () => {
       });
     });
     await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
+  });
+
+  it('opens the existing sign-in gate when the confirmed directory is empty', async () => {
+    window.history.replaceState(null, '', '/');
+    let directoryReads = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspace/directory')) {
+        directoryReads += 1;
+        return jsonResponse(workspaceDirectoryFixture([]));
+      }
+      if (url.endsWith('/api/workspace/projects/team')) {
+        return jsonResponse({ projects: [] });
+      }
+      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+      return jsonResponse({});
+    }) as typeof fetch;
+    mockedCheckAmrBalanceGate.mockResolvedValue({
+      kind: 'hard',
+      reason: 'signed_out',
+      snapshot: {
+        status: 'signed_out',
+        profile: 'default',
+        user: null,
+        balanceUsd: null,
+        updatedAt: null,
+        fetchedAt: new Date(0).toISOString(),
+        stale: false,
+        source: 'unavailable',
+        error: { code: 'signed_out', message: 'Sign in to view wallet balance.' },
+      },
+    });
+    const onCreateProject = vi.fn(async () => true);
+
+    render(
+      <I18nProvider initial="en">
+        <EntryShell
+          skills={[]}
+          designTemplates={[]}
+          designSystems={[]}
+          projects={[]}
+          templates={[]}
+          promptTemplates={[]}
+          defaultDesignSystemId={null}
+          connectors={[]}
+          connectorsLoading={false}
+          config={amrConfig()}
+          agents={[amrAgent()]}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiProtocolChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onConfigPersist={vi.fn()}
+          onRefreshAgents={vi.fn(() => [amrAgent()])}
+          onCreateProject={onCreateProject}
+          onCreatePluginShareProject={vi.fn()}
+          onImportClaudeDesign={vi.fn()}
+          onOpenProject={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onDeleteProject={vi.fn()}
+          onRenameProject={vi.fn()}
+          onChangeDefaultDesignSystem={vi.fn()}
+          onPersistComposioKey={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onCompleteOnboarding={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(directoryReads).toBeGreaterThan(0));
+    setHomeHeroPrompt('Create a poster after I sign in.');
+    fireEvent.click(await screen.findByTestId('home-hero-submit'));
+
+    await waitFor(() => expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith(undefined));
+    const dialog = await screen.findByTestId('amr-balance-dialog');
+    expect(dialog.getAttribute('data-reason')).toBe('signed_out');
+    expect(onCreateProject).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByText('Close gate'));
+    await waitFor(() => expect(screen.queryByTestId('amr-balance-dialog')).toBeNull());
   });
 
   it('keeps one Home submit loading until a transient team billing read recovers', async () => {

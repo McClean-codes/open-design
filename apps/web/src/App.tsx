@@ -2850,10 +2850,8 @@ function AppInner() {
         const usesAmrCloud =
           executionConfig.mode === 'daemon'
           && executionConfig.agentId === AMR_AGENT_ID;
-        const isExplicitlySignedOut =
-          amrLoginStatusRef.current?.loggedIn === false;
         const unavailablePolicy: 'unscoped' | 'reject' =
-          !usesAmrCloud && isExplicitlySignedOut ? 'unscoped' : 'reject';
+          usesAmrCloud ? 'reject' : 'unscoped';
         let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
         try {
           createWorkspaceContext = resolvedWorkspaceContextForWrite(

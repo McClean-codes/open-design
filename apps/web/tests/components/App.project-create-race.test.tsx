@@ -1226,7 +1226,7 @@ describe('App project creation routing', () => {
     ['Local CLI', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
     ['BYOK', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],
   ])(
-    'lets %s create an unscoped project while AMR workspace discovery is unavailable',
+    'lets %s create an unscoped project without waiting for AMR identity discovery',
     async (_label, executionConfig) => {
       mockedLoadConfig.mockReturnValue(executionConfig);
       mockedListProjects.mockResolvedValue([]);
@@ -1235,15 +1235,7 @@ describe('App project creation routing', () => {
         vi.fn(async (input: RequestInfo | URL) => {
           const pathname = new URL(String(input), 'http://d.local').pathname;
           if (pathname.endsWith('/integrations/vela/status')) {
-            return new Response(JSON.stringify({
-              loggedIn: false,
-              profile: 'default',
-              user: null,
-              configPath: '/test/vela.json',
-            }), {
-              status: 200,
-              headers: { 'content-type': 'application/json' },
-            });
+            return new Promise<Response>(() => {});
           }
           if (pathname.endsWith('/workspace/directory')) {
             return new Promise<Response>(() => {});
@@ -1256,7 +1248,7 @@ describe('App project creation routing', () => {
       );
 
       render(<App />);
-      await screen.findByText('false', { selector: '[data-testid="amr-login-status"]' });
+      await screen.findByText('null', { selector: '[data-testid="amr-login-status"]' });
       fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
 
       await waitFor(() => {
@@ -1326,7 +1318,7 @@ describe('App project creation routing', () => {
     ['Local CLI', 'loading', { ...baseConfig, mode: 'daemon' as const, agentId: 'codex' }],
     ['BYOK', 'unavailable', { ...baseConfig, mode: 'api' as const, agentId: 'amr' }],
   ])(
-    'keeps %s project creation fail-closed for a signed-in account while Team workspace discovery is %s',
+    'lets %s create locally for a signed-in account while Team workspace discovery is %s',
     async (_label, discoveryState, executionConfig) => {
       mockedLoadConfig.mockReturnValue(executionConfig);
       mockedListProjects.mockResolvedValue([]);
@@ -1361,8 +1353,11 @@ describe('App project creation routing', () => {
       fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
 
       await waitFor(() => {
-        expect(mockedCreateProject).not.toHaveBeenCalled();
+        expect(mockedCreateProject).toHaveBeenCalledWith(
+          expect.objectContaining({ workspaceContext: null }),
+        );
       });
+      expect(screen.getByTestId('project-title').textContent).toBe('Fresh project');
     },
   );
 

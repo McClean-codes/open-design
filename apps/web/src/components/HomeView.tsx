@@ -1388,7 +1388,11 @@ export function HomeView({
       } catch {
         workspaceWitness = null;
       }
-      if (!workspaceWitness?.isStillCurrent()) {
+      const requiresWorkspaceIdentity = record.source.startsWith('team:plugin:');
+      if (
+        !workspaceWitness?.isStillCurrent()
+        || (requiresWorkspaceIdentity && !workspaceWitness.context)
+      ) {
         clearPendingApply();
         setError(
           'Workspace context is unavailable. Try again when workspace sync finishes.',

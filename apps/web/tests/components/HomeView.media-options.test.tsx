@@ -473,6 +473,72 @@ describe('HomeView media composer options', () => {
     expect(scopedApply).toBeTruthy();
   });
 
+  it('keeps bundled plugins usable when identity is pending and the directory is empty', async () => {
+    const fetchMock = stubFetch({ emptyWorkspaceDirectory: true });
+    const onSubmit = vi.fn();
+    const props = homeProps({ onSubmit });
+    const view = render(<HomeView {...props} />);
+
+    await clickHomeRailChip('video');
+    await setHomePrompt('Create a launch teaser after signing out.');
+    const applyCountBeforeSubmit = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    )).length;
+    workspaceContextMock.state = {
+      context: null,
+      resourceReadIdentity: null,
+      loading: false,
+      identityChangePending: true,
+      failure: undefined,
+    };
+    view.rerender(<HomeView {...props} />);
+    await submitHome();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const applyCountAfterSubmit = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    )).length;
+    expect(applyCountAfterSubmit).toBe(applyCountBeforeSubmit + 1);
+    const submittedApply = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    )).at(-1);
+    expect(new Headers(submittedApply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
+  });
+
+  it('does not apply a team plugin unscoped when identity is pending and the directory is empty', async () => {
+    const fetchMock = stubFetch({
+      emptyWorkspaceDirectory: true,
+      teamMediaPlugin: true,
+    });
+    const onSubmit = vi.fn();
+    const props = homeProps({ onSubmit });
+    const view = render(<HomeView {...props} />);
+
+    await clickHomeRailChip('video');
+    await setHomePrompt('Create a team launch teaser after signing out.');
+    const applyCountBeforeSubmit = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    )).length;
+    workspaceContextMock.state = {
+      context: null,
+      resourceReadIdentity: null,
+      loading: false,
+      identityChangePending: true,
+      failure: undefined,
+    };
+    view.rerender(<HomeView {...props} />);
+    await submitHome();
+
+    await waitFor(() => {
+      expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('false');
+    });
+    const applyCountAfterSubmit = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    )).length;
+    expect(applyCountAfterSubmit).toBe(applyCountBeforeSubmit);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it('preserves od-media-generation required inputs when applying media chips', async () => {
     const fetchMock = stubFetch();
     renderHome();
@@ -514,29 +580,39 @@ function homeProps(overrides: Partial<React.ComponentProps<typeof HomeView>> = {
   };
 }
 
-function stubFetch(options: { elevenLabsVoices?: Array<{ voiceId: string; name: string; category?: string }>; elevenLabsVoiceError?: string } = {}) {
+function stubFetch(options: {
+  elevenLabsVoices?: Array<{ voiceId: string; name: string; category?: string }>;
+  elevenLabsVoiceError?: string;
+  emptyWorkspaceDirectory?: boolean;
+  teamMediaPlugin?: boolean;
+} = {}) {
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
     cb(0);
     return 0;
   });
+  const mediaPlugin = options.teamMediaPlugin
+    ? { ...MEDIA_PLUGIN, source: 'team:plugin:workspace-a:od-media-generation' }
+    : MEDIA_PLUGIN;
   const fetchMock = vi.fn<typeof fetch>(async (url, init) => {
     if (typeof url === 'string' && url === '/api/plugins') {
-      return json({ plugins: [MEDIA_PLUGIN, PROTOTYPE_PLUGIN, HYPERFRAMES_PLUGIN] });
+      return json({ plugins: [mediaPlugin, PROTOTYPE_PLUGIN, HYPERFRAMES_PLUGIN] });
     }
     if (typeof url === 'string' && url === '/api/mcp/servers') {
       return json({ servers: [], templates: [] });
     }
     if (typeof url === 'string' && url === '/api/workspace/directory') {
       return json({
-        items: [{
-          workspaceId: 'workspace-cold',
-          workspaceName: 'Cold workspace',
-          workspaceType: 'team',
-          workspaceMemberId: 'member-cold',
-          role: 'member',
-          memberStatus: 'active',
-          lifecycleState: 'active',
-        }],
+        items: options.emptyWorkspaceDirectory
+          ? []
+          : [{
+              workspaceId: 'workspace-cold',
+              workspaceName: 'Cold workspace',
+              workspaceType: 'team',
+              workspaceMemberId: 'member-cold',
+              role: 'member',
+              memberStatus: 'active',
+              lifecycleState: 'active',
+            }],
         activeWorkspaceId: null,
       });
     }
