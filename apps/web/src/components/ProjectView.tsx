@@ -6934,7 +6934,6 @@ export function ProjectView({
         .map((touchedPath, index) => {
           const name = provenProjectRelativeToolPath(
             touchedPath,
-            project.id,
             projectDetail.resolvedDir,
           );
           return name ? { name, path: name, mtime: index } : null;
@@ -7028,7 +7027,6 @@ export function ProjectView({
               // an external `/files` observer cannot outrun the workspace UI.
               const immediateFileName = provenProjectRelativeToolPath(
                 filePath,
-                project.id,
                 projectDetail.resolvedDir,
               );
               const immediateTouchedFiles = provenTraceTouchedFiles();
@@ -12100,22 +12098,18 @@ function findTouchedProjectFile(
 }
 
 // Return a project-relative tool path only when an absolute Write/Edit path
-// can be proven to live under this project. Unlike findTouchedProjectFile,
-// this does not use filename suffixes: it runs before the refreshed inventory
-// is available, so ambiguous or unanchored paths must wait for that later
-// authoritative match.
+// can be proven to live under the resolved project root. This runs before the
+// refreshed inventory is available, so aliases, relative paths, and paths with
+// only a matching `projects/<id>` suffix must wait for that later authoritative
+// match instead of creating a persistent placeholder tab.
 function provenProjectRelativeToolPath(
   rawPath: string,
-  projectId?: string,
   projectRoot?: string | null,
 ): string | null {
   const slashed = rawPath.replace(/\\/g, '/');
+  if (!isAbsoluteToolPath(slashed) || !projectRoot) return null;
   const segments = lexicallyNormalizePathSegments(slashed);
   if (!segments || segments.length === 0) return null;
-  const normalized = segments.join('/');
-  const managedProjectRelativePath = relativePathFromManagedProjectAlias(normalized, projectId);
-  if (managedProjectRelativePath) return managedProjectRelativePath;
-  if (!isAbsoluteToolPath(slashed) || !projectRoot) return null;
   const rootSegments = lexicallyNormalizePathSegments(projectRoot.replace(/\\/g, '/'));
   if (!rootSegments || segments.length <= rootSegments.length) return null;
   for (let index = 0; index < rootSegments.length; index += 1) {

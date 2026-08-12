@@ -147,12 +147,17 @@ vi.mock('../../src/components/Loading', () => ({
   CenteredLoader: () => null,
 }));
 
-function renderProjectView() {
+function renderProjectView(options?: { resolvedDir?: string | null }) {
+  const project = {
+    id: 'project-1',
+    name: 'Project',
+    skillId: null,
+    designSystemId: null,
+  } as never;
   return render(
     <ProjectView
-      project={
-        { id: 'project-1', name: 'Project', skillId: null, designSystemId: null } as never
-      }
+      project={project}
+      initialProjectDetail={{ project, resolvedDir: options?.resolvedDir ?? null }}
       routeFileName={null}
       config={
         {
@@ -496,7 +501,7 @@ describe('ProjectView daemon reattach restore', () => {
     window.sessionStorage.clear();
   });
 
-  it('keeps terminal artifact selection after slower per-write refreshes settle', async () => {
+  it('keeps terminal artifact selection and ignores external project-alias writes', async () => {
     listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
     listMessages.mockResolvedValue([]);
     fetchPreviewComments.mockResolvedValue([]);
@@ -526,7 +531,7 @@ describe('ProjectView daemon reattach restore', () => {
       return new Promise<void>(() => {});
     });
 
-    renderProjectView();
+    renderProjectView({ resolvedDir: '/tmp/projects/project-1' });
     await waitFor(() => expect(chatPaneHarness.onSend).toBeTruthy());
     await waitFor(() => expect(fetchProjectFiles).toHaveBeenCalled());
 
@@ -571,6 +576,18 @@ describe('ProjectView daemon reattach restore', () => {
       content: 'ok',
       isError: false,
     });
+    handlers!.onAgentEvent({
+      kind: 'tool_use',
+      id: 'write-external-html',
+      name: 'Write',
+      input: { file_path: '/tmp/external/projects/project-1/ghost.html' },
+    });
+    handlers!.onAgentEvent({
+      kind: 'tool_result',
+      toolUseId: 'write-external-html',
+      content: 'ok',
+      isError: false,
+    });
     await waitFor(() => expect(chatPaneHarness.openRequestNames.at(-1)).toBe('index.html'));
     handlers!.onDone('Generated index.html from plan.md.');
 
@@ -580,6 +597,7 @@ describe('ProjectView daemon reattach restore', () => {
     await new Promise((resolve) => setTimeout(resolve, 50));
 
     expect(chatPaneHarness.openRequestNames.at(-1)).toBe('index.html');
+    expect(chatPaneHarness.openRequestNames).not.toContain('ghost.html');
   });
 
   it('does not replay a terminal succeeded row just because produced files are missing', async () => {
