@@ -21,6 +21,7 @@ import {
 const execFileAsync = promisify(execFile);
 const launchEnv = { ...process.env };
 const launchPath = launchEnv.PATH ?? launchEnv.Path ?? "";
+const nodeBinDir = dirname(process.execPath);
 const jqBin = process.platform !== "win32" && existsSync("/usr/bin/jq") ? "/usr/bin/jq" : "jq";
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(e2eRoot);
@@ -126,7 +127,7 @@ function workflowFixtureEnv(
   overrides: Record<string, string>,
   executableDir?: string,
 ): NodeJS.ProcessEnv {
-  const childPath = executableDir ? `${executableDir}${delimiter}${launchPath}` : launchPath;
+  const childPath = [executableDir, nodeBinDir, launchPath].filter(Boolean).join(delimiter);
   return {
     ...launchEnv,
     ...overrides,
