@@ -525,11 +525,7 @@ export async function configureVisualPage(page: Page, options: VisualPageOptions
     });
   });
 
-  // Catalog selections carry an exact local source and therefore use the
-  // current daemon's /apply-local endpoint. Match both forms so this visual
-  // fixture also remains valid for id-only callers without pretending an old
-  // daemon can verify an exact source.
-  await page.route('**/api/plugins/*/apply*', async (route) => {
+  await page.route('**/api/plugins/*/apply', async (route) => {
     if (route.request().method() !== 'POST') {
       await route.fallback();
       return;
