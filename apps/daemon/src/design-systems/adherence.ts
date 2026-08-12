@@ -1,3 +1,18 @@
+import { parse } from '@babel/parser';
+import type {
+  Expression,
+  JSXAttribute,
+  JSXElement,
+  JSXExpressionContainer,
+  JSXFragment,
+  JSXIdentifier,
+  JSXMemberExpression,
+  JSXNamespacedName,
+  JSXOpeningElement,
+  JSXSpreadAttribute,
+  Node,
+  TemplateLiteral,
+} from '@babel/types';
 import { load } from 'cheerio';
 import postcss, { type Declaration } from 'postcss';
 
@@ -385,57 +400,217 @@ function countSelectorMatches(
   selectors: readonly string[],
 ): number {
   if (/\.(?:jsx|tsx)$/iu.test(artifact.path)) {
-    const tags = extractExecutableMarkupTags(artifact.content).filter((tag) => !tag.closing);
-    return tags.filter((tag) => selectors.some((selector) => {
-      const tokens = uniqueByKey(
-        selectorIdentityTokens(selector),
-        (token) => `${token.kind}:${token.value}`,
-      );
-      const executableTag = stripComments(tag.raw);
-      return tokens.length > 0 && tokens.every((token) => identityPattern(token).test(executableTag));
-    })).length;
+    const jsxRoots = jsxStaticMarkupRoots(artifact.content);
+    return jsxRoots?.reduce(
+      (count, root) => count + countMarkupSelectorMatches(root, selectors, true),
+      0,
+    ) ?? 0;
   }
 
-  const source = stripComments(artifact.content);
+  return countMarkupSelectorMatches(stripComments(artifact.content), selectors, false);
+}
+
+function countMarkupSelectorMatches(
+  source: string,
+  selectors: readonly string[],
+  xmlMode: boolean,
+): number {
   try {
-    const $ = load(source);
-    const selectable = selectors.filter((selector) => !selector.includes(':'));
-    if (selectable.length > 0) {
-      const parsedCount = $(selectable.join(', ')).length;
-      if (parsedCount > 0) return parsedCount;
+    const $ = load(source, { xmlMode }, false);
+    const matches = new Set<unknown>();
+    for (const selector of selectors) {
+      try {
+        $(selector).each((_index, element) => {
+          matches.add(element);
+        });
+      } catch {
+        // Invalid or runtime-only selectors cannot prove static component reuse.
+      }
     }
+    return matches.size;
   } catch {
-    // Vue, Svelte, or partially generated HTML may not parse as strict selectors.
+    // Partially generated markup cannot prove component reuse.
+    return 0;
   }
-  return 0;
 }
 
-type SelectorIdentity = { kind: 'class' | 'id' | 'attribute'; value: string };
+type JsxRoot = JSXElement | JSXFragment;
 
-function selectorIdentityTokens(selector: string): SelectorIdentity[] {
-  const out: SelectorIdentity[] = [];
-  for (const match of selector.matchAll(/\.([_A-Za-z][_A-Za-z0-9-]*)/gu)) {
-    out.push({ kind: 'class', value: match[1]! });
+function jsxStaticMarkupRoots(source: string): string[] | undefined {
+  let ast: ReturnType<typeof parse>;
+  try {
+    ast = parse(source, {
+      sourceType: 'unambiguous',
+      errorRecovery: true,
+      plugins: ['jsx', 'typescript'],
+    });
+  } catch {
+    return undefined;
   }
-  for (const match of selector.matchAll(/#([_A-Za-z][_A-Za-z0-9-]*)/gu)) {
-    out.push({ kind: 'id', value: match[1]! });
-  }
-  for (const match of selector.matchAll(/\[([A-Za-z_:][A-Za-z0-9_:.-]*)/gu)) {
-    out.push({ kind: 'attribute', value: match[1]! });
-  }
-  return out;
+
+  return collectJsxRoots(ast.program)
+    .map((root) => `<od-jsx-root>${serializeJsxRoot(root)}</od-jsx-root>`);
 }
 
-function identityPattern(identity: SelectorIdentity, global = false): RegExp {
-  const flag = global ? 'gu' : 'u';
-  const value = escapeRegExp(identity.value);
-  if (identity.kind === 'class') {
-    return new RegExp(`(?:class|className)\\s*=\\s*(?:["'][^"']*\\b${value}(?![A-Za-z0-9_-])|\\{[^}]*["'][^"']*\\b${value}(?![A-Za-z0-9_-]))`, flag);
+function collectJsxRoots(value: unknown): JsxRoot[] {
+  const roots: JsxRoot[] = [];
+  visit(value);
+  return roots;
+
+  function visit(candidate: unknown): void {
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (!isBabelNode(candidate)) return;
+    if (candidate.type === 'JSXElement' || candidate.type === 'JSXFragment') {
+      roots.push(candidate);
+      return;
+    }
+    for (const [key, child] of Object.entries(candidate)) {
+      if (BABEL_METADATA_KEYS.has(key)) continue;
+      visit(child);
+    }
   }
-  if (identity.kind === 'id') {
-    return new RegExp(`\\bid\\s*=\\s*(?:["']${value}["']|\\{["']${value}["']\\})`, flag);
+}
+
+const BABEL_METADATA_KEYS = new Set([
+  'comments',
+  'end',
+  'extra',
+  'innerComments',
+  'leadingComments',
+  'loc',
+  'start',
+  'trailingComments',
+]);
+
+function isBabelNode(value: unknown): value is Node {
+  return typeof value === 'object'
+    && value !== null
+    && 'type' in value
+    && typeof value.type === 'string';
+}
+
+function serializeJsxRoot(root: JsxRoot): string {
+  if (root.type === 'JSXFragment') return serializeJsxChildren(root.children);
+  const name = jsxElementName(root.openingElement.name);
+  if (name === undefined) return '';
+  const attributes = root.openingElement.attributes
+    .map(serializeJsxAttribute)
+    .filter((attribute): attribute is string => attribute !== undefined)
+    .join('');
+  const children = serializeJsxChildren(root.children);
+  return `<${name}${attributes}>${children}</${name}>`;
+}
+
+function serializeJsxChildren(children: JSXElement['children'] | JSXFragment['children']): string {
+  return children.map((child) => {
+    if (child.type === 'JSXElement' || child.type === 'JSXFragment') {
+      return serializeJsxRoot(child);
+    }
+    if (child.type === 'JSXExpressionContainer') {
+      return serializeEmbeddedJsx(child);
+    }
+    return '';
+  }).join('');
+}
+
+function serializeEmbeddedJsx(container: JSXExpressionContainer): string {
+  if (container.expression.type === 'JSXEmptyExpression') return '';
+  return collectJsxRoots(container.expression).map(serializeJsxRoot).join('');
+}
+
+function serializeJsxAttribute(attribute: JSXAttribute | JSXSpreadAttribute): string | undefined {
+  if (attribute.type === 'JSXSpreadAttribute') return undefined;
+  const originalName = jsxAttributeName(attribute.name);
+  if (originalName === undefined) return undefined;
+  const name = originalName === 'className' ? 'class' : originalName;
+  const attributeValue = attribute.value;
+  if (attributeValue === null || attributeValue === undefined) return ` ${name}=""`;
+  if (attributeValue.type === 'StringLiteral') {
+    return ` ${name}="${escapeMarkupAttribute(attributeValue.value)}"`;
   }
-  return new RegExp(`(?:\\b${value}\\s*=|\\{\\.\.\.[^}]*\\b${value}\\b)`, flag);
+  if (attributeValue.type !== 'JSXExpressionContainer'
+    || attributeValue.expression.type === 'JSXEmptyExpression') {
+    return undefined;
+  }
+  const value = staticJsxAttributeValue(attributeValue.expression, name);
+  return value === undefined ? undefined : ` ${name}="${escapeMarkupAttribute(value)}"`;
+}
+
+function staticJsxAttributeValue(expression: Expression, attributeName: string): string | undefined {
+  if (expression.type === 'StringLiteral'
+    || expression.type === 'NumericLiteral'
+    || expression.type === 'BooleanLiteral') {
+    return String(expression.value);
+  }
+  if (expression.type !== 'TemplateLiteral') return undefined;
+  const exact = exactTemplateLiteralValue(expression);
+  if (exact !== undefined) return exact;
+  if (attributeName !== 'class') return undefined;
+  const classes = guaranteedTemplateLiteralClasses(expression);
+  return classes.length === 0 ? undefined : classes.join(' ');
+}
+
+function exactTemplateLiteralValue(template: TemplateLiteral): string | undefined {
+  let value = template.quasis[0]?.value.cooked ?? template.quasis[0]?.value.raw ?? '';
+  for (let index = 0; index < template.expressions.length; index += 1) {
+    const expression = template.expressions[index]!;
+    const staticValue = staticPrimitiveValue(expression);
+    if (staticValue === undefined) return undefined;
+    const quasi = template.quasis[index + 1];
+    value += staticValue + (quasi?.value.cooked ?? quasi?.value.raw ?? '');
+  }
+  return value;
+}
+
+function staticPrimitiveValue(expression: TemplateLiteral['expressions'][number]): string | undefined {
+  if (expression.type === 'StringLiteral'
+    || expression.type === 'NumericLiteral'
+    || expression.type === 'BooleanLiteral') {
+    return String(expression.value);
+  }
+  if (expression.type === 'NullLiteral') return 'null';
+  return undefined;
+}
+
+function guaranteedTemplateLiteralClasses(template: TemplateLiteral): string[] {
+  return unique(template.quasis.flatMap((quasi, index) => {
+    let text = quasi.value.cooked ?? quasi.value.raw;
+    if (index > 0 && !/^\s/u.test(text)) text = text.replace(/^\S*/u, '');
+    if (index < template.expressions.length && !/\s$/u.test(text)) text = text.replace(/\S*$/u, '');
+    return text.split(/\s+/u).filter(Boolean);
+  }));
+}
+
+function jsxElementName(name: JSXOpeningElement['name']): string | undefined {
+  if (name.type === 'JSXIdentifier') return name.name;
+  if (name.type === 'JSXNamespacedName') {
+    return `${name.namespace.name}:${name.name.name}`;
+  }
+  return jsxMemberName(name);
+}
+
+function jsxMemberName(name: JSXMemberExpression): string | undefined {
+  const object = name.object.type === 'JSXIdentifier'
+    ? name.object.name
+    : jsxMemberName(name.object);
+  return object === undefined ? undefined : `${object}.${name.property.name}`;
+}
+
+function jsxAttributeName(name: JSXIdentifier | JSXNamespacedName): string | undefined {
+  return name.type === 'JSXIdentifier'
+    ? name.name
+    : `${name.namespace.name}:${name.name.name}`;
+}
+
+function escapeMarkupAttribute(value: string): string {
+  return value
+    .replace(/&/gu, '&amp;')
+    .replace(/"/gu, '&quot;')
+    .replace(/</gu, '&lt;')
+    .replace(/>/gu, '&gt;');
 }
 
 function hasCssRule(source: string, selector: string): boolean {

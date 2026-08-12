@@ -19,6 +19,32 @@ async function loadBundle() {
   return runtime.bundle;
 }
 
+async function loadBundleWithSelectors(input: {
+  component: string[];
+  primary: string[];
+}) {
+  const bundle = await loadBundle();
+  return {
+    ...bundle,
+    components: bundle.components.map((component) => component.definition.id !== 'Button'
+      ? component
+      : {
+          ...component,
+          definition: {
+            ...component.definition,
+            selectors: input.component,
+            variants: {
+              ...component.definition.variants,
+              primary: {
+                ...component.definition.variants!.primary!,
+                selectors: input.primary,
+              },
+            },
+          },
+        }),
+  };
+}
+
 describe('design-system adherence validation', () => {
   it('checks component, variant, state, and token reuse across related files', async () => {
     const report = validateDesignSystemAdherence({
@@ -332,6 +358,84 @@ describe('design-system adherence validation', () => {
             <button className="button button--primary" style={{ color: 'var(--accent)' }}>
               Save changes
             </button>
+          </>;
+        }`,
+      }],
+    });
+
+    expect(report.status).toBe('passed');
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'mapped-component-reuse', status: 'passed' }),
+      expect.objectContaining({ id: 'variant-reuse', status: 'passed' }),
+    ]));
+  });
+
+  it.each([
+    {
+      label: 'element name',
+      markup: '<form><div data-role="primary" className="button button--primary">Save</div></form>',
+    },
+    {
+      label: 'attribute value',
+      markup: '<form><button data-role="secondary" className="button button--primary">Save</button></form>',
+    },
+    {
+      label: 'parent combinator',
+      markup: '<section><button data-role="primary" className="button button--primary">Save</button></section>',
+    },
+  ])('preserves the $label constraint when matching JSX selectors', async ({ markup }) => {
+    const bundle = await loadBundleWithSelectors({
+      component: ['form > button[data-role="primary"]'],
+      primary: ['form > button[data-role="primary"].button--primary'],
+    });
+    const report = validateDesignSystemAdherence({
+      bundle,
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [{
+        path: 'AccountSettings.tsx',
+        size: 420,
+        content: `export function AccountSettings() {
+          return <>
+            <style>{\`.button--primary:hover { opacity: .9; }
+              .button:focus-visible { outline: 2px solid var(--accent); }\`}</style>
+            ${markup}
+          </>;
+        }`,
+      }],
+    });
+
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'mapped-component-reuse', status: 'failed' }),
+      expect.objectContaining({ id: 'variant-reuse', status: 'failed' }),
+    ]));
+  });
+
+  it('matches static classes inside a JSX template literal without discarding selector structure', async () => {
+    const bundle = await loadBundleWithSelectors({
+      component: ['form > button[data-role="primary"].button'],
+      primary: ['form > button[data-role="primary"].button--primary'],
+    });
+    const report = validateDesignSystemAdherence({
+      bundle,
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [{
+        path: 'AccountSettings.tsx',
+        size: 520,
+        content: `export function AccountSettings({ disabled }: { disabled: boolean }) {
+          return <>
+            <style>{\`.button--primary:hover { opacity: .9; }
+              .button:focus-visible { outline: 2px solid var(--accent); }\`}</style>
+            <form>
+              <button
+                data-role="primary"
+                className={\`button button--primary \${disabled ? 'is-disabled' : ''}\`}
+                style={{ color: 'var(--accent)' }}
+              >
+                Save changes
+              </button>
+            </form>
           </>;
         }`,
       }],
