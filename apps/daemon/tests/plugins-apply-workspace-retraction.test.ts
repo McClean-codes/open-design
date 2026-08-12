@@ -1,8 +1,10 @@
 import express from 'express';
+import type { ApplyResult, InstalledPluginRecord } from '@open-design/contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerPluginRoutes } from '../src/routes/plugins/index.js';
+import { applyPlugin as applyPluginCore } from '../src/plugins/apply.js';
 
 const servers: Array<ReturnType<express.Express['listen']>> = [];
 
@@ -106,18 +108,47 @@ describe('Team plugin apply retraction gate', () => {
     expect(applyPlugin).not.toHaveBeenCalled();
   });
 
-  it('applies the exact local Team materialization without Workspace headers', async () => {
+  it('resolves exact local Team context from its source instead of current Workspace headers', async () => {
     const app = express();
     app.use(express.json());
-    const applyPlugin = vi.fn((input: { plugin: { source?: string } }) => ({
-      result: {
-        query: input.plugin.source,
-        capabilitiesGranted: [],
-        appliedPlugin: { capabilitiesGranted: [] },
+    const registryFor = (scope?: { workspaceId?: string }) => ({
+      skills: scope?.workspaceId === 'ws-a'
+        ? [{ id: 'team-skill', title: 'Team Skill' }]
+        : [],
+      designSystems: scope?.workspaceId === 'ws-a'
+        ? [{ id: 'user:team-system', title: 'Team System' }]
+        : [],
+      craft: [],
+      atoms: [],
+      scenarios: [],
+    });
+    const loadPluginRegistryView = vi.fn(async (scope?: { workspaceId?: string }) =>
+      registryFor(scope));
+    const applyPlugin = vi.fn(applyPluginCore);
+    const teamPlugin: InstalledPluginRecord = {
+      id: 'shared-id',
+      title: 'Team plugin',
+      version: '1.0.0',
+      sourceKind: 'user',
+      source: 'team:plugin:ws-a:shared-id',
+      trust: 'trusted',
+      capabilitiesGranted: [],
+      fsPath: '/tmp/team-plugin',
+      installedAt: 1,
+      updatedAt: 1,
+      manifest: {
+        name: 'shared-id',
+        title: 'Team plugin',
+        version: '1.0.0',
+        od: {
+          kind: 'skill',
+          context: {
+            skills: [{ ref: 'team-skill' }],
+            designSystem: { ref: 'user:team-system' },
+          },
+        },
       },
-      warnings: [],
-      manifestSourceDigest: 'team-digest',
-    }));
+    };
     const middleware: express.RequestHandler = (_req, _res, next) => next();
 
     registerPluginRoutes(app, {
@@ -137,7 +168,7 @@ describe('Team plugin apply retraction gate', () => {
         getWorkspacePlugin: async () => null,
         getLocalPluginBySource: async (_db: unknown, id: string, source: string) =>
           id === 'shared-id' && source === 'team:plugin:ws-a:shared-id'
-            ? { id, source }
+            ? teamPlugin
             : null,
         listInstalledPlugins: () => [],
         applyPlugin,
@@ -151,7 +182,7 @@ describe('Team plugin apply retraction gate', () => {
           single: () => middleware,
           array: () => middleware,
         },
-        loadPluginRegistryView: async () => ({}),
+        loadPluginRegistryView,
         buildConnectorProbe: () => ({}),
         connectorService: {},
         sendApiError: (res: express.Response, status: number, code: string, message: string) =>
@@ -167,7 +198,13 @@ describe('Team plugin apply retraction gate', () => {
       `http://127.0.0.1:${port}/api/plugins/shared-id/apply-local`,
       {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        // The current project/session may belong to another Workspace. Exact
+        // local refs must still follow the selected plugin's source provenance.
+        headers: {
+          'content-type': 'application/json',
+          'x-od-workspace-id': 'ws-current-project',
+          'x-od-workspace-member-id': 'member-current-project',
+        },
         body: JSON.stringify({
           source: 'team:plugin:ws-a:shared-id',
           inputs: {},
@@ -176,9 +213,38 @@ describe('Team plugin apply retraction gate', () => {
     );
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
+    const body = await response.json() as ApplyResult & {
+      manifestSourceDigest: string;
+      ok: true;
+    };
+    expect(body).toMatchObject({
       ok: true,
-      query: 'team:plugin:ws-a:shared-id',
+      contextItems: [
+        { kind: 'skill', id: 'team-skill' },
+        { kind: 'design-system', id: 'user:team-system' },
+      ],
+      appliedPlugin: {
+        resolvedContext: {
+          items: [
+            { kind: 'skill', id: 'team-skill' },
+            { kind: 'design-system', id: 'user:team-system' },
+          ],
+        },
+      },
+    });
+    expect(body.manifestSourceDigest).toBe(applyPluginCore({
+      plugin: teamPlugin,
+      inputs: {},
+      registry: registryFor({ workspaceId: 'ws-a' }),
+    }).manifestSourceDigest);
+    expect(body.manifestSourceDigest).not.toBe(applyPluginCore({
+      plugin: teamPlugin,
+      inputs: {},
+      registry: registryFor({ workspaceId: 'ws-current-project' }),
+    }).manifestSourceDigest);
+    expect(loadPluginRegistryView).toHaveBeenCalledWith({
+      workspaceId: 'ws-a',
+      workspaceMemberId: null,
     });
     expect(applyPlugin).toHaveBeenCalledWith(expect.objectContaining({
       plugin: expect.objectContaining({ source: 'team:plugin:ws-a:shared-id' }),

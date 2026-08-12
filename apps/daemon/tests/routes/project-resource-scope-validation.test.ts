@@ -296,11 +296,22 @@ describe('project resource selection uses the persisted exact member', () => {
   it('does not reject an exact local Team plugin from a different historical Workspace', async () => {
     const insertProject = vi.fn((_: unknown, input: Record<string, unknown>) => input);
     const source = 'team:plugin:historical-workspace:shared-id';
+    const loadRegistry = vi.fn(async () => ({
+      skills: [],
+      designSystems: [],
+      craft: [],
+      atoms: [],
+      scenarios: [],
+    }));
     const getLocalPluginBySource = vi.fn(async () => ({
       id: 'shared-id',
       source,
     }));
-    const baseUrl = await start(buildDeps({ insertProject, getLocalPluginBySource }));
+    const baseUrl = await start(buildDeps({
+      insertProject,
+      getLocalPluginBySource,
+      loadRegistry,
+    }));
 
     const response = await fetch(`${baseUrl}/api/projects`, {
       method: 'POST',
@@ -320,6 +331,10 @@ describe('project resource selection uses the persisted exact member', () => {
     expect(response.status).toBe(400);
     expect(getLocalPluginBySource).toHaveBeenCalledWith('shared-id', source);
     expect(insertProject).toHaveBeenCalledOnce();
+    expect(loadRegistry).toHaveBeenCalledWith({
+      workspaceId: 'historical-workspace',
+      workspaceMemberId: null,
+    });
   });
 
   it('rejects a Team plugin after local reconciliation tombstones it', async () => {
