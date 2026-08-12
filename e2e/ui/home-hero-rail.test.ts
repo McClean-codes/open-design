@@ -538,7 +538,11 @@ test.beforeEach(async ({ page }) => {
     });
   });
 
-  await page.route('**/api/plugins/*/apply', async (route) => {
+  // Exact local-source selection uses /apply-local; keep /apply covered for
+  // old-daemon compatibility. Both paths must stay hermetic instead of
+  // falling through to whichever plugins happen to exist in the worker's
+  // daemon data root.
+  await page.route('**/api/plugins/*/apply*', async (route) => {
     const pluginId = route.request().url().split('/api/plugins/')[1]?.split('/apply')[0];
     const body = pluginId ? APPLY_RESPONSES[pluginId] : null;
     await route.fulfill({
