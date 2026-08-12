@@ -167,13 +167,11 @@ export const PluginsSection = forwardRef<PluginsSectionHandle, Props>(
           try {
             workspaceContext = workspaceContextForAction();
           } catch {
-            if (!record?.source) return null;
-            workspaceContext = null;
+            return null;
           }
           const result = await applyPlugin(pluginId, {
             ...(props.projectId ? { projectId: props.projectId } : {}),
             locale,
-            ...(record?.source ? { pluginSource: record.source } : {}),
             workspaceContext,
           });
           if (!result) return null;

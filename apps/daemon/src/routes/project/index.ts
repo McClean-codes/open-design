@@ -127,10 +127,6 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
       id: string,
       options: { workspaceId: string | null; workspaceMemberId: string | null },
     ) => Promise<unknown | null>;
-    getLocalPluginBySource?: (
-      id: string,
-      source: string,
-    ) => Promise<Parameters<typeof resolvePluginSnapshot>[0]['plugin'] | null>;
   };
   teamProjectCatalog?: VelaTeamProjectCatalogClient;
   /** Bounded authoritative verifier for idempotent Workspace project reads. */
@@ -3493,38 +3489,10 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         typeof req.body?.pluginId === 'string' && req.body.pluginId.trim().length > 0
           ? req.body.pluginId.trim()
           : null;
-      const requestedPluginSource =
-        typeof req.body?.pluginSource === 'string' && req.body.pluginSource.trim().length > 0
-          ? req.body.pluginSource.trim()
-          : null;
-      // This is exact local resource resolution, not Team authorization.
-      // `pluginSource` preserves the record the user actually selected across
-      // same-id Personal/Team installs. The resolver may consult the daemon's
-      // local reconciliation state (including a recorded tombstone), but must
-      // not make a network authority call or compare the source's historical
-      // Workspace with the project's current Workspace. New projects are local
-      // (`sync_state=local_only`, `visibility=personal`); remote sharing/syncing
-      // performs its own fresh checks if the user later moves into Team space.
-      const exactLocalPlugin = requestedPluginId && requestedPluginSource
-        ? await ctx.pluginScope?.getLocalPluginBySource?.(
-            requestedPluginId,
-            requestedPluginSource,
-          ) ?? null
-        : null;
-      if (
-        requestedPluginId
-        && requestedPluginSource
-        && ctx.pluginScope?.getLocalPluginBySource
-        && !exactLocalPlugin
-      ) {
-        return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
-      }
       if (requestedPluginId) {
-        const visiblePlugin = exactLocalPlugin ?? (
-          ctx.pluginScope
-            ? await ctx.pluginScope.getPlugin(requestedPluginId, creationWorkspaceScope)
-            : getInstalledPlugin(db, requestedPluginId)
-        );
+        const visiblePlugin = ctx.pluginScope
+          ? await ctx.pluginScope.getPlugin(requestedPluginId, creationWorkspaceScope)
+          : getInstalledPlugin(db, requestedPluginId);
         if (!visiblePlugin) {
           return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
         }
@@ -3680,7 +3648,6 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
               ? { id: normalizedDesignSystemId }
               : undefined,
           connectorProbe: buildConnectorProbe(connectorService),
-          ...(exactLocalPlugin ? { plugin: exactLocalPlugin } : {}),
         });
         if (resolved && !resolved.ok) {
           if (!explicitPlugin) {

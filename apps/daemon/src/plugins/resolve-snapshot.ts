@@ -62,8 +62,6 @@ export interface ResolveSnapshotInput {
   // Pluggable for tests; in production these are the daemon's live
   // skill / design-system catalogs (server.ts wires them).
   registry: RegistryView;
-  /** Exact already-local record selected by a record-aware caller. */
-  plugin?: InstalledPluginRecord | undefined;
   connectorProbe?: ConnectorProbe | undefined;
   // Optional active-project DS binding. Forwarded to `applyPlugin` so
   // plugins that declared `od.context.designSystem.primary: true` get
@@ -222,9 +220,7 @@ export function resolvePluginSnapshot(input: ResolveSnapshotInput): ResolveSnaps
   }
 
   // Path 2: pluginId — run apply, persist a new snapshot.
-  const plugin = input.plugin?.id === fields.pluginId
-    ? input.plugin
-    : getInstalledPlugin(input.db, fields.pluginId!);
+  const plugin = getInstalledPlugin(input.db, fields.pluginId!);
   if (!plugin) {
     return {
       ok: false,

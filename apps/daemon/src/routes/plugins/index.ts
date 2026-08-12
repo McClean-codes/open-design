@@ -255,11 +255,6 @@ export interface RegisterPluginRoutesDeps {
       workspaceId: string | null,
       workspaceMemberId?: string | null,
     ) => InstalledPluginLike | null | Promise<InstalledPluginLike | null>;
-    getLocalPluginBySource?: (
-      db: SqliteDbLike,
-      id: string,
-      source: string,
-    ) => InstalledPluginLike | null | Promise<InstalledPluginLike | null>;
     installPlugin: (db: SqliteDbLike, args: unknown) => AsyncIterable<unknown>;
     isSafePluginId: (id: string) => boolean;
     uninstallPlugin: (db: SqliteDbLike, id: string, roots: string[]) => Promise<{ ok: boolean; removedFolder?: boolean; warning?: string }>;
@@ -408,34 +403,6 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
     return plugins.getWorkspacePlugin
       ? plugins.getWorkspacePlugin(db, id, workspaceId, authority?.workspaceMemberId ?? null)
       : plugins.getInstalledPlugin(db, id);
-  };
-  const applyResolvedPlugin = async (
-    req: Request,
-    res: Response,
-    plugin: InstalledPluginLike,
-    registry: unknown,
-  ) => {
-    const body = req.body && typeof req.body === 'object'
-      ? req.body as Record<string, unknown>
-      : {};
-    const inputs = body.inputs && typeof body.inputs === 'object' ? body.inputs : {};
-    const grantCaps = Array.isArray(body.grantCaps)
-      ? body.grantCaps.filter((c: unknown): c is string => typeof c === 'string')
-      : [];
-    const locale = typeof body.locale === 'string' ? body.locale : undefined;
-    const connectorProbe = helpers.buildConnectorProbe(helpers.connectorService);
-    const computed = plugins.applyPlugin({ plugin, inputs, registry, locale, connectorProbe });
-    if (grantCaps.length > 0) {
-      const merged = new Set([...computed.result.capabilitiesGranted, ...grantCaps]);
-      computed.result.capabilitiesGranted = Array.from(merged);
-      computed.result.appliedPlugin.capabilitiesGranted = Array.from(merged);
-    }
-    return res.json({
-      ok: true,
-      ...computed.result,
-      warnings: computed.warnings,
-      manifestSourceDigest: computed.manifestSourceDigest,
-    });
   };
   const isTeamPlugin = (plugin: InstalledPluginLike | null | undefined): boolean =>
     typeof plugin?.source === 'string' && plugin.source.startsWith('team:plugin:');
@@ -612,35 +579,20 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
     )) return;
     return helpers.installOrUpgradePlugin(req, res, 'upgrade', authority);
   });
-  app.post('/api/plugins/:id/apply-local', async (req, res) => {
-    res.setHeader('x-od-plugin-apply-local', '1');
-    try {
-      const body = req.body && typeof req.body === 'object'
-        ? req.body as Record<string, unknown>
-        : {};
-      const source = typeof body.source === 'string' ? body.source.trim() : '';
-      if (!source || !plugins.getLocalPluginBySource) {
-        return res.status(404).json({ error: 'plugin not found' });
-      }
-      const plugin = await plugins.getLocalPluginBySource(db, req.params.id, source);
-      if (!plugin) {
-        return res.status(404).json({ error: 'plugin not found' });
-      }
-      const registry = await helpers.loadPluginRegistryView();
-      return applyResolvedPlugin(req, res, plugin, registry);
-    } catch (err: unknown) {
-      if (err instanceof plugins.MissingInputError) {
-        return res.status(422).json({ error: 'missing_inputs', fields: err.fields });
-      }
-      return res.status(500).json({ error: String(err) });
-    }
-  });
   app.post('/api/plugins/:id/apply', async (req, res) => {
     try {
       const authority = await resolveWorkspaceAuthority(req, res);
       if (authority === undefined) return;
       const plugin = await resolveRequestPlugin(req.params.id, authority);
       if (!plugin) return res.status(404).json({ error: 'plugin not found' });
+      const body = req.body && typeof req.body === 'object'
+        ? req.body as Record<string, unknown>
+        : {};
+      const inputs = body.inputs && typeof body.inputs === 'object' ? body.inputs : {};
+      const grantCaps = Array.isArray(body.grantCaps)
+        ? body.grantCaps.filter((c: unknown): c is string => typeof c === 'string')
+        : [];
+      const locale = typeof body.locale === 'string' ? body.locale : undefined;
       const registry = await helpers.loadPluginRegistryView({
         workspaceId: authority?.workspaceId ?? null,
         workspaceMemberId: authority?.workspaceMemberId ?? null,
@@ -661,7 +613,19 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
       ) {
         return res.status(404).json({ error: 'plugin not found' });
       }
-      return applyResolvedPlugin(req, res, plugin, registry);
+      const connectorProbe = helpers.buildConnectorProbe(helpers.connectorService);
+      const computed = plugins.applyPlugin({ plugin, inputs, registry, locale, connectorProbe });
+      if (grantCaps.length > 0) {
+        const merged = new Set([...computed.result.capabilitiesGranted, ...grantCaps]);
+        computed.result.capabilitiesGranted = Array.from(merged);
+        computed.result.appliedPlugin.capabilitiesGranted = Array.from(merged);
+      }
+      res.json({
+        ok: true,
+        ...computed.result,
+        warnings: computed.warnings,
+        manifestSourceDigest: computed.manifestSourceDigest,
+      });
     } catch (err: unknown) {
       if (err instanceof plugins.MissingInputError) {
         return res.status(422).json({ error: 'missing_inputs', fields: err.fields });

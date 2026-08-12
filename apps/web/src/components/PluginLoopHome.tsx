@@ -30,7 +30,6 @@ import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 export interface PluginLoopSubmit {
   prompt: string;
   pluginId: string | null;
-  pluginSource?: string | null;
   // Marketplace trust of the routed plugin (official / community / …), used
   // to attribute project_create_result to a plugin type. Null when no plugin.
   pluginType?: string | null;
@@ -133,14 +132,9 @@ export function PluginLoopHome({ onSubmit }: Props) {
   ) {
     setPendingApplyId(record.id);
     setError(null);
-    const workspaceContext = resolvedWorkspaceContextForWrite(
-      workspaceContextState,
-      { unavailablePolicy: 'unscoped' },
-    );
     const result = await applyPlugin(record.id, {
       locale,
-      pluginSource: record.source,
-      workspaceContext,
+      workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
     });
     setPendingApplyId(null);
     if (!result) {

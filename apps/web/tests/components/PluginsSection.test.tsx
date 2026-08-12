@@ -147,13 +147,6 @@ describe('PluginsSection', () => {
     // rendered: inputs fall back to schema defaults instead of being edited inline.
     expect(screen.queryByTestId('plugin-inputs-form')).toBeNull();
     expect(onApplied).toHaveBeenCalled();
-    const localApply = fetchMock.mock.calls.find(([url]) => (
-      url === '/api/plugins/sample-plugin/apply-local'
-    ));
-    expect(localApply).toBeTruthy();
-    expect(JSON.parse(String(localApply?.[1]?.body))).toMatchObject({
-      source: '/tmp/sample',
-    });
     const [brief, applied] = onApplied.mock.calls[0]!;
     // `topic` has no schema default, so it stays un-substituted in the brief.
     expect(brief).toContain('{{topic}}');

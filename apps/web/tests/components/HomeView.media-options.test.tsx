@@ -446,7 +446,7 @@ describe('HomeView media composer options', () => {
     })));
   });
 
-  it('re-applies the exact local source without waiting for rich Workspace context', async () => {
+  it('re-applies the selected plugin from directory identity while rich context is loading', async () => {
     const fetchMock = stubFetch({ teamMediaPlugin: true });
     const onSubmit = vi.fn();
     const props = homeProps({ onSubmit });
@@ -465,15 +465,12 @@ describe('HomeView media composer options', () => {
     await submitHome();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    const localApply = fetchMock.mock.calls.filter(([url]) => (
+    const scopedApply = fetchMock.mock.calls.filter(([url, init]) => (
       typeof url === 'string'
-      && url.includes('/api/plugins/od-media-generation/apply-local')
+      && url.includes('/api/plugins/od-media-generation/apply')
+      && new Headers(init?.headers).get('x-od-workspace-id') === 'workspace-cold'
     )).at(-1);
-    expect(localApply).toBeTruthy();
-    expect(new Headers(localApply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
-    expect(JSON.parse(String(localApply?.[1]?.body))).toMatchObject({
-      source: 'team:plugin:workspace-a:od-media-generation',
-    });
+    expect(scopedApply).toBeTruthy();
   });
 
   it('keeps bundled plugins usable when identity is pending and the directory is empty', async () => {
@@ -561,7 +558,7 @@ describe('HomeView media composer options', () => {
     ))).toBe(false);
   });
 
-  it('applies an already-local Team plugin when the settled workspace directory is empty', async () => {
+  it('does not apply a team plugin unscoped when the settled workspace directory is empty', async () => {
     const fetchMock = stubFetch({
       emptyWorkspaceDirectory: true,
       teamMediaPlugin: true,
@@ -580,11 +577,9 @@ describe('HomeView media composer options', () => {
     await waitFor(() => {
       expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('false');
     });
-    const localApply = fetchMock.mock.calls.find(([url]) => (
-      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply-local')
-    ));
-    expect(localApply).toBeTruthy();
-    expect(new Headers(localApply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
+    expect(fetchMock.mock.calls.some(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    ))).toBe(false);
   });
 
   it('preserves od-media-generation required inputs when applying media chips', async () => {

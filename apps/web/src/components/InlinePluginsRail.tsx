@@ -172,7 +172,6 @@ export function InlinePluginsRail(props: Props) {
     const result = await applyPlugin(record.id, {
       ...(props.projectId ? { projectId: props.projectId } : {}),
       locale,
-      pluginSource: record.source,
       workspaceContext: writeWorkspaceContext,
     });
     if (workspaceIdentityRef.current !== issuedIdentity) return;

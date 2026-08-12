@@ -104,10 +104,7 @@ async function renderDetailAndUse() {
   const useButton = await screen.findByTestId('plugin-detail-use');
   fireEvent.click(useButton);
   await waitFor(() => {
-    expect(vi.mocked(applyPlugin)).toHaveBeenCalledWith(
-      PLUGIN.id,
-      expect.objectContaining({ pluginSource: PLUGIN.source }),
-    );
+    expect(vi.mocked(applyPlugin)).toHaveBeenCalledWith(PLUGIN.id, expect.anything());
   });
 }
 
