@@ -489,6 +489,35 @@ describe('design-system pull tool route', () => {
     expect(response.body.error).toMatchObject({ code: 'UNSUPPORTED_ARTIFACT' });
   });
 
+  it('rejects directory artifact paths as invalid input instead of returning an internal error', async () => {
+    const builtInRoot = fresh();
+    const userRoot = fresh();
+    cpSync(
+      path.resolve(import.meta.dirname, '../fixtures/design-systems/runtime-v3'),
+      path.join(builtInRoot, 'runtime-v3'),
+      { recursive: true },
+    );
+    const baseUrl = await startRouteServer({
+      builtInRoot,
+      userRoot,
+      activeDesignSystemId: 'runtime-v3',
+      projectFiles: {
+        'generated/account-settings.html': '<button class="button button--primary">Save</button>',
+      },
+    });
+
+    const response = await jsonFetch(`${baseUrl}/api/tools/design-systems/validate-adherence`, {
+      intent: 'account.settings.save',
+      artifacts: ['generated'],
+    });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error).toMatchObject({
+      code: 'INVALID_INPUT',
+      message: 'artifact generated must be a regular file',
+    });
+  });
+
   it('loads adherence tokens from the same user package selected for a bare-id runtime', async () => {
     const builtInRoot = fresh();
     const userRoot = fresh();

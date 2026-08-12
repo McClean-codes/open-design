@@ -448,6 +448,73 @@ describe('design-system adherence validation', () => {
     ]));
   });
 
+  it.each([
+    ['css tag', 'css'],
+    ['styled member tag', 'styled.button'],
+  ])('checks raw colors in a %s CSS-in-JS template', async (_label, tag) => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [{
+        path: 'AccountSettings.tsx',
+        size: 620,
+        content: `const generatedStyle = ${tag}\`
+            .button { color: #123456; }
+          \`;
+          export function AccountSettings() {
+            return <>
+              <style>{\`.button--primary:hover { opacity: .9; }
+                .button:focus-visible { outline: 2px solid var(--accent); }\`}</style>
+              <button className="button button--primary" style={{ color: 'var(--accent)' }}>
+                Save changes
+              </button>
+            </>;
+          }`,
+      }],
+    });
+
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'unauthorized-color-literal',
+        status: 'failed',
+        message: expect.stringContaining('#123456'),
+      }),
+    ]));
+  });
+
+  it('checks raw colors in SVG presentation attributes', async () => {
+    const report = validateDesignSystemAdherence({
+      bundle: await loadBundle(),
+      intent: 'account.settings.save',
+      tokensCss: ':root { --accent: #245cff; }',
+      artifacts: [{
+        path: 'account-settings.svg',
+        mime: 'image/svg+xml',
+        size: 620,
+        content: `<svg xmlns="http://www.w3.org/2000/svg">
+          <style>
+            .button { color: var(--accent); }
+            .button--primary:hover { opacity: .9; }
+            .button:focus-visible { outline: 2px solid var(--accent); }
+          </style>
+          <linearGradient id="accent-gradient">
+            <stop offset="0" stop-color="#123456" />
+          </linearGradient>
+          <g class="button button--primary"><text>Save changes</text></g>
+        </svg>`,
+      }],
+    });
+
+    expect(report.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'unauthorized-color-literal',
+        status: 'failed',
+        message: expect.stringContaining('#123456'),
+      }),
+    ]));
+  });
+
   it('keeps no-match output blocked until its marker and human confirmation exist', async () => {
     const missingMarker = validateDesignSystemAdherence({
       bundle: await loadBundle(),
