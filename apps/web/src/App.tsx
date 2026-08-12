@@ -1912,14 +1912,28 @@ function AppInner() {
   }, [applyAmrLoginStatus]);
 
   useEffect(() => {
+    const usesOpenDesignCloud =
+      config.mode === 'daemon'
+      && config.agentId === AMR_AGENT_ID;
     const cloudIdentityRejected =
-      amrLoginStatus?.loggedIn === false
-      || amrLoginStatus?.sessionState === 'reauth_required'
-      || workspaceContextState.failure === 'reauth-required';
+      workspaceContextState.failure === 'reauth-required'
+      || (
+        usesOpenDesignCloud
+        && (
+          amrLoginStatus?.loggedIn === false
+          || amrLoginStatus?.sessionState === 'reauth_required'
+        )
+      );
     if (!cloudIdentityRejected) return;
     if (route.kind === 'home' && route.view === 'onboarding') return;
     navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-  }, [amrLoginStatus, route, workspaceContextState.failure]);
+  }, [
+    amrLoginStatus,
+    config.agentId,
+    config.mode,
+    route,
+    workspaceContextState.failure,
+  ]);
 
   // Bootstrap — detect daemon, then fan out independent fetches so each
   // entry-view tab can render the moment its own data lands. Earlier this

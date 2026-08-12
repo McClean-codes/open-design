@@ -352,6 +352,11 @@ describe('App AMR polling', () => {
   });
 
   it('returns every authenticated surface to onboarding when Cloud auth definitively expires', async () => {
+    mockedLoadConfig.mockReturnValue({
+      ...baseConfig,
+      mode: 'daemon',
+      agentId: 'amr',
+    });
     useRouteMock.mockReturnValue({
       kind: 'project',
       projectId: 'project-with-expired-auth',

@@ -620,18 +620,22 @@ export function EntryShell({
   const railWorkspaceContext = accountFooterState === 'sign-in'
     ? null
     : workspaceContext;
-  const amrAuthRequired = requiresAmrReauthentication(
-    amrSessionState,
-    workspaceContextState.failure,
-  );
+  const usesOpenDesignCloud = config.mode === 'daemon' && config.agentId === 'amr';
+  const amrAuthRequired =
+    workspaceContextState.failure === 'reauth-required'
+    || (
+      usesOpenDesignCloud
+      && requiresAmrReauthentication(amrSessionState, workspaceContextState.failure)
+    );
   useEffect(() => {
     // The entry shell is an authenticated surface. Both an explicit signed-out
     // status and a definitive credential rejection return to the existing
     // Cloud identity gate. Passive reauthentication preserves the saved model
     // source and Home's locally persisted, not-yet-sent draft.
-    if ((amrLoggedIn !== false && !amrAuthRequired) || view === 'onboarding') return;
+    const selectedCloudIdentityRejected = usesOpenDesignCloud && amrLoggedIn === false;
+    if ((!selectedCloudIdentityRejected && !amrAuthRequired) || view === 'onboarding') return;
     navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-  }, [amrAuthRequired, amrLoggedIn, view]);
+  }, [amrAuthRequired, amrLoggedIn, usesOpenDesignCloud, view]);
   let accountFooterNotice: ReactNode = null;
   if (accountFooterState === 'syncing') {
     accountFooterNotice = <RailAccountSyncTip />;
