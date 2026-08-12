@@ -113,18 +113,7 @@
 4. `returns a pending authorization to Connect and clears session storage after a successful cancel`
 5. `surfaces a connector error state when credentials have degraded`
 
-### 7. Design systems：Settings 导入/重命名/坏导入
-
-文件：
-- [e2e/ui/settings-design-systems.test.ts](/Users/mac/open-design/open-design-amr-runtime-acp/e2e/ui/settings-design-systems.test.ts)
-
-新增用例：
-
-1. `imports a local design system and makes it visible immediately`
-2. `renames an editable design system and keeps the new title after reopening settings`
-3. `shows an inline error when importing a broken local design system package`
-
-### 8. Design systems manager：发布、过滤、删除 fallback
+### 7. Design systems manager：发布、过滤、删除 fallback
 
 文件：
 - [e2e/ui/design-systems-manager.test.ts](/Users/mac/open-design/open-design-amr-runtime-acp/e2e/ui/design-systems-manager.test.ts)
@@ -135,7 +124,7 @@
 2. `filters user design systems by draft and published status in the manager`
 3. `deleting the active design system falls back to another user system`
 
-### 9. main 最新功能回归补测
+### 8. main 最新功能回归补测
 
 文件：
 - [e2e/ui/project-management-flows.test.ts](/Users/mac/open-design/open-design-amr-runtime-acp/e2e/ui/project-management-flows.test.ts)
@@ -173,7 +162,7 @@
 - 评论模式下预览不再刷新
 - diagnostics 导出丢主日志
 - connector pending / degraded / reconnect 状态错乱
-- design systems 导入、重命名、发布和删除 fallback 回归
+- design systems 发布和删除 fallback 回归
 
 ## 运行命令
 
@@ -245,11 +234,7 @@ pnpm exec playwright test -c playwright.config.ts ui/settings-connectors-auth-ha
 pnpm exec playwright test -c playwright.config.ts ui/settings-connectors-auth-recovery.test.ts
 ```
 
-### Design systems：settings + manager
-
-```bash
-pnpm exec playwright test -c playwright.config.ts ui/settings-design-systems.test.ts
-```
+### Design systems manager
 
 ```bash
 pnpm exec playwright test -c playwright.config.ts ui/design-systems-manager.test.ts

@@ -8,7 +8,7 @@
 - Language 页面
 - Pets 页面
 - Integrations 的 Skills 标签页
-- Settings 的 Design systems 页面
+- Design systems 内部组件契约（当前无 Settings 入口）
 - API protocol 迁移与切换回归
 - 国际化内容注册完整性
 
@@ -17,7 +17,6 @@
 - `e2e/ui/settings-api-protocol.test.ts`
 - `e2e/ui/settings-media-providers.test.ts`
 - `e2e/ui/settings-memory-routines.test.ts`
-- `e2e/ui/settings-design-systems.test.ts`
 - `e2e/tests/localized-content.test.ts`
 - `apps/web/tests/components/App.connectors.test.tsx`
 - `apps/web/tests/components/App.mediaProviders.test.tsx`
@@ -98,7 +97,7 @@
 | SET-062 | Community 标签页的 hatch prompt 会带上当前 concept，支持复制到剪贴板并展示 `Copied!` 反馈 | `SettingsDialog.execution.test.tsx` |
 | SET-063 | Integrations 的 Skills 标签页展示 functional skills，支持按 type/category 筛选并结合搜索缩小结果 | `SettingsDialog.execution.test.tsx`, `SkillsSection.test.tsx` |
 | SET-064 | Integrations 的 Skills 标签页支持展开详情，并可通过 toggle 把 skill 加入 `disabledSkills` 保存 | `SettingsDialog.execution.test.tsx`, `SkillsSection.test.tsx` |
-| SET-065 | Settings 的独立 Design systems 页面支持按 category 筛选、展开详情，并保存 `disabledDesignSystems` | `SettingsDialog.execution.test.tsx`, `DesignSystemsSection.test.tsx` |
+| SET-065 | 无 Settings 入口的 Design systems 内部组件支持按 category 筛选、展开详情，并保存 `disabledDesignSystems` | `SettingsDialog.execution.test.tsx`, `DesignSystemsSection.test.tsx` |
 | SET-066 | Integrations 的 Skills 标签页在筛选或搜索无匹配时展示空结果提示 | `SettingsDialog.execution.test.tsx` |
 | SET-067 | About 页面会正确展示 `Version / Channel / Runtime / Platform / Architecture` 五项只读版本信息 | `SettingsDialog.execution.test.tsx` |
 | SET-068 | About 页面在 `appVersionInfo` 缺失时，会展示版本信息不可用的降级空态 | `SettingsDialog.execution.test.tsx` |
