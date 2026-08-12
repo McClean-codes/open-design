@@ -2194,7 +2194,29 @@ export function ProjectView({
   useEffect(() => {
     if (!streaming) setLiveToolInput((prev) => (Object.keys(prev).length ? {} : prev));
   }, [streaming]);
-  const [error, setError] = useState<string | null>(null);
+  const [paneError, setPaneError] = useState<{
+    message: string;
+    sourceAssistantId: string | null;
+  } | null>(null);
+  const error = paneError?.message ?? null;
+  const errorSourceAssistantId = paneError?.sourceAssistantId ?? null;
+  const setError = useCallback((next: SetStateAction<string | null>) => {
+    setPaneError((current) => {
+      const currentMessage = current?.message ?? null;
+      const message = typeof next === 'function' ? next(currentMessage) : next;
+      if (message == null) return null;
+      return {
+        message,
+        sourceAssistantId:
+          typeof next === 'function' && message === currentMessage
+            ? current?.sourceAssistantId ?? null
+            : null,
+      };
+    });
+  }, []);
+  const setRunError = useCallback((message: string, sourceAssistantId: string) => {
+    setPaneError({ message, sourceAssistantId });
+  }, []);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [filesRefresh, setFilesRefresh] = useState(0);
   const filesRefreshRequestKeyRef = useRef(0);
@@ -5464,6 +5486,7 @@ export function ProjectView({
           || spuriouslyFailedPending
           || recoverableGenericDisconnectFailed;
         void reattachDaemonRun({
+          agentId: message.agentId,
           runId,
           projectId: project.id,
           conversationId: reattachConversationId,
@@ -5700,7 +5723,7 @@ export function ProjectView({
               textBuffer.cancel();
               unregisterTextBuffer();
               if (runMayFinalize) {
-                setError(err.message);
+                setRunError(err.message, message.id);
                 appendAssistantErrorEvent(message.id, err.message, errorCode, failure);
                 updateMessageById(
                   message.id,
@@ -5771,9 +5794,11 @@ export function ProjectView({
                     if (
                       shouldPublishRunFinishedEvent
                       && latestRunStatus?.status === 'succeeded'
+                      && latestRunStatus.agentId === 'amr'
                       && typeof latestRunStatus.artifactCount === 'number'
                     ) {
                       publishDaemonRunFinishedEvent({
+                        agentId: latestRunStatus.agentId,
                         runId,
                         projectId: project.id,
                         conversationId: reattachConversationId,
@@ -5864,9 +5889,11 @@ export function ProjectView({
                   } else if (latestRunStatus.status === 'succeeded') {
                     if (
                       shouldPublishRunFinishedEvent
+                      && latestRunStatus.agentId === 'amr'
                       && typeof latestRunStatus.artifactCount === 'number'
                     ) {
                       publishDaemonRunFinishedEvent({
+                        agentId: latestRunStatus.agentId,
                         runId,
                         projectId: project.id,
                         conversationId: reattachConversationId,
@@ -6008,7 +6035,7 @@ export function ProjectView({
               !supersededRunsRef.current.has(controller);
             if ((err as Error).name !== 'AbortError' && runMayFinalize) {
               const msg = err instanceof Error ? err.message : String(err);
-              setError(msg);
+              setRunError(msg, message.id);
               appendAssistantErrorEvent(message.id, msg);
               updateMessageById(
                 message.id,
@@ -6243,8 +6270,12 @@ export function ProjectView({
   }, [project.id]);
 
   const enqueueChatSend = useCallback((item: QueuedChatSend) => {
+    if (queuedChatSendsRef.current.some((candidate) => candidate.id === item.id)) {
+      return false;
+    }
     const next = [...queuedChatSendsRef.current, item];
     commitQueuedChatSends(next);
+    return true;
   }, [commitQueuedChatSends]);
 
   const removeQueuedChatSend = useCallback((id: string) => {
@@ -6308,9 +6339,13 @@ export function ProjectView({
     meta?: ProjectChatSendMeta;
     prompt: string;
   }) => {
-    const queuedMeta = stripQueueOnlyFromMeta(input.meta);
-    enqueueChatSend({
-      id: randomUUID(),
+    const clientRequestId = input.meta?.clientRequestId ?? randomUUID();
+    const queuedMeta = stripQueueOnlyFromMeta({
+      ...(input.meta ?? {}),
+      clientRequestId,
+    });
+    const enqueued = enqueueChatSend({
+      id: clientRequestId,
       conversationId: input.conversationId,
       prompt: input.prompt,
       attachments: input.attachments,
@@ -6318,6 +6353,7 @@ export function ProjectView({
       ...(queuedMeta === undefined ? {} : { meta: queuedMeta }),
       createdAt: Date.now(),
     });
+    if (!enqueued) return;
     if (input.commentAttachments.length > 0) {
       const reservedCommentIds = new Set(
         input.commentAttachments
@@ -6360,6 +6396,11 @@ export function ProjectView({
     ) => {
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
+      const clientRequestId = meta?.clientRequestId ?? randomUUID();
+      meta = {
+        ...(meta ?? {}),
+        clientRequestId,
+      };
       const runSessionMode = meta?.sessionMode ?? activeSessionMode;
       const retryTarget = meta?.retryOfAssistantId
         ? resolveRetryTarget(messages, meta.retryOfAssistantId)
@@ -7362,7 +7403,7 @@ export function ProjectView({
           textBuffer.cancel();
           cancelSendTextBuffer();
           if (runMayFinalize) {
-            setError(err.message);
+            setRunError(err.message, assistantId);
             appendAssistantErrorEvent(assistantId, err.message, errorCode, failure);
             updateAssistant((prev) => ({
               ...prev,
@@ -7418,8 +7459,12 @@ export function ProjectView({
                 }
                 if (!latestRunStatus || isActiveRunStatus(latestRunStatus.status)) {
                 } else if (latestRunStatus.status === 'succeeded') {
-                  if (typeof latestRunStatus.artifactCount === 'number') {
+                  if (
+                    latestRunStatus.agentId === 'amr'
+                    && typeof latestRunStatus.artifactCount === 'number'
+                  ) {
                     publishDaemonRunFinishedEvent({
+                      agentId: latestRunStatus.agentId,
                       runId: runIdForGenericDisconnect,
                       projectId: project.id,
                       conversationId: runConversationId,
@@ -7646,7 +7691,7 @@ export function ProjectView({
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
-          clientRequestId: randomUUID(),
+          clientRequestId,
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
@@ -7821,7 +7866,7 @@ export function ProjectView({
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
-          clientRequestId: randomUUID(),
+          clientRequestId,
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
@@ -7971,7 +8016,11 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[],
       meta?: ChatSendMeta,
     ): Promise<ChatSendOutcome> => {
-      if (activeConversationId) {
+      if (
+        activeConversationId
+        && config.mode === 'daemon'
+        && config.agentId === 'amr'
+      ) {
         const decision = await requestAmrArtifactUpgrade({
           projectId: project.id,
           conversationId: activeConversationId,
@@ -7981,7 +8030,7 @@ export function ProjectView({
       }
       void handleSend(prompt, attachments, commentAttachments, meta);
     },
-    [activeConversationId, handleSend, project.id],
+    [activeConversationId, config.agentId, config.mode, handleSend, project.id],
   );
 
   // Cancel every in-flight run for the current conversation (the user's own
@@ -9265,6 +9314,8 @@ export function ProjectView({
 	            sendDisabled: currentConversationSendDisabled,
             queuedItems: currentConversationQueuedItems,
             error: conversationLoadError ?? error,
+            errorSourceAssistantId:
+              conversationLoadError ? null : errorSourceAssistantId,
             onSend: handleComposerSend,
             onRetry: handleRetry,
             onStop: handleStop,
@@ -9284,6 +9335,7 @@ export function ProjectView({
 	      currentConversationLoading,
 	      currentConversationControlStreaming,
       error,
+      errorSourceAssistantId,
       handleAssistantFeedback,
       handleRetry,
       handleComposerSend,
@@ -10731,6 +10783,9 @@ export function ProjectView({
               }
               queuedItems={currentConversationQueuedItems}
               error={conversationLoadError ?? error}
+              errorSourceAssistantId={
+                conversationLoadError ? null : errorSourceAssistantId
+              }
               projectId={project.id}
               sessionMode={activeSessionMode}
               onSessionModeChange={handleActiveConversationSessionModeChange}
@@ -11557,7 +11612,15 @@ function loadQueuedChatSends(projectId: string): QueuedChatSend[] {
     const raw = window.localStorage.getItem(queuedChatSendsStorageKey(projectId));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isQueuedChatSend).slice(0, 100);
+    const seenIds = new Set<string>();
+    return parsed
+      .filter(isQueuedChatSend)
+      .filter((item) => {
+        if (seenIds.has(item.id)) return false;
+        seenIds.add(item.id);
+        return true;
+      })
+      .slice(0, 100);
   } catch {
     return [];
   }

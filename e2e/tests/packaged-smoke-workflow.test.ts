@@ -36,6 +36,13 @@ const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
 const autofixWorkflowPath = join(workspaceRoot, ".github", "workflows", "autofix.atom.yml");
 const reportWorkflowPath = join(workspaceRoot, ".github", "workflows", "report.atom.yml");
+const contributorMaintainerCheckWorkflowPath = join(
+  workspaceRoot,
+  ".github",
+  "workflows",
+  "contributor-maintainer-check.yml",
+);
+const prAuthorInactivityWorkflowPath = join(workspaceRoot, ".github", "workflows", "pr-author-inactivity.yml");
 const rerunWorkflowPath = join(workspaceRoot, ".github", "workflows", "rerun.atom.yml");
 const rerunInfraCancelScriptPath = join(workspaceRoot, ".github", "scripts", "rerun_infra_cancel.py");
 const bakePluginPreviewsWorkflowPath = join(workspaceRoot, ".github", "workflows", "bake-plugin-previews.yml");
@@ -174,7 +181,7 @@ function extractValidateGateJqPrograms(workflow: string): { failures: string; re
   const needsCheck = sectionBetween(
     validate,
     "      - name: Check workspace validation jobs",
-    "      - name: Block merge while the needs-validation label is present",
+    "      - name: Block merge while a merge-blocking label is present",
   );
   const programs = [...needsCheck.matchAll(/jq -r '([\s\S]*?)'/g)].map((match) => match[1] ?? "");
   expect(programs).toHaveLength(2);
@@ -529,7 +536,7 @@ describe("packaged smoke workflow", () => {
     expect(ciWorkflow).toContain("<!-- merge-queue-needs-validation -->");
     expect(ciWorkflow).toContain("emit_ejection_notice");
     expect(ciWorkflow).toContain(
-      "if: ${{ failure() && steps.needs_validation_gate.outputs.comment_created == 'true' }}",
+      "if: ${{ failure() && steps.merge_blocking_label_gate.outputs.comment_created == 'true' }}",
     );
 
     // Consumer: a merge_group run's head_sha is the queue's synthetic merge commit, so the atom
@@ -538,6 +545,35 @@ describe("packaged smoke workflow", () => {
     expect(commentWorkflow).toContain('"$RUN_EVENT" = "merge_group"');
     expect(commentWorkflow).toContain('"$artifact_run_id" != "$RUN_ID"');
     expect(commentWorkflow).toContain('[ "$RUN_EVENT" != "merge_group" ] && [ "$current_base" != "$base_sha" ]');
+  });
+
+  it("[P1] routes configured contributors into an independent maintainer merge block", async () => {
+    const [routingWorkflow, ciWorkflow, inactivityWorkflow] = await Promise.all([
+      readFile(contributorMaintainerCheckWorkflowPath, "utf8"),
+      readFile(ciWorkflowPath, "utf8"),
+      readFile(prAuthorInactivityWorkflowPath, "utf8"),
+    ]);
+    const trigger = sectionBetween(routingWorkflow, "on:", "\npermissions:");
+
+    expect(trigger).toContain("pull_request_target:");
+    expect(trigger).toContain("types: [opened, reopened, synchronize]");
+    expect(trigger).not.toContain("unlabeled");
+    expect(routingWorkflow).toContain("permissions:\n  issues: write");
+    expect(routingWorkflow).toContain("actions/github-script@v8");
+    expect(routingWorkflow).toContain("secrets.NEEDS_MAINTAINER_CHECK_USER_IDS");
+    expect(routingWorkflow).toContain("rawIds ? JSON.parse(rawIds) : []");
+    expect(routingWorkflow).toContain("Number.isSafeInteger(id) && id > 0");
+    expect(routingWorkflow).toContain("context.payload.pull_request?.user?.id");
+    expect(routingWorkflow).toContain("configuredIds.includes(authorId)");
+    expect(routingWorkflow).toContain("github.rest.issues.addLabels");
+    expect(routingWorkflow).toContain("labels: ['needs-maintainer-check']");
+    expect(routingWorkflow).not.toContain("actions/checkout");
+
+    expect(ciWorkflow).toContain("Block merge while a merge-blocking label is present");
+    expect(ciWorkflow).toContain("grep -qx 'needs-maintainer-check'");
+    expect(ciWorkflow).toContain("<!-- merge-queue-needs-maintainer-check -->");
+    expect(ciWorkflow).toContain("needs-maintainer-check-pr-$pr");
+    expect(inactivityWorkflow).toContain("'needs-maintainer-check'");
   });
 
   it("[P2] gates the backport auto-merge follow-up as a trusted workflow_run consumer", async () => {

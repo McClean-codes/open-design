@@ -515,6 +515,7 @@ describe('ProjectView daemon reattach restore', () => {
       {
         id: 'msg-reattach',
         role: 'assistant',
+        agentId: 'kimi',
         content: '',
         createdAt: startedAt,
         startedAt,
@@ -561,6 +562,7 @@ describe('ProjectView daemon reattach restore', () => {
 
     await waitFor(() => expect(reattachDaemonRun).toHaveBeenCalledTimes(1));
     expect(reattachDaemonRun).toHaveBeenCalledWith(expect.objectContaining({
+      agentId: 'kimi',
       publishRunFinishedEvent: true,
     }));
     expect(capturedHandlers).not.toBeNull();
