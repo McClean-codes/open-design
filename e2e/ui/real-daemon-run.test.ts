@@ -296,7 +296,6 @@ test('[P1] media-only turn auto-opens the generated image file', async ({ page }
 // then touches the plan document again. The viewer must auto-open the
 // generated HTML instead of staying on the markdown plan.
 test('[P1] Plan mode generation turn auto-opens the generated HTML file', async ({ page }) => {
-  test.fail(true, 'Plan generation persists index.html but does not auto-open the generated deliverable.');
   test.setTimeout(120_000);
   await createProject(page, 'Plan mode html auto-open smoke', 'claude');
   await expectWorkspaceReady(page);

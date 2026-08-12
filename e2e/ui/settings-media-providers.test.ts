@@ -26,7 +26,9 @@ function baseConfig(): Record<string, unknown> {
 
 async function seedSettingsBase(page: Page, override?: Record<string, unknown>) {
   await page.addInitScript(({ key, value }) => {
-    window.localStorage.setItem(key, JSON.stringify(value));
+    if (window.localStorage.getItem(key) == null) {
+      window.localStorage.setItem(key, JSON.stringify(value));
+    }
   }, { key: STORAGE_KEY, value: { ...baseConfig(), ...override } });
 }
 
@@ -228,8 +230,6 @@ async function openNewProjectImageModelPicker(page: Page) {
 }
 
 test.describe('Settings media providers flows', () => {
-  const pickerSyncGap =
-    'Media provider credentials persist in Settings but are not propagated to the New Project picker after returning to Projects.';
   test('[P1] autosaves media provider edits and restores them after closing and reopening settings', async ({ page }) => {
     await seedSettingsBase(page);
 
@@ -308,7 +308,6 @@ test.describe('Settings media providers flows', () => {
   });
 
   test('[P1] saved media provider config is consumed by the new-project media picker across pages', async ({ page }) => {
-    test.fail(true, pickerSyncGap);
     await seedSettingsBase(page);
     await routeBootstrapApis(page);
 
@@ -334,7 +333,6 @@ test.describe('Settings media providers flows', () => {
   });
 
   test('[P1] configured media provider model is written into image project metadata', async ({ page }) => {
-    test.fail(true, pickerSyncGap);
     test.setTimeout(60_000);
 
     await seedSettingsBase(page);
@@ -401,7 +399,6 @@ test.describe('Settings media providers flows', () => {
   });
 
   test('[P1] configured image media model is carried into the first daemon run without leaking provider keys', async ({ page }) => {
-    test.fail(true, pickerSyncGap);
     test.setTimeout(60_000);
 
     await seedSettingsBase(page);
@@ -479,7 +476,6 @@ test.describe('Settings media providers flows', () => {
   });
 
   test('[P1] MiniMax image-01 is carried into the first daemon run without leaking provider keys', async ({ page }) => {
-    test.fail(true, pickerSyncGap);
     test.setTimeout(60_000);
 
     await seedSettingsBase(page);
@@ -557,7 +553,6 @@ test.describe('Settings media providers flows', () => {
   });
 
   test('[P1] configured video media model is carried into the first daemon run without leaking provider keys', async ({ page }) => {
-    test.fail(true, pickerSyncGap);
     test.setTimeout(60_000);
 
     await seedSettingsBase(page);
@@ -635,7 +630,6 @@ test.describe('Settings media providers flows', () => {
   });
 
   test('[P1] configured audio media model is carried into the first daemon run without leaking provider keys', async ({ page }) => {
-    test.fail(true, pickerSyncGap);
     test.setTimeout(60_000);
 
     await seedSettingsBase(page);

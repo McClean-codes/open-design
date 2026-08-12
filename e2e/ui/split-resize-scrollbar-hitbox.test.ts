@@ -1,5 +1,4 @@
 import { expect, test } from '@/playwright/suite';
-import { openNewProjectModal } from '@/playwright/rail';
 import type { Locator, Page } from '@playwright/test';
 import { applyStandardMocks } from '@/playwright/mock-factory';
 import { openSettingsDialog } from '../lib/playwright/amr.js';
@@ -19,7 +18,6 @@ test.beforeEach(async ({ page }) => {
 });
 
 test('[P1] chat scrollbar gutter edge belongs to the chat panel, not the resize handle', async ({ page }) => {
-  test.fail(true, 'Known #548 regression: the resize handle still overlaps the chat scrollbar gutter.');
   await gotoEntryHome(page);
   await createProject(page, 'Scrollbar hitbox LTR');
   await expectWorkspaceReady(page);
@@ -45,7 +43,6 @@ test('[P1] chat scrollbar gutter edge belongs to the chat panel, not the resize 
 });
 
 test('[P1] hovering and dragging on the scrollbar gutter does not enter resize posture', async ({ page }) => {
-  test.fail(true, 'Known #548 regression: the resize handle still overlaps the chat scrollbar gutter.');
   await gotoEntryHome(page);
   await createProject(page, 'Scrollbar hover posture');
   await expectWorkspaceReady(page);
@@ -99,7 +96,6 @@ test('[P1] resize handle body still drags the chat panel width', async ({ page }
 });
 
 test('[P1] RTL: chat scrollbar gutter is not covered by the resize handle', async ({ page }) => {
-  test.fail(true, 'Known #548 regression: the resize handle still overlaps the RTL chat scrollbar gutter.');
   await gotoEntryHome(page);
   await createProject(page, 'Scrollbar hitbox RTL');
   await expectWorkspaceReady(page);
@@ -168,12 +164,13 @@ async function readChatPanelWidth(handle: Locator): Promise<number> {
 // this drives the select. All selectors are class/testid based so they survive
 // the locale change.
 async function switchLocaleToArabic(page: Page) {
+  const projectUrl = page.url();
   const dialog = await openSettingsDialog(page);
   await dialog.locator('.settings-nav-item', { hasText: 'General' }).click();
   await dialog.locator('.settings-general-select select').selectOption('ar');
   await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');
-  await dialog.getByRole('button', { name: 'Back to home', exact: true }).click();
-  await expect(dialog).toBeHidden();
+  await page.goto(projectUrl, { waitUntil: 'domcontentloaded' });
+  await expect(page).toHaveURL(projectUrl);
 }
 
 async function gotoEntryHome(page: Page) {
@@ -189,10 +186,16 @@ async function gotoEntryHome(page: Page) {
 }
 
 async function createProject(page: Page, projectName: string) {
-  await openNewProjectModal(page);
-  await page.getByTestId('new-project-tab-prototype').click();
-  await page.getByTestId('new-project-name').fill(projectName);
-  await page.getByTestId('create-project').click();
+  const response = await page.request.post('/api/projects', { data: {
+    id: `scrollbar-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    name: projectName,
+    skillId: null,
+    designSystemId: null,
+    metadata: { kind: 'prototype', nameSource: 'user' },
+  } });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const created = (await response.json()) as { project: { id: string }; conversationId: string };
+  await page.goto(`/projects/${created.project.id}/conversations/${created.conversationId}`);
 }
 
 async function expectWorkspaceReady(page: Page) {

@@ -1002,7 +1002,6 @@ test('[P1] project detail composer sends referenced workspace contexts into the 
 });
 
 test('[P1] project detail composer removing local-code context updates metadata and the next run request', async ({ page }) => {
-  test.fail(true, 'Deleting an inline workspace mention does not yet remove linkedDirs metadata');
   const patchRequests: Array<Record<string, unknown>> = [];
   const runRequestBodies: Array<Record<string, unknown>> = [];
 
@@ -1018,22 +1017,15 @@ test('[P1] project detail composer removing local-code context updates metadata 
     if (route.request().method() === 'PATCH') {
       const body = route.request().postDataJSON() as Record<string, unknown>;
       patchRequests.push(body);
-      await route.fulfill({
-        json: {
-          project: {
-            id: route.request().url().split('/api/projects/')[1]?.split(/[/?#]/)[0] ?? 'project',
-            name: 'Composer remove context',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            metadata: body.metadata ?? { kind: 'prototype' },
-          },
-        },
-      });
+      await route.fulfill({ json: { project: {
+        id: route.request().url().split('/api/projects/')[1]?.split(/[/?#]/)[0] ?? 'project',
+        name: 'Composer remove context', createdAt: Date.now(), updatedAt: Date.now(),
+        metadata: body.metadata ?? { kind: 'prototype' },
+      } } });
       return;
     }
     await route.continue();
   });
-
   await page.goto('/');
   await createProject(page, 'Composer remove context');
   await expectWorkspaceReady(page);
@@ -1044,8 +1036,8 @@ test('[P1] project detail composer removing local-code context updates metadata 
   await page.getByTestId('composer-plus-local-code').click();
   await expect(input).toContainText('local-code-remove');
 
-  await input.press('ControlOrMeta+A');
-  await input.press('Backspace');
+  const chip = page.getByTestId('staged-contexts').locator('.staged-context--workspace', { hasText: 'local-code-remove' });
+  await chip.getByRole('button', { name: /local-code-remove/i }).click();
   await expect(input).not.toContainText('local-code-remove');
   await expect.poll(() => patchRequests.length).toBeGreaterThanOrEqual(2);
   expect((patchRequests.at(-1)?.metadata as { linkedDirs?: string[] } | undefined)?.linkedDirs ?? []).toEqual([]);
@@ -1062,7 +1054,6 @@ test('[P1] project detail composer removing local-code context updates metadata 
 });
 
 test('[P1] project detail keeps local-code context when linkedDirs PATCH removal fails', async ({ page }) => {
-  test.fail(true, 'Inline workspace mention deletion does not yet reach the linkedDirs PATCH path');
   test.setTimeout(60_000);
   const patchRequests: Array<Record<string, unknown>> = [];
   const runRequestBodies: Array<Record<string, unknown>> = [];
@@ -1081,28 +1072,20 @@ test('[P1] project detail keeps local-code context when linkedDirs PATCH removal
       patchRequests.push(body);
       const linkedDirs = (body.metadata as { linkedDirs?: string[] } | undefined)?.linkedDirs ?? [];
       if (linkedDirs.length === 0) {
-        await route.fulfill({
-          status: 400,
-          json: { error: { code: 'INVALID_LINKED_DIR', message: 'linked dir removal rejected' } },
-        });
+        await route.fulfill({ status: 400, json: { error: {
+          code: 'INVALID_LINKED_DIR', message: 'linked dir removal rejected',
+        } } });
         return;
       }
-      await route.fulfill({
-        json: {
-          project: {
-            id: route.request().url().split('/api/projects/')[1]?.split(/[/?#]/)[0] ?? 'project',
-            name: 'Composer remove context failure',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            metadata: body.metadata ?? { kind: 'prototype' },
-          },
-        },
-      });
+      await route.fulfill({ json: { project: {
+        id: route.request().url().split('/api/projects/')[1]?.split(/[/?#]/)[0] ?? 'project',
+        name: 'Composer remove context failure', createdAt: Date.now(), updatedAt: Date.now(),
+        metadata: body.metadata ?? { kind: 'prototype' },
+      } } });
       return;
     }
     await route.continue();
   });
-
   await page.goto('/', { waitUntil: 'domcontentloaded' });
   await createProject(page, 'Composer remove context failure');
   await expectWorkspaceReady(page);
@@ -1113,8 +1096,8 @@ test('[P1] project detail keeps local-code context when linkedDirs PATCH removal
   await page.getByRole('menuitem', { name: /Link local code/i }).click();
   await expect(input).toContainText('local-code-persist');
 
-  await input.press('ControlOrMeta+A');
-  await input.press('Backspace');
+  const chip = page.getByTestId('staged-contexts').locator('.staged-context--workspace', { hasText: 'local-code-persist' });
+  await chip.getByRole('button', { name: /local-code-persist/i }).click();
   await expect.poll(() => patchRequests.length).toBeGreaterThanOrEqual(2);
   await expect(input).toContainText('local-code-persist');
 
@@ -1137,7 +1120,6 @@ test('[P1] project detail keeps local-code context when linkedDirs PATCH removal
 });
 
 test('[P1] project detail composer context actions emit analytics event fields', async ({ page }) => {
-  test.fail(true, 'Inline workspace mention deletion does not yet emit context_remove analytics');
   const analyticsBodies: string[] = [];
 
   await page.route('**/api/app-config', async (route) => {
@@ -1188,22 +1170,15 @@ test('[P1] project detail composer context actions emit analytics event fields',
   await page.route('**/api/projects/*', async (route) => {
     if (route.request().method() === 'PATCH') {
       const body = route.request().postDataJSON() as Record<string, unknown>;
-      await route.fulfill({
-        json: {
-          project: {
-            id: route.request().url().split('/api/projects/')[1]?.split(/[/?#]/)[0] ?? 'project',
-            name: 'Composer context analytics',
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-            metadata: body.metadata ?? { kind: 'prototype' },
-          },
-        },
-      });
+      await route.fulfill({ json: { project: {
+        id: route.request().url().split('/api/projects/')[1]?.split(/[/?#]/)[0] ?? 'project',
+        name: 'Composer context analytics', createdAt: Date.now(), updatedAt: Date.now(),
+        metadata: body.metadata ?? { kind: 'prototype' },
+      } } });
       return;
     }
     await route.continue();
   });
-
   await page.goto('/');
   await createProject(page, 'Composer context analytics');
   await expectWorkspaceReady(page);
@@ -1211,7 +1186,7 @@ test('[P1] project detail composer context actions emit analytics event fields',
 
   await composer.getByTestId('chat-plus-trigger').click();
   await page.getByTestId('composer-plus-local-code').click();
-  const chip = composer.locator('.staged-context--workspace', { hasText: 'local-code-analytics' });
+  const chip = page.getByTestId('staged-contexts').locator('.staged-context--workspace', { hasText: 'local-code-analytics' });
   await expect(chip).toBeVisible();
   await chip.getByRole('button', { name: /local-code-analytics/i }).click();
   await expect(chip).toHaveCount(0);

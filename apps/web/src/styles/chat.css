@@ -2558,12 +2558,6 @@
 .staged-context-row {
   padding-top: 2px;
 }
-.chat-composer-fixed-layer .staged-context-row:has(> .staged-context--workspace):not(:has(> :not(.staged-context--workspace))) {
-  display: none;
-}
-.chat-composer-fixed-layer .staged-context--workspace {
-  display: none;
-}
 .staged-context-picker {
   display: inline-flex;
   align-items: center;
