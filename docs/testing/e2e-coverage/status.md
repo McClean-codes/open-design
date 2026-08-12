@@ -137,15 +137,16 @@ daemon/API 回归只在 PR 的某个早期 SHA 跑过，但未在实际 prerelea
 
 打包后 smoke 已覆盖 macOS arm64、macOS Intel、Windows x64 和可选的
 Linux x64 AppImage。Smoke 保持 advisory，不会因单一包体回归失败阻断产物发布；
-四个平台的失败都会在飞书下载卡中显示。
+macOS arm64 和 Windows x64 的失败会在飞书下载卡中显示，macOS Intel 和
+Linux x64 的结果仅保留在 GitHub Actions job summary 和上传报告中。
 
 ### 8. 长耗时 media run 生命周期
 
 AMR run 的 tool token TTL 现在至少覆盖完整 inactivity timeout，并保留
-15 分钟收尾窗口；30 分钟 media run 因此会获得 45 分钟 token。终态
-media task 保留时间同步提高到 60 分钟，避免 token 仍有效时 task 已被清理。
-daemon 单测锁定这两个不变式，AMR 系统 E2E 还会校验真实 run start 事件
-暴露的 token deadline。
+15 分钟收尾窗口；30 分钟 media run 因此会获得 45 分钟 token，且 agent 活动会
+同步刷新 token。终态 media task 每 60 分钟执行一次清理检查；只要所属 run token
+仍有效就继续保留，run 结束后再由下一次检查清理。daemon 单测锁定这个滑动生命周期，
+AMR 系统 E2E 还会校验真实 run start 事件暴露的 token deadline。
 
 ## 现在信号明显变强的能力面
 
