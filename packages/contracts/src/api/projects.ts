@@ -317,6 +317,8 @@ export interface CreateProjectRequest {
   pendingPrompt?: string;
   metadata?: ProjectMetadata;
   pluginId?: string;
+  /** Exact identity of the local catalogue record selected by the caller. */
+  pluginSource?: string;
   appliedPluginSnapshotId?: string;
   pluginInputs?: Record<string, unknown>;
   /** Session mode for the default conversation seeded with the project. */

@@ -105,4 +105,66 @@ describe('Team plugin apply retraction gate', () => {
     expect(response.status).toBe(404);
     expect(applyPlugin).not.toHaveBeenCalled();
   });
+
+  it('applies a selected local record without Workspace authority headers', async () => {
+    const app = express();
+    app.use(express.json());
+    const loadPluginRegistryView = vi.fn(async () => ({}));
+    const applyPlugin = vi.fn((input: { plugin: { source?: string } }) => ({
+      result: {
+        query: input.plugin.source,
+        capabilitiesGranted: [],
+        appliedPlugin: { capabilitiesGranted: [] },
+      },
+      warnings: [],
+      manifestSourceDigest: 'team-digest',
+    }));
+    const middleware: express.RequestHandler = (_req, _res, next) => next();
+
+    registerPluginRoutes(app, {
+      db: {
+        prepare: () => ({ all: () => [], get: () => null, run: () => undefined }),
+        transaction: (run: () => unknown) => () => run(),
+      },
+      paths: { PROJECTS_DIR: '', PLUGIN_REGISTRY_ROOTS: [], PLUGIN_LOCKFILE_PATH: '' },
+      ids: { randomId: () => 'unused' },
+      projectStore: {},
+      conversations: {},
+      plugins: {
+        getInstalledPlugin: () => null,
+        getWorkspacePlugin: async () => null,
+        getLocalPluginBySource: async (_db: unknown, id: string, source: string) => ({ id, source }),
+        listInstalledPlugins: () => [],
+        applyPlugin,
+        MissingInputError: class MissingInputError extends Error { fields: string[] = []; },
+      },
+      helpers: {
+        requireLocalDaemonRequest: middleware,
+        pluginUpload: { single: () => middleware, array: () => middleware },
+        loadPluginRegistryView,
+        buildConnectorProbe: () => ({}),
+        connectorService: {},
+        sendApiError: (res: express.Response, status: number, code: string, message: string) =>
+          res.status(status).json({ error: { code, message } }),
+      },
+    } as unknown as Parameters<typeof registerPluginRoutes>[1]);
+
+    const server = app.listen(0, '127.0.0.1');
+    servers.push(server);
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(`http://127.0.0.1:${port}/api/plugins/shared-id/apply-local`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ source: 'team:plugin:workspace-a:shared-id' }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ query: 'team:plugin:workspace-a:shared-id' });
+    expect(loadPluginRegistryView).toHaveBeenCalledWith({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: null,
+    });
+    expect(applyPlugin).toHaveBeenCalledTimes(1);
+  });
 });

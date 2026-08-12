@@ -114,6 +114,7 @@ import {
   CreatedProjectWorkspaceResolutionError,
   localProjectWorkspaceAttribution,
 } from '../../collab/created-project-workspace.js';
+import { localPluginRegistryScope } from '../../plugins/local-source.js';
 import type { WorkspaceDirectoryFetchResult } from '../../collab/vela-workspace-context.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
 
@@ -127,6 +128,10 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
       id: string,
       options: { workspaceId: string | null; workspaceMemberId: string | null },
     ) => Promise<unknown | null>;
+    getLocalPluginBySource?: (
+      id: string,
+      source: string,
+    ) => Promise<Parameters<typeof resolvePluginSnapshot>[0]['plugin'] | null>;
   };
   teamProjectCatalog?: VelaTeamProjectCatalogClient;
   /** Bounded authoritative verifier for idempotent Workspace project reads. */
@@ -3489,10 +3494,29 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         typeof req.body?.pluginId === 'string' && req.body.pluginId.trim().length > 0
           ? req.body.pluginId.trim()
           : null;
+      const requestedPluginSource =
+        typeof req.body?.pluginSource === 'string' && req.body.pluginSource.trim().length > 0
+          ? req.body.pluginSource.trim()
+          : null;
+      // Local identity resolution only. Do not compare this historical source
+      // with the project's current Workspace or perform a membership request:
+      // Home already reconciles staged selections against its current local
+      // catalogue, and this project is local until a later share/sync/move.
+      const selectedLocalPlugin = requestedPluginId && requestedPluginSource
+        ? await ctx.pluginScope?.getLocalPluginBySource?.(
+            requestedPluginId,
+            requestedPluginSource,
+          ) ?? null
+        : null;
       if (requestedPluginId) {
-        const visiblePlugin = ctx.pluginScope
-          ? await ctx.pluginScope.getPlugin(requestedPluginId, creationWorkspaceScope)
-          : getInstalledPlugin(db, requestedPluginId);
+        // Once a source is supplied, never substitute a same-id Personal or
+        // other catalogue record. A missing local source is a missing plugin,
+        // not a Workspace authorization verdict.
+        const visiblePlugin = requestedPluginSource
+          ? selectedLocalPlugin
+          : ctx.pluginScope
+            ? await ctx.pluginScope.getPlugin(requestedPluginId, creationWorkspaceScope)
+            : getInstalledPlugin(db, requestedPluginId);
         if (!visiblePlugin) {
           return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
         }
@@ -3636,7 +3660,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       let resolvedSnapshot = null;
       if (resolveBody) {
-        const registry = await loadPluginRegistryView(creationWorkspaceScope);
+        // The exact plugin source also identifies the local registry partition
+        // for its referenced Skill/Design System records. This is provenance,
+        // not a project-Workspace match or remote authorization decision.
+        const registry = await loadPluginRegistryView(
+          selectedLocalPlugin
+            ? localPluginRegistryScope(selectedLocalPlugin)
+            : creationWorkspaceScope,
+        );
         const resolved = resolvePluginSnapshot({
           db,
           body: resolveBody,
@@ -3648,6 +3679,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
               ? { id: normalizedDesignSystemId }
               : undefined,
           connectorProbe: buildConnectorProbe(connectorService),
+          ...(selectedLocalPlugin ? { plugin: selectedLocalPlugin } : {}),
         });
         if (resolved && !resolved.ok) {
           if (!explicitPlugin) {

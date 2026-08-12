@@ -30,6 +30,8 @@ import { useWorkspaceContext } from '../collab/useWorkspaceContext';
 export interface PluginLoopSubmit {
   prompt: string;
   pluginId: string | null;
+  /** Exact identity of the local catalogue record selected by the user. */
+  pluginSource?: string | null;
   // Marketplace trust of the routed plugin (official / community / …), used
   // to attribute project_create_result to a plugin type. Null when no plugin.
   pluginType?: string | null;

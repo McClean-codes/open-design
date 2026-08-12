@@ -95,11 +95,8 @@ import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry'
 import { workspaceContextLinkedDirs } from './workspace-context';
 import {
   currentWorkspaceAccountGeneration,
-  type CurrentWorkspaceContextReadWitness,
-  resolveCurrentWorkspaceContextReadWitness,
   useTeamProjects,
   useWorkspaceContext,
-  workspaceContextReadWitnessFromState,
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
@@ -242,6 +239,7 @@ interface Props {
   projects: Project[];
   projectsLoading?: boolean;
   designSystems?: DesignSystemSummary[];
+  designSystemsLoading?: boolean;
   defaultDesignSystemId?: string | null;
   // `'blocked'` means the shell refused the submit but already surfaced its
   // own UI (e.g. the AMR balance gate dialog): keep the draft, show no error.
@@ -414,6 +412,7 @@ export function HomeView({
   projects,
   projectsLoading,
   designSystems = EMPTY_DESIGN_SYSTEMS,
+  designSystemsLoading = false,
   defaultDesignSystemId = null,
   onSubmit,
   onOpenProject,
@@ -532,6 +531,7 @@ export function HomeView({
   const [fallbackProjectMetadata, setFallbackProjectMetadata] =
     useState<ProjectMetadata | null>(null);
   const [active, setActive] = useState<ActivePlugin | null>(null);
+  const reconciledPluginCatalogKeyRef = useRef<string | null>(null);
   const previousWorkspaceNameRef = useRef<string | null>(null);
   // A placeholder-carousel scenario the user submitted on an empty composer.
   // We seed the prompt + bind the template synchronously, then let an effect
@@ -1088,6 +1088,74 @@ export function HomeView({
     () => selectableHomeDesignSystems(designSystems, defaultDesignSystemId),
     [defaultDesignSystemId, designSystems],
   );
+  useEffect(() => {
+    if (pluginsLoading) return;
+    const pluginById = new Map(plugins.map((record) => [record.id, record]));
+
+    // Catalogue reads are already partitioned by Workspace. Reconcile staged
+    // choices here when that partition settles: same ids bind to the CURRENT
+    // catalogue record; missing ids lose only their selection. Keep the prompt,
+    // attachments and the rest of the draft intact. Do not move this policy to
+    // project creation or turn it into remote authorization — local catalogue
+    // refresh/SSE is the product boundary for plugin availability.
+    if (reconciledPluginCatalogKeyRef.current !== pluginCatalogKey) {
+      // An apply started against the prior Workspace must not commit after the
+      // catalogue partition changes. Ordinary same-Workspace SSE refreshes do
+      // not cancel an in-flight local apply.
+      activePluginApplyRequestRef.current += 1;
+      reconciledPluginCatalogKeyRef.current = pluginCatalogKey;
+    }
+    setActive((current) => {
+      if (!current) return current;
+      const nextRecord = pluginById.get(current.record.id);
+      if (!nextRecord) return null;
+      if (nextRecord === current.record) return current;
+      return {
+        ...current,
+        record: nextRecord,
+        // An apply snapshot belongs to the old catalogue record. Preserve the
+        // user's inputs, but force submit to resolve against the rebound record.
+        result: null,
+      };
+    });
+    setSelectedPluginContexts((current) => {
+      let changed = false;
+      const next = current.flatMap((selection) => {
+        const nextRecord = pluginById.get(selection.record.id);
+        if (!nextRecord) {
+          changed = true;
+          return [];
+        }
+        if (nextRecord === selection.record) return [selection];
+        changed = true;
+        return [{ ...selection, record: nextRecord }];
+      });
+      return changed ? next : current;
+    });
+    setDetailsRecord((current) => {
+      if (!current) return current;
+      return pluginById.get(current.id) ?? null;
+    });
+  }, [pluginCatalogKey, plugins, pluginsLoading]);
+
+  useEffect(() => {
+    if (skillsLoading) return;
+    setActiveSkill((current) => {
+      if (!current) return current;
+      return selectableSkills.find((skill) => skill.id === current.id) ?? null;
+    });
+    setDetailsSkill((current) => {
+      if (!current) return current;
+      return selectableSkills.find((skill) => skill.id === current.id) ?? null;
+    });
+  }, [selectableSkills, skillsLoading]);
+
+  useEffect(() => {
+    if (designSystemsLoading || !designSystemId) return;
+    if (designSystemPickerSystems.some((system) => system.id === designSystemId)) return;
+    setDesignSystemId(null);
+  }, [designSystemId, designSystemPickerSystems, designSystemsLoading]);
+
   // Re-seed the default selection when the catalogue or the user's default
   // resolves after mount (async load), unless the user already picked one.
   useEffect(() => {
@@ -1374,41 +1442,24 @@ export function HomeView({
         setPendingChipId(null);
       }
     }
-    let writeWorkspaceContext;
-    let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
-    const requiresWorkspaceIdentity = record.source.startsWith('team:plugin:');
-    if (!requiresWorkspaceIdentity) {
-      try {
-        if (workspaceContextState.identityChangePending) {
-          throw new Error('workspace identity change pending');
-        }
-        writeWorkspaceContext = resolvedWorkspaceContextForWrite(workspaceContextState);
-      } catch {
-        writeWorkspaceContext = null;
-      }
-    } else {
-      try {
-        workspaceWitness = workspaceContextReadWitnessFromState(workspaceContextState)
-          ?? await resolveCurrentWorkspaceContextReadWitness();
-      } catch {
-        workspaceWitness = null;
-      }
-      if (!workspaceWitness?.isStillCurrent() || !workspaceWitness.context) {
-        clearPendingApply();
-        setError(
-          'Workspace context is unavailable. Try again when workspace sync finishes.',
+    // Applying a record that the local, Workspace-scoped catalogue already
+    // returned is local composition work. Do not add a second identity wait or
+    // membership probe here: directory refresh/SSE owns catalogue freshness,
+    // while remote install/share/sync mutations enforce current authority.
+    // During an identity transition, omit attribution instead of blocking Send.
+    const writeWorkspaceContext = workspaceContextState.identityChangePending
+      ? null
+      : resolvedWorkspaceContextForWrite(
+          workspaceContextState,
+          { unavailablePolicy: 'unscoped' },
         );
-        return null;
-      }
-      writeWorkspaceContext = workspaceWitness.context;
-    }
     const result = await applyPlugin(record.id, {
       locale,
       inputs,
+      pluginSource: record.source,
       workspaceContext: writeWorkspaceContext,
     });
     clearPendingApply();
-    if (workspaceWitness && !workspaceWitness.isStillCurrent()) return null;
     return result;
   }
 
@@ -1739,7 +1790,14 @@ export function HomeView({
         // agent title arrives — see the matching note in
         // EntryShell.startBlankProjectFromRail.
         metadata: { kind: 'other', nameSource: 'generated' },
-        workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
+        // Blank project creation is local too. During an identity transition,
+        // omit stale attribution instead of blocking on Workspace discovery.
+        workspaceContext: workspaceContextState.identityChangePending
+          ? null
+          : resolvedWorkspaceContextForWrite(
+              workspaceContextState,
+              { unavailablePolicy: 'unscoped' },
+            ),
       });
       onOpenProject(project.id);
     } catch {
@@ -2483,6 +2541,9 @@ export function HomeView({
       const accepted = await onSubmit({
         prompt: trimmed,
         pluginId: routedPluginId,
+        ...(submittedActive?.record.source
+          ? { pluginSource: submittedActive.record.source }
+          : {}),
         pluginType: submittedActive?.record.marketplaceTrust ?? (routedPluginId ? 'official' : null),
         skillId: resolvedSkillId,
         appliedPluginSnapshotId: submittedActive?.result?.appliedPlugin?.snapshotId ?? null,

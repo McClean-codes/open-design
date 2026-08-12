@@ -446,7 +446,7 @@ describe('HomeView media composer options', () => {
     })));
   });
 
-  it('re-applies the selected plugin from directory identity while rich context is loading', async () => {
+  it('does not wait for rich Workspace context after a directory-scoped plugin was selected', async () => {
     const fetchMock = stubFetch({ teamMediaPlugin: true });
     const onSubmit = vi.fn();
     const props = homeProps({ onSubmit });
@@ -465,12 +465,12 @@ describe('HomeView media composer options', () => {
     await submitHome();
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    const scopedApply = fetchMock.mock.calls.filter(([url, init]) => (
+    const localApply = fetchMock.mock.calls.filter(([url]) => (
       typeof url === 'string'
       && url.includes('/api/plugins/od-media-generation/apply')
-      && new Headers(init?.headers).get('x-od-workspace-id') === 'workspace-cold'
     )).at(-1);
-    expect(scopedApply).toBeTruthy();
+    expect(localApply).toBeTruthy();
+    expect(new Headers(localApply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
   });
 
   it('keeps bundled plugins usable when identity is pending and the directory is empty', async () => {
@@ -558,7 +558,7 @@ describe('HomeView media composer options', () => {
     ))).toBe(false);
   });
 
-  it('does not apply a team plugin unscoped when the settled workspace directory is empty', async () => {
+  it('keeps a locally catalogued plugin usable until local reconciliation removes it', async () => {
     const fetchMock = stubFetch({
       emptyWorkspaceDirectory: true,
       teamMediaPlugin: true,
@@ -577,9 +577,11 @@ describe('HomeView media composer options', () => {
     await waitFor(() => {
       expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('false');
     });
-    expect(fetchMock.mock.calls.some(([url]) => (
+    const apply = fetchMock.mock.calls.find(([url]) => (
       typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
-    ))).toBe(false);
+    ));
+    expect(apply).toBeTruthy();
+    expect(new Headers(apply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
   });
 
   it('preserves od-media-generation required inputs when applying media chips', async () => {
