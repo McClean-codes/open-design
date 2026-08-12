@@ -882,6 +882,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/standalone-runtime
     devDependencies:
+      '@open-design/closure-proto':
+        specifier: workspace:*
+        version: link:../../packages/closure-proto
       '@types/node':
         specifier: 24.12.2
         version: 24.12.2
@@ -891,6 +894,9 @@ importers:
       esbuild:
         specifier: 0.28.0
         version: 0.28.0
+      jszip:
+        specifier: 3.10.1
+        version: 3.10.1
       typescript:
         specifier: 6.0.3
         version: 6.0.3
