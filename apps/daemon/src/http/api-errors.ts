@@ -29,8 +29,7 @@ export function sendApiError(
   const request = res.req;
   recordApiFailure({
     at: new Date().toISOString(),
-    method: request?.method ?? 'UNKNOWN',
-    path: request?.originalUrl ?? request?.url ?? '/',
+    request,
     status,
     code,
     retryable: init.retryable === true,

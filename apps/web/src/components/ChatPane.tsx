@@ -1351,7 +1351,8 @@ export function ChatPane({
   const consumeAmrAuthRetryIfAuthorized = useCallback((status: VelaLoginStatus | null) => {
     if (!isAmrSessionAuthenticated(status)) {
       if (
-        amrAuthRetryContinuation
+        status?.loginInFlight === true
+        && amrAuthRetryContinuation
         && amrAuthRetryContinuation.workspaceIdentityKey === 'none'
         && amrAuthRetryContinuation.originMountId === amrAuthRetryMountId
       ) {
