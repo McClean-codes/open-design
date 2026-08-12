@@ -15,6 +15,7 @@ import {
 
 class OpeningEventSource {
   static instances: OpeningEventSource[] = [];
+  static autoOpen = true;
 
   readonly url: string;
   readonly withCredentials = false;
@@ -30,10 +31,7 @@ class OpeningEventSource {
   constructor(url: string | URL) {
     this.url = String(url);
     OpeningEventSource.instances.push(this);
-    queueMicrotask(() => {
-      this.readyState = this.OPEN;
-      this.onopen?.(new Event('open'));
-    });
+    if (OpeningEventSource.autoOpen) queueMicrotask(() => this.open());
   }
 
   addEventListener(
@@ -66,6 +64,11 @@ class OpeningEventSource {
     this.readyState = this.CLOSED;
   }
 
+  open(): void {
+    this.readyState = this.OPEN;
+    this.onopen?.(new Event('open'));
+  }
+
   emit(type: string, data: unknown = {}): void {
     this.dispatchEvent(new MessageEvent(type, { data: JSON.stringify(data) }));
   }
@@ -96,6 +99,7 @@ describe('useWorkspaceContext invalidation freshness', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     OpeningEventSource.instances = [];
+    OpeningEventSource.autoOpen = true;
     vi.stubGlobal('EventSource', OpeningEventSource as unknown as typeof EventSource);
   });
 
@@ -105,9 +109,11 @@ describe('useWorkspaceContext invalidation freshness', () => {
     resetCoalescedGet();
     resetWorkspaceContextCache();
     OpeningEventSource.instances = [];
+    OpeningEventSource.autoOpen = true;
   });
 
   it('revalidates the directory after a pushed membership revocation', async () => {
+    OpeningEventSource.autoOpen = false;
     let membershipActive = true;
     let directoryReads = 0;
     let contextReads = 0;
@@ -147,6 +153,58 @@ describe('useWorkspaceContext invalidation freshness', () => {
       expect(directoryReads).toBe(2);
       expect(contextReads).toBe(2);
       expect(hook.result.current.context?.workspaceId).toBe(PERSONAL_CONTEXT.workspaceId);
+    });
+  });
+
+  it('uses a fresh snapshot when the workspace stream first connects', async () => {
+    OpeningEventSource.autoOpen = false;
+    let role: 'member' | 'admin' = 'member';
+    let directoryReads = 0;
+    let contextReads = 0;
+    const context = () => workspaceContextFixture({
+      ...TEAM_CONTEXT,
+      role,
+      permissions: {
+        ...TEAM_CONTEXT.permissions,
+        canInviteMembers: role === 'admin',
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/workspace/directory') {
+        directoryReads += 1;
+        return jsonResponse(workspaceDirectoryFixture([context()]));
+      }
+      if (url === '/api/workspace/context') {
+        contextReads += 1;
+        return jsonResponse({ context: context() });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }));
+
+    const hook = renderHook(() => useWorkspaceContext());
+    await waitFor(() => {
+      expect(hook.result.current.context?.role).toBe('member');
+      expect(OpeningEventSource.instances).toHaveLength(1);
+    });
+    expect(directoryReads).toBe(1);
+    expect(contextReads).toBe(1);
+
+    // The role changed while the browser had no workspace-event sink. Opening
+    // the stream is the only catch-up signal; settled client caches still hold
+    // the old member snapshot at this point.
+    role = 'admin';
+    await act(async () => {
+      OpeningEventSource.instances[0]?.open();
+    });
+
+    await waitFor(() => {
+      expect(directoryReads).toBe(2);
+      expect(contextReads).toBe(2);
+      expect(hook.result.current.context).toMatchObject({
+        role: 'admin',
+        permissions: { canInviteMembers: true },
+      });
     });
   });
 });

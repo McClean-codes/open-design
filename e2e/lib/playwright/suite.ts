@@ -3,8 +3,10 @@ import { join } from 'node:path';
 
 import { expect, test as base } from '@playwright/test';
 
+import { seedCampaignDismissals } from './campaign-dismissals.ts';
 import {
   PLAYWRIGHT_TOOLS_DEV_FIXTURE_TIMEOUT_MS,
+  warmPlaywrightDaemonRuntime,
   warmPlaywrightWebRuntime,
 } from './runtime-lifecycle.ts';
 import { routeUnavailableVelaStatus } from './mock-factory.ts';
@@ -26,6 +28,11 @@ type WorkerFixtures = {
 };
 
 export const test = base.extend<TestFixtures, WorkerFixtures>({
+  context: async ({ context }, use) => {
+    await seedCampaignDismissals(context);
+    await use(context);
+  },
+
   toolsDev: [
     async ({}, use, workerInfo) => {
       const suite = await createPlaywrightToolsDevSuite(
@@ -42,8 +49,15 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
       let useError: unknown = null;
       let stopError: unknown = null;
       try {
-        await toolsDev.startWeb();
+        // Never let a developer's real ~/.amr/config.json turn an otherwise
+        // signed-out UI test into a Workspace-scoped daemon session. Specs
+        // that exercise AMR/Workspace authority provide their own explicit
+        // fake runtime configuration and request headers.
+        await toolsDev.startWeb({
+          AMR_HOME: join(toolsDev.root, 'scratch', 'amr-home'),
+        });
         await warmPlaywrightWebRuntime(toolsDev.url.web('/'));
+        await warmPlaywrightDaemonRuntime(toolsDev.url.daemon('/api/health'));
         await use(toolsDev);
       } catch (error) {
         useError = error;
@@ -113,7 +127,12 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
  * the UI-test ownership boundary without booting an unused worker runtime in
  * addition to the runtimes owned by the spec.
  */
-export const clusterTest = base;
+export const clusterTest = base.extend({
+  context: async ({ context }, use) => {
+    await seedCampaignDismissals(context);
+    await use(context);
+  },
+});
 
 export { expect };
 export type { PlaywrightToolsDevSuite };

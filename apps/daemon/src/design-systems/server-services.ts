@@ -76,6 +76,71 @@ export type DesignSystemAssetSyncOutcome =
   | { ok: true; synced: string[] }
   | { ok: false; reason: 'not-found' | 'no-workspace-project' };
 
+/**
+ * A design system's persisted `workspace_resources` binding is the visibility
+ * authority for a verified Workspace+member scope. The on-disk `metadata.json`
+ * claim is deliberately NOT consulted here: a brand re-finalize can drop the
+ * `workspaceId` claim while the envelope keeps the binding correct (issue
+ * #6763), so the envelope alone must decide for `visibility: 'personal'`
+ * systems. Mirrors `skillVisibleFromBinding` in `skills.ts`.
+ */
+function designSystemBindingAllowsRead(
+  binding: ReturnType<typeof getWorkspaceResourceByResourceId>,
+  workspaceId: string,
+  workspaceMemberId: string,
+): boolean {
+  return Boolean(
+    binding
+    && binding.workspaceId === workspaceId
+    && binding.visibility === 'personal'
+    && binding.resourceState !== 'deleted'
+    && binding.createdByWorkspaceMemberId === workspaceMemberId,
+  );
+}
+
+type DesignSystemUserReadScope = {
+  workspaceId?: string | null;
+  workspaceMemberId?: string | null;
+};
+
+/**
+ * Read options for a `user:` design-system directory read. `null` means the
+ * caller must NOT read the system at all (fail-closed). When the request
+ * carries a verified Workspace+member scope whose binding matches exactly,
+ * read the FS copy UNSCOPED (issue #6763) so an ownerless-but-bound system
+ * stays readable after a re-finalize dropped its metadata claim; otherwise
+ * keep the current metadata-gated read so claimed/hidden states behave as
+ * before. An explicit signed-out/incomplete scope hides envelope-bound
+ * systems, mirroring the catalog lane (spec 04 §10).
+ */
+function designSystemUserReadOptions(
+  db: Database.Database | undefined,
+  id: string,
+  scope: DesignSystemUserReadScope,
+): Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'> | null {
+  const workspaceId = scope.workspaceId?.trim();
+  const workspaceMemberId = scope.workspaceMemberId?.trim();
+  const metadataGated: Pick<DesignSystemListOptions, 'idPrefix' | 'workspaceId'> = {
+    idPrefix: 'user:',
+    ...(scope.workspaceId !== undefined ? { workspaceId: scope.workspaceId } : {}),
+  };
+  if (scope.workspaceId !== undefined && (!workspaceId || !workspaceMemberId)) {
+    // Explicit signed-out/incomplete scope (`null`, `''`, or a memberless
+    // positive workspace): a persisted envelope is positive evidence the
+    // resource is not local-public and must stay hidden.
+    if (db && getWorkspaceResourceByResourceId(db, 'design_system', id)) return null;
+    return metadataGated;
+  }
+  if (!db || !workspaceId || !workspaceMemberId) return metadataGated;
+  const binding = getWorkspaceResourceByResourceId(db, 'design_system', id);
+  if (designSystemBindingAllowsRead(binding, workspaceId, workspaceMemberId)) {
+    // Issue #6763: the binding is authoritative even when a re-finalize
+    // dropped `workspaceId` from metadata.json — read the FS copy unscoped.
+    return { idPrefix: 'user:' };
+  }
+  return metadataGated;
+}
+
 export function createDesignSystemServerServices({
   getDb,
   roots,
@@ -282,13 +347,14 @@ export function createDesignSystemServerServices({
    * validation and request-bound lookups pass the project's exact persisted
    * Workspace, so shell navigation cannot retarget same-id resolution.
    *
-   * Forwarding the key whenever it is DEFINED (not just truthy) matters:
-   * `GET /api/design-systems` always passes `workspaceId`, with `null`
-   * whenever there is no verified vela session — that request DID ask to be
-   * scoped, just with no identity, and must still reach
-   * `designSystemVisibleFromWorkspace`'s filter so a claimed system is hidden
-   * from it (spec 04 §10) instead of silently landing in the unscoped branch a
-   * plain `options.workspaceId ? … : …` truthiness check would take.
+   * The USER directory is listed UNSCOPED and the `workspace_resources`
+   * envelope below is the sole visibility authority for any request that
+   * carries a scope key (issue #6763): a brand re-finalize can drop the
+   * `workspaceId` claim from `metadata.json` while the persisted binding keeps
+   * the system correctly bound, so the metadata alone must never decide. The
+   * signed-out lane hides BOTH envelope-bound systems and metadata-claimed
+   * systems (spec 04 §10) — only genuinely unclaimed resources stay visible
+   * to a headerless caller.
    */
   async function listAllDesignSystems(options: {
     workspaceId?: string | null;
@@ -309,7 +375,6 @@ export function createDesignSystemServerServices({
         source: 'user',
         isEditable: true,
         defaultStatus: 'draft',
-        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
       });
     } catch {
       // User directory may not exist yet or be unreadable.
@@ -355,29 +420,27 @@ export function createDesignSystemServerServices({
       if (system.source !== 'user') return true;
       // A fully headerless request is the signed-out/local compatibility
       // lane. It may see resources that have never been claimed by any
-      // Workspace, but a persisted binding is positive evidence that the
-      // resource is not local-public and must stay hidden without authority.
+      // Workspace, but both a persisted binding and a metadata claim are
+      // positive evidence that the resource is not local-public and must stay
+      // hidden without authority (spec 04 §10, issue #6763).
       if (!exactWorkspaceId && !exactMemberId) {
         if (!db) return false;
-        return !getWorkspaceResourceByResourceId(
-          db,
-          'design_system',
-          system.id,
-        );
+        return !system.workspaceId?.trim()
+          && !getWorkspaceResourceByResourceId(
+            db,
+            'design_system',
+            system.id,
+          );
       }
       if (system.teamSynced === true) {
         return Boolean(exactWorkspaceId) && system.workspaceId === exactWorkspaceId;
       }
       if (!db || !exactWorkspaceId || !exactMemberId) return false;
-      const binding = getWorkspaceResourceByResourceId(
-        db,
-        'design_system',
-        system.id,
+      return designSystemBindingAllowsRead(
+        getWorkspaceResourceByResourceId(db, 'design_system', system.id),
+        exactWorkspaceId,
+        exactMemberId,
       );
-      return binding?.workspaceId === exactWorkspaceId
-        && binding.visibility === 'personal'
-        && binding.resourceState !== 'deleted'
-        && binding.createdByWorkspaceMemberId === exactMemberId;
     });
   }
 
@@ -385,10 +448,12 @@ export function createDesignSystemServerServices({
     id: string,
     options: {
       workspaceId?: string | null;
+      workspaceMemberId?: string | null;
       exactTeam?: boolean;
       exactPersonal?: boolean;
     } = {},
   ) {
+    const db = getDb?.();
     const workspaceId = options.workspaceId?.trim();
     if (
       workspaceId
@@ -405,10 +470,9 @@ export function createDesignSystemServerServices({
       if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, {
-        idPrefix: 'user:',
-        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
-      });
+      const readOptions = designSystemUserReadOptions(db, id, options);
+      if (readOptions === null) return null;
+      return designSystems.readDesignSystem(paths.USER_DESIGN_SYSTEMS_DIR, id, readOptions);
     }
     return (
       (await designSystems.readDesignSystem(paths.DESIGN_SYSTEMS_DIR, id))
@@ -418,8 +482,9 @@ export function createDesignSystemServerServices({
 
   async function readAvailableDesignSystemPackageInfo(
     id: string,
-    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
+    options: { workspaceId?: string | null; workspaceMemberId?: string | null; exactTeam?: boolean } = {},
   ) {
+    const db = getDb?.();
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
       const scoped = await designSystems.readDesignSystemPackageInfo(
@@ -431,10 +496,9 @@ export function createDesignSystemServerServices({
       if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, {
-        idPrefix: 'user:',
-        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
-      });
+      const readOptions = designSystemUserReadOptions(db, id, options);
+      if (readOptions === null) return null;
+      return designSystems.readDesignSystemPackageInfo(paths.USER_DESIGN_SYSTEMS_DIR, id, readOptions);
     }
     return (
       (await designSystems.readDesignSystemPackageInfo(paths.DESIGN_SYSTEMS_DIR, id))
@@ -445,8 +509,9 @@ export function createDesignSystemServerServices({
   async function readAvailableDesignSystemStaticFile(
     id: string,
     filePath: string,
-    options: { workspaceId?: string | null; exactTeam?: boolean } = {},
+    options: { workspaceId?: string | null; workspaceMemberId?: string | null; exactTeam?: boolean } = {},
   ) {
+    const db = getDb?.();
     const workspaceId = options.workspaceId?.trim();
     if (workspaceId && typeof id === 'string' && id.startsWith('user:')) {
       const scoped = await designSystems.readDesignSystemStaticFile(
@@ -459,10 +524,14 @@ export function createDesignSystemServerServices({
       if (options.exactTeam) return null;
     }
     if (typeof id === 'string' && id.startsWith('user:')) {
-      return designSystems.readDesignSystemStaticFile(paths.USER_DESIGN_SYSTEMS_DIR, id, filePath, {
-        idPrefix: 'user:',
-        ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
-      });
+      const readOptions = designSystemUserReadOptions(db, id, options);
+      if (readOptions === null) return null;
+      return designSystems.readDesignSystemStaticFile(
+        paths.USER_DESIGN_SYSTEMS_DIR,
+        id,
+        filePath,
+        readOptions,
+      );
     }
     return (
       (await designSystems.readDesignSystemStaticFile(paths.DESIGN_SYSTEMS_DIR, id, filePath))

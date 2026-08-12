@@ -83,7 +83,6 @@ const SECTION_INPUTS = {
   mcp: ['connectedExternalMcp'],
   runtime: [
     'agentId',
-    'includeCodexImagegenOverride',
     'promptCoreVariant',
     'runtimeToolPrompt',
   ],

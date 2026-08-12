@@ -14,8 +14,8 @@ import type { ReleaseChannel } from '@open-design/release';
 import type { ArtifactOriginEntrySurface, ArtifactOriginStatus } from '../../api/files.js';
 import type { TrackingDesignSystemEditSurface, TrackingDesignSystemKind, TrackingDesignSystemLengthBucket, TrackingDesignSystemOrigin, TrackingDesignSystemRunEntryFrom } from './design-systems.js';
 import type { TrackingSettingsPage } from './event-names.js';
-import type { TrackingAmrOpenCodeErrorPhase, TrackingAmrOpenCodeLastEventType, TrackingAmrOpenCodeLastToolKind, TrackingAmrOpenCodeLastToolStatus, TrackingArtifactKind, TrackingArtifactWriteSource, TrackingArtifactWriteStatus, TrackingByokPreflightBlockReason, TrackingByokProviderId, TrackingCliProviderId, TrackingDesignSystemSource, TrackingExecutionMode, TrackingExportFormat, TrackingExportResult, TrackingFeedbackAction, TrackingFeedbackProviderId, TrackingFeedbackRating, TrackingFeedbackRatingWithNone, TrackingFeedbackReasonCode, TrackingFidelity, TrackingFileSizeBucket, TrackingFileType, TrackingFirstModelEventType, TrackingLangfuseDeliveryStatus, TrackingLangfuseDropReason, TrackingLangfuseReportResult, TrackingLangfuseReportSkipReason, TrackingProjectKind, TrackingProjectSource, TrackingResult, TrackingRunCloseReason, TrackingRunDiagnosticSource, TrackingRunFailureCategory, TrackingRunFailureDetail, TrackingRunFailureStage, TrackingRunFailureUserAction, TrackingRunLifecyclePhase, TrackingRunPhaseTimingStatus, TrackingRunResult, TrackingRunRetryFinalResult, TrackingRunRetryStrategy, TrackingRunRetrySuppressedReason, TrackingStderrLineCountBucket, TrackingTestResult, TrackingTokenCountSource } from './shared-enums.js';
-import type { TrackingFileVersionSource, TrackingPluginImportSource, TrackingSessionMode, TrackingSettingsArea } from './ui-click.js';
+import type { TrackingAmrOpenCodeErrorPhase, TrackingAmrOpenCodeLastEventType, TrackingAmrOpenCodeLastToolKind, TrackingAmrOpenCodeLastToolStatus, TrackingArtifactKind, TrackingArtifactWriteSource, TrackingArtifactWriteStatus, TrackingByokPreflightBlockReason, TrackingByokProviderId, TrackingCliProviderId, TrackingDesignSystemSource, TrackingExecutionMode, TrackingExportFormat, TrackingExportResult, TrackingFeedbackAction, TrackingFeedbackProviderId, TrackingFeedbackRating, TrackingFeedbackRatingWithNone, TrackingFeedbackReasonCode, TrackingFidelity, TrackingFileSizeBucket, TrackingFileType, TrackingFirstModelEventType, TrackingLangfuseDeliveryStatus, TrackingLangfuseDropReason, TrackingLangfuseReportResult, TrackingLangfuseReportSkipReason, TrackingProjectKind, TrackingProjectSource, TrackingPublishErrorCode, TrackingResult, TrackingRunCancelOrigin, TrackingRunCloseReason, TrackingRunDiagnosticSource, TrackingRunFailureCategory, TrackingRunFailureDetail, TrackingRunFailureStage, TrackingRunFailureUserAction, TrackingRunLifecyclePhase, TrackingRunPhaseTimingStatus, TrackingRunResult, TrackingRunRetryFinalResult, TrackingRunRetryStrategy, TrackingRunRetrySuppressedReason, TrackingRunTerminalTrigger, TrackingStderrLineCountBucket, TrackingTestResult, TrackingTokenCountSource } from './shared-enums.js';
+import type { ConversationForkAnalyticsContext, TrackingFileVersionSource, TrackingPluginImportSource, TrackingSessionMode, TrackingSettingsArea } from './ui-click.js';
 // ---- Result events -------------------------------------------------------
 
 // Final outcome for the paid provider submission. Keep this envelope free of
@@ -97,8 +97,10 @@ export interface SpeakerNotesSaveResultProps {
 
 // Outcome of an actual import attempt from the plugin import modal. Fires
 // once per executed import (after the install/upload promise settles), not
-// for clicks that no-op. `error_code` carries the backend failure message —
-// the install pipeline has no structured codes (see PluginInstallOutcome).
+// for clicks that no-op. `error_code` carries a bounded machine-readable
+// backend code when available, with a stable HTTP/network fallback. Never put
+// the free-form install message here: it can contain URLs, paths, or upstream
+// response text and would create unbounded analytics cardinality.
 export interface PluginImportResultProps {
   page_name: 'plugins';
   area: 'import_modal';
@@ -405,6 +407,10 @@ export interface RunFinishedProps extends Omit<RunCreatedProps, 'area'> {
   area: 'chat_panel' | 'design_system_generation';
   result: TrackingRunResult;
   error_code?: string;
+  /** Only `user_stop` proves the user explicitly cancelled the run. */
+  cancel_origin?: TrackingRunCancelOrigin;
+  /** Lifecycle or watchdog mechanism that forced the terminal state. */
+  terminal_trigger?: TrackingRunTerminalTrigger;
   failure_category?: TrackingRunFailureCategory;
   failure_detail?: TrackingRunFailureDetail;
   /** v4 name; failure_detail remains during the compatibility window. */
@@ -605,6 +611,7 @@ export interface RunRetryBaseProps {
   failure_category?: TrackingRunFailureCategory;
   failure_detail?: TrackingRunFailureDetail;
   failure_stage?: TrackingRunFailureStage;
+  terminal_trigger?: TrackingRunTerminalTrigger;
   error_code?: string;
 }
 
@@ -785,6 +792,27 @@ export interface ArtifactDeployResultProps {
   project_kind: TrackingProjectKind | null;
 }
 
+// Fired when a "Publish this file for everyone" attempt from the Share tab
+// resolves — publishing and unpublishing share the event, split by `action`.
+// Fires when the daemon call settles (success once the public URL is returned
+// for publish, or removal is confirmed for unpublish), regardless of whether a
+// newer request superseded this one in the UI. Clicking the publish button
+// reports separately as ui_click element 'publish_file'.
+export interface ArtifactPublishResultProps {
+  page_name: 'artifact';
+  area: 'share_option_popover';
+  artifact_id: string;
+  artifact_kind: TrackingArtifactKind;
+  action: 'publish' | 'unpublish';
+  result: TrackingExportResult;
+  // 'workspace_identity_required' when the workspace context could not be
+  // confirmed (the one actionable failure), 'publish_failed' otherwise.
+  error_code?: TrackingPublishErrorCode;
+  publish_duration_ms: number;
+  project_id: string;
+  project_kind: TrackingProjectKind | null;
+}
+
 // Outcome of an HTML file version restore from the version history modal.
 // Fires once per confirmed restore attempt (after the restore API settles) —
 // opening the confirm popover or cancelling it only reports ui_click.
@@ -835,6 +863,24 @@ export interface FeedbackSubmitResultProps {
   has_custom_reason: boolean;
   custom_reason?: string;
   result: TrackingResult;
+}
+
+export type TrackingConversationForkErrorCode =
+  | 'bad_request'
+  | 'permission_denied'
+  | 'fork_source_not_found'
+  | 'payload_too_large'
+  | 'server_error'
+  | 'http_error'
+  | 'network_error'
+  | 'empty_response'
+  | 'unknown_error';
+
+export interface ConversationForkResultProps extends ConversationForkAnalyticsContext {
+  target_conversation_id: string | null;
+  result: TrackingResult;
+  error_code?: TrackingConversationForkErrorCode;
+  duration_ms: number;
 }
 
 interface AssistantFeedbackBase {

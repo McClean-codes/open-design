@@ -12,6 +12,7 @@ import { describe, expect, test } from 'vitest';
 
 import {
   packagedAppShellExpression,
+  packagedAppRouteUrl,
   PackagedOnboardingConfigError,
   packagedOnboardingCompletedFromProbe,
   packagedOnboardingConfigExpression,
@@ -250,26 +251,13 @@ const packagedOnboardingExpression = `
   (() => {
     const onboardingShell = document.querySelector('.entry-shell--onboarding');
     const onboardingModal = document.querySelector('.entry-onboarding-modal');
-    // Redesigned connect step: a cloud sign-in landing (primary CTA + two
-    // secondary runtime links) replaces the old selectable runtime cards.
+    // Identity is the first gate; runtime selection follows Cloud sign-in.
     const cloudSignIn = document.querySelector('.onboarding-cloud__primary');
-    const secondaryLinks = Array.from(
-      document.querySelectorAll('.onboarding-cloud__secondary'),
-    );
-    const localLink = secondaryLinks[0] ?? null;
-    const byokLink = secondaryLinks[1] ?? null;
-    const backToCloud = document.querySelector('.onboarding-view__back-to-cloud');
-    const setupPanel = document.querySelector('.onboarding-view__setup-panel');
 
     return {
-      backVisible: backToCloud instanceof HTMLElement,
-      byokLinkVisible: byokLink instanceof HTMLElement,
       cloudSignInVisible: cloudSignIn instanceof HTMLElement,
       href: location.href,
-      inputCount: setupPanel instanceof HTMLElement ? setupPanel.querySelectorAll('input').length : 0,
-      localLinkVisible: localLink instanceof HTMLElement,
       onboardingVisible: onboardingShell instanceof HTMLElement && onboardingModal instanceof HTMLElement,
-      setupPanelVisible: setupPanel instanceof HTMLElement,
       text: onboardingModal?.textContent?.trim().slice(0, 2000) ?? null,
       title: document.title,
     };
@@ -492,20 +480,10 @@ type UpdaterClickEvalValue = {
   reason?: string;
 };
 
-// The redesigned connect step exposes the two alternative runtimes as
-// secondary links on the cloud sign-in landing (AMR is the primary cloud CTA,
-// not a selectable link).
-type OnboardingRuntime = 'local' | 'byok';
-
 type PackagedOnboardingEvalValue = {
-  backVisible: boolean;
-  byokLinkVisible: boolean;
   cloudSignInVisible: boolean;
   href: string;
-  inputCount: number;
-  localLinkVisible: boolean;
   onboardingVisible: boolean;
-  setupPanelVisible: boolean;
   text: string | null;
   title: string;
 };
@@ -685,15 +663,30 @@ winDescribe('packaged windows runtime smoke', () => {
       const inspect = await measureSmokeStep(timings, 'wait healthy inspect eval', async () => waitForHealthyDesktop());
       expect(inspect.status?.state).toBe('running');
       if (inspect.desktopIpcUnavailable) expectWindowsFallbackWebUrl(inspect.status?.url);
-      else expectWindowsPackagedAppUrl(inspect.status?.url);
+      else expectWindowsPackagedRouteUrl(inspect.status?.url);
 
       const value = assertHealthEvalValue(inspect.eval?.value);
       if (inspect.desktopIpcUnavailable) expectWindowsDaemonUrl(value.href);
-      else expectWindowsPackagedAppUrl(value.href);
+      else expectWindowsPackagedRouteUrl(value.href);
       expect(value.status).toBe(200);
       expect(value.health.ok).toBe(true);
       if (releaseVersion != null && releaseVersion !== '') expect(value.health.version).toBe(releaseVersion);
       else expect(value.health.version).toEqual(expect.any(String));
+
+      // Establish the data-root postcondition before probing unrelated runtime
+      // capabilities. A healthy auth-first renderer may already be on
+      // od://app/onboarding, but it must still read the completed seed written
+      // into this tools-pack namespace.
+      if (!inspect.desktopIpcUnavailable) {
+        seededOnboardingCompleted = await measureSmokeStep(timings, 'verify seeded onboarding config', async () =>
+          packagedOnboardingCompletedFromProbe(await readPackagedOnboardingConfig()),
+        );
+        expect(
+          seededOnboardingCompleted,
+          'daemon did not read the seeded onboardingCompleted config; check that the packaged data root still resolves to the tools-pack runtime namespace root',
+        ).toBe(true);
+      }
+
       const ptyInspect = await measureSmokeStep(timings, 'packaged PTY capability', async () =>
         runToolsPackJson<WinInspectResult>('inspect', [
           '--expr',
@@ -711,23 +704,6 @@ winDescribe('packaged windows runtime smoke', () => {
       expect(pty.cleanup.projectStatus).toBe(200);
       assertLauncherPointer(inspect.launcher.active, updateScenario.expectedCurrentVersion, 0, 'initial active');
       assertLauncherPointer(inspect.launcher.lastSuccessful, updateScenario.expectedCurrentVersion, 0, 'initial lastSuccessful');
-
-      // The seed's postcondition, asserted where it must hold: this process was
-      // started by `tools-pack win start`, which points the packaged runtime at
-      // the same data root `seedPackagedOnboardingComplete` wrote. If the daemon
-      // does not see it here, the completed-onboarding boot path is broken —
-      // the #4389-era failure where the seed landed in the AppData fallback and
-      // the daemon never read it. Fail with that named cause instead of letting
-      // it surface later as an unexplained onboarding screen.
-      if (!inspect.desktopIpcUnavailable) {
-        seededOnboardingCompleted = await measureSmokeStep(timings, 'verify seeded onboarding config', async () =>
-          packagedOnboardingCompletedFromProbe(await readPackagedOnboardingConfig()),
-        );
-        expect(
-          seededOnboardingCompleted,
-          'daemon did not read the seeded onboardingCompleted config; check that the packaged data root still resolves to the tools-pack runtime namespace root',
-        ).toBe(true);
-      }
 
       // Runtime registration must preserve the stable installed outer path;
       // pointing at a versioned payload would break the scheme after cleanup.
@@ -776,8 +752,9 @@ winDescribe('packaged windows runtime smoke', () => {
         // environment — so it is a different daemon, and only it can say what
         // config the surface being asserted on is actually running under.
         // Phase 2 — the completed user. The seed must have been confirmed before
-        // this point; anything else means the run never established the fact
-        // this phase depends on.
+        // this point; the core auth-first profile may legitimately stop at the
+        // cloud sign-in landing, while the full updater profile still needs
+        // Home. Either way, a cold launch that lost the seed fails first.
         if (seededOnboardingCompleted !== true) {
           throw new Error('reached the completed-user app-shell check without a confirmed seeded onboarding state');
         }
@@ -792,7 +769,7 @@ winDescribe('packaged windows runtime smoke', () => {
         );
         onboardingCompleted = completedUser.onboardingCompleted;
         appShell = completedUser.appShell;
-        expect(appShell).toBe('home');
+        if (!verifyCoreOnly) expect(appShell).toBe('home');
 
         if (verifyUpgradePersistence) {
           const seedInspect = await measureSmokeStep(timings, 'seed pre-update persistence project', async () =>
@@ -1291,7 +1268,7 @@ winOnboardingDescribe('packaged windows onboarding AMR smoke', () => {
   let installed = false;
   let started = false;
 
-  test('[P0] @electron-smoke starts a fresh packaged Windows app on onboarding with AMR, Local CLI, and BYOK visible', async () => {
+  test('[P0] @electron-smoke starts a fresh packaged Windows app on the Cloud identity gate', async () => {
     const report = await createPackagedSmokeReport('win');
     const timings: SmokeTiming[] = [];
     let install: WinInstallResult | null = null;
@@ -1330,11 +1307,8 @@ winOnboardingDescribe('packaged windows onboarding AMR smoke', () => {
       expect(health.health.ok).toBe(true);
 
       const initial = await waitForPackagedOnboarding((snapshot) =>
-        snapshot.onboardingVisible &&
-        snapshot.cloudSignInVisible &&
-        snapshot.localLinkVisible &&
-        snapshot.byokLinkVisible,
-        'fresh packaged Windows onboarding cloud sign-in landing',
+        snapshot.onboardingVisible && snapshot.cloudSignInVisible,
+        'fresh packaged Windows onboarding Cloud identity gate',
       );
       // Onboarding lives on a dedicated route since the #4513 cloud sign-in
       // redesign, so the href is `od://app/onboarding` (packaged) — not the
@@ -1344,33 +1318,6 @@ winOnboardingDescribe('packaged windows onboarding AMR smoke', () => {
       // is why the stale exact-match assertion went unnoticed.
       expect(initial.href).toMatch(/^(od:\/\/app\/|http:\/\/127\.0\.0\.1:\d+\/)/);
       expect(initial.cloudSignInVisible).toBe(true);
-      expect(initial.localLinkVisible).toBe(true);
-      expect(initial.byokLinkVisible).toBe(true);
-
-      // Expand the BYOK panel from the landing, then collapse back via Back.
-      await clickPackagedOnboardingRuntime('byok');
-      const byok = await waitForPackagedOnboarding(
-        (snapshot) => snapshot.setupPanelVisible && snapshot.inputCount > 0,
-        'packaged Windows onboarding BYOK setup panel',
-      );
-      expect(byok.setupPanelVisible).toBe(true);
-
-      // The secondary links only live on the landing, so Back before Local.
-      await clickPackagedOnboardingBack();
-      await clickPackagedOnboardingRuntime('local');
-      const local = await waitForPackagedOnboarding(
-        (snapshot) => snapshot.setupPanelVisible,
-        'packaged Windows onboarding Local CLI setup panel',
-      );
-      expect(local.setupPanelVisible).toBe(true);
-
-      // Back once more lands on the cloud sign-in surface for the screenshot.
-      await clickPackagedOnboardingBack();
-      const landing = await waitForPackagedOnboarding(
-        (snapshot) => snapshot.cloudSignInVisible && !snapshot.setupPanelVisible,
-        'packaged Windows onboarding cloud sign-in landing after Back',
-      );
-      expect(landing.cloudSignInVisible).toBe(true);
 
       const onboardingScreenshotPath = join(toolsPackDir, 'screenshots', `${namespace}-onboarding.png`);
       await mkdir(dirname(onboardingScreenshotPath), { recursive: true });
@@ -1379,11 +1326,8 @@ winOnboardingDescribe('packaged windows onboarding AMR smoke', () => {
       expect(await fileSizeBytes(onboardingScreenshotPath)).toBeGreaterThan(0);
       await report.report.save('screenshots/open-design-win-onboarding-smoke.png', await readFile(onboardingScreenshotPath));
       await report.report.json('onboarding-summary.json', {
-        byok,
         health,
         initial,
-        landing,
-        local,
         namespace,
         screenshot: 'screenshots/open-design-win-onboarding-smoke.png',
         start: {
@@ -2241,22 +2185,6 @@ async function waitForPackagedOnboarding(
   throw new Error(`${label}: packaged Windows onboarding timed out: ${formatUnknown(lastResult)}`);
 }
 
-async function clickPackagedOnboardingRuntime(runtime: OnboardingRuntime): Promise<void> {
-  const inspect = await runToolsPackJson<WinInspectResult>('inspect', ['--expr', clickPackagedOnboardingRuntimeExpression(runtime)]);
-  const value = inspect.eval?.value;
-  if (!isRecord(value) || value.clicked !== true) {
-    throw new Error(`failed to click packaged Windows onboarding ${runtime} runtime: ${formatUnknown(value)}`);
-  }
-}
-
-async function clickPackagedOnboardingBack(): Promise<void> {
-  const inspect = await runToolsPackJson<WinInspectResult>('inspect', ['--expr', clickPackagedOnboardingBackExpression()]);
-  const value = inspect.eval?.value;
-  if (!isRecord(value) || value.clicked !== true) {
-    throw new Error(`failed to click packaged Windows onboarding back: ${formatUnknown(value)}`);
-  }
-}
-
 async function repackWinPayloadFixture(
   payloadSevenZPath: string,
   workDir: string,
@@ -2612,49 +2540,11 @@ function asHealthEvalValue(value: unknown): HealthEvalValue | null {
   return value as HealthEvalValue;
 }
 
-function clickPackagedOnboardingRuntimeExpression(runtime: OnboardingRuntime): string {
-  // Secondary runtime links on the cloud landing, in DOM order: [0] Local,
-  // [1] BYOK. Clicking one expands its setup panel.
-  const index = runtime === 'local' ? 0 : 1;
-  return `
-    (async () => {
-      const links = Array.from(document.querySelectorAll('.onboarding-cloud__secondary'));
-      const target = links[${index}] ?? null;
-      if (!(target instanceof HTMLElement)) {
-        return { clicked: false, reason: 'missing-runtime-link', runtime: ${JSON.stringify(runtime)} };
-      }
-      target.click();
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      return { clicked: true, runtime: ${JSON.stringify(runtime)} };
-    })()
-  `;
-}
-
-function clickPackagedOnboardingBackExpression(): string {
-  // Collapse an expanded runtime setup panel back to the cloud sign-in landing.
-  return `
-    (async () => {
-      const target = document.querySelector('.onboarding-view__back-to-cloud');
-      if (!(target instanceof HTMLElement)) {
-        return { clicked: false, reason: 'missing-back' };
-      }
-      target.click();
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      return { clicked: true };
-    })()
-  `;
-}
-
 function asPackagedOnboardingEvalValue(value: unknown): PackagedOnboardingEvalValue | null {
   if (!isRecord(value)) return null;
-  if (typeof value.backVisible !== 'boolean') return null;
-  if (typeof value.byokLinkVisible !== 'boolean') return null;
   if (typeof value.cloudSignInVisible !== 'boolean') return null;
   if (typeof value.href !== 'string') return null;
-  if (typeof value.inputCount !== 'number') return null;
-  if (typeof value.localLinkVisible !== 'boolean') return null;
   if (typeof value.onboardingVisible !== 'boolean') return null;
-  if (typeof value.setupPanelVisible !== 'boolean') return null;
   if (value.text != null && typeof value.text !== 'string') return null;
   if (typeof value.title !== 'string') return null;
   return value as PackagedOnboardingEvalValue;
@@ -2671,6 +2561,10 @@ function expectPathInside(filePath: string, expectedRoot: string): void {
 
 function expectWindowsPackagedAppUrl(value: string | null | undefined): void {
   expect(value).toEqual(expect.stringMatching(/^od:\/\/app\/$/));
+}
+
+function expectWindowsPackagedRouteUrl(value: string | null | undefined): void {
+  expect(packagedAppRouteUrl(value), `${String(value)} should be an od://app/* packaged renderer URL`).toBe(true);
 }
 
 function expectWindowsFallbackWebUrl(value: string | null | undefined): void {

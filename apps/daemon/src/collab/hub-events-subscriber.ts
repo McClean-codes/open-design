@@ -21,6 +21,7 @@
 import type { WorkspaceBillingRevisionClock } from '@open-design/contracts';
 
 export type HubResourceStatus = 'shared' | 'retracted';
+export type HubWorkspaceMemberChange = 'added' | 'removed' | 'updated';
 export type HubListenerHealth = 'starting' | 'healthy' | 'reconnecting' | 'stopped';
 
 export interface HubListenerStatus {
@@ -36,6 +37,10 @@ export interface HubReadyFrame {
 }
 
 const BILLING_REVISION_CLOCKS_CAPABILITY = 'billing-revision-clocks-v1';
+export const WORKSPACE_MEMBER_EVENTS_CAPABILITY =
+  'workspace-member-events-v1';
+const WORKSPACE_EVENT_LISTENER_STATUS_CAPABILITY =
+  'workspace-event-listener-status-v1';
 export const AUTHORITATIVE_PROJECT_PRESENCE_CAPABILITY =
   'authoritative-project-presence-v1';
 const MAX_HANDLED_SOURCE_GAP_EPOCHS = 64;
@@ -46,6 +51,7 @@ export interface HubWorkspaceEvent {
     | 'comment-changed'
     | 'presence-changed'
     | 'workspace-context-changed'
+    | 'workspace-members-changed'
     | 'billing-changed'
     | 'billing-subscription-changed'
     | 'wallet-balance-changed'
@@ -54,6 +60,10 @@ export interface HubWorkspaceEvent {
     | 'team-resources-changed';
   workspaceId?: string;
   workspaceMemberId?: string;
+  /** Subject of a workspace-members-changed event. This is distinct from the
+   * authenticated workspaceMemberId carried by private billing events. */
+  memberId?: string;
+  memberChange?: HubWorkspaceMemberChange;
   revision?: string;
   revisionClock?: WorkspaceBillingRevisionClock;
   projectId?: string;
@@ -78,6 +88,7 @@ const HUB_EVENT_TYPES = new Set<HubWorkspaceEvent['type']>([
   'comment-changed',
   'presence-changed',
   'workspace-context-changed',
+  'workspace-members-changed',
   'billing-changed',
   'billing-subscription-changed',
   'wallet-balance-changed',
@@ -87,6 +98,11 @@ const HUB_EVENT_TYPES = new Set<HubWorkspaceEvent['type']>([
 ]);
 
 const HUB_RESOURCE_STATUSES = new Set<HubResourceStatus>(['shared', 'retracted']);
+const HUB_WORKSPACE_MEMBER_CHANGES = new Set<HubWorkspaceMemberChange>([
+  'added',
+  'removed',
+  'updated',
+]);
 
 export function parseHubWorkspaceEvent(data: string): HubWorkspaceEvent | null {
   try {
@@ -98,6 +114,15 @@ export function parseHubWorkspaceEvent(data: string): HubWorkspaceEvent | null {
     if (typeof parsed.workspaceId === 'string') event.workspaceId = parsed.workspaceId;
     if (typeof parsed.workspaceMemberId === 'string') {
       event.workspaceMemberId = parsed.workspaceMemberId;
+    }
+    if (typeof parsed.memberId === 'string') event.memberId = parsed.memberId;
+    if (
+      typeof parsed.memberChange === 'string'
+      && HUB_WORKSPACE_MEMBER_CHANGES.has(
+        parsed.memberChange as HubWorkspaceMemberChange,
+      )
+    ) {
+      event.memberChange = parsed.memberChange as HubWorkspaceMemberChange;
     }
     if (typeof parsed.revision === 'string') event.revision = parsed.revision;
     const revisionClock = parseRevisionClock(parsed.revisionClock);
@@ -206,8 +231,23 @@ export interface HubEventsSubscriberOptions {
    */
   resolveEndpoint: () => Promise<HubEventsEndpoint | null>;
   onEvent: (event: HubWorkspaceEvent) => void;
+  /** Terminal authorization signal emitted immediately before Vela closes a
+   * revoked member's verified stream. */
+  onAccessRevoked?: (revocation: {
+    workspaceId?: string;
+    reason?: string;
+  }) => void;
   /** Channel health transitions — drives poll-cadence switching. */
   onStateChange?: (state: 'connected' | 'disconnected') => void;
+  /** Strict authority health for adaptive polling. `healthy` is true only
+   * after exact-scope verification, required roster/listener capabilities,
+   * and a healthy gap-free producer status are all present. */
+  onAuthorityHealthChange?: (health: {
+    workspaceId?: string;
+    healthy: boolean;
+    capabilities: readonly string[];
+    listenerStatus: HubListenerStatus | null;
+  }) => void;
   /** Fired after a `ready` frame verifies the stream workspace. Unlike
    *  `onReconnect`, this includes the first successful connection. */
   onConnect?: (connection: {
@@ -280,9 +320,43 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
       };
     });
 
-  async function consumeStream(endpoint: HubEventsEndpoint): Promise<void> {
+  async function consumeStream(
+    endpoint: HubEventsEndpoint,
+  ): Promise<'closed' | 'rejected' | 'revoked'> {
     abortController = new AbortController();
     let watchdog: NodeJS.Timeout | null = null;
+    let scopeVerified = false;
+    let verifiedWorkspaceId: string | undefined;
+    let verifiedCapabilities: readonly string[] = [];
+    let lastListenerStatus: HubListenerStatus | null = null;
+    let lastAuthorityHealthy: boolean | null = null;
+    const publishAuthorityHealth = (
+      status: HubListenerStatus | null,
+      forceUnhealthy = false,
+    ) => {
+      lastListenerStatus = status;
+      const healthy =
+        !forceUnhealthy &&
+        scopeVerified &&
+        verifiedCapabilities.includes(WORKSPACE_MEMBER_EVENTS_CAPABILITY) &&
+        verifiedCapabilities.includes(
+          WORKSPACE_EVENT_LISTENER_STATUS_CAPABILITY,
+        ) &&
+        status?.listenerHealth === 'healthy' &&
+        status.sourceGap === false;
+      if (lastAuthorityHealthy === healthy) return;
+      lastAuthorityHealthy = healthy;
+      try {
+        options.onAuthorityHealthChange?.({
+          ...(verifiedWorkspaceId ? { workspaceId: verifiedWorkspaceId } : {}),
+          healthy,
+          capabilities: [...verifiedCapabilities],
+          listenerStatus: status,
+        });
+      } catch (error) {
+        options.onError?.(error);
+      }
+    };
     const armWatchdog = () => {
       if (watchdog) clearTimeout(watchdog);
       watchdog = setTimeout(() => abortController?.abort(), heartbeatTimeoutMs);
@@ -297,18 +371,14 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
       if (!response.ok || !response.body) {
         throw new Error(`hub events stream ${response.status}`);
       }
-      // Transport-connected. Content catch-up remains gated on the server's
-      // `ready` frame proving the expected workspace below.
-      backoffMs = backoffMinMs;
-      setConnected(true);
+      // Transport-connected. Do not publish a connected state until the
+      // server's `ready` frame proves the exact expected workspace below.
       armWatchdog();
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
-      let scopeVerified = false;
       let connectionNotified = false;
-      let verifiedWorkspaceId: string | undefined;
       let revisionClocksEnabled = false;
       const reportSourceGap = (
         status: HubListenerStatus | null,
@@ -388,7 +458,7 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
                   : {}),
               });
               abortController?.abort();
-              return;
+              return 'rejected';
             }
             const actualWorkspaceId = ready.workspaceId;
             if (endpoint.workspaceId && actualWorkspaceId !== endpoint.workspaceId) {
@@ -399,10 +469,16 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
                 actualWorkspaceId,
               });
               abortController?.abort();
-              return;
+              return 'rejected';
             }
             scopeVerified = true;
             verifiedWorkspaceId = actualWorkspaceId;
+            verifiedCapabilities = [...ready.capabilities];
+            // A verified connection has recovered from prior transport
+            // failures. Terminal revocation below deliberately overrides this
+            // with the maximum retry delay.
+            backoffMs = backoffMinMs;
+            setConnected(true);
             revisionClocksEnabled = ready.capabilities.includes(
               BILLING_REVISION_CLOCKS_CAPABILITY,
             );
@@ -412,11 +488,52 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
             // catch-up. A first connection has no such callback, so a healthy
             // producer-side gap reported in ready must trigger it here.
             reportSourceGap(ready.listenerStatus, reconnect);
+            // `ready` verifies the stream scope and capabilities, but Vela
+            // emits it before its post-subscribe membership revalidation has
+            // completed. Keep the authority path conservative until the first
+            // healthy post-ready status/heartbeat proves that catch-up crossed
+            // that boundary.
+            publishAuthorityHealth(ready.listenerStatus, true);
             continue;
           }
           if (eventName === 'source-status' || eventName === 'heartbeat') {
-            if (scopeVerified) reportSourceGap(parseHubListenerStatus(data));
+            if (scopeVerified) {
+              const status = parseHubListenerStatus(data);
+              reportSourceGap(status);
+              publishAuthorityHealth(status);
+            }
             continue;
+          }
+          if (eventName === 'access-revoked') {
+            if (!scopeVerified) {
+              options.onDrop?.({
+                reason: 'unverified-scope',
+                eventName,
+                ...(endpoint.workspaceId
+                  ? { expectedWorkspaceId: endpoint.workspaceId }
+                  : {}),
+              });
+              continue;
+            }
+            const parsed = parseJsonRecord(data);
+            const reason =
+              typeof parsed?.reason === 'string' && parsed.reason.trim()
+                ? parsed.reason.trim()
+                : undefined;
+            try {
+              options.onAccessRevoked?.({
+                ...(verifiedWorkspaceId
+                  ? { workspaceId: verifiedWorkspaceId }
+                  : {}),
+                ...(reason ? { reason } : {}),
+              });
+            } catch (error) {
+              options.onError?.(error);
+            }
+            publishAuthorityHealth(lastListenerStatus, true);
+            setConnected(false);
+            abortController?.abort();
+            return 'revoked';
           }
           if (eventName !== 'workspace-event') continue;
           if (!scopeVerified) {
@@ -455,9 +572,11 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
           }
         }
       }
+      return 'closed';
     } finally {
       if (watchdog) clearTimeout(watchdog);
       abortController = null;
+      if (scopeVerified) publishAuthorityHealth(lastListenerStatus, true);
       setConnected(false);
     }
   }
@@ -476,13 +595,16 @@ export function startHubEventsSubscriber(options: HubEventsSubscriberOptions): H
           await sleep(backoffMaxMs);
           continue;
         }
-        await consumeStream(endpoint);
+        const outcome = await consumeStream(endpoint);
         if (generation !== endpointGeneration) {
           backoffMs = backoffMinMs;
           continue;
         }
-        // Server closed cleanly (deploy/restart) — reconnect promptly.
-        backoffMs = backoffMinMs;
+        // Server closed cleanly (deploy/restart) — reconnect promptly. A
+        // terminal revocation or untrusted ready frame must not become a
+        // one-request-per-second loop; probe only at the bounded maximum until
+        // membership, deployment, or scope changes.
+        backoffMs = outcome === 'closed' ? backoffMinMs : backoffMaxMs;
       } catch (error) {
         // Deliberately aborting the old workspace stream is not a transport
         // failure and must not surface a misleading reconnect warning.

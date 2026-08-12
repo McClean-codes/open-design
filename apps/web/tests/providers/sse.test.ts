@@ -115,6 +115,7 @@ describe('streamViaDaemon', () => {
     const handlers = createDaemonHandlers();
     const eventTarget = new EventTarget();
     const published: DaemonRunFinishedEventDetail[] = [];
+    const artifactPaths: string[][] = [];
     eventTarget.addEventListener(DAEMON_RUN_FINISHED_EVENT, (event) => {
       published.push((event as CustomEvent<DaemonRunFinishedEventDetail>).detail);
     });
@@ -124,30 +125,68 @@ describe('streamViaDaemon', () => {
       if (url === '/api/runs') return jsonResponse({ runId: 'run-artifact-success' });
       if (url === '/api/runs/run-artifact-success/events') {
         return sseResponse(
-          'event: end\ndata: {"code":0,"status":"succeeded","artifactCount":2}\n\n',
+          'event: end\ndata: {"code":0,"status":"succeeded","artifactCount":2,"artifactPaths":["existing.png","renders/new.png"]}\n\n',
         );
       }
       throw new Error(`unexpected fetch ${url}`);
     }));
 
     await streamViaDaemon({
-      agentId: 'mock',
+      agentId: 'amr',
       history: [{ id: '1', role: 'user', content: 'make a design' }],
       systemPrompt: '',
       signal: new AbortController().signal,
       handlers,
       projectId: 'project-1',
       conversationId: 'conversation-1',
+      onArtifactPaths: (paths) => artifactPaths.push(paths),
     });
 
     expect(published).toEqual([{
+      agentId: 'amr',
       runId: 'run-artifact-success',
       projectId: 'project-1',
       conversationId: 'conversation-1',
       result: 'success',
       artifactCount: 2,
     }]);
+    expect(artifactPaths).toEqual([['existing.png', 'renders/new.png']]);
   });
+
+  it.each(['kimi', 'codex'])(
+    'does not publish a local %s artifact run to the AMR upgrade gate',
+    async (agentId) => {
+      const handlers = createDaemonHandlers();
+      const eventTarget = new EventTarget();
+      const published: DaemonRunFinishedEventDetail[] = [];
+      eventTarget.addEventListener(DAEMON_RUN_FINISHED_EVENT, (event) => {
+        published.push((event as CustomEvent<DaemonRunFinishedEventDetail>).detail);
+      });
+      vi.stubGlobal('window', eventTarget);
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/runs') return jsonResponse({ runId: `run-${agentId}` });
+        if (url === `/api/runs/run-${agentId}/events`) {
+          return sseResponse(
+            'event: end\ndata: {"code":0,"status":"succeeded","artifactCount":1}\n\n',
+          );
+        }
+        throw new Error(`unexpected fetch ${url}`);
+      }));
+
+      await streamViaDaemon({
+        agentId,
+        history: [{ id: '1', role: 'user', content: 'make a design' }],
+        systemPrompt: '',
+        signal: new AbortController().signal,
+        handlers,
+        projectId: 'project-1',
+        conversationId: 'conversation-1',
+      });
+
+      expect(published).toEqual([]);
+    },
+  );
 
   it.each([
     ['no artifact', '{"code":0,"status":"succeeded","artifactCount":0}'],

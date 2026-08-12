@@ -310,7 +310,7 @@ async function startServer(opts?: {
       runRetryEventsForAnalytics: () => [],
     },
     messages: {
-      pinAssistantMessageOnRunCreate: () => {},
+      pinAssistantMessageOnRunCreate: () => ({ ok: true }),
       reconcileAssistantMessageOnRunEnd: () => {},
     },
     enforceWorkspaceProjectMutation:
@@ -1140,7 +1140,11 @@ describe('Workspace-bound run lifecycle authority', () => {
         agentId: 'byok-opencode',
         model: 'test-model',
         message: 'byok run',
-        byokProfileId: 'test-profile',
+        byokProvider: {
+          protocol: 'openai',
+          baseUrl: 'http://127.0.0.1:1234/v1',
+          requiresApiKey: false,
+        },
       },
     ];
 
@@ -1597,7 +1601,11 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
           agentId: 'byok-opencode',
           model: 'test-model',
           message: 'byok',
-          byokProfileId: 'test-profile',
+          byokProvider: {
+            protocol: 'openai',
+            baseUrl: 'http://127.0.0.1:1234/v1',
+            requiresApiKey: false,
+          },
         },
       ]) {
         const response = await fetch(`${baseUrl}${route}`, {

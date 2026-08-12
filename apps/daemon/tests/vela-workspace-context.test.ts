@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { WorkspaceDirectoryItem } from '@open-design/contracts';
 import {
   createCachedWorkspaceDirectoryFetcher,
   createFreshWorkspaceDirectoryFetcher,
@@ -35,6 +36,16 @@ const B_TEAM_CONTEXT = {
     canManageSharedResources: false,
   },
   lastActiveWorkspaceId: 'ws-team-1',
+};
+
+const B_DIRECTORY_ITEM: WorkspaceDirectoryItem = {
+  workspaceId: 'ws-team-1',
+  workspaceName: 'Team 1',
+  workspaceType: 'team',
+  workspaceMemberId: 'wm-1',
+  role: 'member',
+  memberStatus: 'active',
+  lifecycleState: 'active',
 };
 
 const SESSION = { profile: 'prod', apiUrl: 'https://vela.example', controlKey: 'ck-1', user: null, configMtimeMs: null };
@@ -223,6 +234,38 @@ describe('createCachedWorkspaceDirectoryFetcher', () => {
     reads[1]!.resolve({ ok: true, items: [] });
     await expect(accountB).resolves.toEqual({ ok: true, items: [] });
   });
+
+  it('reports directory lease hits and mutation invalidation without identity labels', async () => {
+    let now = 1_000;
+    const onDecision = vi.fn();
+    const onSuppressedRequest = vi.fn();
+    const onInvalidation = vi.fn();
+    const broker = createWorkspaceDirectoryAuthorityBroker({
+      now: () => now,
+      ttlMs: 5_000,
+      fetchDirectory: async () => ({ ok: true, items: [] }),
+      onDecision,
+      onSuppressedRequest,
+      onInvalidation,
+    });
+
+    await broker.read();
+    now += 250;
+    await broker.read();
+    expect(onDecision).toHaveBeenLastCalledWith({
+      source: 'cache',
+      reason: 'lease_hit',
+      outcome: 'allow',
+      ageMs: 250,
+    });
+    expect(onSuppressedRequest).toHaveBeenCalledOnce();
+
+    await broker.refreshAfterMutation();
+    expect(onInvalidation).toHaveBeenCalledWith({
+      source: 'cache',
+      reason: 'mutation',
+    });
+  });
 });
 
 describe('createFreshWorkspaceDirectoryFetcher', () => {
@@ -275,6 +318,109 @@ describe('createFreshWorkspaceDirectoryFetcher', () => {
 });
 
 describe('createWorkspaceDirectoryAuthorityBroker', () => {
+  it('invalidates the current account lease and forces the next read to refresh', async () => {
+    const first = {
+      ok: true as const,
+      items: [{ ...B_DIRECTORY_ITEM }],
+    };
+    const second = { ok: true as const, items: [] };
+    const fetchDirectory = vi
+      .fn()
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'account-a:config-a',
+    });
+
+    await expect(authority.read()).resolves.toEqual(first);
+    await expect(authority.read()).resolves.toEqual(first);
+    authority.invalidate();
+    await expect(authority.read()).resolves.toEqual(second);
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not let an invalidated in-flight result seed or satisfy the new generation', async () => {
+    const pending: Array<
+      (result: { ok: true; items: WorkspaceDirectoryItem[] }) => void
+    > = [];
+    const fetchDirectory = vi.fn(
+      () =>
+        new Promise<{ ok: true; items: WorkspaceDirectoryItem[] }>(
+          (resolve) => pending.push(resolve),
+        ),
+    );
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => 'account-a:config-a',
+    });
+
+    const staleRead = authority.read();
+    authority.invalidate();
+    const currentRead = authority.read();
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+
+    const stale = { ok: true as const, items: [{ ...B_DIRECTORY_ITEM }] };
+    pending[0]!(stale);
+    await expect(staleRead).resolves.toEqual(stale);
+
+    let currentSettled = false;
+    void currentRead.then(() => {
+      currentSettled = true;
+    });
+    await Promise.resolve();
+    expect(currentSettled).toBe(false);
+
+    const current = {
+      ok: true as const,
+      items: [{ ...B_DIRECTORY_ITEM, workspaceId: 'ws-team-2' }],
+    };
+    pending[1]!(current);
+    await expect(currentRead).resolves.toEqual(current);
+    await expect(authority.read()).resolves.toEqual(current);
+    expect(fetchDirectory).toHaveBeenCalledTimes(2);
+  });
+
+  it('exposes a cached-only lease that never starts I/O and is partitioned by account identity and expiry', async () => {
+    let identity = 'account-a:config-a';
+    let now = 0;
+    const accepted = {
+      ok: true as const,
+      items: [{
+        workspaceId: 'ws-team-1',
+        workspaceName: 'Team',
+        workspaceType: 'team' as const,
+        workspaceMemberId: 'wm-1',
+        role: 'member' as const,
+        memberStatus: 'active' as const,
+        lifecycleState: 'active' as const,
+      }],
+    };
+    const fetchDirectory = vi.fn(async () => accepted);
+    const authority = createWorkspaceDirectoryAuthorityBroker({
+      fetchDirectory,
+      identityKey: () => identity,
+      now: () => now,
+      ttlMs: 100,
+    });
+
+    await expect(authority.cached()).resolves.toEqual({ ok: false, items: [] });
+    expect(fetchDirectory).not.toHaveBeenCalled();
+
+    await authority.read();
+    await expect(authority.cached()).resolves.toEqual(accepted);
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+
+    identity = 'account-b:config-b';
+    await expect(authority.cached()).resolves.toEqual({ ok: false, items: [] });
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+
+    identity = 'account-a:config-a';
+    now = 100;
+    await expect(authority.cached()).resolves.toEqual({ ok: false, items: [] });
+    expect(fetchDirectory).toHaveBeenCalledTimes(1);
+  });
+
   it('single-flights shell and project bootstrap reads per account generation without caching failures', async () => {
     let identity = 'account-a:config-a';
     const fetchDirectory = vi.fn(async () => ({
@@ -532,7 +678,7 @@ describe('createVelaWorkspaceContextProvider explicit local scope', () => {
     expect(context?.workspaceType).toBe('personal');
     expect(context?.workspaceMemberId).toBe('wm-p1');
     expect(context?.workspaceSettingsUrl).toBe(
-      'https://web.example.com/console/settings?workspaceId=ws-personal-1',
+      'https://web.example.com/console/settings?workspaceId=ws-personal-1&source=open_design',
     );
     // Resource semantics from the handoff: a plain read NEVER writes the
     // account-level Active Workspace.
@@ -560,7 +706,7 @@ describe('createVelaWorkspaceContextProvider explicit local scope', () => {
 
     expect(initial?.workspaceType).toBe('personal');
     expect(initial?.workspaceSettingsUrl).toBe(
-      'https://web.example.com/console/settings?workspaceId=ws-personal-1',
+      'https://web.example.com/console/settings?workspaceId=ws-personal-1&source=open_design',
     );
     expect(refreshed?.workspaceSettingsUrl).toBe(initial?.workspaceSettingsUrl);
   });

@@ -27,6 +27,7 @@ import {
   applyJsonInstall,
   removeJsonInstall,
 } from './mcp-agent-install.js';
+import { resolveMcpWorkspaceContext } from './mcp-workspace-context.js';
 
 const argv = process.argv.slice(2);
 
@@ -69,6 +70,8 @@ const MEDIA_GENERATE_STRING_FLAGS = new Set([
   'prompt-file',
   'output',
   'aspect',
+  'quality',
+  'resolution',
   'length',
   'duration',
   'prompt-influence',
@@ -481,7 +484,10 @@ async function runExport(args) {
     process.exit(2);
   }
   const base = await cliDaemonBaseUrl(flags);
-  const workspaceHeaders = workspaceHeadersFromExplicitFlags(flags) ?? {};
+  const token = process.env.OD_TOOL_TOKEN;
+  const requestHeaders = token
+    ? { authorization: `Bearer ${token}` }
+    : workspaceHeadersFromExplicitFlags(flags) ?? {};
   // All three formats rasterize through the desktop screenshot renderer so the
   // CLI matches the UI exactly. In particular `pdf` uses `/export/pdf-image`
   // (one raster page per deck slide / per viewport for a page) — NOT the generic
@@ -511,7 +517,7 @@ async function runExport(args) {
   try {
     resp = await fetch(`${base}/api/projects/${encodeURIComponent(projectId)}/${exportPath}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', ...workspaceHeaders },
+      headers: { 'content-type': 'application/json', ...requestHeaders },
       body: JSON.stringify(requestBody),
     });
   } catch (err) {
@@ -1476,6 +1482,11 @@ async function runMediaGenerate(rawArgs) {
     console.error('--model required (see http://<daemon>/api/media/models)');
     process.exit(2);
   }
+  const images = repeatableFlagValues(rawArgs, 'image');
+  if (flags.model.startsWith('vela/') && images.length > 5) {
+    console.error(`Vela media accepts at most 5 --image values; received ${images.length}`);
+    process.exit(2);
+  }
 
   // Long-form media prompts (detailed image/video descriptions, program-
   // generated prompts) arrive via --prompt-file <path|-> (stdin) per the CLI
@@ -1489,10 +1500,13 @@ async function runMediaGenerate(rawArgs) {
     prompt,
     output: flags.output,
     aspect: flags.aspect,
+    quality: flags.quality,
+    resolution: flags.resolution,
     voice: flags.voice,
     audioKind: flags['audio-kind'],
     compositionDir: flags['composition-dir'],
-    image: flags.image,
+    image: images[0],
+    images,
     language: flags.language,
   };
   if (flags.length != null) body.length = Number(flags.length);
@@ -1823,6 +1837,13 @@ Common options:
   --prompt-file <path|->     Read the prompt from a file, or - for stdin (for long-form prompts).
   --output <filename>       File to write under the project. Auto-named if omitted.
   --aspect 1:1|16:9|9:16|4:3|3:4
+  --quality <tier>          Open Design Cloud images only: published quality tier
+                            (gpt-image-2 accepts low|medium|high). Omit to let the
+                            model's own default tier decide — tiers are priced
+                            differently, so this is a billing choice.
+  --resolution <res>        Open Design Cloud images only: published output resolution
+                            (e.g. 1K, 2K). Must name a resolution the model publishes
+                            for --aspect. Omit to use the model's default profile.
   --length <seconds>        Video length.
   --duration <seconds>      Audio duration.
   --prompt-influence <0-1>  ElevenLabs SFX prompt adherence. Higher values follow the prompt more closely.
@@ -1834,11 +1855,11 @@ Common options:
                             to the dir containing hyperframes.json /
                             meta.json / index.html. The daemon runs
                             \`npx hyperframes render\` against it.
-  --image <path>            Project-relative path to a reference image
-                            (image-to-video for Seedance i2v models, or
-                            future image-edit endpoints). Daemon reads
-                            the file from the project, base64-encodes
-                            it, and forwards it to the upstream API.
+  --image <path>            Project-relative reference image; repeat up to 5
+                            times for Vela image editing or video references.
+                            The first video image is the first frame; the rest
+                            are references. Existing providers still receive
+                            the first image through the legacy single-image field.
   --daemon-url <url>
 
 Output: a single line of JSON: {"file": { name, size, kind, mime, ... }}
@@ -6584,15 +6605,48 @@ Common options:
     boolean: PROJECT_BOOLEAN_FLAGS,
   });
   const base = (await projectDaemonUrl(flags)).replace(/\/$/, '');
-  const workspaceHeaders =
-    workspaceHeadersFromExplicitFlags(flags) ?? {};
+  const explicitWorkspaceHeaders = workspaceHeadersFromExplicitFlags(flags);
+  const workspaceHeaders = explicitWorkspaceHeaders ?? {};
   switch (sub) {
     case 'list': {
-      const resp = await fetch(`${base}/api/projects`, {
-        headers: workspaceHeaders,
-      });
-      if (!resp.ok) return structuredHttpFailure(resp);
-      const data = await resp.json();
+      // After 0.18.0's workspace isolation, GET /api/projects is the NO-SCOPE
+      // catalog: it only returns projects that were never adopted into a
+      // workspace. Every project `od project import-folder` creates is
+      // immediately workspace-bound, so a headerless `od project list` shows
+      // an empty list while the UI keeps listing them (#6679). #6595 fixed
+      // this for the MCP bridge by resolving the signed-in workspace once
+      // and routing to GET /api/workspaces/:id/projects; mirror that here.
+      // BOTH the implicit signed-in path AND an explicit
+      // --workspace/--workspace-member pair route to the workspace-scoped
+      // catalog. The signed-out / non-vela / no-directory cases fall back to
+      // the original headerless catalog so `od project list` still returns
+      // unbound projects there. Passing --workspace to /api/projects does
+      // NOT scope it (#6679 repro), so the explicit path needs the same
+      // workspace-scoped endpoint as the implicit path.
+      let listResp: any = null;
+      let scopeHeaders: Record<string, string> = {};
+      if (explicitWorkspaceHeaders) {
+        const workspaceId = String(flags.workspace).trim();
+        scopeHeaders = explicitWorkspaceHeaders;
+        listResp = await fetch(
+          `${base}/api/workspaces/${encodeURIComponent(workspaceId)}/projects`,
+          { headers: scopeHeaders },
+        );
+      } else {
+        const ctx = await resolveMcpWorkspaceContext(base);
+        if (ctx) {
+          scopeHeaders = ctx.headers;
+          listResp = await fetch(
+            `${base}/api/workspaces/${encodeURIComponent(ctx.workspaceId)}/projects`,
+            { headers: scopeHeaders },
+          );
+        }
+      }
+      if (!listResp) {
+        listResp = await fetch(`${base}/api/projects`, { headers: workspaceHeaders });
+      }
+      if (!listResp.ok) return structuredHttpFailure(listResp);
+      const data = await listResp.json();
       if (flags.json) return process.stdout.write(JSON.stringify(data, null, 2) + '\n');
       const projects = data?.projects ?? [];
       if (projects.length === 0) {

@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
@@ -11,9 +12,17 @@ import { describe, expect, it } from "vitest";
 
 import { T } from "@/timeouts";
 
-import { uiP0CiMatrix, uiP0Groups } from "../lib/playwright/suites.ts";
+import {
+  uiP0CiMatrix,
+  uiP0Groups,
+  validatePlaywrightSuiteTopology,
+} from "../lib/playwright/suites.ts";
 
 const execFileAsync = promisify(execFile);
+const launchEnv = { ...process.env };
+const launchPath = launchEnv.PATH ?? launchEnv.Path ?? "";
+const nodeBinDir = dirname(process.execPath);
+const jqBin = process.platform !== "win32" && existsSync("/usr/bin/jq") ? "/usr/bin/jq" : "jq";
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(e2eRoot);
 const ciWorkflowPath = join(workspaceRoot, ".github", "workflows", "ci.yml");
@@ -30,6 +39,13 @@ const playwrightConfigPath = join(e2eRoot, "playwright.config.ts");
 const commentWorkflowPath = join(workspaceRoot, ".github", "workflows", "comment.atom.yml");
 const autofixWorkflowPath = join(workspaceRoot, ".github", "workflows", "autofix.atom.yml");
 const reportWorkflowPath = join(workspaceRoot, ".github", "workflows", "report.atom.yml");
+const contributorMaintainerCheckWorkflowPath = join(
+  workspaceRoot,
+  ".github",
+  "workflows",
+  "contributor-maintainer-check.yml",
+);
+const prAuthorInactivityWorkflowPath = join(workspaceRoot, ".github", "workflows", "pr-author-inactivity.yml");
 const rerunWorkflowPath = join(workspaceRoot, ".github", "workflows", "rerun.atom.yml");
 const rerunInfraCancelScriptPath = join(workspaceRoot, ".github", "scripts", "rerun_infra_cancel.py");
 const bakePluginPreviewsWorkflowPath = join(workspaceRoot, ".github", "workflows", "bake-plugin-previews.yml");
@@ -53,9 +69,22 @@ const bakePreviewsReleaseWorkflowPath = join(
 const finalizeReleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "finalize-release.yml");
 const handoffScriptPath = join(workspaceRoot, ".github", "scripts", "handoff.py");
 const releaseBetaWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-beta.yml");
+const dailyBetaRecoveryScriptPath = join(
+  workspaceRoot,
+  ".github",
+  "scripts",
+  "release",
+  "resolve-daily-beta-recovery.ts",
+);
 const releaseBetaSelfHostedWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-beta-s.yml");
 const releasePreviewWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-preview.yml");
 const releasePrereleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-prerelease.yml");
+const mainPrereleaseWinSmokeWorkflowPath = join(
+  workspaceRoot,
+  ".github",
+  "workflows",
+  "main-prerelease-win-smoke.yml",
+);
 const releaseStableWorkflowPath = join(workspaceRoot, ".github", "workflows", "release-stable.yml");
 const releaseStableNotesScriptPath = join(workspaceRoot, ".github", "scripts", "release", "github", "stable-notes.sh");
 const releasePreviewScriptPath = join(workspaceRoot, "tools", "release", "src", "metadata", "prepare-preview.ts");
@@ -65,8 +94,10 @@ const packagedPackageJsonPath = join(workspaceRoot, "apps", "packaged", "package
 const scopesScriptPath = join(workspaceRoot, "scripts", "scopes.ts");
 const runnersScriptPath = join(workspaceRoot, ".github", "scripts", "runners.py");
 const notifyDailyFeishuWorkflowPath = join(workspaceRoot, ".github", "workflows", "notify-daily-feishu.yml");
+const notifyReleaseFeishuWorkflowPath = join(workspaceRoot, ".github", "workflows", "notify-release-feishu.yml");
 const cutReleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "cut-release.yml");
 const cutPatchReleaseWorkflowPath = join(workspaceRoot, ".github", "workflows", "cut-patch-release.yml");
+const feishuCardScriptPath = join(workspaceRoot, "tools", "release", "src", "notifications", "feishu.ts");
 const feishuNoticeScriptPath = join(workspaceRoot, "tools", "release", "src", "notifications", "feishu-notice.ts");
 const landingPageDailyFeishuWorkflowPath = join(workspaceRoot, ".github", "workflows", "landing-page-daily-feishu.yml");
 const landingPageCiWorkflowPath = join(workspaceRoot, ".github", "workflows", "landing-page-ci.yml");
@@ -91,6 +122,19 @@ const releaseBetaPlatformPublishScriptPath = join(
   "storage",
   "publish-platform.ts",
 );
+
+function workflowFixtureEnv(
+  overrides: Record<string, string>,
+  executableDir?: string,
+): NodeJS.ProcessEnv {
+  const childPath = [executableDir, nodeBinDir, launchPath].filter(Boolean).join(delimiter);
+  return {
+    ...launchEnv,
+    ...overrides,
+    Path: childPath,
+    PATH: childPath,
+  };
+}
 
 function sectionBetween(content: string, start: string, end: string): string {
   const startIndex = content.indexOf(start);
@@ -153,7 +197,7 @@ function extractValidateGateJqPrograms(workflow: string): { failures: string; re
   const needsCheck = sectionBetween(
     validate,
     "      - name: Check workspace validation jobs",
-    "      - name: Block merge while the needs-validation label is present",
+    "      - name: Block merge while a merge-blocking label is present",
   );
   const programs = [...needsCheck.matchAll(/jq -r '([\s\S]*?)'/g)].map((match) => match[1] ?? "");
   expect(programs).toHaveLength(2);
@@ -162,7 +206,7 @@ function extractValidateGateJqPrograms(workflow: string): { failures: string; re
 
 function runValidateGateJq(program: string, needs: unknown): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = execFile("jq", ["-r", program], { encoding: "utf8" }, (error, stdout, stderr) => {
+    const child = execFile(jqBin, ["-r", program], { encoding: "utf8" }, (error, stdout, stderr) => {
       if (error) {
         reject(Object.assign(error, { stdout, stderr }));
         return;
@@ -231,19 +275,15 @@ if (process.argv.includes("--jq")) {
   await writeFile(ghCmdPath, `@echo off\r\n"${process.execPath}" "${ghPath}" %*\r\n`);
 
   try {
-    const fakePath = `${tempDir}${delimiter}${process.env.PATH ?? ""}`;
     const { stdout } = await execFileAsync(process.execPath, ["--experimental-strip-types", scopesScriptPath, "print"], {
       cwd: workspaceRoot,
-      env: {
-        ...process.env,
+      env: workflowFixtureEnv({
         GITHUB_EVENT_NAME: eventName,
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_REPOSITORY: "nexu-io/open-design",
         GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
         OPEN_DESIGN_GH_NODE_SCRIPT: ghPath,
-        Path: fakePath,
-        PATH: fakePath,
-      },
+      }, tempDir),
     });
     return JSON.parse(stdout) as Record<string, unknown>;
   } finally {
@@ -311,6 +351,52 @@ process.exit(1);
   );
   await chmod(ghPath, 0o755);
   await writeFile(ghCmdPath, `@echo off\r\n"${process.execPath}" "%~dp0gh" %*\r\n`);
+}
+
+async function renderFeishuBuildCard(env: Record<string, string>): Promise<Record<string, unknown>> {
+  let payload: Record<string, unknown> | undefined;
+  const server = createServer((request, response) => {
+    void (async () => {
+      let raw = "";
+      for await (const chunk of request) raw += chunk.toString();
+      payload = JSON.parse(raw) as Record<string, unknown>;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ code: 0 }));
+    })();
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  const address = server.address();
+  if (address == null || typeof address === "string") {
+    throw new Error("Feishu card fixture did not bind to a TCP port");
+  }
+
+  try {
+    await execFileAsync(process.execPath, ["--experimental-strip-types", feishuCardScriptPath], {
+      cwd: workspaceRoot,
+      env: {
+        ...process.env,
+        BUILD_STATE: "success",
+        CHANNEL_LABEL: "Prerelease",
+        FEISHU_WEBHOOK: `http://127.0.0.1:${address.port}`,
+        VERSION: "0.19.0-prerelease.1",
+        ...env,
+      },
+    });
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error == null ? resolve() : reject(error)));
+    });
+  }
+
+  if (payload == null) throw new Error("Feishu card fixture received no payload");
+  return payload;
 }
 
 describe("packaged smoke workflow", () => {
@@ -462,7 +548,7 @@ describe("packaged smoke workflow", () => {
     expect(ciWorkflow).toContain("<!-- merge-queue-needs-validation -->");
     expect(ciWorkflow).toContain("emit_ejection_notice");
     expect(ciWorkflow).toContain(
-      "if: ${{ failure() && steps.needs_validation_gate.outputs.comment_created == 'true' }}",
+      "if: ${{ failure() && steps.merge_blocking_label_gate.outputs.comment_created == 'true' }}",
     );
 
     // Consumer: a merge_group run's head_sha is the queue's synthetic merge commit, so the atom
@@ -471,6 +557,35 @@ describe("packaged smoke workflow", () => {
     expect(commentWorkflow).toContain('"$RUN_EVENT" = "merge_group"');
     expect(commentWorkflow).toContain('"$artifact_run_id" != "$RUN_ID"');
     expect(commentWorkflow).toContain('[ "$RUN_EVENT" != "merge_group" ] && [ "$current_base" != "$base_sha" ]');
+  });
+
+  it("[P1] routes configured contributors into an independent maintainer merge block", async () => {
+    const [routingWorkflow, ciWorkflow, inactivityWorkflow] = await Promise.all([
+      readFile(contributorMaintainerCheckWorkflowPath, "utf8"),
+      readFile(ciWorkflowPath, "utf8"),
+      readFile(prAuthorInactivityWorkflowPath, "utf8"),
+    ]);
+    const trigger = sectionBetween(routingWorkflow, "on:", "\npermissions:");
+
+    expect(trigger).toContain("pull_request_target:");
+    expect(trigger).toContain("types: [opened, reopened, synchronize]");
+    expect(trigger).not.toContain("unlabeled");
+    expect(routingWorkflow).toContain("permissions:\n  issues: write");
+    expect(routingWorkflow).toContain("actions/github-script@v8");
+    expect(routingWorkflow).toContain("secrets.NEEDS_MAINTAINER_CHECK_USER_IDS");
+    expect(routingWorkflow).toContain("rawIds ? JSON.parse(rawIds) : []");
+    expect(routingWorkflow).toContain("Number.isSafeInteger(id) && id > 0");
+    expect(routingWorkflow).toContain("context.payload.pull_request?.user?.id");
+    expect(routingWorkflow).toContain("configuredIds.includes(authorId)");
+    expect(routingWorkflow).toContain("github.rest.issues.addLabels");
+    expect(routingWorkflow).toContain("labels: ['needs-maintainer-check']");
+    expect(routingWorkflow).not.toContain("actions/checkout");
+
+    expect(ciWorkflow).toContain("Block merge while a merge-blocking label is present");
+    expect(ciWorkflow).toContain("grep -qx 'needs-maintainer-check'");
+    expect(ciWorkflow).toContain("<!-- merge-queue-needs-maintainer-check -->");
+    expect(ciWorkflow).toContain("needs-maintainer-check-pr-$pr");
+    expect(inactivityWorkflow).toContain("'needs-maintainer-check'");
   });
 
   it("[P2] gates the backport auto-merge follow-up as a trusted workflow_run consumer", async () => {
@@ -644,16 +759,14 @@ process.stdin.on("end", () => {
       try {
         await execFileAsync("bash", ["-c", script], {
           cwd: dir,
-          env: {
-            ...process.env,
+          env: workflowFixtureEnv({
             EVENT: args.event,
             INPUT_TAG: args.inputTag ?? "",
             GITHUB_OUTPUT: outputPath,
-            PATH: `${dir}${delimiter}${process.env.PATH ?? ""}`,
             FAKE_GH_LOG: ghLogPath,
             FAKE_GH_STATE: args.state ?? "",
             FAKE_GH_EXIT: args.ghExit ? "1" : "0",
-          },
+          }, dir),
         });
         const [rawOutput, rawGhArgs] = await Promise.all([
           readFile(outputPath, "utf8").catch(() => ""),
@@ -737,7 +850,7 @@ process.stdin.on("end", () => {
 
       await execFileAsync("bash", ["-c", script], {
         cwd: dir,
-        env: { ...process.env, NEXT: "0.12.1", GITHUB_OUTPUT: outputPath },
+        env: workflowFixtureEnv({ NEXT: "0.12.1", GITHUB_OUTPUT: outputPath }),
       });
 
       await expect(readFile(outputPath, "utf8")).resolves.toContain("changed=true");
@@ -776,7 +889,7 @@ process.stdin.on("end", () => {
 
       await execFileAsync("bash", ["-c", script], {
         cwd: dir,
-        env: { ...process.env, NEXT: "0.12.1", GITHUB_OUTPUT: outputPath },
+        env: workflowFixtureEnv({ NEXT: "0.12.1", GITHUB_OUTPUT: outputPath }),
       });
 
       await expect(readFile(outputPath, "utf8")).resolves.toContain("changed=false");
@@ -1014,7 +1127,7 @@ process.stdin.on("end", () => {
 
   it("[P2] closes packaged-leaf coverage without duplicating the broad E2E lane", async () => {
     const workflow = await readFile(ciWorkflowPath, "utf8");
-    const workspaceUnit = sectionBetween(workflow, "  workspace_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const workspaceUnit = sectionBetween(workflow, "  workspace_unit_tests:", "  daemon_unit_tests:");
 
     expect(workspaceUnit).toContain(`if [ "\${{ needs.scopes.outputs.tools_pack_tests_required }}" = "true" ]; then
             pnpm --filter @open-design/desktop build
@@ -1025,6 +1138,19 @@ process.stdin.on("end", () => {
               pnpm --filter @open-design/e2e test tests/packaged-launcher-update-loop.test.ts
             fi
           fi`);
+  });
+
+  it("[P1] runs the complete daemon suite in four required shards", async () => {
+    const workflow = await readFile(ciWorkflowPath, "utf8");
+    const daemonTests = sectionBetween(workflow, "  daemon_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const validate = sectionBetween(workflow, "  validate:", "  runtime_summary:");
+
+    expect(daemonTests).toContain("if: ${{ needs.scopes.outputs.daemon_tests_required == 'true' }}");
+    expect(daemonTests).toContain("fail-fast: false");
+    expect(daemonTests).toContain("shard: [1, 2, 3, 4]");
+    expect(daemonTests).toContain("pnpm --filter @open-design/daemon test --shard=${{ matrix.shard }}/4");
+    expect(validate).toContain("- daemon_unit_tests");
+    expect(validate).toContain('when($out.daemon_tests_required == "true"; ["daemon_unit_tests"])');
   });
 
   it("[P2] skips the critical fallback for pure packaged-leaf changes and stays fail-closed elsewhere", async () => {
@@ -1180,7 +1306,8 @@ process.stdin.on("end", () => {
     const runners = sectionBetween(workflow, "  runners:", "  scopes:");
     const scopes = sectionBetween(workflow, "  scopes:", "  static_gate:");
     const staticGate = sectionBetween(workflow, "  static_gate:", "  preflight:");
-    const workspaceUnitTests = sectionBetween(workflow, "  workspace_unit_tests:", "  windows_tools_pack_payload_tests:");
+    const workspaceUnitTests = sectionBetween(workflow, "  workspace_unit_tests:", "  daemon_unit_tests:");
+    const daemonUnitTests = sectionBetween(workflow, "  daemon_unit_tests:", "  windows_tools_pack_payload_tests:");
     const webWorkspaceTests = sectionBetween(workflow, "  web_workspace_tests:", "  e2e_vitest:");
     const e2eVitest = sectionBetween(workflow, "  e2e_vitest:", "  playwright_critical:");
     const preflight = sectionBetween(workflow, "  preflight:", "  workspace_unit_tests:");
@@ -1198,6 +1325,8 @@ process.stdin.on("end", () => {
     expect(staticGate).toContain("fromJSON(needs.runners.outputs.runs_on).control");
     expect(workspaceUnitTests).toContain("fromJSON(needs.runners.outputs.runs_on).workspace_unit");
     expect(workspaceUnitTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).workspace_unit)");
+    expect(daemonUnitTests).toContain("fromJSON(needs.runners.outputs.runs_on).workspace_unit");
+    expect(daemonUnitTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).workspace_unit)");
     expect(webWorkspaceTests).toContain("fromJSON(needs.runners.outputs.runs_on).js_hot");
     expect(webWorkspaceTests).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).js_hot)");
     expect(webWorkspaceTests).not.toContain('"od-persistent-ci"');
@@ -1214,7 +1343,11 @@ process.stdin.on("end", () => {
     expect(preflight).toContain("fromJSON(needs.runners.outputs.runs_on).general_medium");
     expect(preflight).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).general_medium)");
     expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0");
-    expect(uiP0).toContain("toJSON(fromJSON(needs.runners.outputs.runs_on).ui_p0)");
+    expect(uiP0).toContain("fromJSON(needs.runners.outputs.runs_on).ui_p0_heavy");
+    expect(uiP0).toContain("matrix.shard == 'project-collab'");
+    expect(uiP0).toContain(
+      "toJSON(matrix.shard == 'project-collab' && fromJSON(needs.runners.outputs.runs_on).ui_p0_heavy || fromJSON(needs.runners.outputs.runs_on).ui_p0)",
+    );
     expect(uiP0).toContain("include: ${{ fromJSON(needs.scopes.outputs.ui_p0_matrix) }}");
     expect(uiP0CiMatrix.map((entry) => entry.name)).toEqual([
       "entry-settings",
@@ -1253,6 +1386,7 @@ process.stdin.on("end", () => {
       grep: String.raw`\[P0\]`,
       files: ["ui/app-restoration.test.ts", "ui/critical-smoke.test.ts"],
     });
+    expect(uiP0Groups["entry-settings"].files).toContain("ui/home-hero-rail.test.ts");
     expect(workflow).not.toContain("  ui_p0_smoke:");
     expect(uiP0).toContain("run-ui-group critical-extras");
     expect(uiP0).toContain("Preserve project-runtime domain artifact");
@@ -1280,6 +1414,34 @@ process.stdin.on("end", () => {
     expect(workflow).not.toContain("needs.runners.outputs.contabo_control");
     expect(workflow).not.toContain("needs.runners.outputs.hosted_or_blacksmith");
     expect(workflow).not.toContain("needs.runners.outputs.blacksmith_default");
+  });
+
+  it.each([
+    {
+      name: "workspace runner assertions",
+      workflowPath: ciWorkflowPath,
+      jobStart: "  workspace_unit_tests:",
+      jobEnd: "  daemon_unit_tests:",
+      marker: "fromJSON(needs.runners.outputs.runs_on).workspace_unit",
+    },
+    {
+      name: "Functional E2E commit pin",
+      workflowPath: releasePrereleaseWorkflowPath,
+      jobStart: "  functional_e2e:",
+      jobEnd: "  e2e_vitest:",
+      marker: "ref: ${{ needs.metadata.outputs.commit }}",
+    },
+  ])("[P1] keeps $name bounded to its owning job", async ({
+    workflowPath,
+    jobStart,
+    jobEnd,
+    marker,
+  }) => {
+    const workflow = await readFile(workflowPath, "utf8");
+    const owningJob = sectionBetween(workflow, jobStart, jobEnd);
+    const mutated = workflow.replace(owningJob, owningJob.replaceAll(marker, "regressed-marker"));
+
+    expect(sectionBetween(mutated, jobStart, jobEnd)).not.toContain(marker);
   });
 
   it("[P2] caps Playwright concurrency independently from build concurrency", async () => {
@@ -1318,23 +1480,33 @@ process.stdin.on("end", () => {
     expect(staticGate).toContain("run: actionlint -color");
   });
 
-  it("[P2] keeps visual ownership and generic full UI sharding explicit", async () => {
+  it("[P2] keeps visual ownership and reusable full UI sharding explicit", async () => {
     const playwrightConfig = await readFile(playwrightConfigPath, "utf8");
     const benchmarkWorkflow = await readFile(uiExtendedMainWorkflowPath, "utf8");
+    const extendedP0 = sectionBetween(benchmarkWorkflow, "  ui_p0:", "  ui_extended:");
+    const extendedP0Matrix = sectionBetween(extendedP0, "        include:", "\n    steps:");
+    const extendedP0Names = [...extendedP0Matrix.matchAll(/^\s+- name: (.+)$/gm)].map(
+      ([, name]) => name,
+    );
     const fullUi = benchmarkWorkflow.slice(benchmarkWorkflow.indexOf("  ui_full:"));
     const fullUiFiles = [...fullUi.matchAll(/ui\/[a-z0-9-]+\.test\.ts/g)]
       .map(([file]) => file)
       .sort();
 
     expect(playwrightConfig).toContain("testIgnore: 'visual-*.test.ts'");
-    expect(benchmarkWorkflow).not.toContain("\n  schedule:");
+    expect(benchmarkWorkflow).toContain("  workflow_call:");
+    expect(benchmarkWorkflow).toContain('description: "Exact git ref to validate. Prerelease passes its resolved build commit."');
+    expect(benchmarkWorkflow).toContain("ref: ${{ inputs.ref || github.sha }}");
+    expect(benchmarkWorkflow).not.toContain("  schedule:");
+    expect(benchmarkWorkflow).not.toContain("github.event_name == 'schedule'");
     expect(benchmarkWorkflow).not.toContain("layout:");
     expect(benchmarkWorkflow).toContain("run-ui-group critical-extras");
     expect(benchmarkWorkflow).toContain("Preserve project-runtime domain artifact");
     expect(benchmarkWorkflow).toContain("--grep-invert '@merge-extra'");
-    expect(benchmarkWorkflow).toContain("name: project-workspace");
+    expect(extendedP0Names).toEqual(uiP0CiMatrix.map((entry) => entry.name));
     expect(benchmarkWorkflow).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_p0");
     expect(fullUi).toContain("fromJSON(needs.p0_runners.outputs.runs_on).ui_hot");
+    expect(fullUi).toContain("inputs.suite == 'full'");
     expect(fullUi).toContain("shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]");
     expect(fullUi).toContain('OD_PLAYWRIGHT_FULLY_PARALLEL: "1"');
     expect(fullUi).not.toContain("OD_PLAYWRIGHT_WORKERS");
@@ -1344,6 +1516,84 @@ process.stdin.on("end", () => {
     expect(fullUi).not.toContain("matrix.files");
     expect(fullUi).not.toContain("--grep");
     expect(fullUiFiles).toEqual([]);
+  });
+
+  it("[P1] rejects unsupported reusable Functional E2E suite values before running suites", async () => {
+    const workflow = await readFile(uiExtendedMainWorkflowPath, "utf8");
+    const validation = sectionBetween(workflow, "  validate_inputs:", "  p0_runners:");
+    const p0Runners = sectionBetween(workflow, "  p0_runners:", "  ui_p0:");
+    const uiP0 = sectionBetween(workflow, "  ui_p0:", "  ui_extended:");
+    const uiP1 = sectionBetween(workflow, "  ui_extended:", "  ui_full:");
+    const uiFull = workflow.slice(workflow.indexOf("  ui_full:"));
+
+    expect(validation).toContain('case "$SUITE" in');
+    expect(validation).toContain("p0|p0p1|full) ;;");
+    expect(validation).toContain("Unsupported suite:");
+    expect(validation).toContain("exit 1");
+    expect(p0Runners).toContain("needs: [validate_inputs]");
+    expect(uiP0).toContain("needs: [validate_inputs, p0_runners]");
+    expect(uiP1).toContain("needs: [validate_inputs]");
+    expect(uiFull).toContain("needs: [validate_inputs, p0_runners]");
+  });
+
+  it("[P1] gates prerelease packaging on full Functional E2E at the resolved build commit", async () => {
+    const [prerelease, functionalE2e] = await Promise.all([
+      readFile(releasePrereleaseWorkflowPath, "utf8"),
+      readFile(uiExtendedMainWorkflowPath, "utf8"),
+    ]);
+
+    const gate = sectionBetween(prerelease, "  functional_e2e:", "  e2e_vitest:");
+    expect(gate).toContain("needs: metadata");
+    expect(gate).toContain("uses: ./.github/workflows/ui-extended-main.yml");
+    expect(gate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    expect(gate).toContain("suite: full");
+
+    const e2eVitestGate = sectionBetween(prerelease, "  e2e_vitest:", "  daemon_unit_tests:");
+    expect(e2eVitestGate).toContain("needs: metadata");
+    expect(e2eVitestGate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    expect(e2eVitestGate).toContain("playwright install --with-deps chromium");
+    expect(e2eVitestGate).toContain("pnpm --filter @open-design/e2e test");
+
+    const daemonGate = sectionBetween(prerelease, "  daemon_unit_tests:", "  verify:");
+    expect(daemonGate).toContain("shard: [1, 2, 3, 4]");
+    expect(daemonGate).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    expect(daemonGate).toContain("pnpm --filter @open-design/daemon test --shard=${{ matrix.shard }}/4");
+
+    expect(functionalE2e).toContain("workflow_call:");
+    expect(functionalE2e).not.toContain("schedule:");
+    expect(functionalE2e).toContain("ref: ${{ inputs.ref || github.sha }}");
+
+    for (const [start, end] of [
+      ["  build_mac:", "  build_mac_intel:"],
+      ["  build_mac_intel:", "  build_win:"],
+      ["  build_win:", "  build_linux:"],
+      ["  build_linux:", "  publish:"],
+    ] as const) {
+      const buildJob = sectionBetween(prerelease, start, end);
+      expect(buildJob).toContain("needs: [metadata, functional_e2e, e2e_vitest, daemon_unit_tests, verify]");
+      expect(buildJob).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+    }
+
+    const publish = sectionBetween(prerelease, "  publish:", "  cleanup_partial_release_assets:");
+    expect(publish).toContain("- functional_e2e");
+    expect(publish).toContain("- e2e_vitest");
+    expect(publish).toContain("- daemon_unit_tests");
+    expect(publish).toContain("needs.functional_e2e.result == 'success'");
+    expect(publish).toContain("needs.e2e_vitest.result == 'success'");
+    expect(publish).toContain("needs.daemon_unit_tests.result == 'success'");
+    expect(publish).toContain("ref: ${{ needs.metadata.outputs.commit }}");
+  });
+
+  it("[P2] rejects duplicate file assignments across UI P0 shards", () => {
+    const files = uiP0Groups["workspace-restoration"].files as unknown as string[];
+    files.push("ui/app.test.ts");
+    try {
+      expect(validatePlaywrightSuiteTopology()).toContain(
+        "UI P0 CI matrix covers ui/app.test.ts more than once",
+      );
+    } finally {
+      files.pop();
+    }
   });
 
   it("[P2] resolves CI runner profiles by mode", async () => {
@@ -1356,6 +1606,7 @@ process.stdin.on("end", () => {
       "js_hot",
       "ui_hot",
       "ui_p0",
+      "ui_p0_heavy",
       "visual_hot",
       "windows_tools",
       "workspace_unit",
@@ -1366,7 +1617,8 @@ process.stdin.on("end", () => {
     expect(defaultRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(defaultRunsOn.js_hot).toEqual(["nexu-runners-medium"]);
     expect(defaultRunsOn.ui_hot).toEqual(["nexu-runners-large"]);
-    expect(defaultRunsOn.ui_p0).toEqual(["nexu-runners-xlarge"]);
+    expect(defaultRunsOn.ui_p0).toEqual(["nexu-runners-medium"]);
+    expect(defaultRunsOn.ui_p0_heavy).toEqual(["nexu-runners-xlarge"]);
     expect(defaultRunsOn.visual_hot).toEqual(["nexu-runners-large"]);
     expect(defaultProfiles).not.toHaveProperty("contabo_control");
     expect(defaultProfiles).not.toHaveProperty("hosted_or_blacksmith");
@@ -1381,7 +1633,8 @@ process.stdin.on("end", () => {
     expect(performanceRunsOn.windows_tools).toEqual(["windows-latest"]);
     expect(performanceRunsOn.js_hot).toEqual(["nexu-runners-medium"]);
     expect(performanceRunsOn.ui_hot).toEqual(["nexu-runners-large"]);
-    expect(performanceRunsOn.ui_p0).toEqual(["nexu-runners-xlarge"]);
+    expect(performanceRunsOn.ui_p0).toEqual(["nexu-runners-medium"]);
+    expect(performanceRunsOn.ui_p0_heavy).toEqual(["nexu-runners-xlarge"]);
     expect(performanceRunsOn.visual_hot).toEqual(["nexu-runners-large"]);
 
     const blacksmithProfiles = await runRunners("blacksmith");
@@ -1394,6 +1647,7 @@ process.stdin.on("end", () => {
     expect(blacksmithRunsOn.js_hot).toEqual(["blacksmith-4vcpu-ubuntu-2404"]);
     expect(blacksmithRunsOn.ui_hot).toEqual(["blacksmith-8vcpu-ubuntu-2404"]);
     expect(blacksmithRunsOn.ui_p0).toEqual(["blacksmith-8vcpu-ubuntu-2404"]);
+    expect(blacksmithRunsOn.ui_p0_heavy).toEqual(["blacksmith-8vcpu-ubuntu-2404"]);
     expect(blacksmithRunsOn.visual_hot).toEqual(["blacksmith-8vcpu-ubuntu-2404"]);
 
     const economicProfiles = await runRunners("economic");
@@ -1406,6 +1660,7 @@ process.stdin.on("end", () => {
     expect(economicRunsOn.js_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.ui_hot).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.ui_p0).toEqual(["ubuntu-24.04"]);
+    expect(economicRunsOn.ui_p0_heavy).toEqual(["ubuntu-24.04"]);
     expect(economicRunsOn.visual_hot).toEqual(["ubuntu-24.04"]);
 
     for (const invalidMode of ["Economic", " economic "]) {
@@ -1571,7 +1826,7 @@ process.stdin.on("end", () => {
     expect(releaseStableWorkflow).not.toMatch(/namespaces\/release-stable(?:-intel|-win|-linux)?\b/);
 
     expectChannelWorkflowNamespaces(releasePreviewWorkflow, "preview", { hasLinuxSmoke: false });
-    expectChannelWorkflowNamespaces(releasePrereleaseWorkflow, "prerelease", { hasLinuxSmoke: false });
+    expectChannelWorkflowNamespaces(releasePrereleaseWorkflow, "prerelease", { hasLinuxSmoke: true });
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-win");
     expect(releaseBetaWorkflow).toContain("RELEASE_NAMESPACE: release-beta-x64");
@@ -1823,6 +2078,131 @@ process.stdin.on("end", () => {
     }
   });
 
+  it("[P1] lets the daily main build recover a shared beta advanced by a feature branch", async () => {
+    const packagedVersion = await readPackagedVersion();
+    const objects: Record<string, unknown> = {
+      "beta/latest/metadata.json": {
+        baseVersion: "0.19.0",
+        channel: "beta",
+        github: { branch: "feat/standalone-closure" },
+        releaseNumber: 9,
+        releaseVersion: "0.19.0-beta.9",
+      },
+    };
+    const fixture = await startStablePrereleaseMetadataServer(objects);
+    const runnerTemp = await mkdtemp(join(tmpdir(), "od-release-beta-foreign-recovery-"));
+    const outputPath = join(runnerTemp, "outputs.txt");
+    const baseEnv = {
+      ...process.env,
+      BUILD_REF: "main",
+      GITHUB_OUTPUT: outputPath,
+      GITHUB_RUN_NUMBER: "4242",
+      NODE_TLS_REJECT_UNAUTHORIZED: "0",
+      OPEN_DESIGN_BETA_METADATA_URL: `${fixture.origin}/beta/latest/metadata.json`,
+      PACKAGED_VERSION: packagedVersion,
+    };
+
+    try {
+      const recovered = await execFileAsync(
+        process.execPath,
+        ["--experimental-strip-types", dailyBetaRecoveryScriptPath],
+        {
+          cwd: workspaceRoot,
+          env: baseEnv,
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      expect(recovered.stdout).toContain(
+        "[daily-beta] recovering shared beta from foreign branch feat/standalone-closure",
+      );
+      const recoveryOutputs = await readFile(outputPath, "utf8");
+      expect(recoveryOutputs).toContain("force=true");
+      expect(recoveryOutputs).toContain("promote=false");
+      expect(recoveryOutputs).toContain(`release_version=${packagedVersion}-beta.4242`);
+
+      await writeFile(outputPath, "", "utf8");
+      const featureBuild = await execFileAsync(
+        process.execPath,
+        ["--experimental-strip-types", dailyBetaRecoveryScriptPath],
+        {
+          cwd: workspaceRoot,
+          env: { ...baseEnv, BUILD_REF: "feat/standalone-closure" },
+          maxBuffer: 1024 * 1024,
+        },
+      );
+      expect(featureBuild.stdout).toContain("[daily-beta] recovery disabled for non-main ref");
+      const featureOutputs = await readFile(outputPath, "utf8");
+      expect(featureOutputs).toContain("force=false");
+      expect(featureOutputs).toContain("promote=true");
+    } finally {
+      await fixture.close();
+      await rm(runnerTemp, { force: true, recursive: true });
+    }
+  });
+
+  it("[P1] keeps shared beta publication main-owned while feature refs stay dogfood-only", async () => {
+    const [betaWorkflow, dailyWorkflow] = await Promise.all([
+      readFile(releaseBetaWorkflowPath, "utf8"),
+      readFile(notifyDailyFeishuWorkflowPath, "utf8"),
+    ]);
+    const metadataJob = sectionBetween(betaWorkflow, "  metadata:", "  build_mac_arm64:");
+    const publisherGuard = sectionBetween(
+      metadataJob,
+      "- name: Validate shared beta publisher",
+      "- name: Capture previous beta commit",
+    );
+
+    expect(betaWorkflow).toContain(
+      "RELEASE_BRANCH: ${{ inputs.ref != '' && inputs.ref || github.ref_name }}",
+    );
+    expect(publisherGuard).toContain("if: ${{ inputs.publish }}");
+    expect(publisherGuard).toContain('built_sha="$(git rev-parse HEAD)"');
+    expect(publisherGuard).toContain(
+      'main_sha="$(git ls-remote origin refs/heads/main | awk \'{print $1}\')"',
+    );
+    expect(publisherGuard).toContain('[ "$built_sha" != "$main_sha" ]');
+    expect(publisherGuard).toContain("publish=false");
+    expect(betaWorkflow).not.toContain("recover_foreign_beta");
+    expect(betaWorkflow).not.toContain("OPEN_DESIGN_RECOVER_FOREIGN_BETA");
+    expect(metadataJob).toContain("branch: ${{ steps.identity.outputs.branch }}");
+    expect(metadataJob).toContain("commit: ${{ steps.identity.outputs.commit }}");
+    expect(metadataJob).toContain("promote: ${{ inputs.promote }}");
+    expect(betaWorkflow).toContain("value: ${{ jobs.build_mac_arm64.outputs.smoke_result }}");
+    expect(betaWorkflow).toContain("value: ${{ jobs.build_win_x64.outputs.smoke_result }}");
+    expect(betaWorkflow).toContain(
+      "value: ${{ jobs.publish.outputs.mac_arm64_url || jobs.build_mac_arm64.outputs.mac_arm64_url }}",
+    );
+    expect(betaWorkflow).toContain(
+      "value: ${{ jobs.publish.outputs.win_x64_url || jobs.build_win_x64.outputs.win_x64_url }}",
+    );
+
+    const macJob = sectionBetween(betaWorkflow, "  build_mac_arm64:", "  build_mac_x64:");
+    expect(macJob).toContain("smoke_result: ${{ steps.mac_arm64_smoke.outcome }}");
+    expect(macJob).toContain("mac_arm64_url: ${{ steps.mac_arm64_platform_outputs.outputs.dmg_url }}");
+    expect(macJob).toContain("id: mac_arm64_smoke");
+    expect(macJob).toContain("continue-on-error: true");
+    expect(macJob).toContain("id: mac_arm64_platform_outputs");
+
+    const winJob = sectionBetween(betaWorkflow, "  build_win_x64:", "  build_linux_x64:");
+    expect(winJob).toContain("smoke_result: ${{ steps.win_x64_smoke.outcome }}");
+    expect(winJob).toContain("win_x64_url: ${{ steps.win_x64_platform_outputs.outputs.installer_url }}");
+    expect(winJob).toContain("id: win_x64_smoke");
+    expect(winJob).toContain("continue-on-error: true");
+    expect(winJob).toContain("id: win_x64_platform_outputs");
+
+    const publishJob = betaWorkflow.slice(betaWorkflow.indexOf("  publish:"));
+    expect(publishJob).toContain("inputs.promote");
+    expect(dailyWorkflow).toContain("resolve-daily-beta-recovery.ts");
+    expect(dailyWorkflow).toContain("force: ${{ needs.resolve.outputs.force == 'true' }}");
+    expect(dailyWorkflow).toContain("promote: ${{ needs.resolve.outputs.promote == 'true' }}");
+    expect(dailyWorkflow).toContain("release_version: ${{ needs.resolve.outputs.release_version }}");
+    expect(dailyWorkflow).toContain(
+      "MAC_ARM64_SMOKE_RESULT: ${{ needs.build.outputs.mac_arm64_smoke_result }}",
+    );
+    expect(dailyWorkflow).toContain("WIN_X64_SMOKE_RESULT: ${{ needs.build.outputs.win_x64_smoke_result }}");
+    expect(dailyWorkflow).toContain("RELEASE_STATE: ${{ needs.build.outputs.release_state }}");
+  });
+
   it("[P2] daily beta resolve defaults to main and preserves the ref override", async () => {
     // Beta is the daily R&D channel and must track the development tip (main).
     // Selecting the highest-semver release/vX.Y.Z branch stalls the build: once
@@ -1837,12 +2217,235 @@ process.stdin.on("end", () => {
     // builds main, and the workflow_dispatch override is still propagated.
     const workflow = await readFile(notifyDailyFeishuWorkflowPath, "utf8");
     const resolveJob = sectionBetween(workflow, "  resolve:", "\n  build:");
+    expect(resolveJob).toContain("force: ${{ steps.recovery.outputs.force }}");
+    expect(resolveJob).toContain("promote: ${{ steps.recovery.outputs.promote }}");
+    expect(resolveJob).toContain("release_version: ${{ steps.recovery.outputs.release_version }}");
     // Override path: workflow_dispatch ref is wired in and forwarded verbatim.
     expect(resolveJob).toContain("OVERRIDE_REF: ${{ inputs.ref }}");
     expect(resolveJob).toContain('echo "ref=$OVERRIDE_REF" >> "$GITHUB_OUTPUT"');
     // Default path: an empty input builds main, never a release branch.
     expect(resolveJob).toContain('echo "ref=main" >> "$GITHUB_OUTPUT"');
     expect(resolveJob).not.toContain("refs/heads/release/v*");
+
+    // Metadata failures happen before beta_version exists, so the normal
+    // download-card job is skipped. Keep a separate failure-only notice or a
+    // stale main version can fail silently every day without reaching smoke.
+    expect(workflow).toContain("  notify_failure:");
+    expect(workflow).toContain("if: ${{ always() && needs.build.result == 'failure' }}");
+    expect(workflow).toContain("tools/release/src/notifications/feishu-notice.ts");
+  });
+
+  it("[P1] skips the scheduled minor cut until the highest release branch is published stable", async () => {
+    const workflow = await readFile(cutReleaseWorkflowPath, "utf8");
+    const gate = sectionBetween(
+      workflow,
+      "- name: Check the current release line is published",
+      "- name: Bail out if the branch already exists",
+    );
+
+    expect(gate).toContain("GITHUB_EVENT_NAME: ${{ github.event_name }}");
+    expect(gate).toContain("LATEST_RELEASE: ${{ steps.ver.outputs.latest_release }}");
+    expect(gate).toContain('[ "$GITHUB_EVENT_NAME" != "schedule" ]');
+    expect(gate).toContain('gh release view "open-design-v$LATEST_RELEASE"');
+    expect(gate).toContain("--jq '(.isDraft or .isPrerelease) | not'");
+    expect(gate).toContain('echo "ready=false" >> "$GITHUB_OUTPUT"');
+    expect(gate).toContain('echo "ready=true" >> "$GITHUB_OUTPUT"');
+
+    for (const step of [
+      "Bail out if the branch already exists",
+      "Create branch + bump version + push",
+      "Create backport label",
+      "Notify Feishu that the branch was cut",
+    ]) {
+      expect(workflow).toContain(`- name: ${step}\n        if: steps.gate.outputs.ready == 'true'`);
+    }
+  });
+
+  it("[P1] keeps the metadata-independent prerelease Windows smoke advisory to release cuts", async () => {
+    const [canary, minorCut, patchCut] = await Promise.all([
+      readFile(mainPrereleaseWinSmokeWorkflowPath, "utf8"),
+      readFile(cutReleaseWorkflowPath, "utf8"),
+      readFile(cutPatchReleaseWorkflowPath, "utf8"),
+    ]);
+
+    const trigger = sectionBetween(canary, "on:", "\npermissions:");
+    expect(trigger).toContain("schedule:");
+    expect(trigger).toContain("workflow_dispatch:");
+    expect(trigger).toContain("workflow_call:");
+    expect(canary).toContain("ref: main");
+    expect(canary).not.toContain("inputs.ref");
+    expect(canary).toContain("runs-on: windows-latest");
+    expect(canary).toContain("OPEN_DESIGN_AMR_PROFILE: prod");
+    expect(canary).toContain("OD_VELA_WEB_URL: ${{ secrets.VELA_WEB_URL_PROD }}");
+    expect(canary).toContain("--namespace release-prerelease-canary-win");
+    expect(canary).toContain('OD_PACKAGED_E2E_RELEASE_CHANNEL: prerelease');
+    expect(canary).toContain('OD_PACKAGED_E2E_WIN_SMOKE_PROFILE: core');
+    expect(canary).toContain("pnpm exec tsx scripts/release-smoke.ts win specs/win.spec.ts");
+    expect(canary).toContain("tools-pack win validate-payload");
+    expect(canary).toContain("tools/release/src/notifications/feishu-notice.ts");
+
+    // This lane is a product canary, not a beta/prerelease publication. In
+    // particular, a stale main package version must not prevent Windows from
+    // reaching the packaged smoke as happened while main was 0.16.2 and stable
+    // had already advanced to 0.18.1.
+    expect(canary).not.toContain("tools-release prepare");
+    expect(canary).not.toContain("tools-release check-storage");
+    expect(canary).not.toContain("uses: ./.github/workflows/release-beta.yml");
+    expect(canary).not.toContain("uses: ./.github/workflows/release-prerelease.yml");
+
+    for (const [label, workflow] of [
+      ["cut-release", minorCut],
+      ["cut-patch-release", patchCut],
+    ] as const) {
+      const cutJob = workflow.slice(workflow.indexOf("  cut:"));
+      expect(workflow, label).not.toContain("prerelease_win_smoke");
+      expect(workflow, label).not.toContain("uses: ./.github/workflows/main-prerelease-win-smoke.yml");
+      expect(workflow, label).toContain("permissions:\n  contents: read");
+      expect(cutJob, label).not.toContain("needs:");
+      expect(cutJob, label).toContain("ref: main");
+    }
+
+    expect(canary).toContain("该 smoke 是独立质量信号，不阻塞 release cut 或 prerelease 打包 / 发布。");
+    expect(canary).not.toContain("release cut 会被阻止");
+  });
+
+  it("[P1] keeps prerelease smoke failures advisory and annotates the download card", async () => {
+    const [prerelease, notify, feishuCard] = await Promise.all([
+      readFile(releasePrereleaseWorkflowPath, "utf8"),
+      readFile(notifyReleaseFeishuWorkflowPath, "utf8"),
+      readFile(feishuCardScriptPath, "utf8"),
+    ]);
+
+    const workflowCall = sectionBetween(prerelease, "  workflow_call:", "permissions:");
+    expect(workflowCall).toContain("mac_arm64_smoke_result:");
+    expect(workflowCall).toContain("value: ${{ jobs.build_mac.outputs.smoke_result }}");
+    expect(workflowCall).toContain("win_x64_smoke_result:");
+    expect(workflowCall).toContain("value: ${{ jobs.build_win.outputs.smoke_result }}");
+
+    const macJob = sectionBetween(prerelease, "  build_mac:", "  build_mac_intel:");
+    const macSmoke = sectionBetween(
+      macJob,
+      "      - name: Smoke prerelease mac packaged runtime",
+      "      - name: Write mac_arm64 release report",
+    );
+    expect(macJob).toContain("outputs:\n      smoke_result: ${{ steps.mac_smoke.outcome }}");
+    expect(macSmoke).toContain("id: mac_smoke");
+    expect(macSmoke).toContain("continue-on-error: true");
+
+    const macX64Job = sectionBetween(prerelease, "  build_mac_intel:", "  build_win:");
+    const macX64Smoke = sectionBetween(
+      macX64Job,
+      "      - name: Smoke prerelease mac_x64 packaged runtime",
+      "      - name: Write mac_x64 release report",
+    );
+    expect(macX64Job).toContain("outputs:\n      smoke_result: ${{ steps.mac_x64_smoke.outcome }}");
+    expect(macX64Smoke).toContain("id: mac_x64_smoke");
+    expect(macX64Smoke).toContain("continue-on-error: true");
+    expect(macX64Smoke).toContain("pnpm exec tsx scripts/release-smoke.ts mac specs/mac.spec.ts");
+    expect(macX64Job).toContain("RELEASE_SMOKE_MODE: core");
+
+    const winJob = sectionBetween(prerelease, "  build_win:", "  build_linux:");
+    const winSmokeFixture = sectionBetween(
+      winJob,
+      "      - name: Build prerelease win_x64 update fixture",
+      "      - name: Smoke prerelease windows packaged runtime",
+    );
+    const winSmoke = sectionBetween(
+      winJob,
+      "      - name: Smoke prerelease windows packaged runtime",
+      "      - name: Write win_x64 release report",
+    );
+    expect(winJob).toContain("outputs:\n      smoke_result: ${{ steps.win_smoke.outcome }}");
+    expect(winSmokeFixture).toContain("continue-on-error: true");
+    expect(winSmoke).toContain("id: win_smoke");
+    expect(winSmoke).toContain("continue-on-error: true");
+    expect(winJob.indexOf("Smoke prerelease windows packaged runtime")).toBeLessThan(
+      winJob.indexOf("Publish windows prerelease platform"),
+    );
+
+    const linuxJob = sectionBetween(prerelease, "  build_linux:", "  publish:");
+    const linuxSmoke = sectionBetween(
+      linuxJob,
+      "      - name: Smoke prerelease linux AppImage runtime",
+      "      - name: Upload linux e2e spec report",
+    );
+    expect(linuxJob).toContain("outputs:\n      smoke_result: ${{ steps.linux_smoke.outcome }}");
+    expect(linuxSmoke).toContain("id: linux_smoke");
+    expect(linuxSmoke).toContain("continue-on-error: true");
+    expect(linuxSmoke).toContain('OD_PACKAGED_E2E_LINUX_APPIMAGE: "1"');
+    expect(linuxSmoke).toContain("xvfb-run -a pnpm test specs/linux.spec.ts");
+    expect(linuxJob.indexOf("Smoke prerelease linux AppImage runtime")).toBeLessThan(
+      linuxJob.indexOf("Publish linux prerelease platform"),
+    );
+
+    const notifyJob = notify.slice(notify.indexOf("  notify:"));
+    expect(notifyJob).toContain("MAC_ARM64_SMOKE_RESULT: ${{ needs.build.outputs.mac_arm64_smoke_result }}");
+    expect(notifyJob).toContain("WIN_X64_SMOKE_RESULT: ${{ needs.build.outputs.win_x64_smoke_result }}");
+    expect(notifyJob).toContain("MAC_ARM64_URL: ${{ needs.build.outputs.mac_arm64_url }}");
+    expect(notifyJob).toContain("WIN_URL: ${{ needs.build.outputs.win_url }}");
+    expect(notifyJob).toContain("tools/release/src/notifications/feishu.ts");
+    expect(notifyJob).not.toContain("tools/release/src/notifications/feishu-notice.ts");
+
+    expect(feishuCard).toContain('optional("MAC_ARM64_SMOKE_RESULT")');
+    expect(feishuCard).toContain('optional("WIN_X64_SMOKE_RESULT")');
+    expect(feishuCard).toContain("Windows x64 smoke 失败");
+    expect(feishuCard).toContain("macOS arm64 smoke 失败");
+    expect(feishuCard).toContain("产物已继续发布，可通过下方链接下载");
+    expect(feishuCard).toContain(
+      'template: smokeFailures.length > 0 || releaseState === "partial" ? "orange"',
+    );
+  });
+
+  it("[P1] keeps download actions on a prerelease card with a failed Windows smoke", async () => {
+    const payload = await renderFeishuBuildCard({
+      MAC_ARM64_SMOKE_RESULT: "success",
+      MAC_ARM64_URL: "https://releases.example/mac.dmg",
+      WIN_X64_SMOKE_RESULT: "failure",
+      WIN_URL: "https://releases.example/windows.exe",
+    });
+    const card = payload.card as {
+      elements: Array<{ actions?: Array<{ url?: string }>; text?: { content?: string } }>;
+      header: { template?: string; title?: { content?: string } };
+    };
+
+    expect(card.header).toMatchObject({
+      template: "orange",
+      title: { content: expect.stringContaining("Windows x64 smoke 失败") },
+    });
+    expect(card.elements.map((element) => element.text?.content).filter(Boolean)).toContain(
+      "**Smoke 告警**\n- Windows x64 smoke 失败\n\n产物已继续发布，可通过下方链接下载。",
+    );
+    expect(card.elements.flatMap((element) => element.actions ?? []).map((action) => action.url)).toEqual([
+      "https://releases.example/mac.dmg",
+      "https://releases.example/windows.exe",
+    ]);
+  });
+
+  it("[P1] keeps download actions on a partial beta card without claiming latest promotion", async () => {
+    const payload = await renderFeishuBuildCard({
+      CHANNEL_LABEL: "Beta",
+      MAC_ARM64_URL: "https://releases.example/beta-mac.dmg",
+      RELEASE_NOTE: "共享 beta/latest 版本高于 main，本次仅发布版本化快照。",
+      RELEASE_STATE: "partial",
+      VERSION: "0.18.2-beta.4242",
+      WIN_URL: "https://releases.example/beta-windows.exe",
+    });
+    const card = payload.card as {
+      elements: Array<{ actions?: Array<{ url?: string }>; text?: { content?: string } }>;
+      header: { template?: string; title?: { content?: string } };
+    };
+
+    expect(card.header).toMatchObject({
+      template: "orange",
+      title: { content: expect.stringContaining("未更新 Beta latest") },
+    });
+    expect(card.elements.map((element) => element.text?.content).filter(Boolean)).toContain(
+      "**渠道状态**\n产物已发布并可下载，但未更新 Beta latest。\n\n共享 beta/latest 版本高于 main，本次仅发布版本化快照。",
+    );
+    expect(card.elements.flatMap((element) => element.actions ?? []).map((action) => action.url)).toEqual([
+      "https://releases.example/beta-mac.dmg",
+      "https://releases.example/beta-windows.exe",
+    ]);
   });
 
   it("[P2] gates the Thursday patch cut on the Tuesday minor being published", async () => {
@@ -1851,7 +2454,7 @@ process.stdin.on("end", () => {
     //   1. It fires Thursday and bumps patch (not minor) from the highest release branch.
     //   2. It only cuts when this line's minor base X.Y.0 is a PUBLISHED stable
     //      GitHub Release (non-draft, non-prerelease) — otherwise it must NOT create
-    //      a branch or build; it posts a Feishu notice and stops.
+    //      a branch or launch the prerelease publication; it posts a notice and stops.
     //   3. The happy path still cuts from main and pushes with the App token, so the
     //      existing notify-release-feishu push trigger produces the prerelease + card.
     const [workflow, notice] = await Promise.all([
@@ -1891,7 +2494,8 @@ process.stdin.on("end", () => {
       expect(workflow).toContain(`- name: ${step}\n        if: steps.guard.outputs.published == 'true'`);
     }
 
-    // Happy path keeps cut-release's mechanics: cut from main, App-token push.
+    // Happy path keeps cut-release's mechanics: cut current main independently
+    // from the advisory Windows canary, then push with the App token.
     expect(workflow).toContain("ref: main");
     expect(workflow).toContain("token: ${{ steps.app.outputs.token }}");
     expect(workflow).toContain('git push origin "$BRANCH"');
@@ -2049,8 +2653,7 @@ process.stdin.on("end", () => {
       try {
         await execFileAsync("bash", [releaseStableNotesScriptPath], {
           cwd: workspaceRoot,
-          env: {
-            ...process.env,
+          env: workflowFixtureEnv({
             BRANCH_NAME: "release/v0.13.0",
             CLOUDFLARE_R2_RELEASES_PUBLIC_ORIGIN: envName === "CLOUDFLARE_R2_RELEASES_PUBLIC_ORIGIN" ? origin : "",
             GITHUB_OUTPUT: outputPath,
@@ -2062,7 +2665,7 @@ process.stdin.on("end", () => {
             RELEASE_VERSION: "0.13.0",
             RUNNER_TEMP: runnerTemp,
             VERSION_TAG: "open-design-v0.13.0",
-          },
+          }),
         });
 
         const outputs = parseGithubOutput(await readFile(outputPath, "utf8"));
@@ -2090,12 +2693,9 @@ process.stdin.on("end", () => {
     try {
       await mkdir(join(runnerTemp, "bin"), { recursive: true });
       await writeFakeGhBin(join(runnerTemp, "bin"), []);
-      const fakePath = `${join(runnerTemp, "bin")}${delimiter}${process.env.PATH ?? ""}`;
-
       const result = await execFileAsync(process.execPath, ["--experimental-strip-types", releaseStableScriptPath], {
         cwd: workspaceRoot,
-        env: {
-          ...process.env,
+        env: workflowFixtureEnv({
           GITHUB_REF_NAME: `release/v${baseVersion}`,
           GITHUB_REPOSITORY: "nexu-io/open-design",
           GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
@@ -2105,9 +2705,7 @@ process.stdin.on("end", () => {
           OPEN_DESIGN_RELEASES_PUBLIC_ORIGIN: fixture.origin,
           OPEN_DESIGN_GH_NODE_SCRIPT: join(runnerTemp, "bin", "gh"),
           OPEN_DESIGN_STABLE_PRERELEASE_VERSION: prereleaseVersion,
-          Path: fakePath,
-          PATH: fakePath,
-        },
+        }, join(runnerTemp, "bin")),
       });
 
       expect(result.stdout).toContain(`[release-stable] validated prerelease: ${prereleaseVersion}`);

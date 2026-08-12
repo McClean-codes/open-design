@@ -73,9 +73,12 @@ import {
   executionModeToTracking,
   projectKindFromMetadataToTracking,
   projectKindToTracking,
+  sessionModeToTracking,
 } from '@open-design/contracts/analytics';
 import type {
   TrackingArtifactKind,
+  TrackingConversationForkErrorCode,
+  TrackingConversationForkPoint,
   TrackingDesignSystemApplyTargetKind,
   TrackingDesignSystemOrigin,
   TrackingDesignSystemStatusValue,
@@ -85,6 +88,8 @@ import { useAnalytics } from '../analytics/provider';
 import {
   trackByokPreflightBlocked,
   trackComposerBarClick,
+  trackConversationForkClick,
+  trackConversationForkResult,
   trackDesignSystemApplyResult,
   trackDesignSystemEnrichClick,
   trackPageView,
@@ -126,6 +131,7 @@ import {
 } from '../runtime/chat-events';
 import type { RunFailureClassificationFields } from '../runtime/chat-events';
 import {
+  designDeliveryReconciliationStale,
   designDeliveryVerificationPending,
   isRetryableAssistantTerminalFailure,
   resolveDesignDeliveryOutcome,
@@ -386,6 +392,33 @@ export function mergeSavedPreviewComment(current: PreviewComment[], saved: Previ
 
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function conversationForkErrorCode(error: unknown): TrackingConversationForkErrorCode {
+  if (error instanceof ProjectConversationsHttpError) {
+    if (error.status === 400) return 'bad_request';
+    if (error.status === 401 || error.status === 403) return 'permission_denied';
+    if (error.status === 404) return 'fork_source_not_found';
+    if (error.status === 413) return 'payload_too_large';
+    if (error.status >= 500) return 'server_error';
+    return 'http_error';
+  }
+  if (error instanceof TypeError) return 'network_error';
+  return 'unknown_error';
+}
+
+function conversationForkPoint(
+  messages: ChatMessage[],
+  assistantMessageId: string,
+  forkIndex: number,
+): TrackingConversationForkPoint {
+  if (forkIndex < 0) return 'unknown';
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message?.role !== 'assistant') continue;
+    return message.id === assistantMessageId ? 'latest' : 'historical';
+  }
+  return 'unknown';
 }
 
 export async function listConversationsWithRetry(
@@ -1476,7 +1509,7 @@ function projectMediaVoiceSeed(
 // Carry the creation-time model pick into the conversation ONLY when it belongs
 // to the active BYOK provider. Guards against clobbering a user's Settings
 // default with a model from a different provider — e.g. a SenseAudio user whose
-// image project was created with the dialog's default `gpt-image-2` keeps their
+// image project was created with the dialog's default `vela/gpt-image-2` keeps their
 // configured SenseAudio model instead of being forced to the registry default.
 // AIHubMix's live (`aihubmix-` prefixed) ids resolve via mediaModelProviderId
 // without waiting on the async catalogue, so the AIHubMix path still seeds.
@@ -2159,7 +2192,29 @@ export function ProjectView({
   useEffect(() => {
     if (!streaming) setLiveToolInput((prev) => (Object.keys(prev).length ? {} : prev));
   }, [streaming]);
-  const [error, setError] = useState<string | null>(null);
+  const [paneError, setPaneError] = useState<{
+    message: string;
+    sourceAssistantId: string | null;
+  } | null>(null);
+  const error = paneError?.message ?? null;
+  const errorSourceAssistantId = paneError?.sourceAssistantId ?? null;
+  const setError = useCallback((next: SetStateAction<string | null>) => {
+    setPaneError((current) => {
+      const currentMessage = current?.message ?? null;
+      const message = typeof next === 'function' ? next(currentMessage) : next;
+      if (message == null) return null;
+      return {
+        message,
+        sourceAssistantId:
+          typeof next === 'function' && message === currentMessage
+            ? current?.sourceAssistantId ?? null
+            : null,
+      };
+    });
+  }, []);
+  const setRunError = useCallback((message: string, sourceAssistantId: string) => {
+    setPaneError({ message, sourceAssistantId });
+  }, []);
   const [artifact, setArtifact] = useState<Artifact | null>(null);
   const [filesRefresh, setFilesRefresh] = useState(0);
   const filesRefreshRequestKeyRef = useRef(0);
@@ -3493,17 +3548,25 @@ export function ProjectView({
       const artifactToPersist = persistedHtml === art.html ? art : { ...art, html: persistedHtml };
       const baseName = artifactBaseNameFor(art);
       const ext = artifactExtensionFor(art);
-      // Pick a name that doesn't collide with an existing project file.
-      // The first run uses `<base>.<ext>`; subsequent runs append `-2`, `-3`…
-      // so prior artifacts aren't silently overwritten.
       const currentProjectFiles = projectFilesSnapshot ?? projectFilesRef.current;
       const existing = new Set(currentProjectFiles.map((f) => f.name));
       let fileName = `${baseName}${ext}`;
+      // A non-empty identifier is stable artifact identity: when its canonical
+      // filename already exists, update that file in place. Title- and
+      // fallback-derived names still suffix collisions so new artifacts cannot
+      // silently replace unrelated project files.
+      const updatesExplicitlyIdentifiedFile =
+        Boolean(art.identifier?.trim()) && existing.has(fileName);
+      let collisionFileName = fileName;
       let n = 2;
-      while (existing.has(fileName) && savedArtifactRef.current !== fileName) {
-        fileName = `${baseName}-${n}${ext}`;
+      while (
+        existing.has(collisionFileName) &&
+        savedArtifactRef.current !== collisionFileName
+      ) {
+        collisionFileName = `${baseName}-${n}${ext}`;
         n += 1;
       }
+      if (!updatesExplicitlyIdentifiedFile) fileName = collisionFileName;
       if (ext === '.html') {
         const pointerProjectFiles = filterProjectFilesByMinMtime(
           currentProjectFiles,
@@ -3511,7 +3574,7 @@ export function ProjectView({
         );
         const pointerTarget = resolveHtmlPointerArtifactTarget({
           content: artifactToPersist.html,
-          candidateFileName: fileName,
+          candidateFileName: collisionFileName,
           projectFiles: pointerProjectFiles,
         });
         if (pointerTarget) {
@@ -5238,14 +5301,20 @@ export function ProjectView({
                 nextFiles = await refreshProjectFiles();
               }
             }
-            const diff = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+            const diff = computeProducedFiles(
+              beforeFileNames,
+              nextFiles,
+              status.artifactPaths,
+              project.id,
+              projectDetail.resolvedDir,
+            ) ?? [];
             const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
             const touchedFilePaths = extractTouchedFilePathsFromEvents(message.events);
             const traceObjectFiles = mergeRecoveredTraceObjectFile(
               computeTraceObjectFiles(
                 beforeFileNames,
                 nextFiles,
-                touchedFilePaths,
+                [...touchedFilePaths, ...(status.artifactPaths ?? [])],
                 project.id,
                 projectDetail.resolvedDir,
               ) ?? [],
@@ -5256,7 +5325,7 @@ export function ProjectView({
               turnStartedAt: status.createdAt || message.startedAt || message.createdAt || null,
               turnEndedAt: message.endedAt || legacyReplayEndedAt || null,
               agentTouchedFileNames: resolveAgentTouchedFileNames(
-                touchedFilePaths,
+                [...touchedFilePaths, ...(status.artifactPaths ?? [])],
                 nextFiles,
                 project.id,
                 projectDetail.resolvedDir,
@@ -5362,6 +5431,7 @@ export function ProjectView({
         let replayedContent = needsFullReplay ? '' : message.content;
         let replayedEvents: AgentEvent[] = needsFullReplay ? [] : [...(message.events ?? [])];
         let latestReattachRunStatus: ChatMessage['runStatus'] = status.status;
+        let authoritativeReattachArtifactPaths = status.artifactPaths;
         const applyContentDelta = (delta: string) => {
           for (const ev of parser.feed(delta)) {
             if (ev.type === 'artifact:start') {
@@ -5422,6 +5492,7 @@ export function ProjectView({
           || spuriouslyFailedPending
           || recoverableGenericDisconnectFailed;
         void reattachDaemonRun({
+          agentId: message.agentId,
           runId,
           projectId: project.id,
           conversationId: reattachConversationId,
@@ -5430,6 +5501,9 @@ export function ProjectView({
           cancelSignal: cancelController.signal,
           initialLastEventId: needsFullReplay ? null : message.lastRunEventId ?? null,
           publishRunFinishedEvent: shouldPublishRunFinishedEvent,
+          onArtifactPaths: (paths) => {
+            authoritativeReattachArtifactPaths = paths;
+          },
           handlers: {
             onDelta: (delta) => {
               // First payload from the resumed stream is real recovery — the daemon is
@@ -5565,7 +5639,13 @@ export function ProjectView({
                     nextFiles = await refreshProjectFiles();
                   }
                 }
-                const diff = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+                const diff = computeProducedFiles(
+                  beforeFileNames,
+                  nextFiles,
+                  authoritativeReattachArtifactPaths,
+                  project.id,
+                  projectDetail.resolvedDir,
+                ) ?? [];
                 const produced = mergeRecoveredArtifact(diff, recoveredExistingArtifact);
                 const touchedFilePaths = extractTouchedFilePathsFromEvents(
                   needsFullReplay ? replayedEvents : message.events,
@@ -5574,7 +5654,10 @@ export function ProjectView({
                   computeTraceObjectFiles(
                     beforeFileNames,
                     nextFiles,
-                    touchedFilePaths,
+                    [
+                      ...touchedFilePaths,
+                      ...(authoritativeReattachArtifactPaths ?? []),
+                    ],
                     project.id,
                     projectDetail.resolvedDir,
                   ) ?? [],
@@ -5585,7 +5668,10 @@ export function ProjectView({
                   turnStartedAt: status.createdAt || message.startedAt || message.createdAt || null,
                   turnEndedAt: endedAt ?? null,
                   agentTouchedFileNames: resolveAgentTouchedFileNames(
-                    touchedFilePaths,
+                    [
+                      ...touchedFilePaths,
+                      ...(authoritativeReattachArtifactPaths ?? []),
+                    ],
                     nextFiles,
                     project.id,
                     projectDetail.resolvedDir,
@@ -5643,7 +5729,7 @@ export function ProjectView({
               textBuffer.cancel();
               unregisterTextBuffer();
               if (runMayFinalize) {
-                setError(err.message);
+                setRunError(err.message, message.id);
                 appendAssistantErrorEvent(message.id, err.message, errorCode, failure);
                 updateMessageById(
                   message.id,
@@ -5714,9 +5800,11 @@ export function ProjectView({
                     if (
                       shouldPublishRunFinishedEvent
                       && latestRunStatus?.status === 'succeeded'
+                      && latestRunStatus.agentId === 'amr'
                       && typeof latestRunStatus.artifactCount === 'number'
                     ) {
                       publishDaemonRunFinishedEvent({
+                        agentId: latestRunStatus.agentId,
                         runId,
                         projectId: project.id,
                         conversationId: reattachConversationId,
@@ -5807,9 +5895,11 @@ export function ProjectView({
                   } else if (latestRunStatus.status === 'succeeded') {
                     if (
                       shouldPublishRunFinishedEvent
+                      && latestRunStatus.agentId === 'amr'
                       && typeof latestRunStatus.artifactCount === 'number'
                     ) {
                       publishDaemonRunFinishedEvent({
+                        agentId: latestRunStatus.agentId,
                         runId,
                         projectId: project.id,
                         conversationId: reattachConversationId,
@@ -5951,7 +6041,7 @@ export function ProjectView({
               !supersededRunsRef.current.has(controller);
             if ((err as Error).name !== 'AbortError' && runMayFinalize) {
               const msg = err instanceof Error ? err.message : String(err);
-              setError(msg);
+              setRunError(msg, message.id);
               appendAssistantErrorEvent(message.id, msg);
               updateMessageById(
                 message.id,
@@ -6186,8 +6276,12 @@ export function ProjectView({
   }, [project.id]);
 
   const enqueueChatSend = useCallback((item: QueuedChatSend) => {
+    if (queuedChatSendsRef.current.some((candidate) => candidate.id === item.id)) {
+      return false;
+    }
     const next = [...queuedChatSendsRef.current, item];
     commitQueuedChatSends(next);
+    return true;
   }, [commitQueuedChatSends]);
 
   const removeQueuedChatSend = useCallback((id: string) => {
@@ -6251,9 +6345,13 @@ export function ProjectView({
     meta?: ProjectChatSendMeta;
     prompt: string;
   }) => {
-    const queuedMeta = stripQueueOnlyFromMeta(input.meta);
-    enqueueChatSend({
-      id: randomUUID(),
+    const clientRequestId = input.meta?.clientRequestId ?? randomUUID();
+    const queuedMeta = stripQueueOnlyFromMeta({
+      ...(input.meta ?? {}),
+      clientRequestId,
+    });
+    const enqueued = enqueueChatSend({
+      id: clientRequestId,
       conversationId: input.conversationId,
       prompt: input.prompt,
       attachments: input.attachments,
@@ -6261,6 +6359,7 @@ export function ProjectView({
       ...(queuedMeta === undefined ? {} : { meta: queuedMeta }),
       createdAt: Date.now(),
     });
+    if (!enqueued) return;
     if (input.commentAttachments.length > 0) {
       const reservedCommentIds = new Set(
         input.commentAttachments
@@ -6303,6 +6402,11 @@ export function ProjectView({
     ) => {
       if (!activeConversationId) return false;
       if (messagesConversationIdRef.current !== activeConversationId) return false;
+      const clientRequestId = meta?.clientRequestId ?? randomUUID();
+      meta = {
+        ...(meta ?? {}),
+        clientRequestId,
+      };
       const runSessionMode = meta?.sessionMode ?? activeSessionMode;
       const retryTarget = meta?.retryOfAssistantId
         ? resolveRetryTarget(messages, meta.retryOfAssistantId)
@@ -6825,10 +6929,24 @@ export function ProjectView({
       // consuming a replacement run's colliding tool id.
       const pendingWrites = new Map<string, string>();
       const traceTouchedFilePaths = new Set<string>();
+      // Per-write file-list reads are intentionally fire-and-forget so a file
+      // can open while the run is still streaming. Once terminal completion
+      // has selected a turn-level artifact, however, an older Write refresh
+      // must not move focus again.
+      let completionSelectedAutoOpen = false;
       const clearTraceTouchedFilePaths = () => {
         pendingWrites.clear();
         traceTouchedFilePaths.clear();
       };
+      const provenTraceTouchedFiles = () => [...traceTouchedFilePaths]
+        .map((touchedPath, index) => {
+          const name = provenProjectRelativeToolPath(
+            touchedPath,
+            projectDetail.resolvedDir,
+          );
+          return name ? { name, path: name, mtime: index } : null;
+        })
+        .filter((file): file is { name: string; path: string; mtime: number } => file !== null);
 
       const parser = createArtifactParser();
       let parsedArtifact: Artifact | null = null;
@@ -6911,6 +7029,26 @@ export function ProjectView({
             pendingWrites.delete(ev.toolUseId);
             if (!ev.isError) {
               traceTouchedFilePaths.add(filePath);
+              // Absolute daemon tool paths can prove containment before the
+              // asynchronous file-list refresh completes. Open the best
+              // proven touched artifact immediately so a terminal status and
+              // an external `/files` observer cannot outrun the workspace UI.
+              const immediateFileName = provenProjectRelativeToolPath(
+                filePath,
+                projectDetail.resolvedDir,
+              );
+              const immediateTouchedFiles = provenTraceTouchedFiles();
+              const immediateArtifact = selectAutoOpenProducedArtifact(
+                immediateTouchedFiles,
+                autoOpenArtifactOptions,
+              );
+              if (
+                !completionSelectedAutoOpen
+                && immediateFileName
+                && immediateArtifact === immediateFileName
+              ) {
+                requestOpenFile(immediateFileName);
+              }
               // Refresh first so FileWorkspace's file list (and the tab
               // body) sees the new content before we ask it to focus.
               // Only auto-open if the file actually landed in the project's
@@ -6926,7 +7064,31 @@ export function ProjectView({
                 const decision = decideAutoOpenAfterWrite(filePath, nextFiles, {
                   moduleFileNames,
                 });
-                if (decision.shouldOpen && decision.fileName) {
+                // Several Write refreshes can settle together after the UI
+                // already renders the run as Done but before the stream's
+                // onDone callback arrives. Rank every file touched so far and
+                // let only the best artifact open; otherwise a trailing
+                // support-file write (plan.md) immediately replaces the
+                // generated deliverable (index.html).
+                const bestTouchedArtifact = selectAutoOpenProducedArtifact(
+                  provenTraceTouchedFiles(),
+                  autoOpenArtifactOptions,
+                ) ?? selectAutoOpenTurnArtifact([], nextFiles, {
+                    ...autoOpenArtifactOptions,
+                    turnStartedAt: startedAt,
+                    agentTouchedFileNames: resolveAgentTouchedFileNames(
+                      [...traceTouchedFilePaths],
+                      nextFiles,
+                      project.id,
+                      projectDetail.resolvedDir,
+                    ),
+                  });
+                if (
+                  !completionSelectedAutoOpen
+                  && bestTouchedArtifact === decision.fileName
+                  && decision.shouldOpen
+                  && decision.fileName
+                ) {
                   requestOpenFile(decision.fileName);
                 }
               }).catch(() => {
@@ -6990,6 +7152,7 @@ export function ProjectView({
 
       const controller = new AbortController();
       const cancelController = new AbortController();
+      let authoritativeArtifactPaths: string[] | undefined;
       abortRef.current = controller;
       cancelRef.current = cancelController;
       const handlers = {
@@ -7131,7 +7294,11 @@ export function ProjectView({
           // chips.
           void (async () => {
             try {
-              let nextFiles = await refreshProjectFiles();
+              // A settled shared file-list read from before the daemon exit can
+              // otherwise win the race with the file-change invalidation and
+              // make this turn persist an empty producedFiles list. Completion
+              // attribution needs a fresh post-run snapshot.
+              let nextFiles = await refreshProjectFiles({ fresh: true });
               let artifactPersistenceSucceeded = false;
               let artifactPersistenceError: string | undefined;
               const finalText = streamedText || fullText;
@@ -7161,15 +7328,22 @@ export function ProjectView({
                 if (sameTurnWrite) {
                   artifactPersistenceSucceeded = true;
                   savedArtifactRef.current = sameTurnWrite.name;
+                  completionSelectedAutoOpen = true;
                   requestOpenFile(sameTurnWrite.name);
                 } else {
                   const persistence = await persistArtifact(artifactToPersist, nextFiles, finalText);
                   if (persistence.ok) artifactPersistenceSucceeded = true;
                   else artifactPersistenceError = persistence.error;
-                  nextFiles = await refreshProjectFiles();
+                  nextFiles = await refreshProjectFiles({ fresh: true });
                 }
               }
-              const produced = computeProducedFiles(beforeFileNames, nextFiles) ?? [];
+              const produced = computeProducedFiles(
+                beforeFileNames,
+                nextFiles,
+                authoritativeArtifactPaths,
+                project.id,
+                projectDetail.resolvedDir,
+              ) ?? [];
               // Completion half of the onboarding funnel: the first generation
               // in a recommendation-started project that actually produced a
               // previewable artifact. Gated on the same artifact-producing
@@ -7195,22 +7369,43 @@ export function ProjectView({
               const traceObjectFiles = computeTraceObjectFiles(
                 beforeFileNames,
                 nextFiles,
-                traceTouchedFilePaths,
+                [
+                  ...traceTouchedFilePaths,
+                  ...(authoritativeArtifactPaths ?? []),
+                ],
                 project.id,
                 projectDetail.resolvedDir,
               ) ?? [];
-              const producedArtifactToOpen = selectAutoOpenTurnArtifact(produced, nextFiles, {
+              const turnArtifactToOpen = selectAutoOpenTurnArtifact(produced, nextFiles, {
                 ...autoOpenArtifactOptions,
                 turnStartedAt: startedAt,
                 turnEndedAt: endedAt ?? null,
                 agentTouchedFileNames: resolveAgentTouchedFileNames(
-                  traceTouchedFilePaths,
+                  [
+                    ...traceTouchedFilePaths,
+                    ...(authoritativeArtifactPaths ?? []),
+                  ],
                   nextFiles,
                   project.id,
                   projectDetail.resolvedDir,
                 ),
               });
-              if (producedArtifactToOpen) requestOpenFile(producedArtifactToOpen);
+              const producedArtifactToOpen = selectAutoOpenProducedArtifact(
+                [
+                  ...provenTraceTouchedFiles(),
+                  ...(turnArtifactToOpen
+                    ? [
+                        nextFiles.find((file) => file.name === turnArtifactToOpen)
+                          ?? { name: turnArtifactToOpen, path: turnArtifactToOpen },
+                      ]
+                    : []),
+                ],
+                autoOpenArtifactOptions,
+              );
+              if (producedArtifactToOpen) {
+                completionSelectedAutoOpen = true;
+                requestOpenFile(producedArtifactToOpen);
+              }
               const deliveryCandidate: ChatMessage = {
                 ...latestAssistantMsg,
                 endedAt,
@@ -7292,7 +7487,7 @@ export function ProjectView({
           textBuffer.cancel();
           cancelSendTextBuffer();
           if (runMayFinalize) {
-            setError(err.message);
+            setRunError(err.message, assistantId);
             appendAssistantErrorEvent(assistantId, err.message, errorCode, failure);
             updateAssistant((prev) => ({
               ...prev,
@@ -7343,10 +7538,17 @@ export function ProjectView({
                   runIdForGenericDisconnect,
                   projectRunWorkspaceContext,
                 ).catch(() => null);
+                if (latestRunStatus?.artifactPaths) {
+                  authoritativeArtifactPaths = latestRunStatus.artifactPaths;
+                }
                 if (!latestRunStatus || isActiveRunStatus(latestRunStatus.status)) {
                 } else if (latestRunStatus.status === 'succeeded') {
-                  if (typeof latestRunStatus.artifactCount === 'number') {
+                  if (
+                    latestRunStatus.agentId === 'amr'
+                    && typeof latestRunStatus.artifactCount === 'number'
+                  ) {
                     publishDaemonRunFinishedEvent({
+                      agentId: latestRunStatus.agentId,
                       runId: runIdForGenericDisconnect,
                       projectId: project.id,
                       conversationId: runConversationId,
@@ -7449,7 +7651,34 @@ export function ProjectView({
           if (refreshConversationAfterError) {
             scheduleConversationMessageRefresh(runConversationId);
           }
-          void refreshProjectFiles().catch(() => {
+          const authoritativeTouchedPaths = [
+            ...traceTouchedFilePaths,
+            ...(authoritativeArtifactPaths ?? []),
+          ];
+          void (async () => {
+            const nextFiles = await refreshProjectFiles({ fresh: true });
+            if (authoritativeArtifactPaths === undefined) return;
+            const produced = computeProducedFiles(
+              beforeFileNames,
+              nextFiles,
+              authoritativeArtifactPaths,
+              project.id,
+              projectDetail.resolvedDir,
+            ) ?? [];
+            const traceObjectFiles = computeTraceObjectFiles(
+              beforeFileNames,
+              nextFiles,
+              authoritativeTouchedPaths,
+              project.id,
+              projectDetail.resolvedDir,
+            ) ?? [];
+            updateMessageById(
+              assistantId,
+              (prev) => ({ ...prev, producedFiles: produced, traceObjectFiles }),
+              true,
+              { telemetryFinalized: true },
+            );
+          })().catch(() => {
             // Retain the last accepted file list while the daemon recovers.
           });
           clearTraceTouchedFilePaths();
@@ -7546,7 +7775,7 @@ export function ProjectView({
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
-          clientRequestId: randomUUID(),
+          clientRequestId,
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
@@ -7606,6 +7835,9 @@ export function ProjectView({
               runStatus: 'queued',
               taskAnalytics: resolvedTaskAnalytics,
             }));
+          },
+          onArtifactPaths: (paths) => {
+            authoritativeArtifactPaths = paths;
           },
           onRunStatus: (runStatus) => {
             const endedAt = isTerminalRunStatus(runStatus) ? Date.now() : undefined;
@@ -7718,7 +7950,7 @@ export function ProjectView({
           conversationId: runConversationId,
           userMessageId: userMsg.id,
           assistantMessageId: assistantId,
-          clientRequestId: randomUUID(),
+          clientRequestId,
           skillId: project.skillId ?? null,
           skillIds: Array.isArray(meta?.skillIds) ? meta.skillIds : [],
           context: runContext,
@@ -7868,7 +8100,11 @@ export function ProjectView({
       commentAttachments: ChatCommentAttachment[],
       meta?: ChatSendMeta,
     ): Promise<ChatSendOutcome> => {
-      if (activeConversationId) {
+      if (
+        activeConversationId
+        && config.mode === 'daemon'
+        && config.agentId === 'amr'
+      ) {
         const decision = await requestAmrArtifactUpgrade({
           projectId: project.id,
           conversationId: activeConversationId,
@@ -7878,7 +8114,7 @@ export function ProjectView({
       }
       void handleSend(prompt, attachments, commentAttachments, meta);
     },
-    [activeConversationId, handleSend, project.id],
+    [activeConversationId, config.agentId, config.mode, handleSend, project.id],
   );
 
   // Cancel every in-flight run for the current conversation (the user's own
@@ -8913,31 +9149,64 @@ export function ProjectView({
 
   const handleForkFromMessage = useCallback(
     async (assistantMessage: ChatMessage) => {
-      if (!activeConversationId || forkingMessageId) return;
+      if (!activeConversationId || forkingMessageId || projectCollab.viewerOnly) return;
+      const requestId = analytics.newRequestId();
+      const startedAt = Date.now();
+      const forkIndex = messages.findIndex((message) => message.id === assistantMessage.id);
+      const forkContext = {
+        page_name: 'chat_panel' as const,
+        area: 'chat_panel' as const,
+        element: 'assistant_fork_button' as const,
+        action: 'fork_conversation' as const,
+        project_id: project.id,
+        project_kind: projectKindFromMetadataToTracking(project.metadata),
+        conversation_id: activeConversationId,
+        assistant_message_id: assistantMessage.id,
+        source_run_id: assistantMessage.runId ?? null,
+        source_agent_id: assistantMessage.agentId ?? 'unknown',
+        agent_provider_id: runAgentProviderId(assistantMessage.agentId ?? 'unknown'),
+        session_mode: sessionModeToTracking(activeSessionMode),
+        fork_point: conversationForkPoint(messages, assistantMessage.id, forkIndex),
+        seed_message_count: forkIndex < 0 ? null : forkIndex + 1,
+        conversation_message_count: messages.length,
+        messages_after_fork_count: forkIndex < 0 ? null : messages.length - forkIndex - 1,
+      };
+      trackConversationForkClick(analytics.track, forkContext, { requestId });
       setForkingMessageId(assistantMessage.id);
       setConversationLoadError(null);
+      let emptyResponse = false;
       try {
         const sourceTitle = activeConversation?.title?.trim();
         const forkTitle = sourceTitle
           ? t('chat.forkedConversationTitle', { title: sourceTitle })
           : undefined;
-        // Seed the fork from the messages the user is actually looking at,
-        // up to and including the fork point. A run that errored or had its
-        // connection reset before its assistant message was persisted leaves
-        // that message in memory only; copying from the database by id would
-        // 404 and silently drop the fork. Sending the in-memory snapshot makes
-        // the fork resilient to that gap.
-        const forkIndex = messages.findIndex((m) => m.id === assistantMessage.id);
-        const seedMessages =
-          forkIndex >= 0 ? messages.slice(0, forkIndex + 1) : [...messages, assistantMessage];
+        const forkFallbackPredecessorMessageId = forkIndex < 0
+          ? undefined
+          : (messages[forkIndex - 1]?.id ?? null);
         const fresh = await createConversation(project.id, forkTitle, {
           seedFromConversationId: activeConversationId,
           forkAfterMessageId: assistantMessage.id,
           sessionMode: activeSessionMode,
-          seedMessages,
+          forkFallbackMessage:
+            forkFallbackPredecessorMessageId === undefined ? undefined : assistantMessage,
+          forkFallbackPredecessorMessageId,
           workspaceContext: projectRunWorkspaceContext,
+          throwOnError: true,
         });
-        if (!fresh) throw new Error(t('chat.forkConversationFailed'));
+        if (!fresh) {
+          emptyResponse = true;
+          throw new Error(t('chat.forkConversationFailed'));
+        }
+        trackConversationForkResult(
+          analytics.track,
+          {
+            ...forkContext,
+            target_conversation_id: fresh.id,
+            result: 'success',
+            duration_ms: Math.max(0, Date.now() - startedAt),
+          },
+          { requestId },
+        );
         setMessages([]);
         commitPreviewComments([]);
         setAttachedComments([]);
@@ -8962,6 +9231,17 @@ export function ProjectView({
         onProjectsRefresh();
         setError(null);
       } catch (err) {
+        trackConversationForkResult(
+          analytics.track,
+          {
+            ...forkContext,
+            target_conversation_id: null,
+            result: 'failed',
+            error_code: emptyResponse ? 'empty_response' : conversationForkErrorCode(err),
+            duration_ms: Math.max(0, Date.now() - startedAt),
+          },
+          { requestId },
+        );
         const message = err instanceof Error ? err.message : t('chat.forkConversationFailed');
         setConversationLoadError(message);
         setError(message);
@@ -8973,6 +9253,7 @@ export function ProjectView({
       activeConversationId,
       activeConversation?.title,
       activeSessionMode,
+      analytics,
       commitPreviewComments,
       forkingMessageId,
       messages,
@@ -8980,6 +9261,8 @@ export function ProjectView({
       onProjectsRefresh,
       openTabsState.active,
       project.id,
+      project.metadata,
+      projectCollab.viewerOnly,
       t,
     ],
   );
@@ -9115,6 +9398,8 @@ export function ProjectView({
 	            sendDisabled: currentConversationSendDisabled,
             queuedItems: currentConversationQueuedItems,
             error: conversationLoadError ?? error,
+            errorSourceAssistantId:
+              conversationLoadError ? null : errorSourceAssistantId,
             onSend: handleComposerSend,
             onRetry: handleRetry,
             onStop: handleStop,
@@ -9134,6 +9419,7 @@ export function ProjectView({
 	      currentConversationLoading,
 	      currentConversationControlStreaming,
       error,
+      errorSourceAssistantId,
       handleAssistantFeedback,
       handleRetry,
       handleComposerSend,
@@ -10581,6 +10867,9 @@ export function ProjectView({
               }
               queuedItems={currentConversationQueuedItems}
               error={conversationLoadError ?? error}
+              errorSourceAssistantId={
+                conversationLoadError ? null : errorSourceAssistantId
+              }
               projectId={project.id}
               sessionMode={activeSessionMode}
               onSessionModeChange={handleActiveConversationSessionModeChange}
@@ -10666,7 +10955,9 @@ export function ProjectView({
               onAssistantFeedback={handleAssistantFeedback}
               onArtifactShare={handleArtifactShare}
               onArtifactDownload={handleArtifactDownload}
-              onForkFromMessage={handleForkFromMessage}
+              onForkFromMessage={
+                projectCollab.viewerOnly ? undefined : handleForkFromMessage
+              }
               forkingMessageId={forkingMessageId}
               onNewConversation={handleNewConversation}
               newConversationDisabled={newConversationDisabled}
@@ -11367,7 +11658,14 @@ export function shouldReplayTerminalRunMessage(message: ChatMessage): boolean {
   // A daemon can persist terminal success before the browser finishes its
   // project-file refresh. Reattach once even when prose already exists so the
   // delivery invariant can confirm a file or downgrade the turn after reload.
-  if (designDeliveryVerificationPending(message)) return true;
+  if (designDeliveryVerificationPending(message)) {
+    // #6505: a historical succeeded Design row whose delivery metadata never
+    // materialized must not be replayed/reattached on every reload. Bound
+    // reconciliation to a short window after the run's terminal time; past it,
+    // the row renders as a terminal outcome instead of looping through replay.
+    if (designDeliveryReconciliationStale(message)) return false;
+    return true;
+  }
   if (message.content.trim().length > 0) return false;
   if (
     message.startedAt == null
@@ -11398,7 +11696,15 @@ function loadQueuedChatSends(projectId: string): QueuedChatSend[] {
     const raw = window.localStorage.getItem(queuedChatSendsStorageKey(projectId));
     const parsed = raw ? JSON.parse(raw) : [];
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isQueuedChatSend).slice(0, 100);
+    const seenIds = new Set<string>();
+    return parsed
+      .filter(isQueuedChatSend)
+      .filter((item) => {
+        if (seenIds.has(item.id)) return false;
+        seenIds.add(item.id);
+        return true;
+      })
+      .slice(0, 100);
   } catch {
     return [];
   }
@@ -11664,10 +11970,35 @@ function applyDesignDeliveryOutcome(
 export function computeProducedFiles(
   beforeNames: ReadonlySet<string> | readonly string[] | undefined,
   next: readonly ProjectFile[],
+  authoritativePaths?: readonly string[],
+  projectId?: string,
+  projectRoot?: string | null,
 ): ProjectFile[] | undefined {
-  if (!beforeNames) return undefined;
-  const set = beforeNames instanceof Set ? beforeNames : new Set(beforeNames);
-  return filterImplicitProducedFiles(next.filter((f) => !set.has(f.name)));
+  const beforeSet = beforeNames
+    ? beforeNames instanceof Set
+      ? beforeNames
+      : new Set(beforeNames)
+    : null;
+  if (authoritativePaths !== undefined) {
+    const byName = new Map<string, ProjectFile>();
+    // The daemon's authoritative list intentionally covers user-facing
+    // artifacts and render dependencies, not every file an agent can create
+    // (for example plugin manifests and Markdown). Preserve all files that are
+    // provably new from the turn baseline, then use authoritative paths to add
+    // modified existing artifacts without attributing untouched inputs.
+    if (beforeSet) {
+      for (const file of next) {
+        if (!beforeSet.has(file.name)) byName.set(file.name, file);
+      }
+    }
+    for (const rawPath of authoritativePaths) {
+      const file = findTouchedProjectFile(rawPath, next, projectId, projectRoot);
+      if (file) byName.set(file.name, file);
+    }
+    return filterImplicitProducedFiles([...byName.values()]);
+  }
+  if (!beforeSet) return undefined;
+  return filterImplicitProducedFiles(next.filter((f) => !beforeSet.has(f.name)));
 }
 
 export function computeTraceObjectFiles(
@@ -11772,6 +12103,27 @@ function findTouchedProjectFile(
     candidates.some((candidate) => candidate.split('/').pop() === basename),
   );
   return basenameMatches.length === 1 ? basenameMatches[0]!.file : null;
+}
+
+// Return a project-relative tool path only when an absolute Write/Edit path
+// can be proven to live under the resolved project root. This runs before the
+// refreshed inventory is available, so aliases, relative paths, and paths with
+// only a matching `projects/<id>` suffix must wait for that later authoritative
+// match instead of creating a persistent placeholder tab.
+function provenProjectRelativeToolPath(
+  rawPath: string,
+  projectRoot?: string | null,
+): string | null {
+  const slashed = rawPath.replace(/\\/g, '/');
+  if (!isAbsoluteToolPath(slashed) || !projectRoot) return null;
+  const segments = lexicallyNormalizePathSegments(slashed);
+  if (!segments || segments.length === 0) return null;
+  const rootSegments = lexicallyNormalizePathSegments(projectRoot.replace(/\\/g, '/'));
+  if (!rootSegments || segments.length <= rootSegments.length) return null;
+  for (let index = 0; index < rootSegments.length; index += 1) {
+    if (segments[index] !== rootSegments[index]) return null;
+  }
+  return segments.slice(rootSegments.length).join('/') || null;
 }
 
 function relativePathFromManagedProjectAlias(

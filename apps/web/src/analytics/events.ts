@@ -18,6 +18,9 @@ import type {
   DesignSystemsTemplatesModalSurfaceViewProps,
   AssistantFeedbackReasonPanelSurfaceViewProps,
   QuestionsFormSurfaceViewProps,
+  DeepSeekCampaignModalSurfaceViewProps,
+  DeepSeekCampaignBadgeSurfaceViewProps,
+  DeepSeekCampaignModelBenefitSurfaceViewProps,
   // ui_click
   HomeNavClickProps,
   HelpPopoverClickProps,
@@ -75,6 +78,8 @@ import type {
   AmrAuthStageProps,
   AmrEntryClickProps,
   PreviewRunStatusSurfaceViewProps,
+  DeepSeekCampaignModalClickProps,
+  DeepSeekCampaignBadgeClickProps,
   RunFailedToastSurfaceViewProps,
   RunRecoveryActionSurfaceViewProps,
   RunStartBlockedSurfaceViewProps,
@@ -105,6 +110,7 @@ import type {
   AssistantFeedbackClickProps,
   AssistantFeedbackReasonClickProps,
   AssistantFeedbackReasonSubmitClickProps,
+  ConversationForkClickProps,
   AssistantFeedbackReasonSubmitProps,
   AssistantFeedbackReasonViewProps,
   SettingsSidebarClickProps,
@@ -131,9 +137,11 @@ import type {
   SpeakerNotesSaveResultProps,
   ArtifactExportResultProps,
   ArtifactDeployResultProps,
+  ArtifactPublishResultProps,
   SketchSaveResultProps,
   SketchExportResultProps,
   FeedbackSubmitResultProps,
+  ConversationForkResultProps,
   SettingsViewProps,
   SettingsCliTestResultProps,
   SettingsByokModelsFetchResultProps,
@@ -409,6 +417,41 @@ export function trackStudioOnboardingHintClick(
 export function trackAmrEntryClick(
   track: Track,
   props: AmrEntryClickProps,
+): void {
+  send(track, 'ui_click', props);
+}
+
+export function trackDeepSeekCampaignModalSurfaceView(
+  track: Track,
+  props: DeepSeekCampaignModalSurfaceViewProps,
+): void {
+  send(track, 'surface_view', props);
+}
+
+export function trackDeepSeekCampaignBadgeSurfaceView(
+  track: Track,
+  props: DeepSeekCampaignBadgeSurfaceViewProps,
+): void {
+  send(track, 'surface_view', props);
+}
+
+export function trackDeepSeekCampaignModelBenefitSurfaceView(
+  track: Track,
+  props: DeepSeekCampaignModelBenefitSurfaceViewProps,
+): void {
+  send(track, 'surface_view', props);
+}
+
+export function trackDeepSeekCampaignModalClick(
+  track: Track,
+  props: DeepSeekCampaignModalClickProps,
+): void {
+  send(track, 'ui_click', props);
+}
+
+export function trackDeepSeekCampaignBadgeClick(
+  track: Track,
+  props: DeepSeekCampaignBadgeClickProps,
 ): void {
   send(track, 'ui_click', props);
 }
@@ -951,6 +994,14 @@ export function trackAssistantFeedbackButtonClick(
   send(track, 'ui_click', props);
 }
 
+export function trackConversationForkClick(
+  track: Track,
+  props: ConversationForkClickProps,
+  options?: { requestId?: string },
+): void {
+  send(track, 'ui_click', props, options);
+}
+
 export function trackAssistantFeedbackReasonSubmitClick(
   track: Track,
   props: AssistantFeedbackReasonSubmitClickProps,
@@ -1125,6 +1176,13 @@ export function trackArtifactDeployResult(
   send(track, 'artifact_deploy_result', props, options);
 }
 
+export function trackArtifactPublishResult(
+  track: Track,
+  props: ArtifactPublishResultProps,
+): void {
+  send(track, 'artifact_publish_result', props);
+}
+
 export function trackFileVersionRestoreResult(
   track: Track,
   props: FileVersionRestoreResultProps,
@@ -1138,6 +1196,14 @@ export function trackFeedbackSubmitResult(
   options?: { requestId?: string },
 ): void {
   send(track, 'feedback_submit_result', props, options);
+}
+
+export function trackConversationForkResult(
+  track: Track,
+  props: ConversationForkResultProps,
+  options?: { requestId?: string },
+): void {
+  send(track, 'conversation_fork_result', props, options);
 }
 
 // ---- Settings view + test/auth result events -----------------------------

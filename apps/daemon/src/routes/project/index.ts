@@ -3,6 +3,10 @@ import { rm } from 'node:fs/promises';
 import path from 'node:path';
 import type { Express, Request, Response } from 'express';
 import {
+  PREVIEW_OBSERVABILITY_BRIDGE_MARKER,
+  buildPreviewObservabilityBridge,
+} from '@open-design/contracts/runtime/preview-observability';
+import {
   defaultScenarioPluginIdForProjectMetadata,
   type ChatSessionMode,
   type PluginManifest,
@@ -130,6 +134,12 @@ export interface RegisterProjectRoutesDeps extends RouteDeps<'db' | 'design' | '
   verifyWorkspaceReadAuthority?: VerifyWorkspaceRequestAuthority;
   /** Authoritative verifier for every Workspace-bound project mutation. */
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority;
+  /**
+   * Cached-only authority verifier for deleting a personal, local-only
+   * project. It must never start network I/O; all other mutations continue
+   * through `verifyWorkspaceRequestAuthority`.
+   */
+  verifyPersonalProjectDeleteLeaseAuthority?: VerifyWorkspaceRequestAuthority;
   /** Shared fresh exact authority gate for all project data-plane routes. */
   authorizeProjectRequest?: AuthorizeProjectRequest;
   /** Startup-hydrated O(1) quarantine lookup for stale Team mirrors. */
@@ -294,10 +304,11 @@ function projectAccess(
 
 /**
  * Build the project-flavored authoritative mutation gate. Every bound project
- * requires an exact Workspace/member pair and a fresh directory-backed
- * verifier result; request role/permission claims and daemon-global
- * active/current/last-known state are never authority. The exported factory is
- * shared with run/chat routes so all project mutations fail closed identically.
+ * requires an exact Workspace/member pair; request role/permission claims and
+ * daemon-global active/current/last-known state are never authority. Mutations
+ * use fresh directory authority except the narrow personal local-only delete
+ * lease below. The exported factory is shared with run/chat routes so all
+ * project mutations fail closed identically.
  */
 /**
  * The non-rejecting counterpart of `createEnforceWorkspaceProjectMutation`,
@@ -328,6 +339,7 @@ export function createWorkspaceProjectWriteAuthorityCheck(
 
 export function createEnforceWorkspaceProjectMutation(
   verifyWorkspaceRequestAuthority?: VerifyWorkspaceRequestAuthority,
+  verifyPersonalProjectDeleteLeaseAuthority?: VerifyWorkspaceRequestAuthority,
 ) {
   return async function enforceWorkspaceProjectMutation(
     req: any,
@@ -350,8 +362,37 @@ export function createEnforceWorkspaceProjectMutation(
       projectId,
       capability,
       verifyWorkspaceRequestAuthority,
+      capability === 'delete' && verifyPersonalProjectDeleteLeaseAuthority
+        ? {
+            authorityLease: {
+              verify: verifyPersonalProjectDeleteLeaseAuthority,
+              allow: personalLocalProjectDeleteLeaseAllowed,
+            },
+          }
+        : {},
     );
   };
+}
+
+/**
+ * A short-lived directory lease may authorize this one local-only cleanup.
+ * Hub-backed or Team resources, stale ownership, locked membership and every
+ * non-delete mutation still require a fresh control-plane read.
+ */
+export function personalLocalProjectDeleteLeaseAllowed(
+  row: WorkspaceProjectAccessInput,
+  context: WorkspaceCollabContext,
+): boolean {
+  return context.workspaceType === 'personal'
+    && context.memberStatus === 'active'
+    && context.lifecycleState === 'active'
+    && context.permissions.canWriteSyncedFiles
+    && row.workspaceId === context.workspaceId
+    && row.visibility === 'personal'
+    && row.resourceState === 'active'
+    && row.createdByWorkspaceMemberId === context.workspaceMemberId
+    && row.syncState === 'local_only'
+    && !row.resourceHubResourceId;
 }
 
 function projectDetailResolvedDir(
@@ -1266,6 +1307,10 @@ function wantsUrlPreviewSnapshotBridge(value: unknown): boolean {
   return previewBridgeTokens(value).some((token) => token === 'snapshot' || token === 'image' || token === 'capture');
 }
 
+function wantsUrlPreviewObservabilityBridge(value: unknown): boolean {
+  return previewBridgeTokens(value).some((token) => token === 'observability' || token === 'errors' || token === 'diagnostics');
+}
+
 function injectBeforeBodyClose(html: string, marker: string, injection: string): string {
   if (html.includes(marker)) return html;
   const bodyCloseIndex = html.search(/<\/body\s*>/i);
@@ -1275,7 +1320,25 @@ function injectBeforeBodyClose(html: string, marker: string, injection: string):
   return `${html}${injection}`;
 }
 
-function injectUrlPreviewBridge(html: string, bridge: 'scroll' | 'selection' | 'snapshot'): string {
+function injectAfterHeadOpen(html: string, marker: string, injection: string): string {
+  if (html.includes(marker)) return html;
+  if (/<head[^>]*>/i.test(html)) {
+    return html.replace(/<head[^>]*>/i, (match) => `${match}${injection}`);
+  }
+  if (/<html[^>]*>/i.test(html)) {
+    return html.replace(/<html[^>]*>/i, (match) => `${match}<head>${injection}</head>`);
+  }
+  return `${injection}${html}`;
+}
+
+function injectUrlPreviewBridge(html: string, bridge: 'scroll' | 'selection' | 'snapshot' | 'observability'): string {
+  if (bridge === 'observability') {
+    return injectAfterHeadOpen(
+      html,
+      PREVIEW_OBSERVABILITY_BRIDGE_MARKER,
+      buildPreviewObservabilityBridge(),
+    );
+  }
   if (bridge === 'scroll') {
     return injectBeforeBodyClose(html, 'data-od-url-scroll-bridge', URL_PREVIEW_SCROLL_BRIDGE);
   }
@@ -1294,7 +1357,8 @@ function applyUrlPreviewBridgesToHtml(
     !(
       wantsUrlPreviewScrollBridge(requestedBridge) ||
       wantsUrlPreviewSelectionBridge(requestedBridge) ||
-      wantsUrlPreviewSnapshotBridge(requestedBridge)
+      wantsUrlPreviewSnapshotBridge(requestedBridge) ||
+      wantsUrlPreviewObservabilityBridge(requestedBridge)
     ) ||
     !/^text\/html(?:;|$)/i.test(mime)
   ) {
@@ -1306,6 +1370,9 @@ function applyUrlPreviewBridgesToHtml(
   // filename. URL-load iframes cannot rely on the host rewriting the document
   // title after load, and powered previews are intentionally cross-origin.
   html = daemonSanitizeTitleInDoc(html);
+  if (wantsUrlPreviewObservabilityBridge(requestedBridge)) {
+    html = injectUrlPreviewBridge(html, 'observability');
+  }
   if (wantsUrlPreviewScrollBridge(requestedBridge)) {
     html = injectUrlPreviewBridge(html, 'scroll');
   }
@@ -1669,6 +1736,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
   const { collabSync, teamProjectCatalog, workspaceTypes } = ctx;
   const enforceWorkspaceProjectMutation = createEnforceWorkspaceProjectMutation(
     ctx.verifyWorkspaceRequestAuthority,
+    ctx.verifyPersonalProjectDeleteLeaseAuthority,
   );
   const verifyWorkspaceProjectReadAuthority =
     ctx.verifyWorkspaceReadAuthority ?? ctx.verifyWorkspaceRequestAuthority;
@@ -5310,6 +5378,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         since: Number.isFinite(since) ? since : undefined,
         metadata: project?.metadata,
       });
+      // The directory is mutated outside HTTP by agent CLIs and filesystem
+      // tools. A cached 200 can therefore outlive a completed Write even when
+      // the daemon's fresh scan already sees the new file, leaving the
+      // workspace on the previous snapshot. The web layer owns its own short
+      // request-coalescing window, so transport caches must always revalidate
+      // this dynamic inventory.
+      res.setHeader('Cache-Control', 'no-store');
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
       const body = { files };
       res.json(body);

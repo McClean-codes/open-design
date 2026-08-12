@@ -31,6 +31,7 @@ export const uiP0Groups = {
     files: [
       "ui/entry-chrome-flows.test.ts",
       "ui/entry-configuration-flows.test.ts",
+      "ui/home-hero-rail.test.ts",
       "ui/amr-onboarding.test.ts",
       "ui/api-empty-response.test.ts",
       "ui/settings-api-protocol.test.ts",
@@ -113,6 +114,7 @@ const uiP0CoverageFiles = [
   "ui/critical-smoke.test.ts",
   "ui/entry-chrome-flows.test.ts",
   "ui/entry-configuration-flows.test.ts",
+  "ui/home-hero-rail.test.ts",
   "ui/project-management-flows.test.ts",
   "ui/real-daemon-run.test.ts",
   "ui/settings-api-protocol.test.ts",
@@ -137,7 +139,10 @@ export function validatePlaywrightSuiteTopology(): string[] {
   const errors: string[] = [];
   const knownGroups = new Set(Object.keys(uiP0Groups));
   const coverageFiles = sortedUnique(uiP0CoverageFiles);
-  const ciFiles = filesForUiP0Groups(uiP0CiMatrix.map((entry) => entry.shard));
+  const ciFileAssignments = uiP0CiMatrix.flatMap(
+    (entry) => uiP0Groups[entry.shard as UiP0GroupName]?.files ?? [],
+  );
+  const ciFiles = sortedUnique(ciFileAssignments);
 
   for (const entry of uiP0CiMatrix) {
     if (!knownGroups.has(entry.shard)) {
@@ -153,6 +158,14 @@ export function validatePlaywrightSuiteTopology(): string[] {
     errors.push(`UI P0 CI matrix unexpectedly covers ${file}`);
   }
 
+  const seenFiles = new Set<string>();
+  for (const file of ciFileAssignments) {
+    if (seenFiles.has(file)) {
+      errors.push(`UI P0 CI matrix covers ${file} more than once`);
+    }
+    seenFiles.add(file);
+  }
+
   for (const entry of visualCiMatrix) {
     if (entry.files.trim().length === 0) {
       errors.push(`Visual CI matrix entry ${entry.name} has no files`);
@@ -160,10 +173,6 @@ export function validatePlaywrightSuiteTopology(): string[] {
   }
 
   return errors;
-}
-
-function filesForUiP0Groups(names: readonly string[]): string[] {
-  return sortedUnique(names.flatMap((name) => uiP0Groups[name as UiP0GroupName]?.files ?? []));
 }
 
 function difference(left: readonly string[], right: readonly string[]): string[] {
