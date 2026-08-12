@@ -758,6 +758,33 @@ describe('createProject', () => {
     );
   });
 
+  it('uses a caller-minted project id for an optimistic route handoff', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      const body = JSON.parse(String(init?.body)) as { id: string };
+      return new Response(JSON.stringify({
+        project: { id: body.id },
+        conversationId: 'optimistic-conversation',
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const created = await createProject({
+      id: 'optimistic-project',
+      name: 'Optimistic project',
+      skillId: null,
+      designSystemId: null,
+    });
+
+    expect(created.project.id).toBe('optimistic-project');
+    const body = JSON.parse(
+      (fetchMock.mock.calls[0]![1] as RequestInit).body as string,
+    ) as { id: string };
+    expect(body.id).toBe('optimistic-project');
+  });
+
   it('fails closed while modern workspace authority is unresolved or unavailable', () => {
     expect(() => resolvedWorkspaceContextForWrite({
       context: null,
