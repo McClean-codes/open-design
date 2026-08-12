@@ -102,4 +102,18 @@ runs:
     - name: Install Playwright browsers
       if: ${{ steps.preinstalled-playwright.outputs.enabled != 'true' }}
       shell: bash
-      run: ${{ inputs.install-command }}
+      env:
+        INSTALL_COMMAND: ${{ inputs.install-command }}
+        PACKAGE_JSON_PATH: ${{ inputs.package-json-path }}
+        RUNNER_LABELS_JSON: ${{ inputs.runner-labels }}
+      run: |
+        case "$RUNNER_LABELS_JSON" in
+          *"blacksmith-"*"ubuntu-2404"*)
+            package_dir="${PACKAGE_JSON_PATH%/*}"
+            echo "Using Blacksmith Ubuntu runner OS dependencies; installing Playwright browser binaries only."
+            pnpm -C "$package_dir" exec playwright install chromium
+            ;;
+          *)
+            bash -o pipefail -c "$INSTALL_COMMAND"
+            ;;
+        esac
