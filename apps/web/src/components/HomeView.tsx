@@ -1377,30 +1377,30 @@ export function HomeView({
     let writeWorkspaceContext;
     let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
     const requiresWorkspaceIdentity = record.source.startsWith('team:plugin:');
-    try {
-      if (workspaceContextState.identityChangePending) {
-        throw new Error('workspace identity change pending');
-      }
-      writeWorkspaceContext = resolvedWorkspaceContextForWrite(workspaceContextState);
-    } catch {
-      if (!requiresWorkspaceIdentity) {
+    if (!requiresWorkspaceIdentity) {
+      try {
+        if (workspaceContextState.identityChangePending) {
+          throw new Error('workspace identity change pending');
+        }
+        writeWorkspaceContext = resolvedWorkspaceContextForWrite(workspaceContextState);
+      } catch {
         writeWorkspaceContext = null;
-      } else {
-        try {
-          workspaceWitness = workspaceContextReadWitnessFromState(workspaceContextState)
-            ?? await resolveCurrentWorkspaceContextReadWitness();
-        } catch {
-          workspaceWitness = null;
-        }
-        if (!workspaceWitness?.isStillCurrent() || !workspaceWitness.context) {
-          clearPendingApply();
-          setError(
-            'Workspace context is unavailable. Try again when workspace sync finishes.',
-          );
-          return null;
-        }
-        writeWorkspaceContext = workspaceWitness.context;
       }
+    } else {
+      try {
+        workspaceWitness = workspaceContextReadWitnessFromState(workspaceContextState)
+          ?? await resolveCurrentWorkspaceContextReadWitness();
+      } catch {
+        workspaceWitness = null;
+      }
+      if (!workspaceWitness?.isStillCurrent() || !workspaceWitness.context) {
+        clearPendingApply();
+        setError(
+          'Workspace context is unavailable. Try again when workspace sync finishes.',
+        );
+        return null;
+      }
+      writeWorkspaceContext = workspaceWitness.context;
     }
     const result = await applyPlugin(record.id, {
       locale,

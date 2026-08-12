@@ -537,20 +537,11 @@ describe('HomeView media composer options', () => {
     expect(new Headers(submittedApply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
   });
 
-  it('does not apply a team plugin unscoped when identity is pending and the directory is empty', async () => {
+  it('does not expose a team plugin for unscoped apply while workspace identity is pending', async () => {
     const fetchMock = stubFetch({
       emptyWorkspaceDirectory: true,
       teamMediaPlugin: true,
     });
-    const onSubmit = vi.fn();
-    const props = homeProps({ onSubmit });
-    const view = render(<HomeView {...props} />);
-
-    await clickHomeRailChip('video');
-    await setHomePrompt('Create a team launch teaser after signing out.');
-    const applyCountBeforeSubmit = fetchMock.mock.calls.filter(([url]) => (
-      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
-    )).length;
     workspaceContextMock.state = {
       context: null,
       resourceReadIdentity: null,
@@ -558,17 +549,37 @@ describe('HomeView media composer options', () => {
       identityChangePending: true,
       failure: undefined,
     };
-    view.rerender(<HomeView {...props} />);
-    await submitHome();
+    renderHome();
+
+    await screen.findByTestId('home-hero-input');
+    expect((screen.getByTestId('home-hero-template-trigger') as HTMLButtonElement).disabled).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    ))).toBe(false);
+  });
+
+  it('does not apply a team plugin unscoped when the settled workspace directory is empty', async () => {
+    const fetchMock = stubFetch({
+      emptyWorkspaceDirectory: true,
+      teamMediaPlugin: true,
+    });
+    workspaceContextMock.state = {
+      context: null,
+      resourceReadIdentity: null,
+      loading: false,
+      identityChangePending: false,
+      failure: undefined,
+    };
+    renderHome();
+
+    await clickHomeRailChip('video');
 
     await waitFor(() => {
       expect(screen.getByTestId('home-hero-submit').getAttribute('aria-busy')).toBe('false');
     });
-    const applyCountAfterSubmit = fetchMock.mock.calls.filter(([url]) => (
+    expect(fetchMock.mock.calls.some(([url]) => (
       typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
-    )).length;
-    expect(applyCountAfterSubmit).toBe(applyCountBeforeSubmit);
-    expect(onSubmit).not.toHaveBeenCalled();
+    ))).toBe(false);
   });
 
   it('preserves od-media-generation required inputs when applying media chips', async () => {
