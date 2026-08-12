@@ -3,6 +3,7 @@ import { PROJECT_EXPORT_MANIFEST_SCHEMA, isExportFormat } from '@open-design/con
 import nodePath from 'node:path';
 import os from 'node:os';
 import { readFile, rm } from 'node:fs/promises';
+import type { Readable } from 'node:stream';
 import { isBlocked as isBlockedSystemDir } from './linked-dirs.js';
 import type { RouteDeps } from './server-context.js';
 import type {
@@ -567,8 +568,8 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
   const { listFiles, readProjectFile, resolveProjectFilePath } = ctx.projectFiles;
   const { isSafeId } = ctx.validation;
   const {
-    buildProjectArchive,
-    buildBatchArchive,
+    createProjectArchiveStream,
+    createBatchArchiveStream,
     buildDesktopPdfExportInput,
     buildDesktopArtifactExportInput,
     desktopPdfExporter,
@@ -577,6 +578,17 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
     daemonUrlRef,
     sanitizeArchiveFilename,
   } = ctx.exports;
+  const pipeArchiveDownload = (res: Response, stream: Readable) => {
+    stream.once('error', (error: unknown) => {
+      if (!res.headersSent) {
+        sendApiError(res, 400, 'BAD_REQUEST', String((error as Error)?.message || error));
+      } else {
+        res.destroy(error as Error);
+      }
+    });
+    res.once('close', () => stream.destroy());
+    stream.pipe(res);
+  };
   async function authorizeExportRead(
     req: any,
     res: any,
@@ -1076,7 +1088,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       const root = typeof req.query?.root === 'string' ? req.query.root : '';
       if (!await authorizeExportRead(req, res, { allowNavigationQuery: true })) return;
       const project = getProject(db, req.params.id);
-      const { buffer, baseName } = await buildProjectArchive(
+      const { stream, baseName } = await createProjectArchiveStream(
         PROJECTS_DIR,
         req.params.id,
         root,
@@ -1095,7 +1107,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         'Content-Disposition',
         `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
       );
-      res.send(buffer);
+      pipeArchiveDownload(res, stream);
     } catch (err: any) {
       const code = err && err.code;
       const status = code === 'ENOENT' || code === 'ENOTDIR' ? 404 : 400;
@@ -1119,7 +1131,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
       }
       if (!await authorizeExportRead(req, res)) return;
       const project = getProject(db, req.params.id);
-      const { buffer } = await buildBatchArchive(
+      const { stream } = await createBatchArchiveStream(
         PROJECTS_DIR,
         req.params.id,
         files,
@@ -1134,7 +1146,7 @@ export function registerProjectExportRoutes(app: Express, ctx: RegisterProjectEx
         'Content-Disposition',
         `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
       );
-      res.send(buffer);
+      pipeArchiveDownload(res, stream);
     } catch (err: any) {
       const code = err && err.code;
       const status = code === 'ENOENT' ? 404 : 400;
