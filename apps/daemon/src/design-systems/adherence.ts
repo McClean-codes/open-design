@@ -437,9 +437,16 @@ function countMarkupSelectorMatches(
 type JsxRoot = JSXElement | JSXFragment;
 
 function jsxStaticMarkupRoots(source: string): string[] | undefined {
-  let ast: ReturnType<typeof parse>;
+  const ast = parseComponentSource(source);
+  if (ast === undefined) return undefined;
+
+  return collectJsxRoots(ast.program)
+    .map((root) => `<od-jsx-root>${serializeJsxRoot(root)}</od-jsx-root>`);
+}
+
+function parseComponentSource(source: string): ReturnType<typeof parse> | undefined {
   try {
-    ast = parse(source, {
+    return parse(source, {
       sourceType: 'unambiguous',
       errorRecovery: true,
       plugins: ['jsx', 'typescript'],
@@ -447,30 +454,30 @@ function jsxStaticMarkupRoots(source: string): string[] | undefined {
   } catch {
     return undefined;
   }
-
-  return collectJsxRoots(ast.program)
-    .map((root) => `<od-jsx-root>${serializeJsxRoot(root)}</od-jsx-root>`);
 }
 
 function collectJsxRoots(value: unknown): JsxRoot[] {
   const roots: JsxRoot[] = [];
-  visit(value);
+  visitBabelNodes(value, (node) => {
+    if (node.type !== 'JSXElement' && node.type !== 'JSXFragment') return;
+    roots.push(node);
+    return false;
+  });
   return roots;
+}
 
-  function visit(candidate: unknown): void {
-    if (Array.isArray(candidate)) {
-      candidate.forEach(visit);
-      return;
-    }
-    if (!isBabelNode(candidate)) return;
-    if (candidate.type === 'JSXElement' || candidate.type === 'JSXFragment') {
-      roots.push(candidate);
-      return;
-    }
-    for (const [key, child] of Object.entries(candidate)) {
-      if (BABEL_METADATA_KEYS.has(key)) continue;
-      visit(child);
-    }
+function visitBabelNodes(
+  value: unknown,
+  visitor: (node: Node) => false | void,
+): void {
+  if (Array.isArray(value)) {
+    value.forEach((item) => visitBabelNodes(item, visitor));
+    return;
+  }
+  if (!isBabelNode(value) || visitor(value) === false) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (BABEL_METADATA_KEYS.has(key)) continue;
+    visitBabelNodes(child, visitor);
   }
 }
 
@@ -786,7 +793,7 @@ function markupStyleFragments(source: string): StyleFragment[] {
           || normalized === ':style'
           || normalized === 'v-bind:style'
           || normalized.startsWith('style:');
-        if (!isStyle && !['fill', 'stroke', 'color', 'bgcolor'].includes(normalized)) continue;
+        if (!isStyle && !VISUAL_COLOR_ATTRIBUTES.has(normalized)) continue;
         fragments.push({
           source: isStyle ? value : `${normalized}: ${value};`,
           inline: true,
@@ -799,9 +806,25 @@ function markupStyleFragments(source: string): StyleFragment[] {
   }
 }
 
+const VISUAL_COLOR_ATTRIBUTES = new Set([
+  'accent-color',
+  'bgcolor',
+  'caret-color',
+  'color',
+  'fill',
+  'flood-color',
+  'lighting-color',
+  'outline-color',
+  'solid-color',
+  'stop-color',
+  'stroke',
+  'text-decoration-color',
+  'text-emphasis-color',
+]);
+
 function componentStyleFragments(source: string): StyleFragment[] {
   const tags = extractExecutableMarkupTags(source);
-  const fragments: StyleFragment[] = [];
+  const fragments = componentAstStyleFragments(source);
   for (let index = 0; index < tags.length; index += 1) {
     const tag = tags[index]!;
     if (tag.closing || tag.name.toLowerCase() !== 'style') continue;
@@ -823,6 +846,81 @@ function componentStyleFragments(source: string): StyleFragment[] {
     }
   }
   return fragments;
+}
+
+function componentAstStyleFragments(source: string): StyleFragment[] {
+  const ast = parseComponentSource(source);
+  if (ast === undefined) return [];
+  const fragments: StyleFragment[] = [];
+  visitBabelNodes(ast.program, (node) => {
+    if (node.type === 'TaggedTemplateExpression' && isCssInJsTag(node.tag)) {
+      fragments.push({ source: cssTemplateSource(node.quasi), inline: false });
+      return;
+    }
+    if (node.type !== 'JSXOpeningElement') return;
+    for (const attribute of node.attributes) {
+      if (attribute.type !== 'JSXAttribute') continue;
+      const originalName = jsxAttributeName(attribute.name);
+      if (originalName === undefined) continue;
+      const normalized = normalizeVisualAttributeName(originalName);
+      if (!VISUAL_COLOR_ATTRIBUTES.has(normalized)) continue;
+      const attributeValue = attribute.value;
+      if (attributeValue === null || attributeValue === undefined) continue;
+      let value: string | undefined;
+      if (attributeValue.type === 'StringLiteral') {
+        value = attributeValue.value;
+      } else if (attributeValue.type === 'JSXExpressionContainer'
+        && attributeValue.expression.type !== 'JSXEmptyExpression') {
+        value = exactStaticExpressionValue(attributeValue.expression);
+      }
+      if (value !== undefined) {
+        fragments.push({ source: `${normalized}: ${value};`, inline: true });
+      }
+    }
+  });
+  return fragments;
+}
+
+function isCssInJsTag(tag: Node): boolean {
+  return expressionRootIdentifier(tag) === 'css'
+    || expressionRootIdentifier(tag) === 'styled';
+}
+
+function expressionRootIdentifier(node: Node): string | undefined {
+  if (node.type === 'Identifier') return node.name;
+  if (node.type === 'MemberExpression' || node.type === 'OptionalMemberExpression') {
+    return isBabelNode(node.object) ? expressionRootIdentifier(node.object) : undefined;
+  }
+  if (node.type === 'CallExpression' || node.type === 'OptionalCallExpression') {
+    return isBabelNode(node.callee) ? expressionRootIdentifier(node.callee) : undefined;
+  }
+  return undefined;
+}
+
+function cssTemplateSource(template: TemplateLiteral): string {
+  let source = template.quasis[0]?.value.cooked ?? template.quasis[0]?.value.raw ?? '';
+  for (let index = 0; index < template.expressions.length; index += 1) {
+    const expression = template.expressions[index]!;
+    source += exactStaticExpressionValue(expression) ?? 'var(--od-dynamic-css-value)';
+    const quasi = template.quasis[index + 1];
+    source += quasi?.value.cooked ?? quasi?.value.raw ?? '';
+  }
+  return source;
+}
+
+function exactStaticExpressionValue(expression: Node): string | undefined {
+  if (expression.type === 'StringLiteral'
+    || expression.type === 'NumericLiteral'
+    || expression.type === 'BooleanLiteral') {
+    return String(expression.value);
+  }
+  if (expression.type === 'NullLiteral') return 'null';
+  if (expression.type === 'TemplateLiteral') return exactTemplateLiteralValue(expression);
+  return undefined;
+}
+
+function normalizeVisualAttributeName(value: string): string {
+  return value.replace(/[A-Z]/gu, (character) => `-${character.toLowerCase()}`).toLowerCase();
 }
 
 type ExecutableMarkupTag = {

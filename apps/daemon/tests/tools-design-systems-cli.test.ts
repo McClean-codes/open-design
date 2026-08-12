@@ -50,6 +50,15 @@ describe('design-system tool CLI', () => {
     process.env = ORIGINAL_ENV;
   });
 
+  it('documents validate artifacts as project-relative files', async () => {
+    const result = await runDesignSystemsToolCli(['--help']);
+
+    expect(result.exitCode).toBe(1);
+    expect(stdoutOutput.join('')).toContain('--artifact <project-relative-file>');
+    expect(stdoutOutput.join('')).not.toContain('file-or-directory');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('resolves a canonical intent through the active project design system', async () => {
     const result = await runDesignSystemsToolCli([
       'resolve',

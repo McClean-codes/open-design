@@ -1,5 +1,5 @@
 import type { Express, Request, Response } from 'express';
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import {
@@ -319,6 +319,15 @@ export function registerDesignSystemToolRoutes(
             return sendApiError(res, 404, 'PROJECT_FILE_NOT_FOUND', `artifact ${artifactPath} was not found`);
           }
           throw error;
+        }
+        const fileStat = await stat(file.filePath);
+        if (!fileStat.isFile()) {
+          return sendApiError(
+            res,
+            400,
+            'INVALID_INPUT',
+            `artifact ${artifactPath} must be a regular file`,
+          );
         }
         if (file.size > MAX_ADHERENCE_ARTIFACT_BYTES) {
           return sendApiError(

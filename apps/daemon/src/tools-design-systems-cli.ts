@@ -24,7 +24,7 @@ interface ParsedOptions {
 const DESIGN_SYSTEMS_USAGE = `Usage:
   od tools design-systems read --path <manifest-declared-path> [--design-system <id>]
   od tools design-systems resolve --intent <canonical-intent> [--design-system <id>] [--json]
-  od tools design-systems validate --intent <canonical-intent> --artifact <project-relative-path> [--artifact <path>...] [--design-system <id>] [--json]
+  od tools design-systems validate --intent <canonical-intent> --artifact <project-relative-file> [--artifact <file>...] [--design-system <id>] [--json]
 
 Environment:
   OD_NODE_BIN     Node-compatible runtime for agent wrapper invocations
@@ -68,7 +68,7 @@ function parseOptions(args: string[]): ParsedOptions | { error: string } {
       options.intent = value;
     } else if (arg === '--artifact') {
       const value = rest[++index];
-      if (!value) return { error: '--artifact requires a project-relative path' };
+      if (!value) return { error: '--artifact requires a project-relative file path' };
       options.artifacts.push(value);
     } else if (arg === '--design-system') {
       const value = rest[++index];
@@ -201,7 +201,7 @@ export async function runDesignSystemsToolCli(args: string[]): Promise<ToolCliRe
   if (options.command === 'validate') {
     if (!options.intent) return fail('validate requires --intent <canonical-intent>');
     if (options.artifacts.length === 0) {
-      return fail('validate requires at least one --artifact <project-relative-path>');
+      return fail('validate requires at least one --artifact <project-relative-file>');
     }
     const request: ValidateDesignSystemAdherenceRequest = {
       intent: options.intent,
