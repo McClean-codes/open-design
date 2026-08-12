@@ -21,13 +21,11 @@ describe("GitHub Actions cache workflows", () => {
     const action = await readFile(setupPlaywrightAction, "utf8");
 
     expect(action).toContain("*'\"nexu-runners-'*");
-    expect(action).toContain('*"blacksmith-"*"ubuntu-2404"*)');
     expect(action).toContain("PLAYWRIGHT_BROWSERS_PATH");
     expect(action).toContain("steps.preinstalled-playwright.outputs.enabled == 'true'");
     expect(action).toContain("steps.preinstalled-playwright.outputs.enabled != 'true'");
     expect(action).toContain('pnpm -C "$package_dir" exec playwright install chromium');
-    expect(action).toContain("Using Blacksmith Ubuntu runner OS dependencies");
-    expect(action).toContain('bash -o pipefail -c "$INSTALL_COMMAND"');
+    expect(action).toContain("run: ${{ inputs.install-command }}");
   });
 
   it("[P1] keeps pnpm cache writes on explicit trusted main seed jobs", async () => {
