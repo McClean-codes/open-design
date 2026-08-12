@@ -151,15 +151,13 @@ AMR 系统 E2E 还会校验真实 run start 事件暴露的 token deadline。
 
 ### 9. Prerelease UI 缺口收敛
 
-此前以 expected failure / `fixme` 保留的一批用例已恢复为正向回归：
+本轮确认下列过期 expected failure / `fixme` 已恢复为正向回归：
 
-- Provider 配置在导航与 reload 后保持同步
 - Plan 首次生成与 regeneration 自动打开或 refocus HTML
-- inline workspace Context chip 删除、PATCH 回滚和 `context_remove` analytics
-- chat scrollbar gutter 与 resize handle hitbox 隔离（含 RTL）
-- account menu Credit 入口与新 billing contract
-- updater popup stacking
 - plugin authoring 从 Plugins Add 面板进入，并生成 scaffold、assistant 文件列表和操作卡
+- Connectors / MCP visual capture 从 Home composer 的当前入口进入，不再 skip
+- 已删除与 light-only 产品契约相反的 system-theme 动态切换旧用例；强制 light 的迁移
+  契约由 `force-light-theme.test.ts` 覆盖
 
 插件用例同时锁定两项完成态契约：终态文件列表必须绕过旧的共享读取缓存，且
 `producedFiles` 必须合并“本轮新增文件”和 daemon 报告的“既有文件修改”。这样 `.md`、
@@ -189,6 +187,22 @@ AMR 系统 E2E 还会校验真实 run start 事件暴露的 token deadline。
   - 断言原始 `runId`、assistant `runStatus`、`producedFiles`、项目文件和预览均在 reload 后收敛
 
 当前仍有下列明确缺口：
+
+- Media provider key 可以在 Settings 保存、重开和从 daemon reload，但返回 Projects
+  后不会同步到 New Project model picker；OpenAI、MiniMax、Volcengine、FishAudio 的
+  6 条跨页面/首轮 run P1 以 expected failure 保留。
+- 删除 inline workspace Context chip 尚未同步 `linkedDirs`、失败 PATCH 与
+  `context_remove` analytics；`project-management-flows.test.ts` 中保留 3 条 P1。
+- chat scrollbar gutter 仍被 resize handle hitbox 覆盖，LTR hover/drag 与 RTL
+  共 3 条 P1 为 expected failure。
+- updater ready popup 在紧凑窗口中仍会落到 Home composer / agent picker 的 stacking
+  context 下方，保留 1 条 P1 expected failure。
+- account menu 当前不展示 Personal / Team credit balance，双窗口 billing scope 的
+  可视化隔离保留 1 条 P1 expected failure；workspace authority / billing API 的 P0
+  覆盖仍正常。
+- 上述 14 条 UI 修复曾在本分支验证通过，但远端提交 `762dc6aa5` 明确将它们作为
+  “unrelated UI changes” 移出当前 release-gate PR；本轮复验确认这些 expected failure
+  仍会触发，而不是过期标记。后续应在单独 UI fix PR 中恢复实现并移除标记。
 
 - Signed-out 产品契约已统一为 Cloud 登录门禁：Home、Community、Projects、
   Design Systems、Plugins、Integrations 和 Settings 深链都会收敛到
@@ -247,6 +261,8 @@ pnpm --filter @open-design/e2e exec playwright test -c playwright.config.ts ui/a
 后面最有价值的继续方式是：
 
 - 在 `extended` 里继续给 UI-only 断言补低成本 persisted-state 校验
+- 用单独 UI fix PR 收敛 Provider 6、Context 3、resize 3、Updater 1、billing 1，避免
+  再次与 release-gate PR 的作用域清理互相覆盖
 - 补一条 fake Vela 驱动的 UI → run → media tool → task 终态 → artifact 跨层闭环
 - 补齐 run analytics v4 的本地 receiver、真实 PostHog 查询与样本对账
 - 为 Community 搜索提供真实产品行为后再补搜索 E2E
