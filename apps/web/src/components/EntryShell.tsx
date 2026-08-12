@@ -1292,6 +1292,7 @@ export function EntryShell({
     // and the composer keeps its draft. In-project sends are gated separately
     // in ProjectView.handleSend.
     let amrGatePrecheckWitness: AmrBalanceGateScope | undefined;
+    let amrGatePrecheckPassed = false;
     if (config.mode === 'daemon' && config.agentId === 'amr') {
       // The membership directory contains every field needed to scope billing
       // and project creation. It lands before the richer Workspace projection
@@ -1299,9 +1300,15 @@ export function EntryShell({
       // generation-keyed request, so submission does not wait on unrelated
       // plan/seat/display metadata.
       for (let workspaceAttempt = 0; workspaceAttempt < 2; workspaceAttempt += 1) {
+        const workspaceState = workspaceContextStateRef.current;
         let workspaceWitness: CurrentWorkspaceContextReadWitness | null =
-          workspaceContextReadWitnessFromState(workspaceContextStateRef.current);
-        if (!workspaceWitness) {
+          workspaceContextReadWitnessFromState(workspaceState);
+        if (!workspaceWitness && workspaceState.failure === 'unsupported') {
+          workspaceWitness = {
+            context: null,
+            isStillCurrent: () => workspaceContextStateRef.current.failure === 'unsupported',
+          };
+        } else if (!workspaceWitness) {
           try {
             workspaceWitness = await resolveCurrentWorkspaceContextReadWitness();
           } catch {
@@ -1349,9 +1356,10 @@ export function EntryShell({
         }
         if (!workspaceWitness.isStillCurrent()) continue;
         amrGatePrecheckWitness = gateScope;
+        amrGatePrecheckPassed = true;
         break;
       }
-      if (!amrGatePrecheckWitness) {
+      if (!amrGatePrecheckPassed) {
         return false;
       }
     }

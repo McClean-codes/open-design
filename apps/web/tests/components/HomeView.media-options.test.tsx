@@ -447,7 +447,7 @@ describe('HomeView media composer options', () => {
   });
 
   it('re-applies the selected plugin from directory identity while rich context is loading', async () => {
-    const fetchMock = stubFetch();
+    const fetchMock = stubFetch({ teamMediaPlugin: true });
     const onSubmit = vi.fn();
     const props = homeProps({ onSubmit });
     const view = render(<HomeView {...props} />);
@@ -499,6 +499,38 @@ describe('HomeView media composer options', () => {
       typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
     )).length;
     expect(applyCountAfterSubmit).toBe(applyCountBeforeSubmit + 1);
+    const submittedApply = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
+    )).at(-1);
+    expect(new Headers(submittedApply?.[1]?.headers).has('x-od-workspace-id')).toBe(false);
+  });
+
+  it('does not wait for directory discovery when applying a bundled plugin', async () => {
+    const fetchMock = stubFetch({ workspaceDirectoryStatus: 503 });
+    const onSubmit = vi.fn();
+    const props = homeProps({ onSubmit });
+    const view = render(<HomeView {...props} />);
+
+    await clickHomeRailChip('video');
+    await setHomePrompt('Create a local launch teaser while identity is unavailable.');
+    workspaceContextMock.state = {
+      context: null,
+      resourceReadIdentity: null,
+      loading: true,
+      identityChangePending: true,
+      failure: 'unavailable',
+    };
+    view.rerender(<HomeView {...props} />);
+    const directoryReadsBeforeSubmit = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url === '/api/workspace/directory'
+    )).length;
+    await submitHome();
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
+    const directoryReadsAfterSubmit = fetchMock.mock.calls.filter(([url]) => (
+      typeof url === 'string' && url === '/api/workspace/directory'
+    )).length;
+    expect(directoryReadsAfterSubmit).toBe(directoryReadsBeforeSubmit);
     const submittedApply = fetchMock.mock.calls.filter(([url]) => (
       typeof url === 'string' && url.includes('/api/plugins/od-media-generation/apply')
     )).at(-1);
@@ -585,6 +617,7 @@ function stubFetch(options: {
   elevenLabsVoiceError?: string;
   emptyWorkspaceDirectory?: boolean;
   teamMediaPlugin?: boolean;
+  workspaceDirectoryStatus?: number;
 } = {}) {
   vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => {
     cb(0);
@@ -601,6 +634,9 @@ function stubFetch(options: {
       return json({ servers: [], templates: [] });
     }
     if (typeof url === 'string' && url === '/api/workspace/directory') {
+      if (options.workspaceDirectoryStatus) {
+        return json({ error: 'workspace_unavailable' }, options.workspaceDirectoryStatus);
+      }
       return json({
         items: options.emptyWorkspaceDirectory
           ? []

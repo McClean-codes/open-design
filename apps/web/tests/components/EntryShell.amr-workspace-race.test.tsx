@@ -293,6 +293,73 @@ describe('EntryShell AMR workspace precheck race', () => {
     await waitFor(() => expect(screen.queryByTestId('amr-balance-dialog')).toBeNull());
   });
 
+  it('keeps the account-scoped gate on daemons without Workspace APIs', async () => {
+    window.history.replaceState(null, '', '/');
+    let directoryReads = 0;
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspace/directory')) {
+        directoryReads += 1;
+        return new Response(JSON.stringify({ error: 'not_found' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+      return jsonResponse({});
+    }) as typeof fetch;
+    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
+    const onCreateProject = vi.fn(async () => true);
+
+    render(
+      <I18nProvider initial="en">
+        <EntryShell
+          skills={[]}
+          designTemplates={[]}
+          designSystems={[]}
+          projects={[]}
+          templates={[]}
+          promptTemplates={[]}
+          defaultDesignSystemId={null}
+          connectors={[]}
+          connectorsLoading={false}
+          config={amrConfig()}
+          agents={[amrAgent()]}
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiProtocolChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onConfigPersist={vi.fn()}
+          onRefreshAgents={vi.fn(() => [amrAgent()])}
+          onCreateProject={onCreateProject}
+          onCreatePluginShareProject={vi.fn()}
+          onImportClaudeDesign={vi.fn()}
+          onOpenProject={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onDeleteProject={vi.fn()}
+          onRenameProject={vi.fn()}
+          onChangeDefaultDesignSystem={vi.fn()}
+          onPersistComposioKey={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onCompleteOnboarding={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(directoryReads).toBe(1));
+    setHomeHeroPrompt('Create through the old daemon compatibility lane.');
+    fireEvent.click(await screen.findByTestId('home-hero-submit'));
+
+    await waitFor(() => expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith(undefined));
+    await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
+    expect(directoryReads).toBe(1);
+  });
+
   it('keeps one Home submit loading until a transient team billing read recovers', async () => {
     window.history.replaceState(null, '', '/');
     const workspace = teamContext('workspace-a', 'member-a');
