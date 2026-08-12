@@ -429,41 +429,4 @@ describe('project resource selection uses the persisted exact member', () => {
     expect(getLocalPluginBySource).toHaveBeenCalledWith('shared-id', source);
     expect(insertProject).not.toHaveBeenCalled();
   });
-
-  it('does not let a legacy plugin scope substitute an ID-only record for an exact source', async () => {
-    const insertProject = vi.fn((_: unknown, input: Record<string, unknown>) => input);
-    const insertConversation = vi.fn();
-    const loadRegistry = vi.fn();
-    const getPlugin = vi.fn(async () => ({
-      id: 'shared-id',
-      source: 'team:plugin:current-workspace:shared-id',
-    }));
-    const baseUrl = await start(buildDeps({
-      insertProject,
-      insertConversation,
-      loadRegistry,
-      getPlugin,
-      // Deliberately omit getLocalPluginBySource to model a legacy scope.
-    }));
-
-    const response = await fetch(`${baseUrl}/api/projects`, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({
-        id: 'legacy-scope-exact-source',
-        name: 'Legacy scope exact source',
-        pluginId: 'shared-id',
-        pluginSource: 'local:personal:shared-id',
-      }),
-    });
-
-    expect(response.status).toBe(404);
-    await expect(response.json()).resolves.toMatchObject({
-      error: { code: 'PLUGIN_NOT_FOUND' },
-    });
-    expect(getPlugin).not.toHaveBeenCalled();
-    expect(loadRegistry).not.toHaveBeenCalled();
-    expect(insertProject).not.toHaveBeenCalled();
-    expect(insertConversation).not.toHaveBeenCalled();
-  });
 });

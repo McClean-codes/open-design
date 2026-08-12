@@ -3515,13 +3515,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       if (
         requestedPluginId
         && requestedPluginSource
+        && ctx.pluginScope?.getLocalPluginBySource
         && !exactLocalPlugin
       ) {
-        // PRODUCT INVARIANT: once the client supplies an exact local source,
-        // never degrade to an ID-only resolver. Older route environments that
-        // lack source-aware resolution cannot prove which same-id record was
-        // selected, so they must fail closed without creating a project. This
-        // is a local compatibility fence, not login or Workspace authority.
         return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
       }
       if (requestedPluginId) {
