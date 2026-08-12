@@ -55,8 +55,14 @@ const UNBOUND_PROJECT = 'p-unbound-run';
 const WORKSPACE_ID = 'ws-run-gate';
 const OWNER_MEMBER_ID = 'member-owner-run';
 
-function sendApiError(res: any, status: number, code: string, message: string) {
-  return res.status(status).json({ error: { code, message } });
+function sendApiError(
+  res: any,
+  status: number,
+  code: string,
+  message: string,
+  details: Record<string, unknown> = {},
+) {
+  return res.status(status).json({ error: { code, message, ...details } });
 }
 
 function workspaceHeaders(memberId: string, role: 'owner' | 'admin' | 'member') {
@@ -484,7 +490,10 @@ describe('POST /api/runs — workspace mutation gate', () => {
 
       expect(response.status).toBe(503);
       await expect(response.json()).resolves.toMatchObject({
-        error: { code: 'WORKSPACE_AUTHORITY_UNAVAILABLE' },
+        error: {
+          code: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
+          retryable: true,
+        },
       });
       expect(verifyWorkspaceRequestAuthority).toHaveBeenCalledTimes(1);
       expect(createdRunCount).toBe(0);

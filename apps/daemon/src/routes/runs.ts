@@ -478,6 +478,7 @@ export interface RegisterRunRoutesDeps {
       status: number,
       code: string,
       message: string,
+      details?: Record<string, unknown>,
     ) => Response<unknown> | void;
   };
   paths: {
@@ -1061,7 +1062,13 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     const verified =
       await ctx.amrWorkspaceScope.verifyWorkspaceRequestAuthority(req);
     if (!verified.ok) {
-      sendApiError(res, verified.status, verified.code, verified.message);
+      sendApiError(
+        res,
+        verified.status,
+        verified.code,
+        verified.message,
+        verified.retryable ? { retryable: true } : {},
+      );
       return { ok: false };
     }
     if (
