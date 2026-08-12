@@ -97,7 +97,7 @@ export async function packWin(config: ToolPackConfig): Promise<WinPackResult> {
       await rm(paths.setupZipPath, { force: true });
     }
   });
-  const workspaceBuildKey = await runPhase("workspace-build", async () => ensureWinWorkspaceBuild(config, cache));
+  const shellBuildIdentity = await runPhase("workspace-build", async () => ensureWinWorkspaceBuild(config, cache));
   const resourceTree = await runPhase("resource-tree", async () =>
     prepareResourceTree(config, paths, cache, { materialize: config.to !== "dir" })
   );
@@ -105,7 +105,7 @@ export async function packWin(config: ToolPackConfig): Promise<WinPackResult> {
     await copyWinIcon(paths);
   });
   const tarballs = await runPhase("workspace-tarballs", async () =>
-    collectWorkspaceTarballs(config, paths, cache, workspaceBuildKey)
+    collectWorkspaceTarballs(config, paths, cache, shellBuildIdentity.buildDigest)
   );
   const packagedAppKey = await createWinPackagedAppCacheKey(config, tarballs.key, tarballs.tarballs);
   let packagedAppRoot: string | null = null;
@@ -160,7 +160,7 @@ export async function packWin(config: ToolPackConfig): Promise<WinPackResult> {
     cacheReport: cache.report(),
     segments,
     sizeReport,
-    shell: { sourceDigest: workspaceBuildKey as `sha256:${string}`, type: config.shell, version: shellVersion },
+    shell: { ...shellBuildIdentity, type: config.shell, version: shellVersion },
     timings,
     to: config.to,
     unpackedPath: builtApp?.unpackedRoot ?? ((await pathExists(paths.unpackedRoot)) ? paths.unpackedRoot : null),
