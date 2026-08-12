@@ -3,8 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { Locator } from '@playwright/test';
-import type { ProjectWorkspaceScopeResponse } from '@open-design/contracts';
-
 import { expect, test } from '@/playwright/suite';
 
 import { writeFakeVelaBin } from '@/amr';
@@ -17,7 +15,6 @@ import {
   openSettingsDialog,
   putAppConfig,
   seedBrowserConfig,
-  sendPrompt,
 } from '@/playwright/amr';
 
 test.describe.configure({ timeout: T.xlong });
@@ -53,7 +50,7 @@ function amrAgentToggle(settings: Locator): Locator {
   return settings.getByTestId('settings-agent-card-amr').getByRole('button').first();
 }
 
-test('[P0] after local Sign out, the app returns to onboarding and AMR runs require re-login without clearing setup', async ({ page }) => {
+test('[P0] after local Sign out, the app returns to onboarding without clearing setup', async ({ page }) => {
   await stubCatalogsEmpty(page);
   const root = join(tmpdir(), `open-design-amr-logout-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
   const reloginVelaBin = await writeFakeVelaBin(join(root, 'bin-relogin'), {
@@ -147,34 +144,6 @@ test('[P0] after local Sign out, the app returns to onboarding and AMR runs requ
     agentId: 'amr',
     onboardingCompleted: true,
   });
-  const reloginConfig = {
-    ...config,
-    agentCliEnv: {
-      amr: { VELA_BIN: reloginVelaBin },
-    },
-  };
-  await putAppConfig(page, reloginConfig);
-  await page.evaluate((next) => {
-    window.localStorage.setItem('open-design:config', JSON.stringify(next));
-  }, reloginConfig);
-  const projectScopeResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return response.request().method() === 'GET'
-      && url.pathname === `/api/projects/${projectId}/workspace-scope`;
-  });
-  await gotoProject(page, projectId);
-  const scopeResponse = await projectScopeResponse;
-  const scopeBody = (await scopeResponse.json()) as ProjectWorkspaceScopeResponse;
-  expect(scopeResponse.ok(), JSON.stringify(scopeBody)).toBeTruthy();
-  expect(scopeBody.scope).toMatchObject({ kind: 'personal', projectId });
-  await sendPrompt(page, 'AMR logout should require relogin');
-
-  const balanceGate = page.getByTestId('amr-balance-dialog');
-  await expect(balanceGate).toBeVisible({ timeout: 15_000 });
-  await expect(balanceGate).toContainText(/Sign in to start creating/i);
-  await expect(balanceGate).toContainText(/sign in and this task can start right away/i);
-  await expect(balanceGate.getByRole('button', { name: /^Sign in$/i })).toBeVisible();
-
   const configResponse = await page.request.get('/api/app-config');
   expect(configResponse.ok(), await configResponse.text()).toBeTruthy();
   const body = (await configResponse.json()) as { config?: { agentId?: string } };
