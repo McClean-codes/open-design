@@ -87,15 +87,9 @@ on:
       mac_arm64_smoke_result:
         description: "macOS arm64 packaged smoke outcome; advisory to publication."
         value: ${{ jobs.build_mac.outputs.smoke_result }}
-      mac_x64_smoke_result:
-        description: "macOS x64 packaged smoke outcome; advisory to publication."
-        value: ${{ jobs.build_mac_intel.outputs.smoke_result }}
       win_x64_smoke_result:
         description: "Windows x64 packaged smoke outcome; advisory to publication."
         value: ${{ jobs.build_win.outputs.smoke_result }}
-      linux_x64_smoke_result:
-        description: "Linux x64 packaged smoke outcome; advisory to publication."
-        value: ${{ jobs.build_linux.outputs.smoke_result }}
       version_metadata_url:
         description: "Public R2 URL of this build's version metadata.json."
         value: ${{ jobs.publish.outputs.version_metadata_url }}

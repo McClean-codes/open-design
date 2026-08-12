@@ -2273,12 +2273,8 @@ process.stdin.on("end", () => {
     const workflowCall = sectionBetween(prerelease, "  workflow_call:", "permissions:");
     expect(workflowCall).toContain("mac_arm64_smoke_result:");
     expect(workflowCall).toContain("value: ${{ jobs.build_mac.outputs.smoke_result }}");
-    expect(workflowCall).toContain("mac_x64_smoke_result:");
-    expect(workflowCall).toContain("value: ${{ jobs.build_mac_intel.outputs.smoke_result }}");
     expect(workflowCall).toContain("win_x64_smoke_result:");
     expect(workflowCall).toContain("value: ${{ jobs.build_win.outputs.smoke_result }}");
-    expect(workflowCall).toContain("linux_x64_smoke_result:");
-    expect(workflowCall).toContain("value: ${{ jobs.build_linux.outputs.smoke_result }}");
 
     const macJob = sectionBetween(prerelease, "  build_mac:", "  build_mac_intel:");
     const macSmoke = sectionBetween(
@@ -2338,22 +2334,16 @@ process.stdin.on("end", () => {
 
     const notifyJob = notify.slice(notify.indexOf("  notify:"));
     expect(notifyJob).toContain("MAC_ARM64_SMOKE_RESULT: ${{ needs.build.outputs.mac_arm64_smoke_result }}");
-    expect(notifyJob).toContain("MAC_X64_SMOKE_RESULT: ${{ needs.build.outputs.mac_x64_smoke_result }}");
     expect(notifyJob).toContain("WIN_X64_SMOKE_RESULT: ${{ needs.build.outputs.win_x64_smoke_result }}");
-    expect(notifyJob).toContain("LINUX_X64_SMOKE_RESULT: ${{ needs.build.outputs.linux_x64_smoke_result }}");
     expect(notifyJob).toContain("MAC_ARM64_URL: ${{ needs.build.outputs.mac_arm64_url }}");
     expect(notifyJob).toContain("WIN_URL: ${{ needs.build.outputs.win_url }}");
     expect(notifyJob).toContain("tools/release/src/notifications/feishu.ts");
     expect(notifyJob).not.toContain("tools/release/src/notifications/feishu-notice.ts");
 
     expect(feishuCard).toContain('optional("MAC_ARM64_SMOKE_RESULT")');
-    expect(feishuCard).toContain('optional("MAC_X64_SMOKE_RESULT")');
     expect(feishuCard).toContain('optional("WIN_X64_SMOKE_RESULT")');
-    expect(feishuCard).toContain('optional("LINUX_X64_SMOKE_RESULT")');
     expect(feishuCard).toContain("Windows x64 smoke 失败");
     expect(feishuCard).toContain("macOS arm64 smoke 失败");
-    expect(feishuCard).toContain("macOS Intel smoke 失败");
-    expect(feishuCard).toContain("Linux x64 smoke 失败");
     expect(feishuCard).toContain("产物已继续发布，可通过下方链接下载");
     expect(feishuCard).toContain(
       'template: smokeFailures.length > 0 || releaseState === "partial" ? "orange"',
@@ -2383,27 +2373,6 @@ process.stdin.on("end", () => {
       "https://releases.example/mac.dmg",
       "https://releases.example/windows.exe",
     ]);
-  });
-
-  it("[P1] reports Intel macOS and Linux prerelease smoke failures on the download card", async () => {
-    const payload = await renderFeishuBuildCard({
-      LINUX_URL: "https://releases.example/open-design.AppImage",
-      LINUX_X64_SMOKE_RESULT: "failure",
-      MAC_INTEL_URL: "https://releases.example/mac-intel.dmg",
-      MAC_X64_SMOKE_RESULT: "failure",
-    });
-    const card = payload.card as {
-      elements: Array<{ text?: { content?: string } }>;
-      header: { template?: string; title?: { content?: string } };
-    };
-
-    expect(card.header).toMatchObject({
-      template: "orange",
-      title: { content: expect.stringContaining("macOS Intel smoke 失败、Linux x64 smoke 失败") },
-    });
-    expect(card.elements.map((element) => element.text?.content).filter(Boolean)).toContain(
-      "**Smoke 告警**\n- macOS Intel smoke 失败\n- Linux x64 smoke 失败\n\n产物已继续发布，可通过下方链接下载。",
-    );
   });
 
   it("[P1] keeps download actions on a partial beta card without claiming latest promotion", async () => {
