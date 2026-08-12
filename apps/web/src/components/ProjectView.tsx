@@ -2014,6 +2014,9 @@ export function ProjectView({
   // Website-clone turns reproduce a whole multi-page site; auto-open should
   // land on the site entry (index.html), not the last-written subpage. See
   // `SelectAutoOpenOptions.preferSiteEntry`.
+  const autoOpenArtifactOptions = {
+    preferSiteEntry: currentProject.metadata?.intent === 'web-clone',
+  };
   const designSystemBrandId = projectIsDesignSystemProject
     ? currentProject.metadata?.brandId?.trim() || null
     : null;
@@ -2128,11 +2131,6 @@ export function ProjectView({
     ],
   );
   const activeSessionMode = activeConversation?.sessionMode ?? 'design';
-  const autoOpenArtifactOptions = {
-    preferSiteEntry:
-      currentProject.metadata?.intent === 'web-clone'
-      || activeSessionMode === 'plan',
-  };
   const [messagesConversationId, setMessagesConversationId] = useState<string | null>(null);
   const [failedMessagesConversationId, setFailedMessagesConversationId] = useState<string | null>(null);
   const [conversationLoadError, setConversationLoadError] = useState<string | null>(null);

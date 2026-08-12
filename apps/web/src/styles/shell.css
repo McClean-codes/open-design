@@ -2434,8 +2434,8 @@ a.avatar-item:visited {
   position: absolute;
   top: 0;
   bottom: 0;
-  inset-inline-start: 0;
-  inset-inline-end: -10px;
+  left: -10px;
+  right: -10px;
   cursor: col-resize;
 }
 .split-resize-handle::after {
