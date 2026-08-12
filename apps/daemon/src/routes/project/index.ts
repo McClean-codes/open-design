@@ -114,7 +114,6 @@ import {
   CreatedProjectWorkspaceResolutionError,
   localProjectWorkspaceAttribution,
 } from '../../collab/created-project-workspace.js';
-import { localPluginRegistryScope } from '../../plugins/local-source.js';
 import type { WorkspaceDirectoryFetchResult } from '../../collab/vela-workspace-context.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
 
@@ -3669,15 +3668,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       }
       let resolvedSnapshot = null;
       if (resolveBody) {
-        // An exact local Team plugin resolves its referenced local Team Skill
-        // and Design System from the plugin source's historical Workspace,
-        // not from the new local project's attribution scope. This is local
-        // provenance only; no membership/network authority is consulted.
-        const registry = await loadPluginRegistryView(
-          exactLocalPlugin
-            ? localPluginRegistryScope(exactLocalPlugin)
-            : creationWorkspaceScope,
-        );
+        const registry = await loadPluginRegistryView(creationWorkspaceScope);
         const resolved = resolvePluginSnapshot({
           db,
           body: resolveBody,

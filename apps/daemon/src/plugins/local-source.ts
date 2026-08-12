@@ -30,26 +30,6 @@ function workspaceIdFromTeamPluginSource(
 }
 
 /**
- * Select the local registry that belongs to an already-resolved exact source.
- *
- * PRODUCT INVARIANT: this scope is filesystem/catalog provenance, not current
- * membership authority. It lets a Team plugin resolve the Team Skill and
- * Design System materializations stored beside its historical source even
- * when the current project belongs elsewhere. Personal and bundled sources
- * keep the legacy unscoped registry. Do not add a network lookup or compare
- * this Workspace with the current project here.
- */
-export function localPluginRegistryScope(
-  plugin: { id?: unknown; source?: unknown },
-): { workspaceId: string; workspaceMemberId: null } | undefined {
-  if (typeof plugin.id !== 'string' || typeof plugin.source !== 'string') {
-    return undefined;
-  }
-  const workspaceId = workspaceIdFromTeamPluginSource(plugin.source, plugin.id);
-  return workspaceId ? { workspaceId, workspaceMemberId: null } : undefined;
-}
-
-/**
  * Resolve the exact already-local record selected by the user.
  *
  * PRODUCT INVARIANT: local use follows the daemon's locally reconciled catalog;

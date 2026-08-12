@@ -30,7 +30,6 @@ import type { WorkspaceDirectoryFetchResult } from '../../collab/vela-workspace-
 import type { PluginShareAction } from '../../services/plugin-share-tasks.js';
 import type { AuthorizeProjectRequest } from '../../collab/project-request-authority.js';
 import { workspaceTeamPluginBindingResourceId } from '../../plugins/registry.js';
-import { localPluginRegistryScope } from '../../plugins/local-source.js';
 import {
   classifyPluginInstallError,
   type PluginInstallErrorCode,
@@ -627,9 +626,7 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
       if (!plugin) {
         return res.status(404).json({ error: 'plugin not found' });
       }
-      const registry = await helpers.loadPluginRegistryView(
-        localPluginRegistryScope(plugin),
-      );
+      const registry = await helpers.loadPluginRegistryView();
       return applyResolvedPlugin(req, res, plugin, registry);
     } catch (err: unknown) {
       if (err instanceof plugins.MissingInputError) {

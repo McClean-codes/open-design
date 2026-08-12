@@ -12,7 +12,6 @@ import {
   teamResourceMaterializationDir,
 } from '../src/collab/team-resource-materialization.js';
 import {
-  localPluginRegistryScope,
   resolveLocalPluginBySource,
   resolvePluginFolder,
   resolvePluginSnapshot,
@@ -37,17 +36,6 @@ async function pluginManifest(folder: string, title: string): Promise<void> {
 }
 
 describe('resolveLocalPluginBySource', () => {
-  it('derives registry provenance only for an exact Team source', () => {
-    expect(localPluginRegistryScope({
-      id: 'shared-id',
-      source: 'team:plugin:workspace-a:shared-id',
-    })).toEqual({ workspaceId: 'workspace-a', workspaceMemberId: null });
-    expect(localPluginRegistryScope({
-      id: 'shared-id',
-      source: 'local:personal:shared-id',
-    })).toBeUndefined();
-  });
-
   it('selects an exact Team materialization when a Personal plugin has the same id', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), 'od-local-plugin-source-'));
     roots.push(root);
