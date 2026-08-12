@@ -630,21 +630,7 @@ export function registerPluginRoutes(app: Express, deps: RegisterPluginRoutesDep
       const registry = await helpers.loadPluginRegistryView(
         localPluginRegistryScope(plugin),
       );
-      // PRODUCT INVARIANT: exact local apply is intentionally independent of
-      // login and remote Workspace authority. Re-resolve only against the
-      // daemon's current local reconciliation state after the registry await,
-      // so a local uninstall/tombstone that lands mid-operation cannot apply a
-      // cached record. Do not replace this fence with a network membership
-      // check or current-project Workspace comparison.
-      const currentPlugin = await plugins.getLocalPluginBySource(
-        db,
-        req.params.id,
-        source,
-      );
-      if (!currentPlugin) {
-        return res.status(404).json({ error: 'plugin not found' });
-      }
-      return applyResolvedPlugin(req, res, currentPlugin, registry);
+      return applyResolvedPlugin(req, res, plugin, registry);
     } catch (err: unknown) {
       if (err instanceof plugins.MissingInputError) {
         return res.status(422).json({ error: 'missing_inputs', fields: err.fields });
