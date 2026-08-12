@@ -332,7 +332,6 @@ test('[P1] Plan mode generation turn auto-opens the generated HTML file', async 
 // fake runtime (no tool_use events, like most CLI protocols) so the per-write
 // auto-open path cannot mask the turn-end selection.
 test('[P1] Plan mode regeneration re-opens the existing generated HTML file', async ({ page }) => {
-  test.fixme(true, 'Blocked by #5352: generation does not reliably open or refocus index.html.');
   test.setTimeout(120_000);
   await createProject(page, 'Plan mode html regen smoke');
   await expectWorkspaceReady(page);
@@ -647,18 +646,7 @@ test('[P1] BYOK OpenCode run is blocked before spawn when provider config is mis
   expect(await listProjectFiles(page, projectId)).toEqual([]);
 });
 
-// BLOCKED — no UI entry point left for agent-driven plugin authoring.
-//
-// This spec used to start from the Home rail's More-shortcuts menu ("Create a
-// plugin", `home-hero-rail-create-plugin`), which #5517 deleted along with the
-// rest of the rail. The daemon-side capability is intact and
-// `EntryShell.startPluginAuthoring` / `createPluginAuthoringHandoff` are still
-// wired, but nothing calls them any more: `EntryShell` hands
-// `onCreatePlugin={startPluginAuthoring}` to `ExtensionsMarketplace`, which
-// only uses the prop as a boolean gate for a Create button that opens the
-// import/upload dialog instead. Restore an entry point (or re-point this spec
-// at it) before un-fixme-ing — do not weaken the assertions to make it pass.
-test.fixme('[P1] plugin authoring produces a generated-plugin scaffold with action cards', async ({ page }) => {
+test('[P1] plugin authoring produces a generated-plugin scaffold with action cards', async ({ page }) => {
   await configureFakeAgent(page, 'codex');
   await installBrowserAgentConfig(page, 'codex');
   await gotoEntryHome(page);
@@ -670,15 +658,13 @@ test.fixme('[P1] plugin authoring produces a generated-plugin scaffold with acti
   await expectBrowserAgentConfig(page, 'codex');
   await dismissPrivacyDialog(page);
 
-  // Enter plugin authoring through the Plugins page create button. It drives
-  // the same queuePluginAuthoring flow as the home shortcuts menu, and this
-  // spec's oracle is the generated scaffold plus its action cards — not the
-  // menu chrome. The shortcuts trigger itself sits disabled on CI runners
-  // while a home plugin apply hangs; that anomaly is tracked as its own
-  // follow-up rather than blocking this journey.
+  // Enter plugin authoring through the current Plugins Add panel. The
+  // agent-assisted option hands its prompt back to the Home composer; the
+  // scaffold and action cards below remain the end-to-end oracle.
   await page.goto('/plugins', { waitUntil: 'domcontentloaded' });
   await waitForLoadingToClear(page);
-  await page.getByTestId('plugins-create-button').click();
+  await page.getByRole('button', { name: 'Add', exact: true }).click();
+  await page.getByTestId('plugin-create-with-agent').click();
   await expect(page.getByTestId('home-hero-input')).toHaveText(/Create an Open Design plugin for:/);
 
   const projectRequestPromise = page.waitForRequest(isCreateProjectRequest);
@@ -699,7 +685,7 @@ test.fixme('[P1] plugin authoring produces a generated-plugin scaffold with acti
   expect(runBody.message).toContain('produce a folder named generated-plugin');
 
   await expectWorkspaceReady(page);
-  const { projectId } = await currentProjectContext(page);
+  const { projectId, conversationId } = await currentProjectContext(page);
   await expectProjectFilesToContain(page, projectId, [
     'generated-plugin/open-design.json',
     'generated-plugin/SKILL.md',
@@ -707,6 +693,15 @@ test.fixme('[P1] plugin authoring produces a generated-plugin scaffold with acti
   ]);
   await expectProjectFileToContain(page, projectId, 'generated-plugin/open-design.json', '"name": "generated-plugin"');
   await expectProjectFileToContain(page, projectId, 'generated-plugin/SKILL.md', '# Generated Plugin');
+
+  await expectRestoredDelayedAssistantMessage(page, projectId, conversationId, {
+    producedFiles: [
+      'generated-plugin/examples/demo.md',
+      'generated-plugin/SKILL.md',
+      'generated-plugin/open-design.json',
+    ],
+    expectedThinking: false,
+  });
 
   await expect(page.getByText('Files from this turn')).toBeVisible();
   await expect(page.getByTestId('assistant-plugin-actions-generated-plugin')).toBeVisible();

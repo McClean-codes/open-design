@@ -7230,7 +7230,11 @@ export function ProjectView({
           // chips.
           void (async () => {
             try {
-              let nextFiles = await refreshProjectFiles();
+              // A settled shared file-list read from before the daemon exit can
+              // otherwise win the race with the file-change invalidation and
+              // make this turn persist an empty producedFiles list. Completion
+              // attribution needs a fresh post-run snapshot.
+              let nextFiles = await refreshProjectFiles({ fresh: true });
               let artifactPersistenceSucceeded = false;
               let artifactPersistenceError: string | undefined;
               const finalText = streamedText || fullText;
@@ -7265,7 +7269,7 @@ export function ProjectView({
                   const persistence = await persistArtifact(artifactToPersist, nextFiles, finalText);
                   if (persistence.ok) artifactPersistenceSucceeded = true;
                   else artifactPersistenceError = persistence.error;
-                  nextFiles = await refreshProjectFiles();
+                  nextFiles = await refreshProjectFiles({ fresh: true });
                 }
               }
               const produced = computeProducedFiles(
@@ -7572,7 +7576,7 @@ export function ProjectView({
             ...(authoritativeArtifactPaths ?? []),
           ];
           void (async () => {
-            const nextFiles = await refreshProjectFiles();
+            const nextFiles = await refreshProjectFiles({ fresh: true });
             if (authoritativeArtifactPaths === undefined) return;
             const produced = computeProducedFiles(
               beforeFileNames,
@@ -11890,17 +11894,31 @@ export function computeProducedFiles(
   projectId?: string,
   projectRoot?: string | null,
 ): ProjectFile[] | undefined {
+  const beforeSet = beforeNames
+    ? beforeNames instanceof Set
+      ? beforeNames
+      : new Set(beforeNames)
+    : null;
   if (authoritativePaths !== undefined) {
     const byName = new Map<string, ProjectFile>();
+    // The daemon's authoritative list intentionally covers user-facing
+    // artifacts and render dependencies, not every file an agent can create
+    // (for example plugin manifests and Markdown). Preserve all files that are
+    // provably new from the turn baseline, then use authoritative paths to add
+    // modified existing artifacts without attributing untouched inputs.
+    if (beforeSet) {
+      for (const file of next) {
+        if (!beforeSet.has(file.name)) byName.set(file.name, file);
+      }
+    }
     for (const rawPath of authoritativePaths) {
       const file = findTouchedProjectFile(rawPath, next, projectId, projectRoot);
       if (file) byName.set(file.name, file);
     }
     return filterImplicitProducedFiles([...byName.values()]);
   }
-  if (!beforeNames) return undefined;
-  const set = beforeNames instanceof Set ? beforeNames : new Set(beforeNames);
-  return filterImplicitProducedFiles(next.filter((f) => !set.has(f.name)));
+  if (!beforeSet) return undefined;
+  return filterImplicitProducedFiles(next.filter((f) => !beforeSet.has(f.name)));
 }
 
 export function computeTraceObjectFiles(
