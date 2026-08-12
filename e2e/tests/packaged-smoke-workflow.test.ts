@@ -19,6 +19,8 @@ import {
 } from "../lib/playwright/suites.ts";
 
 const execFileAsync = promisify(execFile);
+const launchEnv = { ...process.env };
+const launchPath = launchEnv.PATH ?? launchEnv.Path ?? "";
 const jqBin = process.platform !== "win32" && existsSync("/usr/bin/jq") ? "/usr/bin/jq" : "jq";
 const e2eRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const workspaceRoot = dirname(e2eRoot);
@@ -119,6 +121,19 @@ const releaseBetaPlatformPublishScriptPath = join(
   "storage",
   "publish-platform.ts",
 );
+
+function workflowFixtureEnv(
+  overrides: Record<string, string>,
+  executableDir?: string,
+): NodeJS.ProcessEnv {
+  const childPath = executableDir ? `${executableDir}${delimiter}${launchPath}` : launchPath;
+  return {
+    ...launchEnv,
+    ...overrides,
+    Path: childPath,
+    PATH: childPath,
+  };
+}
 
 function sectionBetween(content: string, start: string, end: string): string {
   const startIndex = content.indexOf(start);
@@ -259,19 +274,15 @@ if (process.argv.includes("--jq")) {
   await writeFile(ghCmdPath, `@echo off\r\n"${process.execPath}" "${ghPath}" %*\r\n`);
 
   try {
-    const fakePath = `${tempDir}${delimiter}${process.env.PATH ?? ""}`;
     const { stdout } = await execFileAsync(process.execPath, ["--experimental-strip-types", scopesScriptPath, "print"], {
       cwd: workspaceRoot,
-      env: {
-        ...process.env,
+      env: workflowFixtureEnv({
         GITHUB_EVENT_NAME: eventName,
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_REPOSITORY: "nexu-io/open-design",
         GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
         OPEN_DESIGN_GH_NODE_SCRIPT: ghPath,
-        Path: fakePath,
-        PATH: fakePath,
-      },
+      }, tempDir),
     });
     return JSON.parse(stdout) as Record<string, unknown>;
   } finally {
@@ -747,16 +758,14 @@ process.stdin.on("end", () => {
       try {
         await execFileAsync("bash", ["-c", script], {
           cwd: dir,
-          env: {
-            ...process.env,
+          env: workflowFixtureEnv({
             EVENT: args.event,
             INPUT_TAG: args.inputTag ?? "",
             GITHUB_OUTPUT: outputPath,
-            PATH: `${dir}${delimiter}${process.env.PATH ?? ""}`,
             FAKE_GH_LOG: ghLogPath,
             FAKE_GH_STATE: args.state ?? "",
             FAKE_GH_EXIT: args.ghExit ? "1" : "0",
-          },
+          }, dir),
         });
         const [rawOutput, rawGhArgs] = await Promise.all([
           readFile(outputPath, "utf8").catch(() => ""),
@@ -840,7 +849,7 @@ process.stdin.on("end", () => {
 
       await execFileAsync("bash", ["-c", script], {
         cwd: dir,
-        env: { ...process.env, NEXT: "0.12.1", GITHUB_OUTPUT: outputPath },
+        env: workflowFixtureEnv({ NEXT: "0.12.1", GITHUB_OUTPUT: outputPath }),
       });
 
       await expect(readFile(outputPath, "utf8")).resolves.toContain("changed=true");
@@ -879,7 +888,7 @@ process.stdin.on("end", () => {
 
       await execFileAsync("bash", ["-c", script], {
         cwd: dir,
-        env: { ...process.env, NEXT: "0.12.1", GITHUB_OUTPUT: outputPath },
+        env: workflowFixtureEnv({ NEXT: "0.12.1", GITHUB_OUTPUT: outputPath }),
       });
 
       await expect(readFile(outputPath, "utf8")).resolves.toContain("changed=false");
@@ -2643,8 +2652,7 @@ process.stdin.on("end", () => {
       try {
         await execFileAsync("bash", [releaseStableNotesScriptPath], {
           cwd: workspaceRoot,
-          env: {
-            ...process.env,
+          env: workflowFixtureEnv({
             BRANCH_NAME: "release/v0.13.0",
             CLOUDFLARE_R2_RELEASES_PUBLIC_ORIGIN: envName === "CLOUDFLARE_R2_RELEASES_PUBLIC_ORIGIN" ? origin : "",
             GITHUB_OUTPUT: outputPath,
@@ -2656,7 +2664,7 @@ process.stdin.on("end", () => {
             RELEASE_VERSION: "0.13.0",
             RUNNER_TEMP: runnerTemp,
             VERSION_TAG: "open-design-v0.13.0",
-          },
+          }),
         });
 
         const outputs = parseGithubOutput(await readFile(outputPath, "utf8"));
@@ -2684,12 +2692,9 @@ process.stdin.on("end", () => {
     try {
       await mkdir(join(runnerTemp, "bin"), { recursive: true });
       await writeFakeGhBin(join(runnerTemp, "bin"), []);
-      const fakePath = `${join(runnerTemp, "bin")}${delimiter}${process.env.PATH ?? ""}`;
-
       const result = await execFileAsync(process.execPath, ["--experimental-strip-types", releaseStableScriptPath], {
         cwd: workspaceRoot,
-        env: {
-          ...process.env,
+        env: workflowFixtureEnv({
           GITHUB_REF_NAME: `release/v${baseVersion}`,
           GITHUB_REPOSITORY: "nexu-io/open-design",
           GITHUB_SHA: "0123456789abcdef0123456789abcdef01234567",
@@ -2699,9 +2704,7 @@ process.stdin.on("end", () => {
           OPEN_DESIGN_RELEASES_PUBLIC_ORIGIN: fixture.origin,
           OPEN_DESIGN_GH_NODE_SCRIPT: join(runnerTemp, "bin", "gh"),
           OPEN_DESIGN_STABLE_PRERELEASE_VERSION: prereleaseVersion,
-          Path: fakePath,
-          PATH: fakePath,
-        },
+        }, join(runnerTemp, "bin")),
       });
 
       expect(result.stdout).toContain(`[release-stable] validated prerelease: ${prereleaseVersion}`);
