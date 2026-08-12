@@ -95,11 +95,8 @@ import { setPendingDesignSystemCreateEntry } from '../analytics/ds-create-entry'
 import { workspaceContextLinkedDirs } from './workspace-context';
 import {
   currentWorkspaceAccountGeneration,
-  type CurrentWorkspaceContextReadWitness,
-  resolveCurrentWorkspaceContextReadWitness,
   useTeamProjects,
   useWorkspaceContext,
-  workspaceContextReadWitnessFromState,
 } from '../collab/useWorkspaceContext';
 import { useWorkspaceInvalidation } from '../collab/workspace-events';
 import { useWorkspaceSnapshotActivation } from '../collab/workspace-snapshot-activation';
@@ -1374,41 +1371,17 @@ export function HomeView({
         setPendingChipId(null);
       }
     }
-    let writeWorkspaceContext;
-    let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
-    const requiresWorkspaceIdentity = record.source.startsWith('team:plugin:');
-    if (!requiresWorkspaceIdentity) {
-      try {
-        if (workspaceContextState.identityChangePending) {
-          throw new Error('workspace identity change pending');
-        }
-        writeWorkspaceContext = resolvedWorkspaceContextForWrite(workspaceContextState);
-      } catch {
-        writeWorkspaceContext = null;
-      }
-    } else {
-      try {
-        workspaceWitness = workspaceContextReadWitnessFromState(workspaceContextState)
-          ?? await resolveCurrentWorkspaceContextReadWitness();
-      } catch {
-        workspaceWitness = null;
-      }
-      if (!workspaceWitness?.isStillCurrent() || !workspaceWitness.context) {
-        clearPendingApply();
-        setError(
-          'Workspace context is unavailable. Try again when workspace sync finishes.',
-        );
-        return null;
-      }
-      writeWorkspaceContext = workspaceWitness.context;
-    }
+    const writeWorkspaceContext = resolvedWorkspaceContextForWrite(
+      workspaceContextState,
+      { unavailablePolicy: 'unscoped' },
+    );
     const result = await applyPlugin(record.id, {
       locale,
       inputs,
+      pluginSource: record.source,
       workspaceContext: writeWorkspaceContext,
     });
     clearPendingApply();
-    if (workspaceWitness && !workspaceWitness.isStillCurrent()) return null;
     return result;
   }
 
@@ -2483,6 +2456,9 @@ export function HomeView({
       const accepted = await onSubmit({
         prompt: trimmed,
         pluginId: routedPluginId,
+        ...(submittedActive?.record.source
+          ? { pluginSource: submittedActive.record.source }
+          : {}),
         pluginType: submittedActive?.record.marketplaceTrust ?? (routedPluginId ? 'official' : null),
         skillId: resolvedSkillId,
         appliedPluginSnapshotId: submittedActive?.result?.appliedPlugin?.snapshotId ?? null,

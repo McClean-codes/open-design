@@ -298,9 +298,14 @@ export function PluginDetailView(props: Props) {
     });
     setApplying(true);
     setError(null);
+    const workspaceContext = resolvedWorkspaceContextForWrite(
+      workspaceContextState,
+      { unavailablePolicy: 'unscoped' },
+    );
     const result = await applyPlugin(plugin.id, {
       locale,
-      workspaceContext: resolvedWorkspaceContextForWrite(workspaceContextState),
+      pluginSource: plugin.source,
+      workspaceContext,
     });
     setApplying(false);
     if (!result) {

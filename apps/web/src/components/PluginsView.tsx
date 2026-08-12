@@ -404,6 +404,7 @@ export function PluginsView({
     setNotice(null);
     const result = await applyPlugin(record.id, {
       locale,
+      pluginSource: record.source,
       workspaceContext: pluginsContextRef.current,
     });
     setPendingApplyId(null);

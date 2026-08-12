@@ -82,6 +82,40 @@ function teamWorkspaceContext(
   };
 }
 
+describe('createProject', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves the exact local plugin source in the create payload', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => Response.json({
+      project: {
+        id: 'project-local-plugin',
+        name: 'Local plugin project',
+        skillId: null,
+        designSystemId: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      conversationId: 'conversation-1',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createProject({
+      name: 'Local plugin project',
+      skillId: null,
+      designSystemId: null,
+      pluginId: 'shared-plugin-id',
+      pluginSource: 'team:plugin:workspace-a:shared-plugin-id',
+    });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      pluginId: 'shared-plugin-id',
+      pluginSource: 'team:plugin:workspace-a:shared-plugin-id',
+    });
+  });
+});
+
 describe('createConversation', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
@@ -292,6 +326,78 @@ describe('applyPlugin', () => {
       grantCaps: [],
       locale: 'zh-CN',
     });
+  });
+
+  it('uses the selected installed source for local apply without Workspace headers', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ ok: true }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await applyPlugin('shared-plugin-id', {
+      pluginSource: 'team:plugin:workspace-a:shared-plugin-id',
+    } as Parameters<typeof applyPlugin>[1]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('/api/plugins/shared-plugin-id/apply-local');
+    expect(new Headers(init?.headers).has('x-od-workspace-id')).toBe(false);
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      source: 'team:plugin:workspace-a:shared-plugin-id',
+      inputs: {},
+      grantCaps: [],
+    });
+  });
+
+  it('falls back to the legacy apply route only when an old daemon lacks local apply', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith('/apply-local')) {
+        return new Response('not found', { status: 404 });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await applyPlugin('bundled-plugin', { pluginSource: 'bundled:bundled-plugin' });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/plugins/bundled-plugin/apply-local',
+      '/api/plugins/bundled-plugin/apply',
+    ]);
+  });
+
+  it('does not fall back when a new daemon rejects the exact local source', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: 'plugin not found' }),
+      {
+        status: 404,
+        headers: {
+          'content-type': 'application/json',
+          'x-od-plugin-apply-local': '1',
+        },
+      },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(applyPlugin('shared-plugin-id', {
+      pluginSource: 'team:plugin:workspace-a:shared-plugin-id',
+    })).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let an old daemon resolve a Team source headerless', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response('not found', { status: 404 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(applyPlugin('shared-plugin-id', {
+      pluginSource: 'team:plugin:workspace-a:shared-plugin-id',
+    })).resolves.toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/plugins/shared-plugin-id/apply-local');
   });
 
   it('scopes same-id plugin apply requests to the exact A/B workspace', async () => {

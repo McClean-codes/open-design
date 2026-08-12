@@ -317,6 +317,8 @@ export interface CreateProjectRequest {
   pendingPrompt?: string;
   metadata?: ProjectMetadata;
   pluginId?: string;
+  /** Exact source of the already-local plugin record selected by the UI. */
+  pluginSource?: string;
   appliedPluginSnapshotId?: string;
   pluginInputs?: Record<string, unknown>;
   /** Session mode for the default conversation seeded with the project. */

@@ -602,6 +602,7 @@ export async function createProject(
     // (or pre-applied snapshot id) to resolve and pin a plugin to the new
     // project. Used by the PluginLoopHome flow on Home.
     pluginId?: string;
+    pluginSource?: string;
     appliedPluginSnapshotId?: string;
     pluginInputs?: Record<string, unknown>;
     workspaceContext?: WorkspaceCollabContext | null;
@@ -1571,9 +1572,10 @@ export async function persistTabsToDaemonNow(
 // Plan §3.C1 — plugin discovery + apply.
 //
 // applyPlugin() is the canonical entry point for both the inline rail
-// (NewProjectPanel + ChatComposer) and the marketplace detail page. It
-// hits POST /api/plugins/:id/apply, which is the same pure resolver
-// the daemon uses; the response carries everything the composer needs:
+// (NewProjectPanel + ChatComposer) and the marketplace detail page. Record-aware
+// callers use the exact local source resolver; id-only compatibility callers
+// retain POST /api/plugins/:id/apply. Both responses carry everything the
+// composer needs:
 //   - query (pre-filled brief)
 //   - contextItems (chip strip)
 //   - inputs (form fields)
@@ -2428,13 +2430,46 @@ export async function applyPlugin(
     projectId?: string;
     grantCaps?: string[];
     locale?: string;
+    pluginSource?: string;
     workspaceContext?: WorkspaceCollabContext | null;
   } = {},
 ): Promise<ApplyResult | null> {
   try {
-    const resp = await fetch(
-      `/api/plugins/${encodeURIComponent(pluginId)}/apply`,
+    const requestBody = JSON.stringify({
+      ...(options.pluginSource ? { source: options.pluginSource } : {}),
+      inputs: options.inputs ?? {},
+      projectId: options.projectId,
+      grantCaps: options.grantCaps ?? [],
+      locale: options.locale,
+    });
+    const pluginUrl = `/api/plugins/${encodeURIComponent(pluginId)}`;
+    let resp = await fetch(
+      `${pluginUrl}/${options.pluginSource ? 'apply-local' : 'apply'}`,
       {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(!options.pluginSource && options.workspaceContext
+            ? workspaceProjectHeaders(options.workspaceContext)
+            : {}),
+        },
+        body: requestBody,
+      },
+    );
+    // Compatibility with a daemon that predates exact local-source apply. The
+    // legacy route keeps its original Workspace-scoped behavior and response;
+    // new daemons never take this branch for a valid catalog record.
+    const localApplyUnsupported = Boolean(
+      options.pluginSource
+      && resp.status === 404
+      && resp.headers.get('x-od-plugin-apply-local') !== '1',
+    );
+    const legacyFallbackCanResolveSelectedSource = Boolean(
+      !options.pluginSource?.startsWith('team:plugin:')
+      || options.workspaceContext,
+    );
+    if (localApplyUnsupported && legacyFallbackCanResolveSelectedSource) {
+      resp = await fetch(`${pluginUrl}/apply`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2442,14 +2477,9 @@ export async function applyPlugin(
             ? workspaceProjectHeaders(options.workspaceContext)
             : {}),
         },
-        body: JSON.stringify({
-          inputs: options.inputs ?? {},
-          projectId: options.projectId,
-          grantCaps: options.grantCaps ?? [],
-          locale: options.locale,
-        }),
-      },
-    );
+        body: requestBody,
+      });
+    }
     if (!resp.ok) return null;
     const json = (await resp.json()) as ApplyResult & { ok?: boolean };
     return json;

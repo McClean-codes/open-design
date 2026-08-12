@@ -4,7 +4,7 @@
 //
 // Asserts that:
 //   - The rail fetches GET /api/plugins on mount and renders one card per row.
-//   - Clicking a card POSTs to /api/plugins/:id/apply and forwards the
+//   - Clicking a card POSTs to /api/plugins/:id/apply-local and forwards the
 //     ApplyResult to onApplied.
 //   - The rail filters by taskKind / mode when supplied.
 
@@ -130,6 +130,13 @@ describe('InlinePluginsRail', () => {
     const card = await waitFor(() => screen.getByTitle('A fixture'));
     fireEvent.click(card);
     await waitFor(() => expect(onApplied).toHaveBeenCalled());
+    const applyCall = fetchMock.mock.calls.find(([url]) => (
+      url === '/api/plugins/sample-plugin/apply-local'
+    ));
+    expect(applyCall).toBeTruthy();
+    expect(JSON.parse(String(applyCall?.[1]?.body))).toMatchObject({
+      source: '/tmp/sample',
+    });
     const [record, result] = onApplied.mock.calls[0]!;
     expect(record.id).toBe('sample-plugin');
     expect(result.appliedPlugin.snapshotId).toBe('snap-1');
