@@ -8044,10 +8044,10 @@ describe('FileViewer tweaks toolbar', () => {
     expect(screen.queryByText('Already sent to Claude')).toBeNull();
   });
 
-  it('does not render the comments drawer over the preview while waiting for a configured dock portal', () => {
+  it('keeps the mobile preview centered while waiting for a configured comments dock portal', () => {
     const { container } = render(
       <FileViewer
-        projectId="project-1"
+        projectId="project-mobile-comment-portal"
         projectKind="prototype"
         file={htmlPreviewFile()}
         liveHtml='<html><body><main data-od-id="hero">Hero</main></body></html>'
@@ -8055,8 +8055,13 @@ describe('FileViewer tweaks toolbar', () => {
       />,
     );
 
+    fireEvent.click(screen.getByRole('button', { name: 'Preview viewport' }));
+    fireEvent.click(screen.getByRole('option', { name: 'Mobile' }));
     fireEvent.click(screen.getByTestId('comment-panel-toggle'));
 
+    expect(screen.getByTestId('comment-preview-layout').classList).not.toContain(
+      'comment-preview-layer-with-side-dock',
+    );
     expect(container.querySelector('.comment-preview-layer > .comment-side-panel')).toBeNull();
   });
 

@@ -8854,7 +8854,13 @@ function HtmlViewer({
   const [commentSidePanelCollapsed, setCommentSidePanelCollapsed] = useState(false);
   const [strokePoints, setStrokePoints] = useState<StrokePoint[]>([]);
   const previewStateKey = `${projectId}:${file.name}`;
-  const localCommentSideDockActive = commentPanelOpen && !commentPortalHost;
+  // A configured portal can take an effect / animation frame to resolve after
+  // Comment opens. Treating that short lookup window as a local-dock fallback
+  // briefly reflows the preview into a side-dock grid, which is especially
+  // visible as a leftward flash for centered tablet/mobile frames. The portal
+  // contract already suppresses the panel until its host exists, so keep the
+  // preview on the portal layout for the whole lookup window as well.
+  const localCommentSideDockActive = commentPanelOpen && !commentPortalId;
   const boardPreviewCanvasSize = commentPreviewCanvasSize(previewBodySize, {
     boardMode: localCommentSideDockActive,
     sidePanelCollapsed: commentSidePanelCollapsed,
