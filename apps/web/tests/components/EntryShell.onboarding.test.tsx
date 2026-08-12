@@ -643,10 +643,9 @@ describe('EntryShell onboarding Open Design AMR runtime', () => {
     ) as typeof fetch;
     const config = baseConfig({
       onboardingCompleted: true,
-      mode: 'api',
-      apiKey: 'persisted-key',
-      baseUrl: 'https://api.anthropic.com',
-      model: 'claude-sonnet-4-5',
+      mode: 'daemon',
+      agentId: 'amr',
+      model: 'claude-opus-4-5',
     });
     const props = renderHome({ config, amrLoggedIn: false });
 
