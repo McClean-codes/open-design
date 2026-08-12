@@ -3506,7 +3506,7 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
       // Workspace with the project's current Workspace. New projects are local
       // (`sync_state=local_only`, `visibility=personal`); remote sharing/syncing
       // performs its own fresh checks if the user later moves into Team space.
-      const exactLocalPlugin = requestedPluginId && requestedPluginSource
+      let exactLocalPlugin = requestedPluginId && requestedPluginSource
         ? await ctx.pluginScope?.getLocalPluginBySource?.(
             requestedPluginId,
             requestedPluginSource,
@@ -3530,6 +3530,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
           return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
         }
       }
+      const exactLocalPluginRegistry = exactLocalPlugin
+        ? await loadPluginRegistryView(localPluginRegistryScope(exactLocalPlugin))
+        : null;
       const selectedLocationId = await resolveCreateProjectLocationId(projectLocationId);
       let externalProjectDir: string | null = null;
       if (selectedLocationId !== BUILT_IN_PROJECT_LOCATION_ID) {
@@ -3612,6 +3615,24 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             designSystemId: normalizedDesignSystemId,
           });
         }
+        if (exactLocalPlugin && requestedPluginId && requestedPluginSource) {
+          // PRODUCT INVARIANT: local project creation must not wait for login
+          // or remote Workspace authority. This final fence consults only the
+          // daemon's reconciled local source after every preparatory await, so
+          // a local uninstall/tombstone cannot be snapshotted from a cached
+          // record. Cross-Workspace historical sources remain valid locally.
+          const currentPlugin = await ctx.pluginScope?.getLocalPluginBySource?.(
+            requestedPluginId,
+            requestedPluginSource,
+          ) ?? null;
+          if (!currentPlugin) {
+            if (externalProjectDir) {
+              await rm(externalProjectDir, { recursive: true, force: true }).catch(() => {});
+            }
+            return sendApiError(res, 404, 'PLUGIN_NOT_FOUND', 'plugin not found');
+          }
+          exactLocalPlugin = currentPlugin;
+        }
         project = db.transaction(() => {
           const createdProject = insertProject(db, {
             id,
@@ -3673,11 +3694,8 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         // and Design System from the plugin source's historical Workspace,
         // not from the new local project's attribution scope. This is local
         // provenance only; no membership/network authority is consulted.
-        const registry = await loadPluginRegistryView(
-          exactLocalPlugin
-            ? localPluginRegistryScope(exactLocalPlugin)
-            : creationWorkspaceScope,
-        );
+        const registry = exactLocalPluginRegistry
+          ?? await loadPluginRegistryView(creationWorkspaceScope);
         const resolved = resolvePluginSnapshot({
           db,
           body: resolveBody,

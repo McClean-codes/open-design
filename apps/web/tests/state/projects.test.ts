@@ -389,12 +389,24 @@ describe('applyPlugin', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('does not let an old daemon resolve a Team source headerless', async () => {
-    const fetchMock = vi.fn<typeof fetch>(async () => new Response('not found', { status: 404 }));
+  it('does not let an old daemon substitute another Workspace\'s same-id Team plugin', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (url) => {
+      if (String(url).endsWith('/apply-local')) {
+        return new Response('not found', { status: 404 });
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
     vi.stubGlobal('fetch', fetchMock);
 
     await expect(applyPlugin('shared-plugin-id', {
       pluginSource: 'team:plugin:workspace-a:shared-plugin-id',
+      workspaceContext: teamWorkspaceContext({
+        workspaceId: 'workspace-b',
+        workspaceMemberId: 'member-b',
+      }),
     })).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/plugins/shared-plugin-id/apply-local');

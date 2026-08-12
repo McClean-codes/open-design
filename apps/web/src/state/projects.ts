@@ -2456,17 +2456,18 @@ export async function applyPlugin(
         body: requestBody,
       },
     );
-    // Compatibility with a daemon that predates exact local-source apply. The
-    // legacy route keeps its original Workspace-scoped behavior and response;
-    // new daemons never take this branch for a valid catalog record.
+    // Compatibility with a daemon that predates exact local-source apply. A
+    // legacy endpoint can still resolve Personal/bundled IDs, but it ignores
+    // `source` and therefore cannot prove an exact Team source: forwarding
+    // current Workspace headers could silently substitute another same-id
+    // plugin. Keep Team exact-source apply fail-closed until the daemon updates.
     const localApplyUnsupported = Boolean(
       options.pluginSource
       && resp.status === 404
       && resp.headers.get('x-od-plugin-apply-local') !== '1',
     );
     const legacyFallbackCanResolveSelectedSource = Boolean(
-      !options.pluginSource?.startsWith('team:plugin:')
-      || options.workspaceContext,
+      !options.pluginSource?.startsWith('team:plugin:'),
     );
     if (localApplyUnsupported && legacyFallbackCanResolveSelectedSource) {
       resp = await fetch(`${pluginUrl}/apply`, {
