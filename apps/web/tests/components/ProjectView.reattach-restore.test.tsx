@@ -44,6 +44,7 @@ const chatPaneHarness = vi.hoisted(() => ({
     meta?: unknown,
   ) => unknown),
   onStop: null as null | (() => void),
+  openRequestNames: [] as string[],
 }));
 
 vi.mock('../../src/i18n', () => ({
@@ -133,7 +134,13 @@ vi.mock('../../src/components/ChatPane', () => ({
 
 vi.mock('../../src/components/FileWorkspace', () => ({
   DESIGN_SYSTEM_TAB: '__design_system__',
-  FileWorkspace: () => null,
+  FileWorkspace: ({ openRequest }: { openRequest?: { name?: string } | null }) => {
+    const name = openRequest?.name;
+    if (name && chatPaneHarness.openRequestNames.at(-1) !== name) {
+      chatPaneHarness.openRequestNames.push(name);
+    }
+    return null;
+  },
 }));
 
 vi.mock('../../src/components/Loading', () => ({
@@ -485,7 +492,94 @@ describe('ProjectView daemon reattach restore', () => {
     vi.clearAllMocks();
     chatPaneHarness.onSend = null;
     chatPaneHarness.onStop = null;
+    chatPaneHarness.openRequestNames = [];
     window.sessionStorage.clear();
+  });
+
+  it('keeps terminal artifact selection after slower per-write refreshes settle', async () => {
+    listConversations.mockResolvedValue([{ id: 'conv-1', title: 'Conversation' }]);
+    listMessages.mockResolvedValue([]);
+    fetchPreviewComments.mockResolvedValue([]);
+    loadTabs.mockResolvedValue({ tabs: ['plan.md'], activeTabId: 'plan.md' });
+    fetchLiveArtifacts.mockResolvedValue([]);
+    fetchSkill.mockResolvedValue(null);
+    fetchDesignSystem.mockResolvedValue(null);
+    getTemplate.mockResolvedValue(null);
+    listActiveChatRuns.mockResolvedValue([]);
+
+    const beforeFiles = [
+      { name: 'plan.md', path: 'plan.md', size: 10, mtime: 1, kind: 'markdown', mime: 'text/markdown' },
+    ];
+    const afterFiles = [
+      { name: 'index.html', path: 'index.html', size: 20, mtime: Date.now(), kind: 'html', mime: 'text/html' },
+      { name: 'plan.md', path: 'plan.md', size: 11, mtime: Date.now(), kind: 'markdown', mime: 'text/markdown' },
+    ];
+    fetchProjectFiles.mockResolvedValue(beforeFiles);
+
+    let handlers: {
+      onAgentEvent: (event: unknown) => void;
+      onDone: (text?: string) => void;
+    } | null = null;
+    streamViaDaemon.mockImplementation(async (options: any) => {
+      options.onRunCreated('run-plan-artifact');
+      handlers = options.handlers;
+      return new Promise<void>(() => {});
+    });
+
+    renderProjectView();
+    await waitFor(() => expect(chatPaneHarness.onSend).toBeTruthy());
+    await waitFor(() => expect(fetchProjectFiles).toHaveBeenCalled());
+
+    let resolveHtmlWriteRefresh!: (files: typeof afterFiles) => void;
+    let resolvePlanWriteRefresh!: (files: typeof afterFiles) => void;
+    let refreshCall = 0;
+    fetchProjectFiles.mockClear();
+    fetchProjectFiles.mockImplementation(() => {
+      refreshCall += 1;
+      if (refreshCall === 1) {
+        return new Promise<typeof afterFiles>((resolve) => { resolveHtmlWriteRefresh = resolve; });
+      }
+      if (refreshCall === 2) {
+        return new Promise<typeof afterFiles>((resolve) => { resolvePlanWriteRefresh = resolve; });
+      }
+      return Promise.resolve(afterFiles);
+    });
+
+    void chatPaneHarness.onSend!('Generate from the plan', [], []);
+    await waitFor(() => expect(handlers).toBeTruthy());
+    handlers!.onAgentEvent({
+      kind: 'tool_use',
+      id: 'write-html',
+      name: 'Write',
+      input: { file_path: '/tmp/projects/project-1/index.html' },
+    });
+    handlers!.onAgentEvent({
+      kind: 'tool_result',
+      toolUseId: 'write-html',
+      content: 'ok',
+      isError: false,
+    });
+    handlers!.onAgentEvent({
+      kind: 'tool_use',
+      id: 'write-plan',
+      name: 'Write',
+      input: { file_path: '/tmp/projects/project-1/plan.md' },
+    });
+    handlers!.onAgentEvent({
+      kind: 'tool_result',
+      toolUseId: 'write-plan',
+      content: 'ok',
+      isError: false,
+    });
+    await waitFor(() => expect(chatPaneHarness.openRequestNames.at(-1)).toBe('index.html'));
+    handlers!.onDone('Generated index.html from plan.md.');
+
+    await waitFor(() => expect(chatPaneHarness.openRequestNames.at(-1)).toBe('index.html'));
+    resolveHtmlWriteRefresh(afterFiles);
+    resolvePlanWriteRefresh(afterFiles);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    expect(chatPaneHarness.openRequestNames.at(-1)).toBe('index.html');
   });
 
   it('does not replay a terminal succeeded row just because produced files are missing', async () => {

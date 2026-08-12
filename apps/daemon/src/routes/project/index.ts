@@ -5378,6 +5378,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
         since: Number.isFinite(since) ? since : undefined,
         metadata: project?.metadata,
       });
+      // The directory is mutated outside HTTP by agent CLIs and filesystem
+      // tools. A cached 200 can therefore outlive a completed Write even when
+      // the daemon's fresh scan already sees the new file, leaving the
+      // workspace on the previous snapshot. The web layer owns its own short
+      // request-coalescing window, so transport caches must always revalidate
+      // this dynamic inventory.
+      res.setHeader('Cache-Control', 'no-store');
       /** @type {import('@open-design/contracts').ProjectFilesResponse} */
       const body = { files };
       res.json(body);
