@@ -114,6 +114,7 @@ interface Props {
 
 const STORAGE_KEY = 'open-design:workspace-tabs:v1';
 const OPEN_WORKSPACE_TAB_EVENT = 'open-design:workspace-tabs:open';
+const REMOVE_WORKSPACE_PROJECT_TABS_EVENT = 'open-design:workspace-tabs:remove-project';
 const MAX_PERSISTED_TAB_SCOPES = 12;
 const TAB_DRAG_HAPTIC_MS = 8;
 const TAB_DROP_HAPTIC_MS = 12;
@@ -132,6 +133,14 @@ export function openWorkspaceTab(route: Route): void {
   window.dispatchEvent(
     new CustomEvent<{ route: Route }>(OPEN_WORKSPACE_TAB_EVENT, {
       detail: { route },
+    }),
+  );
+}
+
+export function removeWorkspaceProjectTabs(projectId: string): void {
+  window.dispatchEvent(
+    new CustomEvent<{ projectId: string }>(REMOVE_WORKSPACE_PROJECT_TABS_EVENT, {
+      detail: { projectId },
     }),
   );
 }
@@ -1094,8 +1103,42 @@ export function WorkspaceTabsBar({
       });
     }
 
+    function onRemoveWorkspaceProjectTabs(event: Event) {
+      const detail = (event as CustomEvent<{ projectId?: string }>).detail;
+      const projectId = detail?.projectId;
+      if (!projectId) return;
+      setState((current) => {
+        const normalized = normalizeTabsState(current);
+        const nextTabs = normalized.tabs.filter(
+          (tab) => tab.kind !== 'project' || tab.projectId !== projectId,
+        );
+        if (nextTabs.length === normalized.tabs.length) return normalized;
+        const removedActiveTab = normalized.tabs.some(
+          (tab) => tab.id === normalized.activeTabId
+            && tab.kind === 'project'
+            && tab.projectId === projectId,
+        );
+        return normalizeTabsState({
+          tabs: nextTabs,
+          activeTabId: removedActiveTab
+            ? nextTabs.find((tab) => tab.kind === 'entry')?.id ?? ''
+            : normalized.activeTabId,
+        });
+      });
+    }
+
     window.addEventListener(OPEN_WORKSPACE_TAB_EVENT, onOpenWorkspaceTab);
-    return () => window.removeEventListener(OPEN_WORKSPACE_TAB_EVENT, onOpenWorkspaceTab);
+    window.addEventListener(
+      REMOVE_WORKSPACE_PROJECT_TABS_EVENT,
+      onRemoveWorkspaceProjectTabs,
+    );
+    return () => {
+      window.removeEventListener(OPEN_WORKSPACE_TAB_EVENT, onOpenWorkspaceTab);
+      window.removeEventListener(
+        REMOVE_WORKSPACE_PROJECT_TABS_EVENT,
+        onRemoveWorkspaceProjectTabs,
+      );
+    };
   }, []);
 
   useEffect(() => {
