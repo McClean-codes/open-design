@@ -184,13 +184,15 @@ export async function startFakeCollabHub(options: {
         if (removedMembers.has(identity.memberId)) {
           return json(response, 403, { error: 'workspace_membership_removed' });
         }
-        const body = await readJsonBody(request) as { args?: unknown };
+        const body = await readJsonBody(request) as { args?: unknown; stdin?: unknown };
         const args = Array.isArray(body.args)
           ? body.args.filter((value): value is string => typeof value === 'string')
           : [];
+        const stdin = typeof body.stdin === 'string' ? body.stdin : '';
         commandLog.push({ args, memberId: identity.memberId, workspaceId });
         const stdout = await handleCommand({
           args,
+          stdin,
           identity,
           workspaceId,
           options,
@@ -297,6 +299,7 @@ export async function startFakeCollabHub(options: {
 
 async function handleCommand(input: {
   args: string[];
+  stdin: string;
   identity: ClientIdentity;
   workspaceId: string;
   options: { workspaceId: string; workspaceName: string; clients: readonly ClientIdentity[] };
@@ -455,6 +458,7 @@ async function handleTeamProjectsCommand(input: {
 
 async function handleResourceCommand(input: {
   args: string[];
+  stdin: string;
   identity: ClientIdentity;
   workspaceId: string;
   projects: Map<string, TeamProjectRecord>;
@@ -530,6 +534,63 @@ async function handleResourceCommand(input: {
     await rm(targetDir, { force: true, recursive: true });
     await cp(resource.snapshotDir, targetDir, { recursive: true });
     return jsonLine({ version: resource.version, versionId: `v${resource.version}` });
+  }
+  if (command === 'pull-batch') {
+    if (flag(input.args, '--requests-file') !== '-') {
+      throw new Error('fake resource pull-batch requires --requests-file -');
+    }
+    const parsed = JSON.parse(input.stdin) as { requests?: unknown };
+    if (!Array.isArray(parsed.requests) || parsed.requests.length === 0) {
+      throw new Error('resource pull batch requires at least one request');
+    }
+    if (parsed.requests.length > 128) {
+      throw new Error('resource pull batch contains more than 128 requests');
+    }
+    const keys = new Set<string>();
+    const requests = parsed.requests.map((raw, index) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+        throw new Error(`requests[${index}] must be an object`);
+      }
+      const request = raw as Record<string, unknown>;
+      const key = typeof request.key === 'string' ? request.key.trim() : '';
+      const kind = typeof request.kind === 'string' ? request.kind.trim() : '';
+      const resourceId =
+        typeof request.resourceId === 'string' ? request.resourceId.trim() : '';
+      const dir = typeof request.dir === 'string' ? request.dir.trim() : '';
+      const ref = typeof request.ref === 'string' && request.ref.trim()
+        ? request.ref.trim()
+        : 'latest';
+      if (!key || !kind || !resourceId || !dir) {
+        throw new Error(`requests[${index}] is missing a required field`);
+      }
+      if (keys.has(key)) throw new Error(`duplicate resource pull key: ${key}`);
+      keys.add(key);
+      return { key, kind, resourceId, dir, ref };
+    });
+    const results = [];
+    let succeeded = 0;
+    for (const request of requests) {
+      const resource = input.resources.get(request.resourceId);
+      if (!resource) {
+        results.push({
+          ...request,
+          ok: false,
+          error: 'resource_not_found',
+          errorCode: 'resource_not_found',
+        });
+        continue;
+      }
+      await rm(request.dir, { force: true, recursive: true });
+      await cp(resource.snapshotDir, request.dir, { recursive: true });
+      succeeded++;
+      results.push({
+        ...request,
+        ok: true,
+        version: resource.version,
+        versionId: `v${resource.version}`,
+      });
+    }
+    return jsonLine({ results, succeeded, failed: results.length - succeeded });
   }
   if (command === 'remove') {
     const resourceId = input.args[2];
@@ -758,6 +819,12 @@ function personalWorkspaceContext(identity: ClientIdentity) {
 
 function fakeVelaScript(): string {
   return `#!/usr/bin/env node
+const args = process.argv.slice(2);
+let stdin = '';
+const requestsFileIndex = args.indexOf('--requests-file');
+if (requestsFileIndex >= 0 && args[requestsFileIndex + 1] === '-') {
+  for await (const chunk of process.stdin) stdin += chunk;
+}
 const response = await fetch(new URL('/__e2e/command', process.env.VELA_API_URL), {
   method: 'POST',
   headers: {
@@ -765,7 +832,7 @@ const response = await fetch(new URL('/__e2e/command', process.env.VELA_API_URL)
     'content-type': 'application/json',
     'x-vela-workspace-id': process.env.OPEN_DESIGN_WORKSPACE_ID || '',
   },
-  body: JSON.stringify({ args: process.argv.slice(2) }),
+  body: JSON.stringify({ args, stdin }),
 });
 const payload = await response.json();
 if (!response.ok) {
