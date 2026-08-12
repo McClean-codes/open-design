@@ -124,8 +124,9 @@ import {
   runAskedUserQuestion,
 } from '../runtimes/run-artifacts.js';
 import {
+  accountScopedRunWorkspaceScopeForProject,
   pinRunWorkspaceScopeForProject,
-  type PinnedRunWorkspaceScope,
+  type RunWorkspaceScope,
 } from '../runtimes/project-amr-trace-env.js';
 import {
   runArtifactCountForRun,
@@ -291,7 +292,7 @@ interface ChatRun {
   clientRequestId?: string | null;
   requestFingerprint?: string | null;
   agentId: string | null;
-  workspaceScope?: PinnedRunWorkspaceScope | null;
+  workspaceScope?: RunWorkspaceScope | null;
   model?: string | null;
   status: ChatRunStatus;
   createdAt: number;
@@ -380,7 +381,7 @@ interface RunCreateMeta extends JsonRecord {
   message?: string;
   currentPrompt?: string;
   projectMetadata?: ProjectMetadata;
-  workspaceScope?: PinnedRunWorkspaceScope | null;
+  workspaceScope?: RunWorkspaceScope | null;
 }
 
 interface RunListFilters {
@@ -979,7 +980,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     agentId: unknown,
     authorizedBoundMutation = false,
   ): Promise<
-    | { ok: true; workspaceScope: PinnedRunWorkspaceScope | null }
+    | { ok: true; workspaceScope: RunWorkspaceScope | null }
     | { ok: false }
   > {
     if (!ctx.projectStore) return { ok: true, workspaceScope: null };
@@ -1052,13 +1053,16 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
     }
 
     if (requestContext === null) {
-      sendApiError(
-        res,
-        409,
-        'AMR_WORKSPACE_SCOPE_REQUIRED',
-        'open the project from your Personal Workspace before running AMR Cloud',
-      );
-      return { ok: false };
+      // A headerless, genuinely unbound project is the local/account-scoped
+      // compatibility lane. Home may create it before Workspace discovery
+      // settles, after already running the account balance gate; requiring a
+      // later identity here would turn that accepted first prompt into a 409.
+      // Explicitly bound projects still pin their persisted Workspace above,
+      // and any asserted identity below is freshly verified before adoption.
+      return {
+        ok: true,
+        workspaceScope: accountScopedRunWorkspaceScopeForProject(projectId),
+      };
     }
     if (requestContext === 'missing') {
       sendApiError(
@@ -1284,7 +1288,7 @@ export function registerRunRoutes(app: Express, ctx: RegisterRunRoutesDeps) {
         console.warn('[runs] agent id fallback failed', err);
       }
     }
-    let preparedWorkspaceScope: PinnedRunWorkspaceScope | null = null;
+    let preparedWorkspaceScope: RunWorkspaceScope | null = null;
     if (typeof requestBody.projectId === 'string' && requestBody.projectId) {
       const prepared = await prepareRunWorkspaceScope(
         req,

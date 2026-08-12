@@ -11,6 +11,7 @@ import {
   getWorkspaceResourceByResourceId,
 } from '../db.js';
 import { workspaceTeamSkillBindingAllowsRead } from '../skills/workspace-team-binding.js';
+import { workspaceTeamDesignSystemBindingAllowsRead } from './workspace-team-binding.js';
 
 type JsonRecord = Record<string, unknown>;
 type SkillEntry = { id: string; dir?: string } & JsonRecord;
@@ -326,8 +327,21 @@ export function createDesignSystemServerServices({
             workspaceId,
           },
         );
-        const teamIds = new Set(team.map((system) => system.id));
-        const teamSystems = team.map((system) => ({ ...system, teamSynced: true }));
+        // Team directories are intentionally retained after reconciliation so
+        // offline/local data is recoverable. Availability comes from the local
+        // binding row: filter both after async filesystem parsing and before
+        // exposing the catalogue, matching the Skill catalogue's boundary.
+        // This is local SSE/poll state, not a network membership check.
+        const teamDb = getDb?.();
+        const reconciledTeam = teamDb
+          ? team.filter((system) => workspaceTeamDesignSystemBindingAllowsRead(
+              teamDb,
+              workspaceId,
+              system.id,
+            ))
+          : team;
+        const teamIds = new Set(reconciledTeam.map((system) => system.id));
+        const teamSystems = reconciledTeam.map((system) => ({ ...system, teamSynced: true }));
         installed = options.exactTeam
           ? teamSystems
           : [

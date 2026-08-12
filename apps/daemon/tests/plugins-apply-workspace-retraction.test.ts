@@ -1,8 +1,10 @@
 import express from 'express';
+import type { InstalledPluginRecord } from '@open-design/contracts';
 import type { AddressInfo } from 'node:net';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { registerPluginRoutes } from '../src/routes/plugins/index.js';
+import { applyPlugin as applyPluginCore } from '../src/plugins/apply.js';
 
 const servers: Array<ReturnType<express.Express['listen']>> = [];
 
@@ -166,5 +168,83 @@ describe('Team plugin apply retraction gate', () => {
       workspaceMemberId: null,
     });
     expect(applyPlugin).toHaveBeenCalledTimes(1);
+  });
+
+  it('omits a locally tombstoned Team Design System from exact local apply context', async () => {
+    const app = express();
+    app.use(express.json());
+    const teamPlugin: InstalledPluginRecord = {
+      id: 'team-plugin',
+      title: 'Team plugin',
+      version: '1.0.0',
+      sourceKind: 'user',
+      source: 'team:plugin:workspace-a:team-plugin',
+      trust: 'trusted',
+      capabilitiesGranted: [],
+      fsPath: '/tmp/team-plugin',
+      installedAt: 1,
+      updatedAt: 1,
+      manifest: {
+        name: 'team-plugin',
+        title: 'Team plugin',
+        version: '1.0.0',
+        od: {
+          kind: 'skill',
+          context: { designSystem: { ref: 'user:removed-system' } },
+        },
+      },
+    };
+    const middleware: express.RequestHandler = (_req, _res, next) => next();
+
+    registerPluginRoutes(app, {
+      db: {
+        prepare: () => ({ all: () => [], get: () => null, run: () => undefined }),
+        transaction: (run: () => unknown) => () => run(),
+      },
+      paths: { PROJECTS_DIR: '', PLUGIN_REGISTRY_ROOTS: [], PLUGIN_LOCKFILE_PATH: '' },
+      ids: { randomId: () => 'unused' },
+      projectStore: {},
+      conversations: {},
+      plugins: {
+        getInstalledPlugin: () => null,
+        getWorkspacePlugin: async () => null,
+        getLocalPluginBySource: async () => teamPlugin,
+        listInstalledPlugins: () => [],
+        applyPlugin: applyPluginCore,
+        MissingInputError: class MissingInputError extends Error { fields: string[] = []; },
+      },
+      helpers: {
+        requireLocalDaemonRequest: middleware,
+        pluginUpload: { single: () => middleware, array: () => middleware },
+        // The local catalogue filter has already removed the tombstoned DS even
+        // though its materialized directory remains recoverable on disk.
+        loadPluginRegistryView: async () => ({
+          skills: [], designSystems: [], craft: [], atoms: [], scenarios: [],
+        }),
+        buildConnectorProbe: () => ({}),
+        connectorService: {},
+        sendApiError: (res: express.Response, status: number, code: string, message: string) =>
+          res.status(status).json({ error: { code, message } }),
+      },
+    } as unknown as Parameters<typeof registerPluginRoutes>[1]);
+
+    const server = app.listen(0, '127.0.0.1');
+    servers.push(server);
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const { port } = server.address() as AddressInfo;
+    const response = await fetch(
+      `http://127.0.0.1:${port}/api/plugins/team-plugin/apply-local`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ source: teamPlugin.source }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.json() as { contextItems?: Array<{ id: string }> };
+    expect(body.contextItems ?? []).not.toContainEqual(
+      expect.objectContaining({ id: 'user:removed-system' }),
+    );
   });
 });

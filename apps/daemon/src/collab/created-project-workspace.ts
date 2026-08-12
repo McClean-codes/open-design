@@ -234,9 +234,9 @@ export function createCreatedProjectWorkspaceResolver(deps: {
  * `GET /api/projects/:id/workspace-scope` answers `unbound` for it, which strips
  * the workspace off the run request (`ProjectView`'s `projectRunWorkspaceContext`
  * → an Open Design Cloud run nothing can bill) and blanks the balance/plan area
- * while that project is open (`AvatarMenu`). It is also denied a run outright by
- * `enforceWorkspaceResourceMutation` the moment the caller carries any workspace
- * header, because the two-key lookup comes back empty.
+ * while that project is open (`AvatarMenu`). Headerless local AMR runs may use
+ * the signed-in account wallet, but any later request that asserts a Workspace
+ * still needs an exact persisted binding before workspace mutation gates allow it.
  *
  * `context` is the caller's exact verified Workspace when the request named
  * one. A headerless legacy request supplies null and remains unbound.

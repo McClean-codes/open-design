@@ -2036,8 +2036,8 @@ export type PluginShareProjectOutcome =
  * `workspaceContext` MUST be attached, for the same reason every sibling create
  * in this file attaches it: the project this endpoint creates gets a
  * `workspace_projects` binding from the request's own identity, and a headerless
- * create leaves it unbound — denied its first run by the daemon's workspace gate
- * and carrying no workspace to bill on any run that does get through. This call
+ * create leaves it unbound — its first run can use the signed-in account wallet,
+ * but it has no pinned Workspace for later Team billing or mutations. This call
  * was the one create in this file with no `workspaceContext` parameter at all,
  * so it was permanently unbound rather than merely racy.
  */

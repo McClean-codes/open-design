@@ -2846,9 +2846,9 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
             // A project this scan adopts off disk is as much a created project
             // as one typed into the composer, and needs the same home
             // workspace. Without this the imported project is an orphan the
-            // moment it appears: denied its first run by
-            // the verified Workspace mutation gate, and billing-less on any run
-            // that does get through.
+            // moment it appears: account-scoped local runs remain possible,
+            // but Workspace mutations and Workspace-pinned billing would have
+            // no durable home.
             bindCreatedProjectToWorkspace(
               (input) => ensureWorkspaceProject(db, input),
               createHome,

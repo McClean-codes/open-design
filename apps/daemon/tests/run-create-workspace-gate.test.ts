@@ -1437,7 +1437,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
   });
 
   it.each(['/api/runs', '/api/chat'])(
-    'refuses a signed-in AMR run through %s when an unbound project has no explicit Personal identity',
+    'keeps a signed-in AMR run through %s account-scoped when its local project is unbound',
     async (route) => {
     const verifyWorkspaceRequestAuthority = vi.fn();
     const baseUrl = await startServer({
@@ -1455,10 +1455,7 @@ describe('POST /api/runs — one-time Personal adoption for signed-in AMR', () =
       }),
     });
 
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toMatchObject({
-        error: { code: 'AMR_WORKSPACE_SCOPE_REQUIRED' },
-      });
+      expect(response.status).toBe(202);
       expect(verifyWorkspaceRequestAuthority).not.toHaveBeenCalled();
       expect(
         getWorkspaceProjectByProjectId(openDatabase(tempDir!), UNBOUND_PROJECT),
