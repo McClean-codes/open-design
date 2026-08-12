@@ -914,6 +914,8 @@ export interface VelaLiveAccount {
 
 export interface VelaLoginStatus {
   loggedIn: boolean;
+  sessionState?: import('@open-design/contracts').AmrSessionState;
+  credentialRevision?: string;
   loginInFlight?: boolean;
   profile: string;
   user: VelaUser | null;

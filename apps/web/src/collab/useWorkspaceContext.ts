@@ -78,7 +78,7 @@ export interface WorkspaceContextState {
    * workspace answer is unknown; write paths must fail closed instead of
    * treating that outage as an anonymous identity.
    */
-  failure?: 'unsupported' | 'unavailable';
+  failure?: 'unsupported' | 'unavailable' | 'reauth-required';
 }
 
 /**
@@ -736,7 +736,9 @@ export function useWorkspaceContext(): WorkspaceContextState {
       // last-known context instead of flashing the signed-out state. A never-
       // signed-in / personal user has a null cache, so this still shows the local
       // state for them.
-      const unsupported = (error as { status?: unknown })?.status === 404;
+      const status = (error as { status?: unknown })?.status;
+      const unsupported = status === 404;
+      const reauthRequired = status === 401 || status === 403;
       setState({
         context: cachedWorkspaceContext,
         resourceReadIdentity:
@@ -748,13 +750,17 @@ export function useWorkspaceContext(): WorkspaceContextState {
             : null,
         loading: false,
         identityChangePending: workspaceContextIdentityChangePending,
-        failure: unsupported ? 'unsupported' : 'unavailable',
+        failure: unsupported
+          ? 'unsupported'
+          : reauthRequired
+            ? 'reauth-required'
+            : 'unavailable',
       });
       // An `unsupported` daemon has no workspace endpoint — retrying is
       // pointless. A transient `unavailable` outage arms the shared jittered
       // backoff so the shell recovers on its own without waiting for the 30s
       // poll or a focus event.
-      if (!unsupported) scheduleWorkspaceContextRetry(requestGeneration);
+      if (!unsupported && !reauthRequired) scheduleWorkspaceContextRetry(requestGeneration);
     }
   }, []);
 

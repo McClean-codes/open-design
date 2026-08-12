@@ -1250,6 +1250,12 @@ export interface Dict {
   'entry.navTeamSection': string;
   'entry.teamSlotNote': string;
   'entry.cloudCalloutTitle': string;
+  'entry.cloudRecovering': string;
+  'entry.authExpiredTitle': string;
+  'entry.authExpiredBody': string;
+  'entry.authExpiredLater': string;
+  'home.createFailed': string;
+  'home.daemonRecovering': string;
   'entry.cloudCalloutBody': string;
   'entry.cloudCalloutDismissAria': string;
   'entry.workspaceLockedNote': string;

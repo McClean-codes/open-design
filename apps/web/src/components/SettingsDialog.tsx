@@ -49,6 +49,7 @@ import { orderAgentsWithOpenDesignFirst } from './agentOrdering';
 import {
   AMR_LOGIN_STATUS_EVENT,
   amrLoginStatusEventReason,
+  isAmrSessionAuthenticated,
 } from './amrLoginPolling';
 import {
   fetchAmrWalletSnapshot,
@@ -1695,6 +1696,7 @@ export function SettingsDialog({
   });
   const [amrCardStatus, setAmrCardStatus] = useState<VelaLoginStatus | null>(null);
   const [amrCardStatusReady, setAmrCardStatusReady] = useState(false);
+  const amrCardSignedIn = isAmrSessionAuthenticated(amrCardStatus);
   const [amrWalletSnapshot, setAmrWalletSnapshot] = useState<AmrWalletSnapshot | null>(null);
   const [amrWalletReady, setAmrWalletReady] = useState(false);
   const [hoveredAgentCardId, setHoveredAgentCardId] = useState<string | null>(null);
@@ -1742,7 +1744,7 @@ export function SettingsDialog({
 
   useEffect(() => {
     const hasAmrAgent = agents.some((agent) => agent.id === 'amr' && agent.available);
-    if (!hasAmrAgent || amrCardStatus?.loggedIn !== true) {
+    if (!hasAmrAgent || !amrCardSignedIn) {
       setAmrWalletSnapshot(null);
       setAmrWalletReady(false);
       return;
@@ -1759,7 +1761,7 @@ export function SettingsDialog({
     };
   }, [
     agents,
-    amrCardStatus?.loggedIn,
+    amrCardSignedIn,
     amrCardStatus?.profile,
     amrCardStatus?.user?.id,
     amrCardStatus?.user?.email,
@@ -1786,7 +1788,7 @@ export function SettingsDialog({
       void fetchVelaLoginStatus({ refresh: true }).then((next) => {
         if (cancelled || !next) return;
         setAmrCardStatus(next);
-        if (next.loggedIn) void refreshAmrWalletSnapshot({ refresh: true });
+        if (isAmrSessionAuthenticated(next)) void refreshAmrWalletSnapshot({ refresh: true });
       });
     };
     window.addEventListener('focus', resyncAmrStatus);
@@ -2426,7 +2428,7 @@ export function SettingsDialog({
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
   useEffect(() => {
-    if (amrCardStatus?.loggedIn !== true) return;
+    if (!amrCardSignedIn) return;
     const amr = agentsRef.current.find((agent) => agent.id === 'amr');
     if (!amr || (amr.models?.length ?? 0) > 0) return;
     if (amrRescanInFlightRef.current) return;
@@ -2464,7 +2466,7 @@ export function SettingsDialog({
       cancelled = true;
       amrRescanInFlightRef.current = false;
     };
-  }, [amrCardStatus?.loggedIn]);
+  }, [amrCardSignedIn]);
 
   const handleTestAgent = async () => {
     if (agentTestState.status === 'running') {
@@ -3888,7 +3890,7 @@ export function SettingsDialog({
     // signed in but the model list hasn't arrived yet, show the picker in a
     // loading state instead of hiding it — so the dropdown appears at sign-in
     // and simply fills in, rather than popping in seconds later.
-    if (selected.id === 'amr' && !hasModels && (amrCardStatus?.loggedIn ?? false)) {
+    if (selected.id === 'amr' && !hasModels && amrCardSignedIn) {
       return (
         <div className="agent-card-config">
           <label className="field">
@@ -4413,7 +4415,7 @@ export function SettingsDialog({
                 </button>
               </div>
               </div>
-              {cfg.mode === 'daemon' && amrCardStatus?.loggedIn !== true ? (
+              {cfg.mode === 'daemon' && !amrCardSignedIn ? (
                 // Only prompt to sign into Open Design Cloud when NOT already
                 // signed in — the AMR/vela session IS the cloud identity (one
                 // session drives both), so a logged-in user has nothing to do
@@ -4613,15 +4615,15 @@ export function SettingsDialog({
                               : (a.path ?? '');
                           const amrHighlighted = isAmrAgent && amrHighlightActive;
                           const amrCardEmail =
-                            isAmrAgent && active && amrCardStatus?.loggedIn
-                              ? amrCardStatus.user?.email || t('settings.amrSignedIn')
+                            isAmrAgent && active && amrCardSignedIn
+                              ? amrCardStatus?.user?.email || t('settings.amrSignedIn')
                               : '';
                           const amrCardProfileBadge =
-                            isAmrAgent && active && amrCardStatus?.loggedIn
-                              ? amrProfileBadgeLabel(amrCardStatus.profile)
+                            isAmrAgent && active && amrCardSignedIn
+                              ? amrProfileBadgeLabel(amrCardStatus?.profile)
                               : null;
                           const amrWalletVisible =
-                            isAmrAgent && active && amrCardStatus?.loggedIn === true;
+                            isAmrAgent && active && amrCardSignedIn;
                           const amrStatusBalance =
                             amrWalletVisible
                               ? formatVelaBalanceUsd(amrCardStatus?.account?.balanceUsd)
@@ -4655,7 +4657,7 @@ export function SettingsDialog({
                               ? formatVelaBalanceUsd(workspaceBalanceUsd)
                               : null;
                           const amrCardBalanceLabel =
-                            isAmrAgent && active && amrCardStatus?.loggedIn
+                            isAmrAgent && active && amrCardSignedIn
                               ? workspaceContext?.workspaceType === 'team'
                                 ? amrWorkspaceBalance
                                 : amrWorkspaceBalance ?? amrStatusBalance ?? amrWalletBalance
@@ -4672,11 +4674,11 @@ export function SettingsDialog({
                           // account row and cannot drift from it). An id outside
                           // the badge set still renders verbatim.
                           const amrCardResolvedPlan =
-                            isAmrAgent && active && amrCardStatus?.loggedIn
+                            isAmrAgent && active && amrCardSignedIn
                               ? resolvePlanTier({
                                   billing: workspaceBilling,
                                   context: workspaceContext,
-                                  accountPlan: amrCardStatus.account?.plan,
+                                  accountPlan: amrCardStatus?.account?.plan,
                                 })
                               : null;
                           const amrCardPlanLabel = amrCardResolvedPlan
@@ -4705,7 +4707,7 @@ export function SettingsDialog({
                           // an upgrade to the top tier they already hold, while
                           // the badge beside it correctly read Max.
                           const amrCardCanUpgrade =
-                            isAmrAgent && active && amrCardStatus?.loggedIn
+                            isAmrAgent && active && amrCardSignedIn
                               ? canUpgradeFromPlanTier(amrCardResolvedPlan) &&
                                 Boolean(workspaceContext?.permissions?.canManageBilling)
                               : false;
@@ -4713,7 +4715,7 @@ export function SettingsDialog({
                             isAmrAgent &&
                             active &&
                             hoveredAgentCardId === a.id &&
-                            amrCardStatus?.loggedIn !== true &&
+                            !amrCardSignedIn &&
                             amrCardStatus?.loginInFlight === true;
                           const cardEl = (
                             <div
@@ -4875,7 +4877,7 @@ export function SettingsDialog({
                                       onMouseEnter={() => setAmrCoachmarkDismissed(true)}
                                     >
                                       {amrCoachmarkArmed &&
-                                      amrCardStatus?.loggedIn === false &&
+                                      !amrCardSignedIn &&
                                       !amrCoachmarkDismissed ? (
                                         <span className="amr-coachmark" aria-hidden="true">
                                           <span className="amr-coachmark__ring" />
@@ -4934,7 +4936,7 @@ export function SettingsDialog({
                                         initialStatus={amrCardStatus}
                                         skipInitialRefresh
                                         signInLabel={t('settings.amrAuthorize')}
-                                        showConsoleAction={amrCardStatus?.loggedIn === true}
+                                        showConsoleAction={amrCardSignedIn}
                                         iconOnlySignOut
                                         amrEntrySourceDetail="settings_amr_authorize"
                                         metricsConsent={cfg.telemetry?.metrics === true}

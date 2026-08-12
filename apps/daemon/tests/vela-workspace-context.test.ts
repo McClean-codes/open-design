@@ -153,6 +153,34 @@ describe('createCachedWorkspaceDirectoryFetcher', () => {
     ).resolves.toEqual({ ok: true, items: [] });
   });
 
+  it.each([401, 403])(
+    'preserves an authoritative %s as an expired authorization result',
+    async (status) => {
+      await expect(fetchVelaWorkspaceDirectory({
+        readSession: () => SESSION,
+        fetch: async () => jsonResponse(status, { error: 'unauthenticated' }),
+      })).resolves.toEqual({
+        ok: false,
+        items: [],
+        reason: 'unauthorized',
+        status,
+      });
+    },
+  );
+
+  it('keeps a transport failure distinct from an expired authorization result', async () => {
+    await expect(fetchVelaWorkspaceDirectory({
+      readSession: () => SESSION,
+      fetch: async () => {
+        throw new TypeError('fetch failed');
+      },
+    })).resolves.toEqual({
+      ok: false,
+      items: [],
+      reason: 'network',
+    });
+  });
+
   it('coalesces concurrent readers and briefly reuses one authoritative success', async () => {
     let now = 1_000;
     let resolveRead:

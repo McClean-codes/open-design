@@ -15,7 +15,11 @@ import type {
   WorkspaceSeatSummary,
   WorkspaceType,
 } from '@open-design/contracts';
-import { readVelaControlApiContext, type VelaUser } from '../integrations/vela.js';
+import {
+  markVelaAuthorizationExpired,
+  readVelaControlApiContext,
+  type VelaUser,
+} from '../integrations/vela.js';
 import {
   createDevWorkspaceContextProvider,
   resolveWorkspaceSettingsUrl,
@@ -519,6 +523,8 @@ function velaUserDisplayName(user: VelaUser | null): string {
 export interface WorkspaceDirectoryFetchResult {
   ok: boolean;
   items: WorkspaceDirectoryItem[];
+  reason?: 'unauthorized' | 'upstream' | 'network';
+  status?: number;
 }
 
 /**
@@ -772,10 +778,26 @@ export async function fetchVelaWorkspaceDirectory(
       headers: { authorization: `Bearer ${session.controlKey}` },
       signal: controller.signal,
     });
-    if (!response.ok) return { ok: false, items: [] };
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        if (!options.readSession) markVelaAuthorizationExpired();
+        return {
+          ok: false,
+          items: [],
+          reason: 'unauthorized',
+          status: response.status,
+        };
+      }
+      return {
+        ok: false,
+        items: [],
+        reason: 'upstream',
+        status: response.status,
+      };
+    }
     return { ok: true, items: mapVelaWorkspaceDirectory(await response.json()) };
   } catch {
-    return { ok: false, items: [] };
+    return { ok: false, items: [], reason: 'network' };
   } finally {
     clearTimeout(timeout);
   }

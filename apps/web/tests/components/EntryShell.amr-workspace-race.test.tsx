@@ -101,6 +101,7 @@ function amrConfig(): AppConfig {
 describe('EntryShell AMR workspace precheck race', () => {
   beforeEach(() => {
     globalThis.ResizeObserver = ResizeObserverMock as typeof ResizeObserver;
+    window.sessionStorage.clear();
     resetWorkspaceContextCache();
     resetWorkspaceBillingCache();
     resetTeamProjectsCache();
@@ -116,7 +117,7 @@ describe('EntryShell AMR workspace precheck race', () => {
     resetTeamProjectsCache();
   });
 
-  it('keeps a locally signed-in account in syncing state while Cloud is unavailable', async () => {
+  it('moves a locally signed-in account from initial syncing to compact auto recovery', async () => {
     window.history.replaceState(null, '', '/');
     const workspace = teamContext('workspace-a', 'member-a');
     const contextFailure = deferred<Response>();
@@ -185,7 +186,69 @@ describe('EntryShell AMR workspace precheck race', () => {
     });
 
     expect(screen.queryByTestId('entry-cloud-signin-tip')).toBeNull();
-    expect(screen.getByTestId('entry-rail-account-sync-tip')).toBeTruthy();
+    expect(screen.getByTestId('entry-rail-account-recovery-tip')).toBeTruthy();
+  });
+
+  it('keeps the startup expired-auth notice open until the user chooses an action', async () => {
+    window.history.replaceState(null, '', '/');
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/workspace/directory')) {
+        return new Response(JSON.stringify({ error: 'unauthenticated' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+      return jsonResponse({});
+    }) as typeof fetch;
+
+    render(
+      <I18nProvider initial="en">
+        <EntryShell
+          skills={[]}
+          designTemplates={[]}
+          designSystems={[]}
+          projects={[]}
+          templates={[]}
+          promptTemplates={[]}
+          defaultDesignSystemId={null}
+          connectors={[]}
+          connectorsLoading={false}
+          config={amrConfig()}
+          agents={[amrAgent()]}
+          amrLoggedIn
+          amrSessionState="reauth_required"
+          amrCredentialRevision="expired-revision"
+          daemonLive
+          onModeChange={vi.fn()}
+          onAgentChange={vi.fn()}
+          onAgentModelChange={vi.fn()}
+          onApiProtocolChange={vi.fn()}
+          onApiModelChange={vi.fn()}
+          onConfigPersist={vi.fn()}
+          onRefreshAgents={vi.fn(() => [amrAgent()])}
+          onCreateProject={vi.fn()}
+          onCreatePluginShareProject={vi.fn()}
+          onImportClaudeDesign={vi.fn()}
+          onOpenProject={vi.fn()}
+          onOpenLiveArtifact={vi.fn()}
+          onDeleteProject={vi.fn()}
+          onRenameProject={vi.fn()}
+          onChangeDefaultDesignSystem={vi.fn()}
+          onPersistComposioKey={vi.fn()}
+          onOpenSettings={vi.fn()}
+          onCompleteOnboarding={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(await screen.findByRole('alertdialog', { name: 'Sign-in expired' })).toBeTruthy();
+    await act(async () => Promise.resolve());
+    expect(screen.getByRole('alertdialog', { name: 'Sign-in expired' })).toBeTruthy();
   });
 
   it('rechecks workspace B when the workspace switches after workspace A passes the gate', async () => {

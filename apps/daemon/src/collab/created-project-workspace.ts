@@ -15,9 +15,10 @@ export type CreatedProjectWorkspaceResolution =
   | { ok: true; context: WorkspaceResourceContext | null }
   | {
       ok: false;
-      status: 400 | 403 | 503;
+      status: 400 | 401 | 403 | 503;
       code:
         | 'WORKSPACE_CONTEXT_INCOMPLETE'
+        | 'AMR_AUTH_REQUIRED'
         | 'WORKSPACE_PROJECT_PERMISSION_DENIED'
         | 'WORKSPACE_AUTHORITY_UNAVAILABLE';
       message: string;
@@ -105,6 +106,14 @@ export async function authorizeCreatedProjectWorkspace(
     directory = { ok: false, items: [] };
   }
   if (!directory.ok) {
+    if (directory.reason === 'unauthorized') {
+      return {
+        ok: false,
+        status: 401,
+        code: 'AMR_AUTH_REQUIRED',
+        message: 'AMR authorization expired. Sign in again to continue.',
+      };
+    }
     return {
       ok: false,
       status: 503,

@@ -84,6 +84,7 @@ import { AmrLoginPill } from './AmrLoginPill';
 import {
   AMR_LOGIN_STATUS_EVENT,
   amrLoginStatusEventReason,
+  isAmrSessionAuthenticated,
 } from './amrLoginPolling';
 import {
   amrPlansUrlForProfile,
@@ -1348,7 +1349,7 @@ export function ChatPane({
     retryAssistant?.id,
   ]);
   const consumeAmrAuthRetryIfAuthorized = useCallback((status: VelaLoginStatus | null) => {
-    if (status?.loggedIn === false) {
+    if (!isAmrSessionAuthenticated(status)) {
       if (
         amrAuthRetryContinuation
         && amrAuthRetryContinuation.workspaceIdentityKey === 'none'
@@ -1359,7 +1360,7 @@ export function ChatPane({
       return;
     }
     if (
-      status?.loggedIn !== true
+      !isAmrSessionAuthenticated(status)
       || !amrAuthRetryContinuation
       || !amrAuthRetryMountId
       || !amrAuthRetryWorkspaceIdentityKey
@@ -1376,7 +1377,7 @@ export function ChatPane({
     // Every continuation is consumed against the account identity returned by
     // this exact status observation. An ambient shell snapshot can belong to a
     // prior account during sign-out/sign-in transitions.
-    const loggedInAccountId = status.user?.id ?? null;
+    const loggedInAccountId = status?.user?.id ?? null;
     if (!canConsumeAmrAuthRetryContinuation(amrAuthRetryContinuation, {
       projectId,
       conversationId: activeConversationId,
@@ -1411,7 +1412,7 @@ export function ChatPane({
     retryAssistant,
   ]);
   useEffect(() => {
-    if (!amrAuthRetryContinuation || inlineAmrLoginStatus?.loggedIn !== true) return;
+    if (!amrAuthRetryContinuation || !isAmrSessionAuthenticated(inlineAmrLoginStatus)) return;
     // A Settings handoff remounts the whole project surface, so there is no
     // inline AmrLoginPill callback to drive consumption. The fresh pane's own
     // status read may request the one-shot retry; the common guard above still

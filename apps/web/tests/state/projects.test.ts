@@ -6,6 +6,7 @@ import {
   createConversation,
   createDesignSystemProjectFromProject,
   createProject,
+  ProjectCreateError,
   createPluginShareProject,
   deleteProject,
   duplicatePluginAsProject,
@@ -812,6 +813,68 @@ describe('createProject', () => {
       { sleep: async () => {} },
     )).rejects.toThrow('nope');
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the structured AMR auth error for the caller instead of reducing it to text', async () => {
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({
+        error: {
+          code: 'AMR_AUTH_REQUIRED',
+          message: 'Sign in again to continue.',
+          retryable: false,
+          requestId: 'req-expired-1',
+        },
+      }),
+      { status: 401, headers: { 'content-type': 'application/json' } },
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const failure = await createProject({
+      name: 'Auth expired',
+      skillId: null,
+      designSystemId: null,
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(ProjectCreateError);
+    expect(failure).toMatchObject({
+      status: 401,
+      code: 'AMR_AUTH_REQUIRED',
+      retryable: false,
+      requestId: 'req-expired-1',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('classifies the web proxy connection-refused 502 as a daemon transport failure', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(
+      'connect ECONNREFUSED 127.0.0.1:17660',
+      { status: 502, headers: { 'content-type': 'text/plain; charset=utf-8' } },
+    )));
+
+    await expect(createProject({
+      name: 'Daemon offline',
+      skillId: null,
+      designSystemId: null,
+    })).rejects.toMatchObject({
+      status: null,
+      code: null,
+    });
+  });
+
+  it('does not misclassify an ordinary business 502 as a daemon transport failure', async () => {
+    vi.stubGlobal('fetch', vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: { message: 'billing gateway rejected the request' } }),
+      { status: 502, headers: { 'content-type': 'application/json' } },
+    )));
+
+    await expect(createProject({
+      name: 'Business failure',
+      skillId: null,
+      designSystemId: null,
+    })).rejects.toMatchObject({
+      status: 502,
+      message: 'billing gateway rejected the request',
+    });
   });
 
   it('gives up after the retry budget when a retryable 503 persists', async () => {

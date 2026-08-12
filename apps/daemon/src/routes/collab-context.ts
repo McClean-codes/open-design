@@ -295,12 +295,15 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
       VerifiedWorkspaceRequestContextResult,
       { ok: true }
     >,
-  ) =>
-    res.status(verified.status).json({
-      error: verified.code,
-      message: verified.message,
-      ...(verified.retryable ? { retryable: true } : {}),
-    });
+  ) => verified.code === 'AMR_AUTH_REQUIRED'
+    ? sendApiError(res, verified.status, verified.code, verified.message, {
+        retryable: false,
+      })
+    : res.status(verified.status).json({
+        error: verified.code,
+        message: verified.message,
+        ...(verified.retryable ? { retryable: true } : {}),
+      });
 
   // Desktop invite hand-off ("桌面唤起和本地恢复"): the desktop app parses the
   // opendesign:// invite deeplink and POSTs the nonce here. The daemon consumes
@@ -460,6 +463,15 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
       (): WorkspaceDirectoryFetchResult => ({ ok: false, items: [] }),
     );
     if (!directory.ok) {
+      if (directory.reason === 'unauthorized') {
+        return sendApiError(
+          res,
+          401,
+          'AMR_AUTH_REQUIRED',
+          'AMR authorization expired. Sign in again to continue.',
+          { retryable: false },
+        );
+      }
       return res.status(503).json({
         error: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
         message: 'workspace membership authority is temporarily unavailable',
@@ -490,6 +502,15 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
       (): WorkspaceDirectoryFetchResult => ({ ok: false, items: [] }),
     );
     if (!directoryResult.ok) {
+      if (directoryResult.reason === 'unauthorized') {
+        return sendApiError(
+          res,
+          401,
+          'AMR_AUTH_REQUIRED',
+          'AMR authorization expired. Sign in again to continue.',
+          { retryable: false },
+        );
+      }
       return res.status(503).json({
         error: 'WORKSPACE_AUTHORITY_UNAVAILABLE',
         message: 'workspace membership authority is temporarily unavailable',
@@ -652,6 +673,15 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
         (): WorkspaceDirectoryFetchResult => ({ ok: false, items: [] }),
       );
       if (!directoryResult.ok) {
+        if (directoryResult.reason === 'unauthorized') {
+          return sendApiError(
+            res,
+            401,
+            'AMR_AUTH_REQUIRED',
+            'AMR authorization expired. Sign in again to continue.',
+            { retryable: false },
+          );
+        }
         return res.status(503).json({ error: 'workspace_directory_unavailable' });
       }
       const unauthorized = interests.filter(
@@ -749,6 +779,15 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
           requestedWorkspaceId,
           'workspace_directory_unavailable',
         );
+        if (directoryResult.reason === 'unauthorized') {
+          return sendApiError(
+            res,
+            401,
+            'AMR_AUTH_REQUIRED',
+            'AMR authorization expired. Sign in again to continue.',
+            { retryable: false },
+          );
+        }
         return res.status(503).json({ error: 'workspace_directory_unavailable' });
       }
       membership = directoryResult.items.find(

@@ -788,6 +788,7 @@ async function runAmr(args) {
   if (!sub || sub === 'help' || args.includes('--help') || args.includes('-h')) {
     console.log(`Usage:
   od amr login [--json]
+  od amr logout [--json]
   od amr status [--refresh] [--json]
 
 Options:
@@ -800,6 +801,20 @@ Options:
   const flags = parseFlags(rest, { string: AMR_STRING_FLAGS, boolean: AMR_BOOLEAN_FLAGS });
   const base = await cliDaemonBaseUrl(flags);
   switch (sub) {
+    case 'logout': {
+      const logoutResp = await fetch(`${base}/api/integrations/vela/logout`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+      });
+      if (!logoutResp.ok) return structuredHttpFailure(logoutResp);
+      const result = await logoutResp.json();
+      if (flags.json) {
+        return process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+      }
+      console.log('AMR account\tsigned out');
+      return;
+    }
     case 'login': {
       const loginResp = await fetch(`${base}/api/integrations/vela/login`, {
         method: 'POST',

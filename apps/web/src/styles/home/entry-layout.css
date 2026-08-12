@@ -515,6 +515,39 @@
     color-mix(in srgb, var(--bg-muted) 84%, var(--bg-panel));
   animation: entry-rail-account-skeleton-sheen 1.55s cubic-bezier(0.23, 1, 0.32, 1) infinite;
 }
+
+.entry-rail-account-recovery {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: calc(100% - 18px);
+  min-height: 34px;
+  margin: 0 auto;
+  padding: 4px 6px;
+  box-sizing: border-box;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.entry-rail-account-recovery__spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 1.5px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
+  border-top-color: var(--text-muted);
+  border-radius: 50%;
+  animation: entry-rail-account-recovery-spin 900ms linear infinite;
+}
+
+@keyframes entry-rail-account-recovery-spin {
+  to { transform: rotate(360deg); }
+}
+
+.entry-rail-account-recovery__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 [data-theme="dark"] .entry-rail-account-skeleton__avatar,
 [data-theme="dark"] .entry-rail-account-skeleton__name {
   background:

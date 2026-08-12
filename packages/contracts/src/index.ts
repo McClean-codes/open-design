@@ -5,6 +5,7 @@ export * from './api/app-config.js';
 export * from './api/agent-sessions.js';
 export * from './api/attribution.js';
 export * from './api/amrWallet.js';
+export * from './api/amr-auth.js';
 export * from './api/automations.js';
 export * from './api/artifacts.js';
 export * from './api/brands.js';

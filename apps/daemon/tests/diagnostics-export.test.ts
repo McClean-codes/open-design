@@ -360,10 +360,16 @@ describe('diagnostics export handler — run event logs', () => {
 
       const manifest = JSON.parse(await zip.file('summary/manifest.json')!.async('string')) as {
         files: { name: string; bytes: number; error?: string }[];
+        warnings: string[];
       };
       const runFile = manifest.files.find((file) => file.name === 'runs/run-3165/events.jsonl');
       expect(runFile?.error).toBeUndefined();
       expect(runFile?.bytes ?? 0).toBeGreaterThan(0);
+      expect(
+        manifest.warnings.some((warning) =>
+          warning.includes('may contain conversation content and artifact excerpts'),
+        ),
+      ).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

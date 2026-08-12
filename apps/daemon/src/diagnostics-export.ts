@@ -29,6 +29,8 @@ import { readCurrentAppVersionInfo } from './app-version.js';
 import { agentCliEnvForAgent, readAppConfig } from './app-config.js';
 import { spawnEnvForAgent } from './agents.js';
 import { collectBrowserUseDiscoveryFacts } from './browser/index.js';
+import { readRecentApiFailures } from './http/api-failure-journal.js';
+import { readVelaLoginStatus } from './integrations/vela.js';
 
 interface ResolvedAgentHomes {
   amrOpenCodeHome: string | null;
@@ -104,6 +106,10 @@ export const STANDALONE_LAUNCH_WARNING =
   "Daemon started without a sidecar runtime (plain `od` / standalone launch); " +
   "file-based logs are not captured. Re-run via `pnpm tools-dev` or the packaged " +
   "desktop app to include daemon/web/desktop log files in the bundle.";
+
+export const RUN_EVENT_CONTENT_WARNING =
+  'Per-run event logs may contain conversation content and artifact excerpts. ' +
+  'Review the bundle before sharing it.';
 
 /**
  * Whether an optional log source should be listed at all.
@@ -244,6 +250,7 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
       // entries — without this note an empty bundle looks like a clean run.
       const warnings: string[] = [];
       if (options.runtime == null) warnings.push(STANDALONE_LAUNCH_WARNING);
+      if (runEventSources.length > 0) warnings.push(RUN_EVENT_CONTENT_WARNING);
       if (options.runsDir && runEventSources.length === 0) {
         warnings.push(
           `No per-run event logs found under ${options.runsDir}. Either no chat ` +
@@ -273,6 +280,39 @@ export function createDiagnosticsExportHandler(options: DiagnosticsHandlerOption
           warnings: warnings.length > 0 ? warnings : undefined,
         },
         sources,
+        summaries: {
+          'recent-api-failures.json': {
+            retainedLimit: 100,
+            privacy:
+              'Request bodies, query strings, messages, credentials, and resource identifiers are not recorded.',
+            failures: readRecentApiFailures(),
+          },
+          'runtime-health.json': {
+            daemon: { reachable: true },
+            amr: (() => {
+              try {
+                const status = readVelaLoginStatus();
+                return {
+                  profile: status.profile,
+                  loggedIn: status.loggedIn,
+                  sessionState: status.sessionState,
+                  credentialRevision: status.credentialRevision,
+                  loginInFlight: status.loginInFlight,
+                };
+              } catch (error) {
+                return {
+                  error: error instanceof Error ? error.message : String(error),
+                };
+              }
+            })(),
+            coverage: {
+              runEventsPresent: runEventSources.length > 0,
+              note: runEventSources.length > 0
+                ? 'Per-run events were included.'
+                : 'The failure may have happened before a run was created; inspect daemon logs and AMR session state.',
+            },
+          },
+        },
         redaction: { username },
         crashReports: {
           // Restrict to Open Design's own process names. A generic "Electron"

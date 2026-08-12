@@ -126,6 +126,22 @@ describe('authorizeCreatedProjectWorkspace', () => {
     expect(result).toMatchObject({ ok: false, retryable: true });
   });
 
+  it('returns a non-retryable 401 when the AMR credential has expired', async () => {
+    const result = await authorizeCreatedProjectWorkspace(
+      request(),
+      async () => ({
+        ok: false,
+        items: [],
+        reason: 'unauthorized',
+        status: 401,
+      }),
+    );
+
+    expectDenied(result, 401, 'AMR_AUTH_REQUIRED');
+    expect(result).toMatchObject({ ok: false });
+    expect(result).not.toHaveProperty('retryable');
+  });
+
   it('preserves explicitly anonymous/headerless compatibility without consulting AMR', async () => {
     const fetchDirectory = vi.fn(async () => ({ ok: false, items: [] }));
     const result = await authorizeCreatedProjectWorkspace(

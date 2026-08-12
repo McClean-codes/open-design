@@ -46,6 +46,7 @@ import {
   readCachedVisiblePlugins,
   patchProject,
   resolvedWorkspaceContextForWrite,
+  ProjectCreateError,
   renderPluginBriefTemplate,
   resolvePluginQueryFallback,
 } from '../state/projects';
@@ -64,6 +65,7 @@ import {
   useAIHubMixImageModels,
 } from '../media/aihubmix-image-models';
 import {
+  daemonIsLive,
   dirExists,
   fetchRecentLinkedDirs,
   openFolderDialog,
@@ -646,6 +648,27 @@ export function HomeView({
     examplePromptInfoRef.current = info;
   }, []);
   const [error, setError] = useState<string | null>(null);
+  const [daemonRecoveryActive, setDaemonRecoveryActive] = useState(false);
+  useEffect(() => {
+    if (!daemonRecoveryActive) return;
+    let cancelled = false;
+    let timeout: number | null = null;
+    const probe = async () => {
+      const alive = await daemonIsLive();
+      if (cancelled) return;
+      if (alive) {
+        setDaemonRecoveryActive(false);
+        setError((current) => current === t('home.daemonRecovering') ? null : current);
+        return;
+      }
+      timeout = window.setTimeout(() => void probe(), 1_500);
+    };
+    void probe();
+    return () => {
+      cancelled = true;
+      if (timeout !== null) window.clearTimeout(timeout);
+    };
+  }, [daemonRecoveryActive, t]);
   // Composer in-flight guard: disables the send button, shows Sending…, and
   // swallows repeat clicks across the whole async create tail.
   const [sending, setSending] = useState(false);
@@ -2487,7 +2510,7 @@ export function HomeView({
         ...(examplePromptToSend ? { examplePromptContext: examplePromptToSend } : {}),
       });
       if (accepted === false) {
-        setError('Failed to start the run. Make sure the daemon is reachable, then try again.');
+        setError(t('home.createFailed'));
         return;
       }
       // Blocked-and-handled (AMR balance gate): the shell already shows its
@@ -2509,7 +2532,22 @@ export function HomeView({
       // A submit handler that throws (instead of resolving false) lands on
       // the same recovery path as a rejected creation.
       console.warn('Home composer submit failed', err);
-      setError('Failed to start the run. Make sure the daemon is reachable, then try again.');
+      const isTransportFailure =
+        err instanceof TypeError
+        || (err instanceof ProjectCreateError && err.status === null);
+      if (isTransportFailure) {
+        setDaemonRecoveryActive(true);
+        setError(t('home.daemonRecovering'));
+      } else if (
+        err instanceof ProjectCreateError
+        && err.code === 'AMR_AUTH_REQUIRED'
+      ) {
+        setError(t('entry.authExpiredBody'));
+      } else {
+        setError(err instanceof Error && err.message.trim()
+          ? err.message
+          : t('home.createFailed'));
+      }
     } finally {
       setSending(false);
     }

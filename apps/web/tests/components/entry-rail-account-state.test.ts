@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import {
   resolveEntryRailAccountFooterState,
+  canResumeAmrAuthBlockedSubmit,
+  shouldPromptForExpiredAmrAuth,
 } from '../../src/components/entry-rail-account-state';
 import type { WorkspaceContextState } from '../../src/collab/useWorkspaceContext';
 
@@ -26,13 +28,13 @@ describe('resolveEntryRailAccountFooterState', () => {
   });
 
   it.each([true, null] as const)(
-    'does not claim sign-out during an outage when local login is %s',
+    'shows automatic recovery during an outage when local login is %s',
     (amrLoggedIn) => {
       expect(resolveEntryRailAccountFooterState({
         context: null,
         loading: false,
         failure: 'unavailable',
-      }, amrLoggedIn)).toBe('syncing');
+      }, amrLoggedIn)).toBe('recovering');
     },
   );
 
@@ -42,6 +44,22 @@ describe('resolveEntryRailAccountFooterState', () => {
       loading: false,
       failure: 'unavailable',
     }, false)).toBe('sign-in');
+  });
+
+  it('offers the existing sign-in card when authoritative auth has expired', () => {
+    expect(resolveEntryRailAccountFooterState({
+      context: null,
+      loading: false,
+      failure: 'reauth-required',
+    }, true, 'reauth_required')).toBe('sign-in');
+  });
+
+  it('does not keep a stale cached account row above the sign-in card after auth expires', () => {
+    expect(resolveEntryRailAccountFooterState({
+      context: SIGNED_IN_CONTEXT,
+      loading: false,
+      failure: 'reauth-required',
+    }, true, 'reauth_required')).toBe('sign-in');
   });
 
   it('accepts the next successful null response as authoritative sign-out', () => {
@@ -57,5 +75,25 @@ describe('resolveEntryRailAccountFooterState', () => {
       loading: false,
       failure: 'unsupported',
     }, true)).toBe('sign-in');
+  });
+});
+
+describe('shouldPromptForExpiredAmrAuth', () => {
+  it('prompts when the workspace authority discovers expiry before the status poll catches up', () => {
+    expect(shouldPromptForExpiredAmrAuth('authenticated', 'reauth-required')).toBe(true);
+  });
+});
+
+describe('canResumeAmrAuthBlockedSubmit', () => {
+  it('waits for workspace authority recovery after login instead of dropping the pending submit', () => {
+    expect(canResumeAmrAuthBlockedSubmit('authenticated', {
+      context: null,
+      loading: false,
+      failure: 'unavailable',
+    })).toBe(false);
+    expect(canResumeAmrAuthBlockedSubmit('authenticated', {
+      context: null,
+      loading: false,
+    })).toBe(true);
   });
 });

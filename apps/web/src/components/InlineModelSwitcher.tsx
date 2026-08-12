@@ -76,6 +76,7 @@ import {
   AMR_LOGIN_STARTUP_SETTLE_MS,
   amrLoginPollOutcome,
   amrLoginStatusEventReason,
+  isAmrSessionAuthenticated,
   notifyAmrLoginStatusChanged,
 } from './amrLoginPolling';
 import { orderAgentsWithOpenDesignFirst } from './agentOrdering';
@@ -317,7 +318,7 @@ export function InlineModelSwitcher({
       const pendingStartup =
         amrLoginStartedAtRef.current !== null &&
         Date.now() - amrLoginStartedAtRef.current < AMR_LOGIN_STARTUP_SETTLE_MS;
-      if (next.loggedIn) {
+      if (isAmrSessionAuthenticated(next)) {
         amrLoginStartedAtRef.current = null;
         setAmrLoginPending(false);
       } else if (next.loginInFlight) {
@@ -557,7 +558,7 @@ export function InlineModelSwitcher({
         { metricsConsent: config.telemetry?.metrics === true },
       );
       const latest = await refreshAmrStatus();
-      if (latest?.loggedIn) return;
+      if (isAmrSessionAuthenticated(latest)) return;
       await handleAmrSignIn(attribution);
     },
     [
@@ -670,7 +671,7 @@ export function InlineModelSwitcher({
         if (next?.authAttemptId) {
           amrAuthAttemptIdRef.current = next.authAttemptId;
         }
-        if (next?.loggedIn) {
+        if (isAmrSessionAuthenticated(next)) {
           amrLoginStartedAtRef.current = null;
           stopAmrPolling();
           return;
@@ -868,7 +869,7 @@ export function InlineModelSwitcher({
     config.installationId,
     config.telemetry?.metrics,
   ]);
-  const amrLoggedIn = amrStatus?.loggedIn === true;
+  const amrLoggedIn = isAmrSessionAuthenticated(amrStatus);
 
   useEffect(() => {
     if (!amrLoggedIn || workspaceContext?.workspaceType === 'team') {
