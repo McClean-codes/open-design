@@ -132,94 +132,111 @@ describe('EntryShell AMR workspace precheck race', () => {
     resetTeamProjectsCache();
   });
 
-  it('starts the team gate from in-memory directory identity when sessionStorage is unavailable', async () => {
-    window.history.replaceState(null, '', '/');
-    const originalStorageGetItem = Storage.prototype.getItem;
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function getItem(
-      this: Storage,
-      key,
-    ) {
-      if (key === 'od.workspaceSelection.v1') {
-        throw new DOMException('Storage is unavailable', 'SecurityError');
+  it.each(['get', 'set'] as const)(
+    'starts the team gate from in-memory directory identity when sessionStorage %sItem fails',
+    async (blockedOperation) => {
+      window.history.replaceState(null, '', '/');
+      if (blockedOperation === 'get') {
+        const originalStorageGetItem = Storage.prototype.getItem;
+        vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function getItem(
+          this: Storage,
+          key,
+        ) {
+          if (key === 'od.workspaceSelection.v1') {
+            throw new DOMException('Storage is unavailable', 'SecurityError');
+          }
+          return originalStorageGetItem.call(this, key);
+        });
+      } else {
+        const originalStorageSetItem = Storage.prototype.setItem;
+        vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function setItem(
+          this: Storage,
+          key,
+          value,
+        ) {
+          if (key === 'od.workspaceSelection.v1') {
+            throw new DOMException('Storage is read-only', 'QuotaExceededError');
+          }
+          return originalStorageSetItem.call(this, key, value);
+        });
       }
-      return originalStorageGetItem.call(this, key);
-    });
-    const workspace = teamContext('workspace-cold', 'member-cold');
-    const contextRead = deferred<Response>();
-    let directoryReads = 0;
-    globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input);
-      if (url.endsWith('/api/workspace/directory')) {
-        directoryReads += 1;
-        return jsonResponse(workspaceDirectoryFixture([workspace]));
-      }
-      if (url.endsWith('/api/workspace/context')) return contextRead.promise;
-      if (url.includes('/api/workspace/billing?')) {
-        return jsonResponse({ summary: null, workspaceBalance: null });
-      }
-      if (url.endsWith('/api/workspace/projects/team')) {
-        return jsonResponse({ projects: [] });
-      }
-      if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
-      if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
-      if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
-      if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
-      return jsonResponse({});
-    }) as typeof fetch;
-    mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
-    const onCreateProject = vi.fn(async () => true);
+      const workspace = teamContext('workspace-cold', 'member-cold');
+      const contextRead = deferred<Response>();
+      let directoryReads = 0;
+      globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith('/api/workspace/directory')) {
+          directoryReads += 1;
+          return jsonResponse(workspaceDirectoryFixture([workspace]));
+        }
+        if (url.endsWith('/api/workspace/context')) return contextRead.promise;
+        if (url.includes('/api/workspace/billing?')) {
+          return jsonResponse({ summary: null, workspaceBalance: null });
+        }
+        if (url.endsWith('/api/workspace/projects/team')) {
+          return jsonResponse({ projects: [] });
+        }
+        if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
+        if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
+        if (url.endsWith('/api/community/discord')) return jsonResponse({ stale: true });
+        if (url.endsWith('/api/github/open-design')) return jsonResponse({ stale: true });
+        return jsonResponse({});
+      }) as typeof fetch;
+      mockedCheckAmrBalanceGate.mockResolvedValue({ kind: 'allow' });
+      const onCreateProject = vi.fn(async () => true);
 
-    render(
-      <I18nProvider initial="en">
-        <EntryShell
-          skills={[]}
-          designTemplates={[]}
-          designSystems={[]}
-          projects={[]}
-          templates={[]}
-          promptTemplates={[]}
-          defaultDesignSystemId={null}
-          connectors={[]}
-          connectorsLoading={false}
-          config={amrConfig()}
-          agents={[amrAgent()]}
-          daemonLive
-          onModeChange={vi.fn()}
-          onAgentChange={vi.fn()}
-          onAgentModelChange={vi.fn()}
-          onApiProtocolChange={vi.fn()}
-          onApiModelChange={vi.fn()}
-          onConfigPersist={vi.fn()}
-          onRefreshAgents={vi.fn(() => [amrAgent()])}
-          onCreateProject={onCreateProject}
-          onCreatePluginShareProject={vi.fn()}
-          onImportClaudeDesign={vi.fn()}
-          onOpenProject={vi.fn()}
-          onOpenLiveArtifact={vi.fn()}
-          onDeleteProject={vi.fn()}
-          onRenameProject={vi.fn()}
-          onChangeDefaultDesignSystem={vi.fn()}
-          onPersistComposioKey={vi.fn()}
-          onOpenSettings={vi.fn()}
-          onCompleteOnboarding={vi.fn()}
-        />
-      </I18nProvider>,
-    );
+      render(
+        <I18nProvider initial="en">
+          <EntryShell
+            skills={[]}
+            designTemplates={[]}
+            designSystems={[]}
+            projects={[]}
+            templates={[]}
+            promptTemplates={[]}
+            defaultDesignSystemId={null}
+            connectors={[]}
+            connectorsLoading={false}
+            config={amrConfig()}
+            agents={[amrAgent()]}
+            daemonLive
+            onModeChange={vi.fn()}
+            onAgentChange={vi.fn()}
+            onAgentModelChange={vi.fn()}
+            onApiProtocolChange={vi.fn()}
+            onApiModelChange={vi.fn()}
+            onConfigPersist={vi.fn()}
+            onRefreshAgents={vi.fn(() => [amrAgent()])}
+            onCreateProject={onCreateProject}
+            onCreatePluginShareProject={vi.fn()}
+            onImportClaudeDesign={vi.fn()}
+            onOpenProject={vi.fn()}
+            onOpenLiveArtifact={vi.fn()}
+            onDeleteProject={vi.fn()}
+            onRenameProject={vi.fn()}
+            onChangeDefaultDesignSystem={vi.fn()}
+            onPersistComposioKey={vi.fn()}
+            onOpenSettings={vi.fn()}
+            onCompleteOnboarding={vi.fn()}
+          />
+        </I18nProvider>,
+      );
 
-    await waitFor(() => expect(directoryReads).toBe(1));
-    setHomeHeroPrompt('Create a launch poster without waiting for account chrome.');
-    fireEvent.click(await screen.findByTestId('home-hero-submit'));
+      await waitFor(() => expect(directoryReads).toBe(1));
+      setHomeHeroPrompt('Create a launch poster without waiting for account chrome.');
+      fireEvent.click(await screen.findByTestId('home-hero-submit'));
 
-    await waitFor(() => {
-      expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
-        workspaceType: 'team',
-        workspaceId: 'workspace-cold',
-        workspaceMemberId: 'member-cold',
+      await waitFor(() => {
+        expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith({
+          workspaceType: 'team',
+          workspaceId: 'workspace-cold',
+          workspaceMemberId: 'member-cold',
+        });
       });
-    });
-    await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
-    expect(directoryReads).toBe(1);
-  });
+      await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
+      expect(directoryReads).toBe(1);
+    },
+  );
 
   it('opens the existing sign-in gate when the confirmed directory is empty', async () => {
     window.history.replaceState(null, '', '/');
@@ -305,17 +322,27 @@ describe('EntryShell AMR workspace precheck race', () => {
     await waitFor(() => expect(screen.queryByTestId('amr-balance-dialog')).toBeNull());
   });
 
-  it('keeps the account-scoped gate on daemons without Workspace APIs', async () => {
+  it('keeps the account-scoped gate when an unsupported daemon retains a team context', async () => {
     window.history.replaceState(null, '', '/');
+    const workspace = teamContext('workspace-retained', 'member-retained');
     let directoryReads = 0;
     globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       if (url.endsWith('/api/workspace/directory')) {
         directoryReads += 1;
+        if (directoryReads === 1) {
+          return jsonResponse(workspaceDirectoryFixture([workspace]));
+        }
         return new Response(JSON.stringify({ error: 'not_found' }), {
           status: 404,
           headers: { 'content-type': 'application/json' },
         });
+      }
+      if (url.endsWith('/api/workspace/context')) {
+        return jsonResponse({ context: workspace });
+      }
+      if (url.endsWith('/api/workspace/projects/team')) {
+        return jsonResponse({ projects: [] });
       }
       if (url.endsWith('/api/plugins')) return jsonResponse({ plugins: [] });
       if (url.endsWith('/api/mcp/servers')) return jsonResponse({ servers: [] });
@@ -364,12 +391,14 @@ describe('EntryShell AMR workspace precheck race', () => {
     );
 
     await waitFor(() => expect(directoryReads).toBe(1));
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
+    act(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => expect(directoryReads).toBeGreaterThan(1));
     setHomeHeroPrompt('Create through the old daemon compatibility lane.');
     fireEvent.click(await screen.findByTestId('home-hero-submit'));
 
     await waitFor(() => expect(mockedCheckAmrBalanceGate).toHaveBeenCalledWith(undefined));
     await waitFor(() => expect(onCreateProject).toHaveBeenCalledTimes(1));
-    expect(directoryReads).toBe(1);
   });
 
   it('keeps one Home submit loading until a transient team billing read recovers', async () => {

@@ -443,12 +443,19 @@ interface WorkspaceSelection {
   workspaceMemberId: string;
 }
 
+// `undefined` means storage is authoritative. A value (including null) means
+// the latest write failed and this tab's in-memory choice is authoritative.
+let inMemoryWorkspaceSelection: WorkspaceSelection | null | undefined;
+
 type WorkspaceSelectionRead =
   | { available: true; selection: WorkspaceSelection | null }
   | { available: false; selection: null };
 
 function readWorkspaceSelectionResult(): WorkspaceSelectionRead {
   if (typeof window === 'undefined') return { available: true, selection: null };
+  if (inMemoryWorkspaceSelection !== undefined) {
+    return { available: true, selection: inMemoryWorkspaceSelection };
+  }
   let storedSelection: string | null;
   try {
     storedSelection = window.sessionStorage.getItem(WORKSPACE_SELECTION_SESSION_KEY);
@@ -481,12 +488,14 @@ function readWorkspaceSelection(): WorkspaceSelection | null {
 
 function writeWorkspaceSelection(selection: WorkspaceSelection | null): void {
   if (typeof window === 'undefined') return;
+  inMemoryWorkspaceSelection = selection ? { ...selection } : null;
   try {
     if (selection) {
       window.sessionStorage.setItem(WORKSPACE_SELECTION_SESSION_KEY, JSON.stringify(selection));
     } else {
       window.sessionStorage.removeItem(WORKSPACE_SELECTION_SESSION_KEY);
     }
+    inMemoryWorkspaceSelection = undefined;
   } catch {
     // A tab with unavailable sessionStorage still remains isolated in memory.
   }
@@ -543,6 +552,7 @@ export function resetWorkspaceContextCache(): void {
   workspaceAccountGeneration = 0;
   workspaceAccountGenerationStamp = 'initial';
   resetWorkspaceContextRetrySchedules();
+  inMemoryWorkspaceSelection = undefined;
   writeWorkspaceSelection(null);
 }
 

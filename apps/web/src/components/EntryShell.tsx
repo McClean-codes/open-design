@@ -1301,14 +1301,16 @@ export function EntryShell({
       // plan/seat/display metadata.
       for (let workspaceAttempt = 0; workspaceAttempt < 2; workspaceAttempt += 1) {
         const workspaceState = workspaceContextStateRef.current;
-        let workspaceWitness: CurrentWorkspaceContextReadWitness | null =
-          workspaceContextReadWitnessFromState(workspaceState);
-        if (!workspaceWitness && workspaceState.failure === 'unsupported') {
+        let workspaceWitness: CurrentWorkspaceContextReadWitness | null;
+        if (workspaceState.failure === 'unsupported') {
           workspaceWitness = {
             context: null,
             isStillCurrent: () => workspaceContextStateRef.current.failure === 'unsupported',
           };
-        } else if (!workspaceWitness) {
+        } else {
+          workspaceWitness = workspaceContextReadWitnessFromState(workspaceState);
+        }
+        if (!workspaceWitness) {
           try {
             workspaceWitness = await resolveCurrentWorkspaceContextReadWitness();
           } catch {
