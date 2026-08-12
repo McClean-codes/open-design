@@ -102,11 +102,9 @@ import {
   RailAccountRecoveryTip,
   RailAccountSyncTip,
 } from './CloudSignInTip';
-import { AmrAuthExpiredDialog } from './AmrAuthExpiredDialog';
 import {
-  canResumeAmrAuthBlockedSubmit,
   resolveEntryRailAccountFooterState,
-  shouldPromptForExpiredAmrAuth,
+  requiresAmrReauthentication,
 } from './entry-rail-account-state';
 import { LibrarySection } from './LibrarySection';
 import { UpdaterPopup } from './UpdaterPopup';
@@ -430,7 +428,6 @@ interface Props {
   // still-signed-in user as signed out.
   amrLoggedIn?: boolean | null;
   amrSessionState?: import('@open-design/contracts').AmrSessionState;
-  amrCredentialRevision?: string | null;
   /**
    * vela login-status account/user plan (ACCOUNT-scoped). Used for personal
    * workspaces so a confirmed free account is not stuck as campaign audience
@@ -564,7 +561,6 @@ export function EntryShell({
   agentsLoading = false,
   amrLoggedIn = null,
   amrSessionState,
-  amrCredentialRevision = null,
   amrAccountPlan = null,
   daemonLive,
   onModeChange,
@@ -608,13 +604,6 @@ export function EntryShell({
   // view from the route rather than keeping it in component state.
   const route = useRoute();
   const view: EntryViewKind = route.kind === 'home' ? route.view : 'home';
-  useEffect(() => {
-    // The entry shell is the authenticated Home surface. A definitive
-    // signed-out result returns it to the Cloud identity gate while leaving
-    // the saved model source untouched for passive reauthentication.
-    if (amrLoggedIn !== false || view === 'onboarding') return;
-    navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-  }, [amrLoggedIn, view]);
   // The one shared workspace context. Any non-null context is a real workspace
   // (personal or team); workspace surfaces gate on B's permission bits, not on
   // workspaceType.
@@ -631,40 +620,18 @@ export function EntryShell({
   const railWorkspaceContext = accountFooterState === 'sign-in'
     ? null
     : workspaceContext;
-  const amrAuthExpired = shouldPromptForExpiredAmrAuth(
+  const amrAuthRequired = requiresAmrReauthentication(
     amrSessionState,
     workspaceContextState.failure,
   );
-  const [amrAuthExpiredDialog, setAmrAuthExpiredDialog] = useState<{
-    resolve?: (signedIn: boolean) => void;
-  } | null>(null);
   useEffect(() => {
-    if (!amrAuthExpired) return;
-    const noticeKey = `od.amrAuthExpired.notified.${amrCredentialRevision || 'unknown'}`;
-    try {
-      if (window.sessionStorage.getItem(noticeKey) === '1') return;
-      window.sessionStorage.setItem(noticeKey, '1');
-    } catch {
-      // A storage-restricted browser still gets one notice per component mount.
-    }
-    setAmrAuthExpiredDialog((current) => current ?? {});
-  }, [amrAuthExpired, amrCredentialRevision]);
-  useEffect(() => {
-    if (!amrAuthExpiredDialog) return;
-    const resolve = amrAuthExpiredDialog.resolve;
-    // A startup notice has no pending submit promise to resolve. Keep it open
-    // until the user chooses Later or Sign in; only submission-blocking dialogs
-    // participate in the automatic resume path below.
-    if (!resolve) return;
-    if (!canResumeAmrAuthBlockedSubmit(amrSessionState, workspaceContextState)) return;
-    resolve(true);
-    setAmrAuthExpiredDialog(null);
-  }, [
-    amrAuthExpiredDialog,
-    amrSessionState,
-    workspaceContextState.failure,
-    workspaceContextState.loading,
-  ]);
+    // The entry shell is an authenticated surface. Both an explicit signed-out
+    // status and a definitive credential rejection return to the existing
+    // Cloud identity gate. Passive reauthentication preserves the saved model
+    // source and Home's locally persisted, not-yet-sent draft.
+    if ((amrLoggedIn !== false && !amrAuthRequired) || view === 'onboarding') return;
+    navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
+  }, [amrAuthRequired, amrLoggedIn, view]);
   let accountFooterNotice: ReactNode = null;
   if (accountFooterState === 'syncing') {
     accountFooterNotice = <RailAccountSyncTip />;
@@ -1340,13 +1307,9 @@ export function EntryShell({
   // projectKind='other', so the agent infers the task type and asks only
   // when the brief cannot be routed reliably.
   async function handlePluginLoopSubmit(payload: PluginLoopSubmit) {
-    if (
-      amrAuthExpired
-    ) {
-      const signedIn = await new Promise<boolean>((resolve) => {
-        setAmrAuthExpiredDialog({ resolve });
-      });
-      if (!signedIn) return 'blocked' as const;
+    if (amrAuthRequired) {
+      navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
+      return 'blocked' as const;
     }
     // Open Design Cloud pre-run balance gate: hard blocks (empty wallet or
     // signed out) and the soft low-balance reminder both fire BEFORE the
@@ -1481,11 +1444,8 @@ export function EntryShell({
         error instanceof ProjectCreateError
         && error.code === 'AMR_AUTH_REQUIRED'
       ) {
-        const signedIn = await new Promise<boolean>((resolve) => {
-          setAmrAuthExpiredDialog({ resolve });
-        });
-        if (!signedIn) return 'blocked' as const;
-        return await create();
+        navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
+        return 'blocked' as const;
       }
       throw error;
     }
@@ -1675,25 +1635,6 @@ export function EntryShell({
               metricsConsent={config.telemetry?.metrics === true}
               installationId={config.installationId}
               onDecision={amrLowBalanceWarn.resolve}
-            />
-          ) : null}
-          {amrAuthExpiredDialog ? (
-            <AmrAuthExpiredDialog
-              onDismiss={() => {
-                amrAuthExpiredDialog.resolve?.(false);
-                setAmrAuthExpiredDialog(null);
-              }}
-              onSignedIn={(status) => {
-                onAmrLoginStatusChange?.(status);
-                notifyWorkspaceContextRefresh();
-                // Startup notices have no blocked submission to resume. Once
-                // login succeeds they can close immediately; submit notices
-                // stay mounted until the workspace authority is healthy and
-                // the waiting promise is resolved by the effect above.
-                if (!amrAuthExpiredDialog.resolve) {
-                  setAmrAuthExpiredDialog(null);
-                }
-              }}
             />
           ) : null}
           <div

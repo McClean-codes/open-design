@@ -80,7 +80,6 @@ interface Props {
   agentsLoading?: boolean;
   amrLoggedIn?: boolean | null;
   amrSessionState?: import('@open-design/contracts').AmrSessionState;
-  amrCredentialRevision?: string | null;
   /** Forwarded to EntryShell for personal free campaign audience resolution. */
   amrAccountPlan?: string | null;
   // Execution / model-switching context forwarded to the EntryShell so the
@@ -261,7 +260,6 @@ export function EntryView({
   agentsLoading,
   amrLoggedIn,
   amrSessionState,
-  amrCredentialRevision,
   amrAccountPlan,
   config,
   providerModelsCache,
@@ -396,7 +394,6 @@ export function EntryView({
       {...(agentsLoading !== undefined ? { agentsLoading } : {})}
       {...(amrLoggedIn !== undefined ? { amrLoggedIn } : {})}
       {...(amrSessionState !== undefined ? { amrSessionState } : {})}
-      {...(amrCredentialRevision !== undefined ? { amrCredentialRevision } : {})}
       {...(amrAccountPlan !== undefined ? { amrAccountPlan } : {})}
       daemonLive={daemonLive}
       onModeChange={onModeChange}

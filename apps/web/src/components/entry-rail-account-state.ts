@@ -2,20 +2,11 @@ import type { WorkspaceContextState } from '../collab/useWorkspaceContext';
 
 export type EntryRailAccountFooterState = 'hidden' | 'syncing' | 'recovering' | 'sign-in';
 
-export function shouldPromptForExpiredAmrAuth(
+export function requiresAmrReauthentication(
   amrSessionState: import('@open-design/contracts').AmrSessionState | undefined,
   workspaceFailure: WorkspaceContextState['failure'],
 ): boolean {
   return amrSessionState === 'reauth_required' || workspaceFailure === 'reauth-required';
-}
-
-export function canResumeAmrAuthBlockedSubmit(
-  amrSessionState: import('@open-design/contracts').AmrSessionState | undefined,
-  workspaceState: WorkspaceContextState,
-): boolean {
-  return amrSessionState === 'authenticated'
-    && !workspaceState.loading
-    && workspaceState.failure === undefined;
 }
 
 /**
@@ -33,7 +24,7 @@ export function resolveEntryRailAccountFooterState(
   amrLoggedIn: boolean | null | undefined,
   amrSessionState?: import('@open-design/contracts').AmrSessionState,
 ): EntryRailAccountFooterState {
-  if (shouldPromptForExpiredAmrAuth(amrSessionState, workspaceState.failure)) return 'sign-in';
+  if (requiresAmrReauthentication(amrSessionState, workspaceState.failure)) return 'sign-in';
   if (workspaceState.context) return 'hidden';
   if (workspaceState.loading) return 'syncing';
   if (

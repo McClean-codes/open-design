@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   resolveEntryRailAccountFooterState,
-  canResumeAmrAuthBlockedSubmit,
-  shouldPromptForExpiredAmrAuth,
+  requiresAmrReauthentication,
 } from '../../src/components/entry-rail-account-state';
 import type { WorkspaceContextState } from '../../src/collab/useWorkspaceContext';
 
@@ -78,22 +77,8 @@ describe('resolveEntryRailAccountFooterState', () => {
   });
 });
 
-describe('shouldPromptForExpiredAmrAuth', () => {
-  it('prompts when the workspace authority discovers expiry before the status poll catches up', () => {
-    expect(shouldPromptForExpiredAmrAuth('authenticated', 'reauth-required')).toBe(true);
-  });
-});
-
-describe('canResumeAmrAuthBlockedSubmit', () => {
-  it('waits for workspace authority recovery after login instead of dropping the pending submit', () => {
-    expect(canResumeAmrAuthBlockedSubmit('authenticated', {
-      context: null,
-      loading: false,
-      failure: 'unavailable',
-    })).toBe(false);
-    expect(canResumeAmrAuthBlockedSubmit('authenticated', {
-      context: null,
-      loading: false,
-    })).toBe(true);
+describe('requiresAmrReauthentication', () => {
+  it('requires reauthentication when workspace authority detects expiry before status polling', () => {
+    expect(requiresAmrReauthentication('authenticated', 'reauth-required')).toBe(true);
   });
 });

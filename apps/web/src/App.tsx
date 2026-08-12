@@ -1911,6 +1911,16 @@ function AppInner() {
     if (status) applyAmrLoginStatus(status, { restartOnSignIn: true });
   }, [applyAmrLoginStatus]);
 
+  useEffect(() => {
+    const cloudIdentityRejected =
+      amrLoginStatus?.loggedIn === false
+      || amrLoginStatus?.sessionState === 'reauth_required'
+      || workspaceContextState.failure === 'reauth-required';
+    if (!cloudIdentityRejected) return;
+    if (route.kind === 'home' && route.view === 'onboarding') return;
+    navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
+  }, [amrLoginStatus, route, workspaceContextState.failure]);
+
   // Bootstrap — detect daemon, then fan out independent fetches so each
   // entry-view tab can render the moment its own data lands. Earlier this
   // was one Promise.all behind a global "Loading workspace…" placeholder,
@@ -5004,7 +5014,6 @@ function AppInner() {
         agentsLoading={agentsLoading}
         amrLoggedIn={amrLoginStatus?.loggedIn ?? null}
         amrSessionState={amrLoginStatus?.sessionState}
-        amrCredentialRevision={amrLoginStatus?.credentialRevision ?? null}
         amrAccountPlan={
           amrLoginStatus?.account?.plan?.trim()
           || amrLoginStatus?.user?.plan?.trim()
