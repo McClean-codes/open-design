@@ -209,7 +209,7 @@ test.describe('Settings hover contrast (regression guard for #1795)', () => {
 });
 
 test('[P1] system theme follows the OS color scheme without persisting an explicit theme', async ({ page }) => {
-  test.fail(true, 'System theme is resolved once at startup and does not react to OS color-scheme changes.');
+  test.skip(true, 'Open Design currently ships a light-only theme; re-enable when system theme support returns.');
   await page.addInitScript(
     ({ key }) => {
       window.localStorage.setItem(
