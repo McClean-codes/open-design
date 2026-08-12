@@ -109,11 +109,10 @@ import {
   type AuthorizeProjectRequest,
 } from '../../collab/project-request-authority.js';
 import {
-  authorizeCreatedProjectWorkspace,
   bindCreatedProjectToWorkspace,
   createCreatedProjectWorkspaceResolver,
   CreatedProjectWorkspaceResolutionError,
-  sendCreatedProjectWorkspaceError,
+  localProjectWorkspaceAttribution,
 } from '../../collab/created-project-workspace.js';
 import type { WorkspaceDirectoryFetchResult } from '../../collab/vela-workspace-context.js';
 import { cancelRunsOwnedBy } from './cancel-owned-runs.js';
@@ -3399,13 +3398,13 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
 
   app.post('/api/projects', async (req, res) => {
     try {
-      const createWorkspace = await authorizeCreatedProjectWorkspace(
-        req,
-        ctx.fetchProjectCreationWorkspaceDirectory,
-      );
-      if (!createWorkspace.ok) {
-        return sendCreatedProjectWorkspaceError(res, createWorkspace);
-      }
+      // Ordinary project creation is local. Capture any complete identity that
+      // the Web already has for local attribution, but do not turn Workspace
+      // directory availability into a Send dependency. Remote share/sync/move
+      // routes retain their authoritative checks.
+      const createWorkspace = {
+        context: localProjectWorkspaceAttribution(req),
+      };
       const { id, name, projectLocationId, skillId, designSystemId, pendingPrompt, metadata, customInstructions, skipDiscoveryBrief } =
         req.body || {};
       if (typeof id !== 'string' || !isSafeId(id)) {
@@ -3498,6 +3497,14 @@ export function registerProjectRoutes(app: Express, ctx: RegisterProjectRoutesDe
         typeof req.body?.pluginSource === 'string' && req.body.pluginSource.trim().length > 0
           ? req.body.pluginSource.trim()
           : null;
+      // This is exact local resource resolution, not Team authorization.
+      // `pluginSource` preserves the record the user actually selected across
+      // same-id Personal/Team installs. The resolver may consult the daemon's
+      // local reconciliation state (including a recorded tombstone), but must
+      // not make a network authority call or compare the source's historical
+      // Workspace with the project's current Workspace. New projects are local
+      // (`sync_state=local_only`, `visibility=personal`); remote sharing/syncing
+      // performs its own fresh checks if the user later moves into Team space.
       const exactLocalPlugin = requestedPluginId && requestedPluginSource
         ? await ctx.pluginScope?.getLocalPluginBySource?.(
             requestedPluginId,

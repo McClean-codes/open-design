@@ -134,13 +134,10 @@ import {
   notifyWorkspaceBillingRefresh,
   notifyWorkspaceContextRefresh,
   currentWorkspaceAccountGeneration,
-  currentWorkspaceContextRequestToken,
-  type CurrentWorkspaceContextReadWitness,
-  resolveCurrentWorkspaceContextReadWitness,
   useTeamProjects,
   useWorkspaceBillingResponse,
   useWorkspaceContext,
-  workspaceContextReadWitnessFromState,
+  workspaceResourceReadContext,
   workspaceBillingBalanceUsd,
   workspaceBillingSummaryForContext,
 } from '../collab/useWorkspaceContext';
@@ -1296,41 +1293,21 @@ export function EntryShell({
     let amrGatePrecheckWitness: AmrBalanceGateScope | undefined;
     let amrGatePrecheckPassed = false;
     if (config.mode === 'daemon' && config.agentId === 'amr') {
-      // The membership directory contains every field needed to scope billing
-      // and project creation. It lands before the richer Workspace projection
-      // on a cold start and is shared with that projection through one
-      // generation-keyed request, so submission does not wait on unrelated
-      // plan/seat/display metadata.
-      for (let workspaceAttempt = 0; workspaceAttempt < 2; workspaceAttempt += 1) {
-        const workspaceState = workspaceContextStateRef.current;
-        let workspaceWitness: CurrentWorkspaceContextReadWitness | null;
-        const unsupportedCompatibilityWitness = workspaceState.failure === 'unsupported';
-        if (unsupportedCompatibilityWitness) {
-          const requestToken = currentWorkspaceContextRequestToken();
-          const accountGeneration = currentWorkspaceAccountGeneration();
-          workspaceWitness = {
-            context: null,
-            isStillCurrent: () => (
-              workspaceContextStateRef.current.failure === 'unsupported'
-              && currentWorkspaceContextRequestToken() === requestToken
-              && currentWorkspaceAccountGeneration() === accountGeneration
-            ),
-          };
-        } else {
-          workspaceWitness = workspaceContextReadWitnessFromState(workspaceState);
-        }
-        if (!workspaceWitness) {
-          try {
-            workspaceWitness = await resolveCurrentWorkspaceContextReadWitness();
-          } catch {
-            return false;
-          }
-        }
-        if (!workspaceWitness.isStillCurrent()) {
-          if (unsupportedCompatibilityWitness) return false;
-          continue;
-        }
-        const gateScope = amrBalanceGateScopeForWorkspaceContext(workspaceWitness.context);
+      // PRODUCT INVARIANT: Send never starts Workspace identity discovery.
+      // Billing consumes the shell's current in-memory snapshot; if it has not
+      // arrived yet, the existing account-scoped gate is used. The daemon's
+      // ordinary project-create route is local and does not need live Workspace
+      // authority. Account/scope generation checks below only prevent a result
+      // from being reused after the user switches identity while the balance
+      // request or dialog is in flight.
+      for (let scopeAttempt = 0; scopeAttempt < 2; scopeAttempt += 1) {
+        const gateAccountGeneration = currentWorkspaceAccountGeneration();
+        const gateWorkspaceState = workspaceContextStateRef.current;
+        const gateWorkspaceContext = gateWorkspaceState.failure === 'unsupported'
+          ? null
+          : workspaceResourceReadContext(gateWorkspaceState);
+        const gateWorkspaceIdentity = workspaceIdentityCacheKey(gateWorkspaceContext);
+        const gateScope = amrBalanceGateScopeForWorkspaceContext(gateWorkspaceContext);
         let gate = await retryUnavailableAmrBalanceGate(
           () => checkAmrBalanceGate(gateScope),
         );
@@ -1368,17 +1345,21 @@ export function EntryShell({
             if (decision !== 'proceed') return 'blocked' as const;
           }
         }
-        if (!workspaceWitness.isStillCurrent()) {
-          if (unsupportedCompatibilityWitness) return false;
+        if (
+          currentWorkspaceAccountGeneration() !== gateAccountGeneration
+          || workspaceIdentityCacheKey(
+            workspaceContextStateRef.current.failure === 'unsupported'
+              ? null
+              : workspaceResourceReadContext(workspaceContextStateRef.current),
+          ) !== gateWorkspaceIdentity
+        ) {
           continue;
         }
         amrGatePrecheckWitness = gateScope;
         amrGatePrecheckPassed = true;
         break;
       }
-      if (!amrGatePrecheckPassed) {
-        return false;
-      }
+      if (!amrGatePrecheckPassed) return false;
     }
     const summarizedName = summarizeProjectNameFromPrompt(payload.prompt);
     const head = payload.prompt.trim().split(/\s+/).slice(0, 8).join(' ');

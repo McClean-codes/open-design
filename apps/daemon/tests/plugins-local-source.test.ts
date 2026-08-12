@@ -2,7 +2,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { openDatabase } from '../src/db.js';
+import {
+  ensureWorkspaceResource,
+  openDatabase,
+  updateWorkspaceResource,
+} from '../src/db.js';
 import {
   materializeWorkspaceScopedTeamResource,
   teamResourceMaterializationDir,
@@ -12,6 +16,7 @@ import {
   resolvePluginFolder,
   resolvePluginSnapshot,
   upsertInstalledPlugin,
+  workspaceTeamPluginBindingResourceId,
 } from '../src/plugins/index.js';
 
 const roots: string[] = [];
@@ -103,6 +108,39 @@ describe('resolveLocalPluginBySource', () => {
     if (snapshot?.ok) {
       expect(snapshot.snapshot.pluginTitle).toBe('Team copy');
     }
+
+    // Catalog retraction is eventually consistent. Before the tombstone lands,
+    // exact local resolution succeeds without a live Workspace authority read.
+    const bindingId = workspaceTeamPluginBindingResourceId(
+      'workspace-a',
+      'shared-id',
+    );
+    ensureWorkspaceResource(db, 'plugin', 'workspace-a', bindingId, {
+      visibility: 'team',
+      resourceState: 'active',
+    });
+    await expect(resolveLocalPluginBySource({
+      db,
+      id: 'shared-id',
+      source: team.sourceKey,
+      userPluginsRoot: pluginsRoot,
+    })).resolves.toMatchObject({
+      id: 'shared-id',
+      title: 'Team copy',
+      source: 'team:plugin:workspace-a:shared-id',
+    });
+
+    // Once SSE/polling records the retraction in local SQLite, new local
+    // apply/project-create attempts follow that local catalog verdict.
+    updateWorkspaceResource(db, 'plugin', 'workspace-a', bindingId, {
+      resourceState: 'deleted',
+    });
+    await expect(resolveLocalPluginBySource({
+      db,
+      id: 'shared-id',
+      source: team.sourceKey,
+      userPluginsRoot: pluginsRoot,
+    })).resolves.toBeNull();
   });
 
   it('rejects a forged Team source without an exact materialization marker', async () => {

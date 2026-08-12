@@ -1374,7 +1374,7 @@ describe('App project creation routing', () => {
     },
   );
 
-  it('creates from the directory identity while the richer Workspace context is still loading', async () => {
+  it('does not wait for directory identity while the richer Workspace context is still loading', async () => {
     const context = workspaceContext('ws-cold-create', 'wm-cold-create');
     const richContextRead = deferred<Response>();
     mockedLoadConfig.mockReturnValue({
@@ -1419,10 +1419,7 @@ describe('App project creation routing', () => {
     await waitFor(() => {
       expect(mockedCreateProject).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceContext: expect.objectContaining({
-            workspaceId: 'ws-cold-create',
-            workspaceMemberId: 'wm-cold-create',
-          }),
+          workspaceContext: null,
         }),
       );
     });
@@ -1475,7 +1472,7 @@ describe('App project creation routing', () => {
     },
   );
 
-  it('keeps AMR Cloud project creation fail-closed while workspace discovery is loading even when signed out', async () => {
+  it('allows an unbound local AMR project while workspace discovery is loading', async () => {
     mockedLoadConfig.mockReturnValue({
       ...baseConfig,
       mode: 'daemon',
@@ -1512,7 +1509,9 @@ describe('App project creation routing', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Create project' }));
 
     await waitFor(() => {
-      expect(mockedCreateProject).not.toHaveBeenCalled();
+      expect(mockedCreateProject).toHaveBeenCalledWith(
+        expect.objectContaining({ workspaceContext: null }),
+      );
     });
   });
 

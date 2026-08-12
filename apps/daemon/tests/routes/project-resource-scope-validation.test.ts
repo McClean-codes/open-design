@@ -30,9 +30,11 @@ function buildDeps(input: {
   validateDesignSystem?: ReturnType<typeof vi.fn>;
   validateSkill?: ReturnType<typeof vi.fn>;
   getPlugin?: ReturnType<typeof vi.fn>;
+  getLocalPluginBySource?: ReturnType<typeof vi.fn>;
   loadRegistry?: ReturnType<typeof vi.fn>;
   insertProject?: ReturnType<typeof vi.fn>;
   insertConversation?: ReturnType<typeof vi.fn>;
+  fetchProjectCreationWorkspaceDirectory?: ReturnType<typeof vi.fn>;
 } = {}) {
   const binding = {
     projectId: PROJECT_ID,
@@ -121,18 +123,19 @@ function buildDeps(input: {
         lifecycleState: 'active',
       }),
     }),
-    fetchProjectCreationWorkspaceDirectory: async () => ({
-      ok: true,
-      items: [{
-        workspaceId: WORKSPACE_ID,
-        workspaceName: 'Project scope workspace',
-        workspaceType: 'personal',
-        workspaceMemberId: MEMBER_ID,
-        role: 'owner',
-        memberStatus: 'active',
-        lifecycleState: 'active',
-      }],
-    }),
+    fetchProjectCreationWorkspaceDirectory:
+      input.fetchProjectCreationWorkspaceDirectory ?? vi.fn(async () => ({
+        ok: true,
+        items: [{
+          workspaceId: WORKSPACE_ID,
+          workspaceName: 'Project scope workspace',
+          workspaceType: 'personal',
+          workspaceMemberId: MEMBER_ID,
+          role: 'owner',
+          memberStatus: 'active',
+          lifecycleState: 'active',
+        }],
+      })),
     pluginScope: {
       loadRegistry: input.loadRegistry ?? vi.fn(async () => ({
         skills: [],
@@ -142,6 +145,9 @@ function buildDeps(input: {
         scenarios: [],
       })),
       getPlugin: input.getPlugin ?? vi.fn(async () => ({})),
+      ...(input.getLocalPluginBySource
+        ? { getLocalPluginBySource: input.getLocalPluginBySource }
+        : {}),
     },
   } as unknown as Parameters<typeof registerProjectRoutes>[1];
 }
@@ -167,6 +173,31 @@ function headers() {
 }
 
 describe('project resource selection uses the persisted exact member', () => {
+  it('creates a local-only project without fetching Workspace authority', async () => {
+    const fetchProjectCreationWorkspaceDirectory = vi.fn(async () => ({
+      ok: false,
+      items: [],
+    }));
+    const insertProject = vi.fn((_: unknown, input: Record<string, unknown>) => input);
+    const baseUrl = await start(buildDeps({
+      fetchProjectCreationWorkspaceDirectory,
+      insertProject,
+    }));
+
+    const response = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        id: 'local-only-create',
+        name: 'Local-only create',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(fetchProjectCreationWorkspaceDirectory).not.toHaveBeenCalled();
+    expect(insertProject).toHaveBeenCalledOnce();
+  });
+
   it('passes exact member scope to both create validators', async () => {
     const validateDesignSystem = vi.fn(async (id) => ({ ok: true, id }));
     const validateSkill = vi.fn(async () => ({
@@ -260,5 +291,59 @@ describe('project resource selection uses the persisted exact member', () => {
     expect(insertProject).not.toHaveBeenCalled();
     expect(insertConversation).not.toHaveBeenCalled();
     expect(loadRegistry).not.toHaveBeenCalled();
+  });
+
+  it('does not reject an exact local Team plugin from a different historical Workspace', async () => {
+    const insertProject = vi.fn((_: unknown, input: Record<string, unknown>) => input);
+    const source = 'team:plugin:historical-workspace:shared-id';
+    const getLocalPluginBySource = vi.fn(async () => ({
+      id: 'shared-id',
+      source,
+    }));
+    const baseUrl = await start(buildDeps({ insertProject, getLocalPluginBySource }));
+
+    const response = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        id: 'cross-workspace-local-plugin',
+        name: 'Cross-Workspace local plugin',
+        pluginId: 'shared-id',
+        pluginSource: source,
+      }),
+    });
+
+    // This narrow route fixture does not implement snapshot persistence, so the
+    // handler later returns BAD_REQUEST. The boundary under test is that exact
+    // source resolution and the local project write both occur instead of an
+    // early Workspace-mismatch 404.
+    expect(response.status).toBe(400);
+    expect(getLocalPluginBySource).toHaveBeenCalledWith('shared-id', source);
+    expect(insertProject).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a Team plugin after local reconciliation tombstones it', async () => {
+    const insertProject = vi.fn();
+    const source = `team:plugin:${WORKSPACE_ID}:shared-id`;
+    const getLocalPluginBySource = vi.fn(async () => null);
+    const baseUrl = await start(buildDeps({ insertProject, getLocalPluginBySource }));
+
+    const response = await fetch(`${baseUrl}/api/projects`, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({
+        id: 'locally-retired-plugin',
+        name: 'Locally retired plugin',
+        pluginId: 'shared-id',
+        pluginSource: source,
+      }),
+    });
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'PLUGIN_NOT_FOUND' },
+    });
+    expect(getLocalPluginBySource).toHaveBeenCalledWith('shared-id', source);
+    expect(insertProject).not.toHaveBeenCalled();
   });
 });

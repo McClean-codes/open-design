@@ -268,7 +268,7 @@ function stubFetch() {
           headers: { 'content-type': 'application/json' },
         });
       if (href === '/api/plugins') return json({ plugins: ALL });
-      const applyMatch = /^\/api\/plugins\/([^/]+)\/apply$/.exec(href);
+      const applyMatch = /^\/api\/plugins\/([^/]+)\/(?:apply|apply-local)$/.exec(href);
       if (applyMatch) {
         const record = ALL.find((entry) => entry.id === decodeURIComponent(applyMatch[1]!));
         const posted = (JSON.parse(String(init?.body ?? '{}')) as { inputs?: Record<string, unknown> })

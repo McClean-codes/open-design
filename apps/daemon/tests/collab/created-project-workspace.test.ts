@@ -3,6 +3,7 @@ import {
   authorizeCreatedProjectWorkspace,
   createdProjectWorkspaceHome,
   CreatedProjectWorkspaceResolutionError,
+  localProjectWorkspaceAttribution,
   type CreatedProjectWorkspaceResolution,
 } from '../../src/collab/created-project-workspace.js';
 
@@ -146,6 +147,23 @@ describe('authorizeCreatedProjectWorkspace', () => {
 
     expectDenied(result, 400, 'WORKSPACE_CONTEXT_INCOMPLETE');
     expect(fetchDirectory).not.toHaveBeenCalled();
+  });
+});
+
+describe('localProjectWorkspaceAttribution', () => {
+  it('keeps a complete local attribution without consulting remote authority', () => {
+    expect(localProjectWorkspaceAttribution(request())).toMatchObject({
+      workspaceId: 'workspace-a',
+      workspaceMemberId: 'member-a',
+      workspaceType: 'team',
+    });
+  });
+
+  it('leaves missing or partial identity unbound instead of blocking local creation', () => {
+    expect(localProjectWorkspaceAttribution(request({}))).toBeNull();
+    expect(localProjectWorkspaceAttribution(request({
+      'x-od-workspace-id': 'workspace-a',
+    }))).toBeNull();
   });
 });
 

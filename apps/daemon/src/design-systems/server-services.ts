@@ -471,6 +471,11 @@ export function createDesignSystemServerServices({
       workspaceMemberId?: string | null;
     } = {},
   ) {
+    // Product boundary: this validator identifies the item in the daemon's
+    // locally reconciled catalog; it is not a fresh Team-authorization gate.
+    // A not-yet-reconciled local copy remains usable, while a locally recorded
+    // tombstone removes it from future selection. Never add a network
+    // membership check to this project-create path.
     if (id === undefined || id === null || id === '') return { ok: true, id: null };
     if (typeof id !== 'string') {
       return {
@@ -502,6 +507,11 @@ export function createDesignSystemServerServices({
     id: unknown,
     options: { workspaceId?: string | null } = {},
   ) {
+    // Same invariant as Design Systems and exact-source plugins: project
+    // creation follows locally reconciled content. Team membership is checked
+    // by remote install/pull/sync/share operations, not by Send. Eventual
+    // consistency is intentional: a stale local copy remains usable until
+    // reconciliation records the retraction in the local catalog.
     if (id === undefined || id === null || id === '') {
       return { ok: true, id: null };
     }

@@ -139,13 +139,11 @@ export type WorkspaceContextWriteResolutionOptions = {
  * When the read is momentarily blocked (loading, a pending identity change, or
  * a transient `unavailable` outage) but the shell still holds a directory-
  * verified last-good context that belongs to the CURRENT identity generation,
- * that context is honored instead of throwing. The daemon re-verifies the
- * claimed identity on the write (`authorizeCreatedProjectWorkspace`: valid →
- * allow, cross-workspace → 403, authority down → 503 retryable), so a
- * client-side fail-closed here is a redundant second lock that, under a flaky
- * network, only turns a create the server would have honored into a dead
- * button + retry storm. A context from a RETIRED generation (an account switch
- * bumped the token) still fails closed — that is the cross-account guard.
+ * that context is honored instead of throwing. Remote mutation routes still
+ * re-verify authority at their network boundary; ordinary `POST /api/projects`
+ * is deliberately local-first and no longer uses this helper or performs that
+ * verification. A context from a RETIRED generation (an account switch bumped
+ * the token) still fails closed — that is the cross-account guard.
  */
 export function resolvedWorkspaceContextForWrite(
   state: WorkspaceContextForWrite,

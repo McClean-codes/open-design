@@ -80,6 +80,24 @@ export function resolveCreatedProjectWorkspace(
 }
 
 /**
+ * Capture optional local attribution for an ordinary local project create.
+ *
+ * PRODUCT INVARIANT: `POST /api/projects` creates local data first. Workspace
+ * identity on that request is metadata for `personal` + `local_only` routing;
+ * it is not permission to publish and must not trigger a directory/network
+ * lookup or block creation. A complete request snapshot is retained as local
+ * attribution even if its remote state may have changed; missing or partial
+ * identity produces an unbound local project. Later share/sync/move-to-Team
+ * operations perform fresh authority checks at their actual remote boundary.
+ */
+export function localProjectWorkspaceAttribution(
+  req: unknown,
+): WorkspaceResourceContext | null {
+  const context = workspaceResourceContextFromRequest(req);
+  return context === null || context === 'missing' ? null : context;
+}
+
+/**
  * Authorize an explicitly-scoped project create against the signed-in
  * membership directory. The caller-selected workspace/member pair is the
  * lookup key; the daemon's ambient active workspace is deliberately absent
@@ -242,6 +260,12 @@ export function bindCreatedProjectToWorkspace(
   now: number,
 ): void {
   if (!context) return;
+  // This row is local attribution, not publication. It keeps billing and later
+  // run routing associated with the browser's captured Workspace/member while
+  // the project remains `personal` + `local_only`. Creating it must never be
+  // interpreted as sharing the project or as authorization to use any local
+  // plugin/Skill/Design System. The move/share/sync routes own those remote
+  // authorization boundaries.
   ensureWorkspaceProject({
     projectId,
     workspaceId: context.workspaceId,

@@ -116,12 +116,12 @@ import { workspaceProjectHeaders } from './collab/workspace-identity';
 import {
   beginWorkspaceScopedRead,
   currentWorkspaceAccountGeneration,
-  type CurrentWorkspaceContextReadWitness,
   resolveBoundProjectWorkspaceContext,
   resolveCurrentWorkspaceContextReadWitness,
   useWorkspaceBilling,
   useWorkspaceContext,
   workspaceIdentityCacheKey,
+  workspaceResourceReadContext,
 } from './collab/useWorkspaceContext';
 import {
   projectResourceReadsCanStart,
@@ -2862,32 +2862,15 @@ function AppInner() {
       let optimisticProjectId: string | null = null;
       let result;
       try {
-        const executionConfig = configRef.current;
-        const usesAmrCloud =
-          executionConfig.mode === 'daemon'
-          && executionConfig.agentId === AMR_AGENT_ID;
-        const unavailablePolicy: 'unscoped' | 'reject' =
-          usesAmrCloud ? 'reject' : 'unscoped';
-        let workspaceWitness: CurrentWorkspaceContextReadWitness | null = null;
-        try {
-          createWorkspaceContext = resolvedWorkspaceContextForWrite(
-            workspaceContextStateRef.current,
-            { unavailablePolicy },
-          );
-        } catch {
-          // Project creation needs only the exact directory-backed Workspace /
-          // member identity. The daemon re-verifies that claim atomically
-          // before binding the project, so waiting for the richer context here
-          // is a redundant client lock. This read shares the shell's in-flight
-          // directory request and normally adds no network roundtrip.
-          workspaceWitness = await resolveCurrentWorkspaceContextReadWitness();
-          if (!workspaceWitness.isStillCurrent() || !workspaceWitness.context) {
-            throw new Error(
-              'Workspace context is unavailable. Try again when workspace sync finishes.',
-            );
-          }
-          createWorkspaceContext = workspaceWitness.context;
-        }
+        // PRODUCT INVARIANT: ordinary project creation is local. Reuse a
+        // current in-memory Workspace snapshot for `personal` + `local_only`
+        // attribution when available, but never start identity discovery or
+        // block creation on Workspace availability. Remote share/sync/move
+        // operations retain their authoritative gates.
+        const createWorkspaceState = workspaceContextStateRef.current;
+        createWorkspaceContext = createWorkspaceState.failure === 'unsupported'
+          ? null
+          : workspaceResourceReadContext(createWorkspaceState);
         if (
           input.amrGatePrecheckWitness &&
           !amrBalanceGateScopesMatch(
@@ -2895,9 +2878,6 @@ function AppInner() {
             amrBalanceGateScopeForWorkspaceContext(createWorkspaceContext),
           )
         ) {
-          throw new Error('AMR_WORKSPACE_GATE_STALE');
-        }
-        if (workspaceWitness && !workspaceWitness.isStillCurrent()) {
           throw new Error('AMR_WORKSPACE_GATE_STALE');
         }
         // Home already accepted the run (including its balance gate), so move
