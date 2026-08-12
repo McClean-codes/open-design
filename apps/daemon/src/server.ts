@@ -827,6 +827,7 @@ import {
   createTeamResourceListCache,
   invalidateTeamResourceListingCaches,
 } from './collab/team-resource-list-cache.js';
+import { createVelaResourcePullBatcher } from './collab/vela-cli-resource-pull-batcher.js';
 import {
   createRememberedTeamResourceScopes,
   type RememberedTeamResourceScopeLease,
@@ -5603,7 +5604,6 @@ export async function startServer({
     }
 
     try {
-      const { runVelaResourceCommand } = await import('./collab/vela-cli-resource-adapter.js');
       const materialized = await materializeWorkspaceScopedTeamResource({
         kindRoot: PLUGIN_REGISTRY_ROOTS.userPluginsRoot,
         storageName: resource.id,
@@ -5614,15 +5614,13 @@ export async function startServer({
           hubResourceId,
         },
         pullInto: (stagedFolder) =>
-          runVelaResourceCommand([
-            'pull',
-            'plugin',
-            hubResourceId,
-            stagedFolder,
-            '--ref',
-            'published',
-            '--json',
-          ], workspaceId).then(() => undefined),
+          teamResourcePullBatcher.pull({
+            workspaceId,
+            kind: 'plugin',
+            resourceId: hubResourceId,
+            dir: stagedFolder,
+            ref: 'published',
+          }),
         verifyWorkspaceScope: () => teamResourceScopeStillAuthorized(scope),
         verifyStillShared: () => teamResourceStillShared('plugin', resource, scope),
       });
@@ -5763,7 +5761,6 @@ export async function startServer({
       return;
     }
     try {
-      const { runVelaResourceCommand } = await import('./collab/vela-cli-resource-adapter.js');
       const materialized = await materializeWorkspaceScopedTeamResource({
         kindRoot: USER_DESIGN_SYSTEMS_DIR,
         storageName: dirId,
@@ -5774,15 +5771,13 @@ export async function startServer({
           hubResourceId,
         },
         pullInto: (stagedFolder) =>
-          runVelaResourceCommand([
-            'pull',
-            'design_system',
-            hubResourceId,
-            stagedFolder,
-            '--ref',
-            'published',
-            '--json',
-          ], workspaceId).then(() => undefined),
+          teamResourcePullBatcher.pull({
+            workspaceId,
+            kind: 'design_system',
+            resourceId: hubResourceId,
+            dir: stagedFolder,
+            ref: 'published',
+          }),
         verifyWorkspaceScope: () => teamResourceScopeStillAuthorized(scope),
         verifyStillShared: () =>
           teamResourceStillShared('design_system', resource, scope),
@@ -5893,7 +5888,6 @@ export async function startServer({
     }
 
     try {
-      const { runVelaResourceCommand } = await import('./collab/vela-cli-resource-adapter.js');
       const materialized = await materializeWorkspaceScopedTeamResource({
         kindRoot: USER_SKILLS_DIR,
         storageName: dirId,
@@ -5904,15 +5898,13 @@ export async function startServer({
           hubResourceId,
         },
         pullInto: (stagedFolder) =>
-          runVelaResourceCommand([
-            'pull',
-            'skill',
-            hubResourceId,
-            stagedFolder,
-            '--ref',
-            'published',
-            '--json',
-          ], workspaceId).then(() => undefined),
+          teamResourcePullBatcher.pull({
+            workspaceId,
+            kind: 'skill',
+            resourceId: hubResourceId,
+            dir: stagedFolder,
+            ref: 'published',
+          }),
         verifyWorkspaceScope: () => teamResourceScopeStillAuthorized(scope),
         verifyStillShared: () => teamResourceStillShared('skill', resource, scope),
       });
@@ -6001,6 +5993,7 @@ export async function startServer({
   const teamResourceMaterializationGate = new ConcurrencyGate(
     COLLAB_VELA_FANOUT_CONCURRENCY,
   );
+  const teamResourcePullBatcher = createVelaResourcePullBatcher();
   const cachedTeamResourceList = (
     share: TeamResourceShareService,
     sync?: (
