@@ -835,7 +835,12 @@ export function useWorkspaceContext(): WorkspaceContextState {
     { 'workspace-context-changed': () => void loadContext({ fresh: true }) },
     {
       workspaceContext: state.context,
-      onActive: () => void loadContext(),
+      // Reconnect is the gap-closing snapshot in the thin-event model. It must
+      // bypass settled one-second directory/context answers: a membership
+      // change may have landed while this browser had no sink, and accepting
+      // that stale snapshot would immediately slow the fallback poll to the
+      // healthy-SSE floor.
+      onActive: () => void loadContext({ fresh: true }),
     },
   );
 

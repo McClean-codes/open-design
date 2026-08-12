@@ -96,6 +96,17 @@ export function emitWorkspaceEventToScope(
 
 export interface RegisterCollabContextRoutesDeps {
   workspaceContext: WorkspaceContextProvider;
+  /** Optional settled verifier for the pure context GET. Mutations and SSE
+   * subscriptions retain their fresh directory verification below. */
+  verifyWorkspaceReadAuthority?: (
+    req: Request,
+  ) => Promise<VerifiedWorkspaceRequestContextResult>;
+  /** Returns an exact, strict-SSE-backed membership only in adaptive mode.
+   * Null preserves the legacy directory preflight byte-for-byte. */
+  readCachedWorkspaceAuthority?: (
+    req: Request,
+    workspaceId: string,
+  ) => WorkspaceCollabContext | null;
   /** Injectable for tests; defaults to consuming against B with the vela session. */
   consumeInvite?: (nonce: string) => Promise<InviteContinueOutcome>;
   /** Injectable for tests; defaults to creating invites on B with the vela session. */
@@ -360,10 +371,12 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
 
   app.get('/api/workspace/context', async (req, res) => {
     const authorization = req.header('authorization') ?? undefined;
-    const verified = await verifyWorkspaceRequestContext({
-      req,
-      fetchWorkspaceDirectory,
-    });
+    const verified = deps.verifyWorkspaceReadAuthority
+      ? await deps.verifyWorkspaceReadAuthority(req)
+      : await verifyWorkspaceRequestContext({
+          req,
+          fetchWorkspaceDirectory,
+        });
     if (!verified.ok) return sendWorkspaceVerificationFailure(res, verified);
     const enriched = await workspaceContext.resolveExact?.({
       authorization,
@@ -718,23 +731,33 @@ export function registerCollabContextRoutes(app: Express, deps: RegisterCollabCo
     const clientId = req.header('x-od-workspace-runtime-client-id') ?? undefined;
     const clientGeneration =
       req.header('x-od-workspace-runtime-generation') ?? undefined;
-    const directoryResult = await fetchWorkspaceDirectory().catch(
-      (): WorkspaceDirectoryFetchResult => ({ ok: false, items: [] }),
-    );
-    if (!directoryResult.ok) {
-      billingRuntime.markWorkspaceUnavailable(
-        requestedWorkspaceId,
-        'workspace_directory_unavailable',
+    const cachedAuthority = deps.readCachedWorkspaceAuthority?.(
+      req,
+      requestedWorkspaceId,
+    ) ?? null;
+    let membership: WorkspaceDirectoryItem | WorkspaceCollabContext | undefined =
+      cachedAuthority?.memberStatus === 'active' &&
+      cachedAuthority.lifecycleState === 'active'
+        ? cachedAuthority
+        : undefined;
+    if (!membership) {
+      const directoryResult = await fetchWorkspaceDirectory().catch(
+        (): WorkspaceDirectoryFetchResult => ({ ok: false, items: [] }),
       );
-      return res.status(503).json({ error: 'workspace_directory_unavailable' });
+      if (!directoryResult.ok) {
+        billingRuntime.markWorkspaceUnavailable(
+          requestedWorkspaceId,
+          'workspace_directory_unavailable',
+        );
+        return res.status(503).json({ error: 'workspace_directory_unavailable' });
+      }
+      membership = directoryResult.items.find(
+        (item) =>
+          item.workspaceId === requestedWorkspaceId &&
+          item.memberStatus === 'active' &&
+          item.lifecycleState === 'active',
+      );
     }
-    const directory = directoryResult.items;
-    const membership = directory.find(
-      (item) =>
-        item.workspaceId === requestedWorkspaceId &&
-        item.memberStatus === 'active' &&
-        item.lifecycleState === 'active',
-    );
     if (!membership) {
       billingRuntime.revokeWorkspace(requestedWorkspaceId);
       return res.status(403).json({ error: 'workspace_not_authorized' });

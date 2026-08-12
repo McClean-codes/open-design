@@ -520,6 +520,10 @@ interface Props {
   streaming: boolean;
   loading?: boolean;
   error: string | null;
+  // Identifies a pane-level error produced by an assistant run. This lets the
+  // pane distinguish a stale run error from a later failure with identical
+  // canonical text; non-run errors leave the source undefined.
+  errorSourceAssistantId?: string | null;
   projectId: string | null;
   sessionMode?: ChatSessionMode;
   onSessionModeChange?: (mode: ChatSessionMode) => void;
@@ -875,6 +879,7 @@ export function ChatPane({
   viewerOnly = false,
   queuedItems = [],
   error,
+  errorSourceAssistantId,
   projectId,
   sessionMode = 'design',
   onSessionModeChange,
@@ -1464,10 +1469,26 @@ export function ChatPane({
     !!retryAssistant?.resumable &&
     !!retryAssistant?.agentId &&
     retryAssistant.agentId === config?.agentId;
+  // `error` is a shared escape hatch for both run failures and unrelated pane
+  // errors. A run error also lives durably on its assistant message. Suppress
+  // it only when its exact source assistant owns the persisted diagnostic and
+  // a later assistant has succeeded; canonical error text alone cannot prove
+  // ownership because a new run can fail with the same detail.
+  const historicalRunError = useMemo(
+    () =>
+      !retryAssistant &&
+      isRecoveredAssistantRunError(
+        displayMessages,
+        error,
+        errorSourceAssistantId,
+      ),
+    [displayMessages, error, errorSourceAssistantId, retryAssistant],
+  );
+  const currentGlobalError = historicalRunError ? null : error;
   // Prefer a case-specific message (AMR auth / balance) over the raw upstream
-  // string; fall back to the live global error (also covers conversation-load
-  // / audio errors) then the persisted run error so a reload still shows it.
-  const rawError = error ?? failedRunErrorEvent?.detail ?? null;
+  // string; otherwise keep a current pane-level error ahead of the persisted
+  // failed-run detail. Historical run errors were already removed above.
+  const rawError = currentGlobalError ?? failedRunErrorEvent?.detail ?? null;
   // Friendly agent name for {agent} interpolation in failure copy (e.g. the
   // sign-in messages). Falls back to a neutral word when unreadable, never null.
   const failedAgentLabel =
@@ -4447,6 +4468,31 @@ export function retryableAssistantMessage(
   if (!last || last.role !== 'assistant') return null;
   if (last.id !== lastAssistantId) return null;
   return isRetryableAssistantTerminalFailure(last) ? last : null;
+}
+
+function isRecoveredAssistantRunError(
+  messages: ChatMessage[],
+  error: string | null,
+  sourceAssistantId: string | null | undefined,
+): boolean {
+  const target = error?.trim();
+  if (!target || !sourceAssistantId) return false;
+  const sourceIndex = messages.findIndex(
+    (message) =>
+      message.role === 'assistant' && message.id === sourceAssistantId,
+  );
+  if (sourceIndex < 0) return false;
+  const source = messages[sourceIndex]!;
+  const ownsPersistedError = (source.events ?? []).some(
+    (event) =>
+      event.kind === 'status' &&
+      event.label === 'error' &&
+      event.detail?.trim() === target,
+  );
+  if (!ownsPersistedError) return false;
+  return messages.slice(sourceIndex + 1).some(
+    (message) => message.role === 'assistant' && message.runStatus === 'succeeded',
+  );
 }
 
 export function isAssistantMessageStreaming(
