@@ -134,6 +134,7 @@ import {
   notifyWorkspaceBillingRefresh,
   notifyWorkspaceContextRefresh,
   currentWorkspaceAccountGeneration,
+  currentWorkspaceContextRequestToken,
   type CurrentWorkspaceContextReadWitness,
   resolveCurrentWorkspaceContextReadWitness,
   useTeamProjects,
@@ -1303,10 +1304,17 @@ export function EntryShell({
       for (let workspaceAttempt = 0; workspaceAttempt < 2; workspaceAttempt += 1) {
         const workspaceState = workspaceContextStateRef.current;
         let workspaceWitness: CurrentWorkspaceContextReadWitness | null;
-        if (workspaceState.failure === 'unsupported') {
+        const unsupportedCompatibilityWitness = workspaceState.failure === 'unsupported';
+        if (unsupportedCompatibilityWitness) {
+          const requestToken = currentWorkspaceContextRequestToken();
+          const accountGeneration = currentWorkspaceAccountGeneration();
           workspaceWitness = {
             context: null,
-            isStillCurrent: () => workspaceContextStateRef.current.failure === 'unsupported',
+            isStillCurrent: () => (
+              workspaceContextStateRef.current.failure === 'unsupported'
+              && currentWorkspaceContextRequestToken() === requestToken
+              && currentWorkspaceAccountGeneration() === accountGeneration
+            ),
           };
         } else {
           workspaceWitness = workspaceContextReadWitnessFromState(workspaceState);
@@ -1318,7 +1326,10 @@ export function EntryShell({
             return false;
           }
         }
-        if (!workspaceWitness.isStillCurrent()) continue;
+        if (!workspaceWitness.isStillCurrent()) {
+          if (unsupportedCompatibilityWitness) return false;
+          continue;
+        }
         const gateScope = amrBalanceGateScopeForWorkspaceContext(workspaceWitness.context);
         let gate = await retryUnavailableAmrBalanceGate(
           () => checkAmrBalanceGate(gateScope),
@@ -1357,7 +1368,10 @@ export function EntryShell({
             if (decision !== 'proceed') return 'blocked' as const;
           }
         }
-        if (!workspaceWitness.isStillCurrent()) continue;
+        if (!workspaceWitness.isStillCurrent()) {
+          if (unsupportedCompatibilityWitness) return false;
+          continue;
+        }
         amrGatePrecheckWitness = gateScope;
         amrGatePrecheckPassed = true;
         break;
