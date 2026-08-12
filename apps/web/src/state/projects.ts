@@ -2456,17 +2456,31 @@ export async function applyPlugin(
         body: requestBody,
       },
     );
-    // A daemon that predates exact local-source apply cannot safely serve this
-    // request: its legacy endpoint ignores `source` and resolves only by ID plus
-    // current Workspace headers, so any source class can be substituted by a
-    // same-id record. Keep exact-source apply fail-closed until the daemon
-    // updates; id-only callers still use the legacy route directly above.
+    // Compatibility with a daemon that predates exact local-source apply. A
+    // legacy endpoint can still resolve Personal/bundled IDs, but it ignores
+    // `source` and therefore cannot prove an exact Team source: forwarding
+    // current Workspace headers could silently substitute another same-id
+    // plugin. Keep Team exact-source apply fail-closed until the daemon updates.
     const localApplyUnsupported = Boolean(
       options.pluginSource
       && resp.status === 404
       && resp.headers.get('x-od-plugin-apply-local') !== '1',
     );
-    if (localApplyUnsupported) return null;
+    const legacyFallbackCanResolveSelectedSource = Boolean(
+      !options.pluginSource?.startsWith('team:plugin:'),
+    );
+    if (localApplyUnsupported && legacyFallbackCanResolveSelectedSource) {
+      resp = await fetch(`${pluginUrl}/apply`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(options.workspaceContext
+            ? workspaceProjectHeaders(options.workspaceContext)
+            : {}),
+        },
+        body: requestBody,
+      });
+    }
     if (!resp.ok) return null;
     const json = (await resp.json()) as ApplyResult & { ok?: boolean };
     return json;

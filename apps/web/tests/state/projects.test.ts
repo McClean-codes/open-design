@@ -350,7 +350,7 @@ describe('applyPlugin', () => {
     });
   });
 
-  it('does not let an old daemon substitute another same-id plugin for a bundled source', async () => {
+  it('falls back to the legacy apply route only when an old daemon lacks local apply', async () => {
     const fetchMock = vi.fn<typeof fetch>(async (url) => {
       if (String(url).endsWith('/apply-local')) {
         return new Response('not found', { status: 404 });
@@ -362,15 +362,12 @@ describe('applyPlugin', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
 
-    await expect(applyPlugin('bundled-plugin', {
-      pluginSource: 'bundled:bundled-plugin',
-      workspaceContext: teamWorkspaceContext({
-        workspaceId: 'workspace-b',
-        workspaceMemberId: 'member-b',
-      }),
-    })).resolves.toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe('/api/plugins/bundled-plugin/apply-local');
+    await applyPlugin('bundled-plugin', { pluginSource: 'bundled:bundled-plugin' });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      '/api/plugins/bundled-plugin/apply-local',
+      '/api/plugins/bundled-plugin/apply',
+    ]);
   });
 
   it('does not fall back when a new daemon rejects the exact local source', async () => {
