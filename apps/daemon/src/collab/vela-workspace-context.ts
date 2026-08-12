@@ -72,6 +72,8 @@ interface VelaWorkspaceContextOptions {
   fetch?: typeof fetch;
   /** Injectable for tests; defaults to reading ~/.amr/config.json + env. */
   readSession?: typeof readVelaControlApiContext;
+  /** Settings-backed AMR environment used by the daemon's agent launcher. */
+  configuredEnv?: Record<string, string>;
   /**
    * Legacy default for no-argument `current()` and fresh-account bootstrap.
    * Exact request resolution never reads it.
@@ -534,8 +536,9 @@ export interface WorkspaceDirectoryFetchResult {
  */
 export function velaWorkspaceDirectoryIdentity(
   readSession: typeof readVelaControlApiContext = readVelaControlApiContext,
+  configuredEnv: Record<string, string> = {},
 ): string {
-  const session = readSession();
+  const session = readSession(process.env, configuredEnv);
   if (!session?.controlKey || !session.apiUrl) return 'signed-out';
   const credentialFingerprint = createHash('sha256')
     .update(session.controlKey)
@@ -765,7 +768,7 @@ export async function fetchVelaWorkspaceDirectory(
   const fetchImpl = options.fetch ?? fetch;
   const readSession = options.readSession ?? readVelaControlApiContext;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const session = readSession();
+  const session = readSession(process.env, options.configuredEnv ?? {});
   // No local Vela session is an authoritative signed-out identity, not an
   // authority outage. Returning a successful empty directory lets clients
   // clear a previously cached Team selection instead of preserving it forever.
@@ -780,7 +783,9 @@ export async function fetchVelaWorkspaceDirectory(
     });
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) {
-        if (!options.readSession) markVelaAuthorizationExpired();
+        if (!options.readSession) {
+          markVelaAuthorizationExpired(process.env, options.configuredEnv ?? {});
+        }
         return {
           ok: false,
           items: [],

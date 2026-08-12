@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { WorkspaceDirectoryItem } from '@open-design/contracts';
 import {
@@ -9,6 +12,10 @@ import {
   mapVelaWorkspaceContext,
   workspaceContextFromDirectoryItem,
 } from '../src/collab/vela-workspace-context.js';
+import {
+  clearVelaAuthorizationState,
+  readVelaLoginStatus,
+} from '../src/integrations/vela.js';
 
 // A well-formed body as B's GET /api/v1/workspaces/current returns it — a team
 // member on a BYOK provider (workspace features stay on regardless of provider).
@@ -49,13 +56,18 @@ const B_DIRECTORY_ITEM: WorkspaceDirectoryItem = {
 };
 
 const SESSION = { profile: 'prod', apiUrl: 'https://vela.example', controlKey: 'ck-1', user: null, configMtimeMs: null };
+const tempDirs: string[] = [];
 
 function jsonResponse(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response;
 }
 
 afterEach(() => {
+  clearVelaAuthorizationState();
   vi.unstubAllEnvs();
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe('mapVelaWorkspaceContext', () => {
@@ -167,6 +179,42 @@ describe('createCachedWorkspaceDirectoryFetcher', () => {
       });
     },
   );
+
+  it('marks the Settings-backed credential revision when the directory rejects its file control key', async () => {
+    const amrHome = mkdtempSync(join(tmpdir(), 'od-vela-directory-auth-'));
+    tempDirs.push(amrHome);
+    vi.stubEnv('AMR_HOME', amrHome);
+    writeFileSync(
+      join(amrHome, 'config.json'),
+      JSON.stringify({
+        profiles: {
+          prod: {
+            apiUrl: 'https://vela.example',
+            controlKey: 'file-control-key',
+          },
+        },
+      }),
+      'utf8',
+    );
+    const configuredEnv = {
+      VELA_LINK_URL: 'https://settings.example/link',
+      VELA_RUNTIME_KEY: 'settings-runtime-key',
+    };
+
+    await expect(fetchVelaWorkspaceDirectory({
+      configuredEnv,
+      fetch: async () => jsonResponse(401, { error: 'unauthenticated' }),
+    })).resolves.toMatchObject({
+      ok: false,
+      reason: 'unauthorized',
+      status: 401,
+    });
+
+    expect(readVelaLoginStatus(process.env, configuredEnv)).toMatchObject({
+      loggedIn: true,
+      sessionState: 'reauth_required',
+    });
+  });
 
   it('keeps a transport failure distinct from an expired authorization result', async () => {
     await expect(fetchVelaWorkspaceDirectory({
