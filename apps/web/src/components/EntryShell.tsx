@@ -593,13 +593,32 @@ export function EntryShell({
   // view from the route rather than keeping it in component state.
   const route = useRoute();
   const view: EntryViewKind = route.kind === 'home' ? route.view : 'home';
+  // Set only by OUR force-redirect below (not by an explicit navigation to
+  // /onboarding, e.g. the rail's "Sign in"). Used to undo the redirect if the
+  // daemon config merge lands after it — an already-onboarded server must
+  // never park a fresh client on the Cloud identity gate.
+  const forcedOnboardingRedirectRef = useRef(false);
   useEffect(() => {
     // The entry shell is the authenticated Home surface. A definitive
     // signed-out result returns it to the Cloud identity gate while leaving
     // the saved model source untouched for passive reauthentication.
+    if (config.onboardingCompleted === true) {
+      // A daemon that already completed onboarding (daemon or local copy —
+      // mergeDaemonConfig ratchets before this runs) must not be forced back
+      // into the Cloud identity gate on a fresh device just because this
+      // client has no AMR session: local/BYOK installs never require a Cloud
+      // account. Undo a redirect we issued before the daemon merge landed;
+      // an explicit user navigation to /onboarding is left alone.
+      if (view === 'onboarding' && forcedOnboardingRedirectRef.current) {
+        forcedOnboardingRedirectRef.current = false;
+        navigate({ kind: 'home', view: 'home' }, { replace: true });
+      }
+      return;
+    }
     if (amrLoggedIn !== false || view === 'onboarding') return;
+    forcedOnboardingRedirectRef.current = true;
     navigate({ kind: 'home', view: 'onboarding' }, { replace: true });
-  }, [amrLoggedIn, view]);
+  }, [amrLoggedIn, view, config.onboardingCompleted]);
   // The one shared workspace context. Any non-null context is a real workspace
   // (personal or team); workspace surfaces gate on B's permission bits, not on
   // workspaceType.
