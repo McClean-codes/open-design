@@ -182,8 +182,18 @@ export function daemonAgentPayloadToPersistedAgentEvent(data: unknown): Persiste
   if (type === 'conversation_title' && typeof data.title === 'string') {
     return { kind: 'conversation_title', title: data.title };
   }
-  if (type === 'thinking_delta' && typeof data.delta === 'string') {
-    return { kind: 'thinking', text: data.delta };
+  // thinking_delta chunks are transient reasoning tokens — 99.8% of persisted
+  // events on long ACP runs. Each chunk triggers a synchronous full rewrite of
+  // the message's accumulated events_json (O(n^2), better-sqlite3) and the
+  // resulting write storm freezes the daemon (upstream #6296, local fork patch
+  // 2026-08-12). Thinking text is intentionally NOT persisted (operator
+  // decision): the web spinner keys off `thinking_start` ->
+  // {kind:'status', label:'thinking'} (one event per phase) plus the live SSE
+  // stream, so dropping the per-chunk text changes no UI behavior. A text-less
+  // {kind:'thinking'} marker was rejected: history replay crashes on it
+  // (stripEmptyThinkingBlocks / hasVisibleBrandAssistantEvent call text.trim()).
+  if (type === 'thinking_delta') {
+    return null;
   }
   if (type === 'thinking_start') return { kind: 'status', label: 'thinking' };
   if (type === 'live_artifact') {
