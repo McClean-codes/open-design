@@ -226,6 +226,7 @@ describe('public MCP discovery + generation tools', () => {
     expect(JSON.parse(firstText(result))).toMatchObject({ runId: 'run-no-skills' });
   });
 
+
   it('start_run omits agentId from POST body when agent arg is not provided', async () => {
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       if (url.endsWith('/api/active')) {
@@ -868,6 +869,27 @@ describe('public MCP discovery + generation tools', () => {
     await handleMcpToolCall('http://127.0.0.1:17456', 'create_project', { name: 'X' });
     const postBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(postBody.skipDiscoveryBrief).toBe(true);
+  });
+
+  it('create_project forwards skills[] as skillIds[] to /api/projects', async () => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe('http://127.0.0.1:17456/api/projects');
+      expect(init?.method).toBe('POST');
+      const body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ project: { id: body.id, name: body.name }, conversationId: 'c1' }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await handleMcpToolCall('http://127.0.0.1:17456', 'create_project', {
+      name: '3D Office',
+      skill: 'threejs',
+      skills: ['shader-dev', 'mockup-device-3d'],
+    });
+
+    const postBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(postBody.skillId).toBe('threejs');
+    expect(postBody.skillIds).toEqual(['shader-dev', 'mockup-device-3d']);
+    expect(JSON.parse(firstText(result))).toMatchObject({ project: { name: '3D Office' }, conversationId: 'c1' });
   });
 
   // #4: list_plugins flattens the bulky daemon record (sourceKind,

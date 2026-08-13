@@ -2551,6 +2551,20 @@ export async function startServer({
       // credentials; the loopback bypass exists for the localhost desktop
       // UI which has no proxy in the path.
       if (isLoopbackPeerAddress(req.socket?.remoteAddress)) return next();
+      // Browser-host bypass: accept requests whose Host or Origin
+      // matches an entry in OD_ALLOWED_ORIGINS (or a resolved
+      // loopback/RFC1918 host on the daemon's bind port). The browser
+      // cannot add Authorization headers for cross-origin subresource
+      // fetches, so an explicit OD_ALLOWED_ORIGINS entry is the only
+      // signal that the request originated from a host the operator
+      // declared trusted. This is the same condition isLocalSameOrigin()
+      // evaluates for the CORS layer below.
+      const resolvedPortForBrowser = resolvedPort
+        || parseInt((req.headers.host ?? '').split(':')[1] ?? '', 10)
+        || undefined;
+      try {
+        if (isLocalSameOrigin(req, resolvedPortForBrowser)) return next();
+      } catch { /* fall through to bearer check */ }
       if (apiTokenAuthorizationMatches(req.get('authorization'), apiToken)) return next();
       if (
         req.method === 'POST'

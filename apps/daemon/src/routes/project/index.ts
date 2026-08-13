@@ -5761,11 +5761,9 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
   // (no preflight needed), but an explicit handler future-proofs the route if
   // artifacts ever add custom request headers.
   app.options(/^\/api\/projects\/([^/]+)\/raw\/(.+)$/u, (req, res) => {
-    if (req.headers.origin === 'null') {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Methods', 'GET');
-      res.header('Access-Control-Allow-Headers', 'Content-Type');
-    }
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Methods', 'GET');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
     res.sendStatus(204);
   });
 
@@ -5788,13 +5786,13 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
       if (project?.metadata?.teamMirrorRevokedAt) {
         return sendApiError(res, 404, 'PROJECT_NOT_FOUND', 'not found');
       }
-      // PreviewModal loads artifact HTML via srcdoc, giving the iframe Origin: "null".
-      // data: URIs, file://, and some sandboxed iframes also send null — all are
-      // local-only callers, so this is safe. Real cross-origin sites send a real
-      // origin and remain blocked by the browser's same-origin policy.
-      if (req.headers.origin === 'null') {
-        res.header('Access-Control-Allow-Origin', '*');
-      }
+      // Always set ACAO so the browser's CORS check passes for both
+      // sandboxed-iframe (Origin: null) and real-Origin loads from allowed
+      // origins. The earlier "if Origin === null" guard broke canvas tile
+      // fetches because the browser sends a real Origin for fetch() calls
+      // even from the same host. The CORS middleware ahead of this route
+      // still gates cross-origin callers.
+      res.header('Access-Control-Allow-Origin', '*');
       const meta = await resolveProjectFilePath(
         PROJECTS_DIR,
         projectId,

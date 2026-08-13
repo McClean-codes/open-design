@@ -500,7 +500,21 @@ export function registerVelaRoutes(app: Express, deps: RegisterVelaRoutesDeps): 
       });
       res.json(response);
     } catch (err) {
-      res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+      // Self-hosted Linux installs frequently lack the AMR `vela` binary.
+      // Surface a graceful "available: false" response instead of a 500 so
+      // the dashboard's AMR card can render a "not available" state rather
+      // than failing the entire UI mount. Other errors keep the 500 path.
+      const message = err instanceof Error ? err.message : String(err);
+      if (/vela binary could not be resolved|AMR runtime definition is missing/i.test(message)) {
+        res.json({
+          available: false,
+          models: [],
+          reason: message,
+          install: 'Install the vela CLI from https://amr-cli.open-design.ai to enable AMR.',
+        });
+        return;
+      }
+      res.status(500).json({ error: message });
     }
   });
 
