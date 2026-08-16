@@ -256,9 +256,11 @@ export const HOME_HERO_CHIPS: ReadonlyArray<HomeHeroChip> = [
     group: 'create',
     description: 'Shaders, 3D & generative GPU visuals',
     hint: 'Build a full-screen real-time WebGL2 shader / 3D scene that runs live on the GPU.',
-    // Powered-preview scenario: binds the bundled `example-webgl-experience`
-    // plugin (shader/3D seed + P0 checklist). The artifact auto-detects into
-    // powered preview via its `getContext('webgl2')` call.
+    // WebGL-experience scenario: binds the bundled `example-webgl-experience`
+    // plugin (shader/3D seed + P0 checklist). The artifact ships a plain
+    // WebGL2 canvas that renders fine under the normal preview sandbox —
+    // powered preview is only auto-detected for isolation-required
+    // capabilities (Workers, WASM, SAB), which this scenario does not need.
     action: {
       kind: 'apply-scenario',
       pluginId: 'example-webgl-experience',

@@ -197,6 +197,10 @@ describe('GET /api/projects/:id/raw/* range request route', () => {
       path.join(dir, 'large-powered.html'),
       Buffer.from(`<!doctype html><html><body>${'x'.repeat((2 * 1024 * 1024) + 256)}<script>new Worker("worker.js")</script></body></html>`),
     );
+    await writeFile(
+      path.join(dir, 'webgl2-only.html'),
+      Buffer.from('<!doctype html><html><body><script>const gl = testCanvas.getContext("webgl2") || testCanvas.getContext("webgl");</script></body></html>'),
+    );
     await writeFile(path.join(dir, 'body.html'), Buffer.from('<html><body><main>Preview</main></body></html>'));
     await writeFile(
       path.join(dir, 'bridged.html'),
@@ -335,6 +339,24 @@ describe('GET /api/projects/:id/raw/* range request route', () => {
     expect(body.text).not.toContain('new Worker');
     expect(body.poweredPreview.required).toBe(true);
     expect(body.poweredPreview.scannedBytes).toBeGreaterThan(2 * 1024 * 1024);
+  });
+
+  it('does not require powered preview for a WebGL2-only HTML artifact', async () => {
+    // Regression (fleetops t_ea729ec6): ordinary WebGL2 does not need
+    // cross-origin isolation — the raw iframe renders it (dashboard covers
+    // prove it). The capability-probe shape here is the exact one found in
+    // the affected induction-motor / axial-turbojet artifacts.
+    const res = await fetch(`${baseUrl}/api/projects/${projectId}/text-preview/webgl2-only.html?limit=64`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      poweredPreview: {
+        required: boolean;
+        scannedBytes: number;
+        complete: boolean;
+      };
+    };
+    expect(body.poweredPreview.required).toBe(false);
+    expect(body.poweredPreview.complete).toBe(true);
   });
 
   it('skips URL preview bridge injection for large HTML so first paint can stream', async () => {

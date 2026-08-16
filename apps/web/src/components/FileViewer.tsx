@@ -9712,7 +9712,7 @@ function HtmlViewer({
     workspaceActive,
     workspaceContext,
   ]);
-  // A real WebGL/Worker/WASM/SharedArrayBuffer artifact needs the "powered
+  // A real Worker/WASM/SharedArrayBuffer artifact needs the "powered
   // preview" path — a cross-origin-isolated iframe with allow-same-origin —
   // which the opaque preview sandbox cannot provide (issue #724). Powered mode
   // supersedes the shim/focus-guard srcDoc fallbacks below: those exist only to

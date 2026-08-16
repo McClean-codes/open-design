@@ -221,10 +221,10 @@ export function htmlNeedsFocusGuard(source: string): boolean {
  *
  * When true, FileViewer routes the artifact through the "powered preview"
  * path (a cross-origin-isolated iframe with allow-same-origin) instead of the
- * opaque sandbox. Plain single-canvas WebGL1 demos are intentionally NOT
- * matched — they already run fine under the default sandbox, and powered mode
- * carries a (documented, opt-in) larger trust surface, so we only escalate for
- * artifacts that genuinely need it.
+ * opaque sandbox. Plain single-canvas WebGL1/WebGL2 demos are intentionally
+ * NOT matched — they already run fine under the default sandbox, and powered
+ * mode carries a (documented, opt-in) larger trust surface, so we only
+ * escalate for artifacts that genuinely need it.
  *
  * Pure string scan over the same `source` already fetched for preview. False
  * positives just take the powered path (still correct, slightly larger trust
@@ -243,9 +243,9 @@ export function htmlNeedsPoweredPreview(source: string | null | undefined): bool
   // cannot fetch; and threaded WASM needs SAB.
   if (/\bWebAssembly\s*\.\s*(?:instantiateStreaming|compileStreaming)\b/.test(source)) return true;
   if (/\.wasm\b/.test(source)) return true;
-  // WebGL2 / OffscreenCanvas / WebGPU — the modern rendering stack these
-  // artifacts drive, usually from a worker.
-  if (/getContext\s*\(\s*["'`]webgl2["'`]/.test(source)) return true;
+  // OffscreenCanvas / WebGPU — worker-driven rendering contexts that need
+  // a same-origin document to function (WebGL2 alone runs fine in the
+  // opaque-sandbox raw iframe, so it is deliberately NOT matched).
   if (/\bOffscreenCanvas\b/.test(source)) return true;
   if (/\bnavigator\s*\.\s*gpu\b/.test(source)) return true;
   return false;

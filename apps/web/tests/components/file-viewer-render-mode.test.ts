@@ -359,11 +359,24 @@ describe('htmlNeedsPoweredPreview', () => {
     expect(htmlNeedsPoweredPreview('fetch("engine.wasm")')).toBe(true);
   });
 
-  it('matches WebGL2 / OffscreenCanvas / WebGPU', () => {
-    expect(htmlNeedsPoweredPreview('canvas.getContext("webgl2")')).toBe(true);
-    expect(htmlNeedsPoweredPreview("el.getContext('webgl2', {})")).toBe(true);
+  it('matches OffscreenCanvas / WebGPU (worker-driven rendering)', () => {
     expect(htmlNeedsPoweredPreview('new OffscreenCanvas(8, 8)')).toBe(true);
     expect(htmlNeedsPoweredPreview('const a = navigator.gpu')).toBe(true);
+  });
+
+  it('does NOT match WebGL2-only canvas code (runs fine in the opaque sandbox)', () => {
+    // Regression (fleetops t_ea729ec6): ordinary WebGL2 does not require
+    // cross-origin isolation, and forcing powered mode host-swaps the daemon
+    // loopback origin (broken for remote/Tailnet browsers). Both the bare
+    // context request and the capability-probe shape seen in real artifacts
+    // (webgl2 || webgl fallback) must stay on the normal path.
+    expect(htmlNeedsPoweredPreview('canvas.getContext("webgl2")')).toBe(false);
+    expect(htmlNeedsPoweredPreview("el.getContext('webgl2', {})")).toBe(false);
+    expect(
+      htmlNeedsPoweredPreview(
+        "const gl = testCanvas.getContext('webgl2') || testCanvas.getContext('webgl');",
+      ),
+    ).toBe(false);
   });
 
   it('does NOT match a plain WebGL1 canvas demo (runs fine in the opaque sandbox)', () => {

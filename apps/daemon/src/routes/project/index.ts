@@ -5057,7 +5057,10 @@ export function registerProjectFileRoutes(app: Express, ctx: RegisterProjectFile
     if (/\bimportScripts\s*\(/.test(source)) return true;
     if (/\bWebAssembly\s*\.\s*(?:instantiateStreaming|compileStreaming)\b/.test(source)) return true;
     if (/\.wasm\b/.test(source)) return true;
-    if (/getContext\s*\(\s*["'`]webgl2["'`]/.test(source)) return true;
+    // Ordinary WebGL2 does NOT require powered preview: the opaque-sandbox raw
+    // iframe already renders WebGL2 artifacts (dashboard covers prove it), and
+    // powered mode's cross-origin-isolated origin is only needed for the
+    // capabilities above (same-origin Workers, WASM, SAB, storage).
     if (/\bOffscreenCanvas\b/.test(source)) return true;
     if (/\bnavigator\s*\.\s*gpu\b/.test(source)) return true;
     return false;
