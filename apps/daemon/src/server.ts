@@ -2027,6 +2027,14 @@ const PROJECT_PREVIEW_SCOPE_TTL_MS = 60 * 60 * 1000;
 const PROJECT_PREVIEW_ASSET_PATH_RE = /^\/projects\/([^/]+)\/preview\/([^/]+)\/.+$/u;
 const PROJECT_RUN_SCOPED_EXPORT_PATH_RE =
   /^\/projects\/[^/]+\/export(?:\/(?:pptx|pdf-image|image))?$/u;
+// Routes that serve content to sandboxed iframes (Origin: null) for
+// read-only purposes. Shared by the API-token middleware (which must not 401
+// sandboxed-preview asset GETs before their route can run its own
+// per-project/workspace authorization and emit ACAO) and the CORS middleware
+// (which rejects every other /api route for Origin: null). All other /api
+// routes reject Origin: null.
+const PROJECT_PREVIEW_NULL_ORIGIN_SAFE_GET_RE =
+  /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
 
 function createProjectPreviewScopeRegistry() {
   const scopes = new Map();
@@ -2545,6 +2553,25 @@ export async function startServer({
         ) {
           return next();
         }
+        // Sandboxed-preview parity with the CORS middleware below: a GET from
+        // an opaque (Origin: null) srcdoc iframe on the exact route set the
+        // CORS layer already declares sandbox-safe (raw preview fonts/assets,
+        // minted preview scopes, codex-pet spritesheets, asset-cache) reaches
+        // its route handler, which still enforces its own per-project /
+        // workspace authorization and ACAO before serving bytes. This is not a
+        // blanket Origin-null bypass: every other route, every real
+        // non-allowlisted Origin, and every non-GET request still falls
+        // through to the bearer/basic challenge below. A request that carries
+        // an Authorization header is not a credential-less sandboxed preview
+        // (srcdoc iframes cannot attach one), so it must still satisfy the
+        // bearer/basic check — a wrong bearer on the raw surface stays 401.
+        if (
+          req.headers.origin === 'null'
+          && req.get('authorization') == null
+          && PROJECT_PREVIEW_NULL_ORIGIN_SAFE_GET_RE.test(req.path)
+        ) {
+          return next();
+        }
       }
       // Loopback short-circuit. We ignore the proxied X-Forwarded-For
       // header here because a reverse proxy MUST always forward the
@@ -2700,8 +2727,8 @@ export async function startServer({
 
   // Routes that serve content to sandboxed iframes (Origin: null) for
   // read-only purposes.  All other /api routes reject Origin: null.
-  const _NULL_ORIGIN_SAFE_GET_RE =
-    /^\/projects\/[^/]+\/(?:raw|preview)\/|^\/codex-pets\/[^/]+\/spritesheet$|^\/asset-cache$/;
+  // The API-token middleware above accepts the same set for opaque-origin
+  // GETs so a sandboxed preview can actually reach these routes.
   const _POWERED_PREVIEW_SAFE_RE = /^\/projects\/[^/]+\/powered\/.+$/u;
 
   // Reject cross-origin requests to API endpoints.
@@ -2763,7 +2790,7 @@ export async function startServer({
     // routes that set their own CORS headers for canvas drawing.
     if (origin === 'null') {
       const isSafeReadOnly =
-        req.method === 'GET' && _NULL_ORIGIN_SAFE_GET_RE.test(req.path);
+        req.method === 'GET' && PROJECT_PREVIEW_NULL_ORIGIN_SAFE_GET_RE.test(req.path);
       if (!isSafeReadOnly) {
         return res.status(403).json({ error: 'Origin: null not allowed for this route' });
       }
